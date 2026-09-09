@@ -19,12 +19,9 @@ static const char *TAG = "XPT2046";
  */
 static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
 {
-    // Use static buffers — spi_device_transmit requires DMA-accessible memory;
-    // stack allocations are unreliable on shared-DMA buses.
-    static uint8_t tx[3];
-    static uint8_t rx[3];
-    tx[0] = cmd; tx[1] = 0x00; tx[2] = 0x00;
-    rx[0] = 0;   rx[1] = 0;    rx[2] = 0;
+    // Stack buffers are fine for polling mode (no DMA path for these tiny reads).
+    uint8_t tx[3] = {cmd, 0x00, 0x00};
+    uint8_t rx[3] = {0, 0, 0};
 
     spi_transaction_t t = {
         .length    = 24,
@@ -32,9 +29,15 @@ static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
         .rx_buffer = rx,
     };
 
-    // spi_device_transmit (ISR-based queue, not polling) — avoids polling_mutex
-    // which the SD SPI driver holds via spi_device_acquire_bus during file I/O.
-    esp_err_t ret = spi_device_transmit(handle->spi, &t);
+    // spi_device_polling_transmit (CPU-driven, not ISR/DMA) is required here.
+    // The ISR-based spi_device_transmit asserts the software CS pin by writing
+    // directly to GPIO_OUT_W1TC_REG, which only covers GPIO0-31. On ESP32,
+    // GPIO33 (XPT2046 CS on CYD-2432S028) is in GPIO_OUT1_W1TC_REG (GPIO32-39).
+    // The ISR path misses this register and GPIO33 never goes LOW, leaving the
+    // XPT2046 DOUT in high-impedance and MISO stuck at the board pull-down (GND).
+    // spi_device_polling_transmit drives CS via gpio_set_level() which handles
+    // GPIO32+ correctly, so the chip responds properly.
+    esp_err_t ret = spi_device_polling_transmit(handle->spi, &t);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI tx failed (cmd=0x%02x): %s", cmd, esp_err_to_name(ret));
         return 0;
@@ -191,10 +194,15 @@ bool xpt2046_read_raw_point(xpt2046_handle_t *handle, uint16_t *out_x, uint16_t 
     // Same position-compensated pressure gate as xpt2046_read_touch.
     uint16_t rz1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
     uint16_t rz2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
+    // Sanity check: z1=0 AND z2=0 means MISO is stuck LOW (XPT2046 CS never
+    // asserted, chip not powered, or SPI bus issue). Real untouched reads have
+    // z1≈0 and z2≈4095 (panel pull-up). Both being 0 is a broken read.
+    if (rz1 == 0 && rz2 == 0) return false;
+
     int pressure = (int)rz1 + 4095 - (int)rz2;
 
-    // Diagnostic: log z1/z2/pressure periodically so calibration issues are visible
-    // in the serial monitor. Logs ~every second (100 calls × ~10ms poll = ~1s).
+    // Diagnostic: log z1/z2/pressure periodically so calibration issues are
+    // visible in the serial monitor. Rate-limited to ~1/s (100 × 10ms).
     static int s_diag_count = 0;
     if (++s_diag_count >= 100) {
         ESP_LOGI(TAG, "cal-diag z1=%u z2=%u pressure=%d threshold=%d",
@@ -203,9 +211,6 @@ bool xpt2046_read_raw_point(xpt2046_handle_t *handle, uint16_t *out_x, uint16_t 
     }
 
     if (pressure < XPT2046_Z_THRESHOLD) return false;
-
-    // Touch detected — log for calibration diagnostics
-    ESP_LOGI(TAG, "TOUCH z1=%u z2=%u pressure=%d", rz1, rz2, pressure);
 
     // Discard first sample per axis (ADC settling), then average 4 samples
     xpt2046_read_raw(handle, XPT2046_CMD_X);
