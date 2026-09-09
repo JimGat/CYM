@@ -19,7 +19,6 @@ static const char *TAG = "XPT2046";
  */
 static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
 {
-    // Stack buffers are fine for polling mode (no DMA path for these tiny reads).
     uint8_t tx[3] = {cmd, 0x00, 0x00};
     uint8_t rx[3] = {0, 0, 0};
 
@@ -29,15 +28,16 @@ static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
         .rx_buffer = rx,
     };
 
-    // spi_device_polling_transmit (CPU-driven, not ISR/DMA) is required here.
-    // The ISR-based spi_device_transmit asserts the software CS pin by writing
-    // directly to GPIO_OUT_W1TC_REG, which only covers GPIO0-31. On ESP32,
-    // GPIO33 (XPT2046 CS on CYD-2432S028) is in GPIO_OUT1_W1TC_REG (GPIO32-39).
-    // The ISR path misses this register and GPIO33 never goes LOW, leaving the
-    // XPT2046 DOUT in high-impedance and MISO stuck at the board pull-down (GND).
-    // spi_device_polling_transmit drives CS via gpio_set_level() which handles
-    // GPIO32+ correctly, so the chip responds properly.
+    // CS is driven manually via gpio_set_level() rather than through the SPI
+    // driver's hardware CS path. On ESP32, GPIO33 (CYD-2432S028 touch CS) is in
+    // the GPIO32-39 domain; the SPI peripheral's GPIO-matrix CS routing has been
+    // observed to not assert it reliably. gpio_set_level() is always correct for
+    // any GPIO number, so we own the CS toggle here and pass spics_io_num=-1 to
+    // the driver so it leaves the pin alone.
+    gpio_set_level(handle->cs_gpio, 0);
     esp_err_t ret = spi_device_polling_transmit(handle->spi, &t);
+    gpio_set_level(handle->cs_gpio, 1);
+
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI tx failed (cmd=0x%02x): %s", cmd, esp_err_to_name(ret));
         return 0;
@@ -90,10 +90,16 @@ esp_err_t xpt2046_init(xpt2046_handle_t *handle,
     handle->y_min    = XPT2046_Y_MIN_DEFAULT;
     handle->y_max    = XPT2046_Y_MAX_DEFAULT;
 
+    // Configure CS GPIO manually — driver gets spics_io_num=-1 so it never
+    // touches the pin. xpt2046_read_raw() toggles it via gpio_set_level() which
+    // correctly handles any GPIO number including GPIO32-39.
+    gpio_set_direction((gpio_num_t)cs_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)cs_gpio, 1);   // idle HIGH (de-asserted)
+
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = XPT2046_SPI_CLK_HZ,
         .mode           = 0,               // SPI mode 0 (CPOL=0, CPHA=0)
-        .spics_io_num   = cs_gpio,
+        .spics_io_num   = -1,              // manual CS — driver must not touch it
         .queue_size     = 1,
         .pre_cb         = NULL,
         .post_cb        = NULL,
@@ -194,23 +200,12 @@ bool xpt2046_read_raw_point(xpt2046_handle_t *handle, uint16_t *out_x, uint16_t 
     // Same position-compensated pressure gate as xpt2046_read_touch.
     uint16_t rz1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
     uint16_t rz2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
-    // Sanity check: z1=0 AND z2=0 means MISO is stuck LOW (XPT2046 CS never
-    // asserted, chip not powered, or SPI bus issue). Real untouched reads have
-    // z1≈0 and z2≈4095 (panel pull-up). Both being 0 is a broken read.
+
+    // z1=0 && z2=0 → MISO stuck LOW (broken read — chip not responding).
+    // Real untouched reads have z1≈0, z2≈4095. Guard prevents false pressure=4095.
     if (rz1 == 0 && rz2 == 0) return false;
 
-    int pressure = (int)rz1 + 4095 - (int)rz2;
-
-    // Diagnostic: log z1/z2/pressure periodically so calibration issues are
-    // visible in the serial monitor. Rate-limited to ~1/s (100 × 10ms).
-    static int s_diag_count = 0;
-    if (++s_diag_count >= 100) {
-        ESP_LOGI(TAG, "cal-diag z1=%u z2=%u pressure=%d threshold=%d",
-                 rz1, rz2, pressure, XPT2046_Z_THRESHOLD);
-        s_diag_count = 0;
-    }
-
-    if (pressure < XPT2046_Z_THRESHOLD) return false;
+    if ((int)rz1 + 4095 - (int)rz2 < XPT2046_Z_THRESHOLD) return false;
 
     // Discard first sample per axis (ADC settling), then average 4 samples
     xpt2046_read_raw(handle, XPT2046_CMD_X);
