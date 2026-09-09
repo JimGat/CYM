@@ -191,7 +191,21 @@ bool xpt2046_read_raw_point(xpt2046_handle_t *handle, uint16_t *out_x, uint16_t 
     // Same position-compensated pressure gate as xpt2046_read_touch.
     uint16_t rz1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
     uint16_t rz2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
-    if ((int)rz1 + 4095 - (int)rz2 < XPT2046_Z_THRESHOLD) return false;
+    int pressure = (int)rz1 + 4095 - (int)rz2;
+
+    // Diagnostic: log z1/z2/pressure periodically so calibration issues are visible
+    // in the serial monitor. Logs ~every second (100 calls × ~10ms poll = ~1s).
+    static int s_diag_count = 0;
+    if (++s_diag_count >= 100) {
+        ESP_LOGI(TAG, "cal-diag z1=%u z2=%u pressure=%d threshold=%d",
+                 rz1, rz2, pressure, XPT2046_Z_THRESHOLD);
+        s_diag_count = 0;
+    }
+
+    if (pressure < XPT2046_Z_THRESHOLD) return false;
+
+    // Touch detected — log for calibration diagnostics
+    ESP_LOGI(TAG, "TOUCH z1=%u z2=%u pressure=%d", rz1, rz2, pressure);
 
     // Discard first sample per axis (ADC settling), then average 4 samples
     xpt2046_read_raw(handle, XPT2046_CMD_X);
