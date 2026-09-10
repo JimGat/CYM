@@ -4012,14 +4012,7 @@ static void init_display(void)
 
     const esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = LCD_RST,
-#if defined(CONFIG_BOARD_CYD2USB)
-        // ILI9341 uses BGR pixel order natively; MADCTL BGR=1 required.
-        // RGB order causes R and B channels to swap — produces blue cast on all warm colors.
-        // ST7789 on other boards uses RGB — do not change the #else branch.
-        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
-#else
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-#endif
         .bits_per_pixel = 16,
     };
 
