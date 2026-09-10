@@ -4031,10 +4031,11 @@ static void init_display(void)
 
 #if defined(CONFIG_BOARD_CYD2USB)
     // ILI9341 on 2432S028 is physically wired with rows/columns transposed relative
-    // to the PCB portrait orientation. swap_xy alone (MADCTL MV=1) rotates 90° CW
-    // into portrait. mirror_x was tested and caused left-right flip — leave false.
+    // to the PCB portrait orientation. swap_xy (MADCTL MV=1) rotates 90 CW into
+    // portrait. Both mirrors flip the resulting portrait 180 degrees so USB is at
+    // the bottom (MADCTL MV=1, MX=1, MY=1).
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, false, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
 #endif
 }
 
