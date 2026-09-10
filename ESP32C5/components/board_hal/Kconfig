@@ -84,6 +84,18 @@ menu "CYM Board Selection"
             need inversion; n for normal panels. Calls esp_lcd_panel_invert_color().
             CYD2USB (2432S028): inversion IS required — set y in sdkconfig.defaults.cyd2usb.
 
+    config BOARD_LCD_BRIGHTNESS_DEFAULT
+        int "Default LCD brightness on first boot (%)"
+        range 10 100
+        default 55 if BOARD_CYD2USB
+        default 80
+        help
+            Factory default brightness used when NVS has no saved brightness value
+            (first boot, or after a factory reset). Each board can have a different
+            default to account for panel characteristics and ambient use cases.
+            CYD2USB: 55% (ILI9341 panel is notably brighter than ST7789 at the same
+            duty cycle). NM-CYD-C5 / WS-C5-28: 80%.
+
     config BOARD_HAS_DUAL_SPI_BUS
         bool
         default y if BOARD_CYD2USB

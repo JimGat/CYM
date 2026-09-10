@@ -708,7 +708,7 @@ static uint32_t      boot_btn_hold_start_ms  = 0;    // timestamp when hold bega
 
 // Screen settings (loaded from NVS)
 static int32_t screen_timeout_ms = 0;       // 0 = stays on (default)
-static uint8_t screen_brightness_pct = 80;  // 10-100% (default 80)
+static uint8_t screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
 static lv_obj_t *brightness_overlay = NULL; // Software brightness overlay on lv_layer_top()
 static uint16_t scan_time_min_ms = 100;     // Active scan min time per channel (default 100)
 static uint16_t scan_time_max_ms = 300;     // Active scan max time per channel (default 300)
@@ -4083,11 +4083,11 @@ static void nvs_settings_load(void)
         } else {
             screen_timeout_ms = 0; // stays on
         }
-        uint8_t b = 80;
+        uint8_t b = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
         if (nvs_get_u8(h, NVS_KEY_BRIGHTNESS, &b) == ESP_OK) {
             screen_brightness_pct = b;
         } else {
-            screen_brightness_pct = 80;
+            screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
         }
         uint16_t smin = 100, smax = 300;
         if (nvs_get_u16(h, NVS_KEY_SCAN_MIN, &smin) == ESP_OK) {
@@ -4167,7 +4167,7 @@ static void nvs_settings_load(void)
     } else {
         ESP_LOGW(TAG, "NVS settings not found (first boot), using defaults");
         screen_timeout_ms = 0;
-        screen_brightness_pct = 80;
+        screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
         scan_time_min_ms = 100;
         scan_time_max_ms = 300;
         dark_mode_enabled = true;
