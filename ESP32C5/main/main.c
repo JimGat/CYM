@@ -4023,6 +4023,35 @@ static void init_display(void)
 #endif
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+
+#if defined(CONFIG_BOARD_CYD2USB)
+    // Extended ILI9341 init — power, VCOM, frame rate, and gamma tables.
+    // The ESP-IDF ILI9341 driver sends a minimal register set; these commands
+    // are what TFT_eSPI / Bruce firmware add to get warm, contrasty colors on
+    // the CYD-2432S028 panel. Sent after panel_init() so they override defaults.
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xCF, (uint8_t[]){0x00, 0xC1, 0x30}, 3);         // Power Control B
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xED, (uint8_t[]){0x64, 0x03, 0x12, 0x81}, 4);   // Power on Sequence
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xE8, (uint8_t[]){0x85, 0x00, 0x78}, 3);         // Driver Timing A
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xCB, (uint8_t[]){0x39, 0x2C, 0x00, 0x34, 0x02}, 5); // Power Control A
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xF7, (uint8_t[]){0x20}, 1);                     // Pump Ratio Control
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xEA, (uint8_t[]){0x00, 0x00}, 2);               // Driver Timing B
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xC0, (uint8_t[]){0x23}, 1);                     // VRH = 4.60 V
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xC1, (uint8_t[]){0x10}, 1);                     // Power Control 2
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xC5, (uint8_t[]){0x3E, 0x28}, 2);               // VCOM Control 1
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xC7, (uint8_t[]){0x86}, 1);                     // VCOM Control 2
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xB1, (uint8_t[]){0x00, 0x18}, 2);               // Frame Rate ~79 Hz
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xB6, (uint8_t[]){0x08, 0x82, 0x27}, 3);        // Display Function
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xF2, (uint8_t[]){0x00}, 1);                     // Gamma enable off
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0x26, (uint8_t[]){0x01}, 1);                     // Gamma curve 1
+    // Positive gamma — tuned for CYD ILI9341 panel (TFT_eSPI reference values)
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xE0,
+        (uint8_t[]){0x0F,0x31,0x2B,0x0C,0x0E,0x08,0x4E,0xF1,0x37,0x07,0x10,0x03,0x0E,0x09,0x00}, 15);
+    // Negative gamma
+    esp_lcd_panel_io_tx_param(lcd_io_handle, 0xE1,
+        (uint8_t[]){0x00,0x0E,0x14,0x03,0x11,0x07,0x31,0xC1,0x48,0x08,0x0F,0x0C,0x31,0x36,0x0F}, 15);
+    ESP_LOGI(TAG, "ILI9341 extended init applied (CYD2USB)");
+#endif
+
 #if defined(CONFIG_BOARD_LCD_INVERT_COLOR)
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
 #else
