@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster - CYD-2432S028",
-  "version": "v2.13.66",
-  "build": "v2.13.66",
+  "version": "v2.13.67",
+  "build": "v2.13.67",
   "chipFamily": "ESP32",
   "parts": [
     { "path": "../binaries-cyd-2432s028/bootloader.bin",          "offset": 4096   },
