@@ -33,8 +33,15 @@ extern "C" {
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 typedef struct {
+    // Hardware SPI handle (NULL when using software SPI)
     spi_device_handle_t spi;
+    // Set true when using software SPI (bit-bang) instead of hardware SPI
+    bool                use_sw_spi;
     int                 cs_gpio;
+    // Software SPI pins — valid only when use_sw_spi = true
+    int                 sck_gpio;
+    int                 mosi_gpio;
+    int                 miso_gpio;
     uint16_t            screen_w;
     uint16_t            screen_h;
     // Calibration (raw ADC units)
@@ -58,12 +65,12 @@ typedef struct {
 // ─── API ─────────────────────────────────────────────────────────────────────
 
 /**
- * @brief Attach XPT2046 to an already-initialised SPI host.
+ * @brief Attach XPT2046 to an already-initialised SPI host (hardware SPI).
  *        Must be called AFTER spi_bus_initialize().
  *
  * @param handle     Pointer to caller-allocated handle struct
  * @param host       SPI host (same host as display, e.g. SPI2_HOST)
- * @param cs_gpio    Chip-select GPIO (TOUCH_CS = GPIO 1)
+ * @param cs_gpio    Chip-select GPIO
  * @param screen_w   Screen width in pixels  (LCD_H_RES)
  * @param screen_h   Screen height in pixels (LCD_V_RES)
  */
@@ -72,6 +79,25 @@ esp_err_t xpt2046_init(xpt2046_handle_t *handle,
                        int               cs_gpio,
                        uint16_t          screen_w,
                        uint16_t          screen_h);
+
+/**
+ * @brief Initialise XPT2046 with software (bit-bang) SPI.
+ *        Use when the touch chip is on separate GPIO pins that do not share
+ *        a hardware SPI host with any other peripheral (e.g. CYD-2432S028
+ *        where both application SPI hosts are occupied by display and SD card).
+ *
+ * @param handle     Pointer to caller-allocated handle struct
+ * @param sck_gpio   Clock output GPIO (T_CLK)
+ * @param mosi_gpio  Data output GPIO  (T_DIN)
+ * @param miso_gpio  Data input GPIO   (T_DO) — may be an input-only pin
+ * @param cs_gpio    Chip-select GPIO  (T_CS, active LOW)
+ * @param screen_w   Screen width in pixels
+ * @param screen_h   Screen height in pixels
+ */
+esp_err_t xpt2046_init_sw(xpt2046_handle_t *handle,
+                           int sck_gpio, int mosi_gpio, int miso_gpio,
+                           int cs_gpio,
+                           uint16_t screen_w, uint16_t screen_h);
 
 /**
  * @brief Override the default calibration values.

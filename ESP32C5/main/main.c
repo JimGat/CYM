@@ -3960,15 +3960,7 @@ static void init_display(void)
     // ── Display + touch SPI bus init ────────────────────────────────────────
     spi_bus_config_t buscfg = {
         .mosi_io_num = LCD_MOSI,
-#if defined(CONFIG_BOARD_CYD2USB)
-        // ILI9341 is write-only — MISO is not used for display. XPT2046 T_DO is
-        // on GPIO39 (SENSOR_VN), NOT on the display VSPI MISO (GPIO12). GPIO12 is
-        // the VDDSDIO strapping pin and has an external pull-down on the CYD-2432S028
-        // to hold it LOW at boot for 3.3 V VDDSDIO, making GPIO12 useless as MISO.
-        .miso_io_num = BOARD_TOUCH_MISO,   // GPIO39
-#else
-        .miso_io_num = LCD_MISO,
-#endif
+        .miso_io_num = LCD_MISO,   // GPIO12 (display is write-only; MISO unused by ILI9341)
         .sclk_io_num = LCD_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
@@ -5180,12 +5172,31 @@ static void run_touch_calibration(void)
 static void init_touch(void)
 {
 #if defined(CONFIG_BOARD_TOUCH_XPT2046)
+#if defined(CONFIG_BOARD_CYD2USB)
+    // CYD-2432S028: XPT2046 is on a SEPARATE SPI bus from the ILI9341 display.
+    // Display uses VSPI (SPI3_HOST, GPIO14/13/12/15). Touch has its own lines:
+    // CLK=GPIO25, MOSI=GPIO32, MISO=GPIO39, CS=GPIO33. Both SPI2_HOST (SD card)
+    // and SPI3_HOST (display) are occupied, so touch uses software SPI bit-banging.
+    esp_err_t ret = xpt2046_init_sw(&touch_handle,
+                                     BOARD_TOUCH_SCK,    // GPIO25
+                                     BOARD_TOUCH_MOSI,   // GPIO32
+                                     BOARD_TOUCH_MISO,   // GPIO39
+                                     TOUCH_CS,           // GPIO33
+                                     LCD_H_RES, LCD_V_RES);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "XPT2046 SW SPI init failed: %s", esp_err_to_name(ret));
+        return;
+    }
+    ESP_LOGI(TAG, "XPT2046 touch initialised (SW SPI, SCK=%d MOSI=%d MISO=%d CS=%d)",
+             BOARD_TOUCH_SCK, BOARD_TOUCH_MOSI, BOARD_TOUCH_MISO, TOUCH_CS);
+#else
     esp_err_t ret = xpt2046_init(&touch_handle, LCD_HOST, TOUCH_CS, LCD_H_RES, LCD_V_RES);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "XPT2046 touch init failed: %s", esp_err_to_name(ret));
         return;
     }
     ESP_LOGI(TAG, "XPT2046 touch initialised (SPI polling mode, CS=GPIO%d)", TOUCH_CS);
+#endif // CONFIG_BOARD_CYD2USB
 
     // Load calibration from NVS; if absent use hardware-observed defaults for NM-CYD-C5
     touch_cal_t cal;

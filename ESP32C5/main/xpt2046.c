@@ -15,11 +15,52 @@ static const char *TAG = "XPT2046";
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 /**
- * Send one 8-bit command, receive one 16-bit response.
+ * Software SPI helper: send one 8-bit command, receive one 16-bit response.
+ *
+ * XPT2046 uses SPI mode 0 (CPOL=0 CPHA=0): CLK idles LOW, data captured on
+ * rising edge, data output on falling edge.  Three bytes are clocked (24 bits):
+ *   TX: [cmd] [0x00] [0x00]
+ *   RX: [don't-care] [BUSY|D11..D5] [D4..D0|000]
+ * Result: ((rx[1] << 8) | rx[2]) >> 3 gives the 12-bit ADC value.
+ */
+static uint16_t xpt2046_read_raw_sw(xpt2046_handle_t *handle, uint8_t cmd)
+{
+    int sck  = handle->sck_gpio;
+    int mosi = handle->mosi_gpio;
+    int miso = handle->miso_gpio;
+
+    uint8_t tx[3] = {cmd, 0x00, 0x00};
+    uint8_t rx[3] = {0, 0, 0};
+
+    gpio_set_level(handle->cs_gpio, 0);   // Assert CS (active LOW)
+
+    for (int b = 0; b < 3; b++) {
+        uint8_t out = tx[b];
+        uint8_t in  = 0;
+        for (int bit = 7; bit >= 0; bit--) {
+            gpio_set_level(sck, 0);                        // CLK falling edge
+            gpio_set_level(mosi, (out >> bit) & 1);       // drive MOSI before rising edge
+            gpio_set_level(sck, 1);                        // CLK rising edge — XPT2046 captures MOSI
+            if (gpio_get_level(miso)) in |= (1 << bit);   // sample MISO on rising edge
+        }
+        rx[b] = in;
+    }
+
+    gpio_set_level(sck, 0);               // leave CLK LOW (SPI mode 0 idle)
+    gpio_set_level(handle->cs_gpio, 1);   // De-assert CS
+
+    uint16_t raw = ((uint16_t)rx[1] << 8 | rx[2]) >> 3;
+    return raw & 0x0FFF;
+}
+
+/**
+ * Send one 8-bit command, receive one 16-bit response (hardware SPI path).
  * The 12-bit result sits in bits [14:3] of the 16-bit word → shift right 3.
  */
 static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
 {
+    if (handle->use_sw_spi) return xpt2046_read_raw_sw(handle, cmd);
+
     uint8_t tx[3] = {cmd, 0x00, 0x00};
     uint8_t rx[3] = {0, 0, 0};
 
@@ -29,12 +70,7 @@ static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
         .rx_buffer = rx,
     };
 
-    // CS is driven manually via gpio_set_level() rather than through the SPI
-    // driver's hardware CS path. On ESP32, GPIO33 (CYD-2432S028 touch CS) is in
-    // the GPIO32-39 domain; the SPI peripheral's GPIO-matrix CS routing has been
-    // observed to not assert it reliably. gpio_set_level() is always correct for
-    // any GPIO number, so we own the CS toggle here and pass spics_io_num=-1 to
-    // the driver so it leaves the pin alone.
+    // CS driven manually — driver has spics_io_num=-1 so it never touches the pin.
     gpio_set_level(handle->cs_gpio, 0);
     esp_err_t ret = spi_device_polling_transmit(handle->spi, &t);
     gpio_set_level(handle->cs_gpio, 1);
@@ -121,6 +157,55 @@ esp_err_t xpt2046_init(xpt2046_handle_t *handle,
     // Send dummy Z1 + Z2 reads to wake the XPT2046 from power-down mode.
     // Untouched: z1≈10-50 (low), z2≈4000-4095 (high). If MISO is stuck LOW
     // (wrong pin or external pull-down), both return 0 — chip not responding.
+    uint16_t wakeup_z1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
+    uint16_t wakeup_z2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
+    const char *diag = (wakeup_z1 == 0 && wakeup_z2 == 0)
+                       ? "MISO stuck LOW — chip not responding; check MISO pin"
+                       : (wakeup_z2 > 3000) ? "OK — chip responding"
+                                            : "unexpected — verify wiring";
+    ESP_LOGI(TAG, "XPT2046 wakeup: z1=%u z2=%u [%s]", wakeup_z1, wakeup_z2, diag);
+
+    return ESP_OK;
+}
+
+esp_err_t xpt2046_init_sw(xpt2046_handle_t *handle,
+                           int sck_gpio, int mosi_gpio, int miso_gpio,
+                           int cs_gpio,
+                           uint16_t screen_w, uint16_t screen_h)
+{
+    if (!handle) return ESP_ERR_INVALID_ARG;
+
+    memset(handle, 0, sizeof(*handle));
+    handle->use_sw_spi = true;
+    handle->cs_gpio    = cs_gpio;
+    handle->sck_gpio   = sck_gpio;
+    handle->mosi_gpio  = mosi_gpio;
+    handle->miso_gpio  = miso_gpio;
+    handle->screen_w   = screen_w;
+    handle->screen_h   = screen_h;
+    handle->x_min      = XPT2046_X_MIN_DEFAULT;
+    handle->x_max      = XPT2046_X_MAX_DEFAULT;
+    handle->y_min      = XPT2046_Y_MIN_DEFAULT;
+    handle->y_max      = XPT2046_Y_MAX_DEFAULT;
+
+    // Configure GPIO pins
+    gpio_set_direction((gpio_num_t)sck_gpio,  GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)sck_gpio,  0);   // SCK idle LOW (SPI mode 0)
+    gpio_set_direction((gpio_num_t)mosi_gpio, GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)mosi_gpio, 0);
+    // MISO may be an input-only pin (e.g. GPIO39 on ESP32 — no pull-up/down capable)
+    gpio_set_direction((gpio_num_t)miso_gpio, GPIO_MODE_INPUT);
+    gpio_set_direction((gpio_num_t)cs_gpio,   GPIO_MODE_OUTPUT);
+    gpio_set_level((gpio_num_t)cs_gpio,   1);   // CS idle HIGH (de-asserted)
+
+    ESP_LOGI(TAG, "XPT2046 initialised (SW SPI) — SCK=%d MOSI=%d MISO=%d CS=%d, screen %dx%d",
+             sck_gpio, mosi_gpio, miso_gpio, cs_gpio, screen_w, screen_h);
+    ESP_LOGI(TAG, "Calibration: X %d-%d -> 0-%d, Y %d-%d -> 0-%d",
+             handle->x_min, handle->x_max, screen_w - 1,
+             handle->y_min, handle->y_max, screen_h - 1);
+
+    // Wakeup read: untouched = z1 low (~10-50), z2 high (~4000-4095).
+    // If both are 0, MISO is unresponsive (wrong pin or chip not powered).
     uint16_t wakeup_z1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
     uint16_t wakeup_z2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
     const char *diag = (wakeup_z1 == 0 && wakeup_z2 == 0)

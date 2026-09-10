@@ -24,13 +24,13 @@
 #define BOARD_TOUCH_CS          33
 // GPIO36 is input-only (SENSOR_VP); used as analog IRQ — not configured as GPIO
 #define BOARD_TOUCH_IRQ         36
-// XPT2046 T_DO (DOUT/MISO) is on GPIO39, NOT GPIO12.
-// GPIO12 is the VDDSDIO voltage strapping pin; it has an external pull-down to
-// ground on the CYD-2432S028 to force 3.3V VDDSDIO at boot. That pull-down
-// holds MISO at ~0 V even when no SPI device drives it, so all XPT2046 reads
-// via GPIO12 return 0. GPIO39 is an input-only (SENSOR_VN) ADC pin — perfect
-// for SPI MISO. CLK/MOSI/CS are still shared with the display on GPIO14/13/33.
-#define BOARD_TOUCH_MISO        39
+// XPT2046 on CYD-2432S028 uses its OWN SPI bus — separate from the ILI9341
+// display (VSPI GPIO14/13/12). ESP32 only has two app SPI hosts (SPI2=SD,
+// SPI3=display), so touch uses software SPI bit-banged on these pins:
+#define BOARD_TOUCH_SCK         25   // T_CLK  — separate from display CLK (GPIO14)
+#define BOARD_TOUCH_MOSI        32   // T_DIN  — separate from display MOSI (GPIO13)
+#define BOARD_TOUCH_MISO        39   // T_DO   — input-only SENSOR_VN, no pull-up/down
+// BOARD_TOUCH_CS=33 and BOARD_TOUCH_IRQ=36 are defined above
 
 // ── SD card (HSPI / SPI2_HOST — separate bus) ────────────────────────────────
 #define BOARD_SD_SPI_HOST       SPI2_HOST   // HSPI: SD card only
