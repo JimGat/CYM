@@ -32,6 +32,11 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 CONFIG_BOARD_CYD2USB=y
 
+# ILI9341 on CYD-2432S028 requires color inversion — without it, the dark-themed
+# LVGL UI renders as washed-out light colors (0x0000 black shows as white).
+# This is a panel-variant hardware characteristic, not a firmware default.
+CONFIG_BOARD_LCD_INVERT_COLOR=y
+
 # Disable WiFi IRAM speed optimizations to free ~10-17 KB IRAM each.
 # Saves >10 KB (IRAM_OPT) + >17 KB (RX_IRAM_OPT) at the cost of reduced WiFi throughput.
 # Required on CYD2USB (no PSRAM, tight IRAM budget). Acceptable: CYD is a local-range
