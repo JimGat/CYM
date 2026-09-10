@@ -3960,7 +3960,15 @@ static void init_display(void)
     // ── Display + touch SPI bus init ────────────────────────────────────────
     spi_bus_config_t buscfg = {
         .mosi_io_num = LCD_MOSI,
+#if defined(CONFIG_BOARD_CYD2USB)
+        // ILI9341 is write-only — MISO is not used for display. XPT2046 T_DO is
+        // on GPIO39 (SENSOR_VN), NOT on the display VSPI MISO (GPIO12). GPIO12 is
+        // the VDDSDIO strapping pin and has an external pull-down on the CYD-2432S028
+        // to hold it LOW at boot for 3.3 V VDDSDIO, making GPIO12 useless as MISO.
+        .miso_io_num = BOARD_TOUCH_MISO,   // GPIO39
+#else
         .miso_io_num = LCD_MISO,
+#endif
         .sclk_io_num = LCD_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,

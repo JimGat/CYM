@@ -1,6 +1,7 @@
 #include "xpt2046.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <string.h>
 
 static const char *TAG = "XPT2046";
@@ -117,10 +118,16 @@ esp_err_t xpt2046_init(xpt2046_handle_t *handle,
              handle->x_min, handle->x_max, screen_w - 1,
              handle->y_min, handle->y_max, screen_h - 1);
 
-    // Send a dummy Z1 read to wake the XPT2046 from power-down mode.
-    // The chip starts powered-down; first SPI command with PD=11 brings it up.
-    uint16_t wakeup = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
-    ESP_LOGI(TAG, "XPT2046 wakeup read: z1_raw=%u (expect < 100 if untouched)", wakeup);
+    // Send dummy Z1 + Z2 reads to wake the XPT2046 from power-down mode.
+    // Untouched: z1≈10-50 (low), z2≈4000-4095 (high). If MISO is stuck LOW
+    // (wrong pin or external pull-down), both return 0 — chip not responding.
+    uint16_t wakeup_z1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
+    uint16_t wakeup_z2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
+    const char *diag = (wakeup_z1 == 0 && wakeup_z2 == 0)
+                       ? "MISO stuck LOW — chip not responding; check MISO pin"
+                       : (wakeup_z2 > 3000) ? "OK — chip responding"
+                                            : "unexpected — verify wiring";
+    ESP_LOGI(TAG, "XPT2046 wakeup: z1=%u z2=%u [%s]", wakeup_z1, wakeup_z2, diag);
 
     return ESP_OK;
 }
@@ -200,6 +207,15 @@ bool xpt2046_read_raw_point(xpt2046_handle_t *handle, uint16_t *out_x, uint16_t 
     // Same position-compensated pressure gate as xpt2046_read_touch.
     uint16_t rz1 = xpt2046_read_raw(handle, XPT2046_CMD_Z1);
     uint16_t rz2 = xpt2046_read_raw(handle, XPT2046_CMD_Z2);
+
+    // Rate-limited diagnostic: log z1/z2 every 5 s so serial output stays readable.
+    static int64_t s_last_diag_us = 0;
+    int64_t now_us = esp_timer_get_time();
+    if (now_us - s_last_diag_us >= 5000000LL) {
+        ESP_LOGI(TAG, "touch poll z1=%u z2=%u pressure=%d",
+                 rz1, rz2, (int)rz1 + 4095 - (int)rz2);
+        s_last_diag_us = now_us;
+    }
 
     // z1=0 && z2=0 → MISO stuck LOW (broken read — chip not responding).
     // Real untouched reads have z1≈0, z2≈4095. Guard prevents false pressure=4095.
