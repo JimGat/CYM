@@ -2849,6 +2849,8 @@ static void show_zgwd_pan_detail(int pan_idx);
 static void show_zgwd_locator(int pan_idx);
 static void show_zgwd_flood(int pan_idx);
 #endif
+static void show_iot_ot_menu_screen(void);
+static void show_ot_survey_screen(void);
 static void show_ir_capture_screen(void);
 static void show_ir_replay_screen(void);
 static void show_ir_signal_list_screen(void);
@@ -15393,9 +15395,11 @@ static const nav_show_entry_t NAV_SHOW_TABLE[] = {
     { "Hardware Options",     show_hardware_options_screen },
     { "NM-RF-HAT",            show_nmrfhat_settings_screen },
     { "Data Transfer",        show_data_transfer_screen    },
+    { "IOT/OT",               show_iot_ot_menu_screen       },
 #if CONFIG_IEEE802154_ENABLED
     { "Zigbee Scout",         show_zigbee_wardrive_screen  },
 #endif
+    { "OT Air Survey",        show_ot_survey_screen        },
     { "Infrared",             show_ir_menu_screen          },
     { "Radio",                show_radio_menu_screen       },
     { "NFC / RFID Hub",       show_nfc_hub_screen          },
@@ -16057,13 +16061,18 @@ static void main_tile_event_cb(lv_event_t *e)
         show_wardrive_menu_screen();
     } else if (strcmp(tile_name, "Go Dark") == 0) {
         show_go_dark_confirm();
+    // IOT/OT umbrella menu and sub-screens
+    } else if (strcmp(tile_name, "IOT/OT") == 0) {
+        show_iot_ot_menu_screen();
+#if CONFIG_IEEE802154_ENABLED
+    } else if (strcmp(tile_name, "Zigbee Scout") == 0) {
+        show_zigbee_wardrive_screen();
+#endif
+    } else if (strcmp(tile_name, "OT Air Survey") == 0) {
+        show_ot_survey_screen();
     // NM-RF-HAT tiles
     } else if (strcmp(tile_name, "IR Menu") == 0) {
         show_dip_switch_popup(4, "Infrared (IR)", show_ir_menu_screen);
-#if CONFIG_IEEE802154_ENABLED
-    } else if (strcmp(tile_name, "Zigbee") == 0) {
-        show_zigbee_wardrive_screen();
-#endif
     } else if (strcmp(tile_name, "Radio Menu") == 0) {
         show_radio_menu_screen();
     } else if (strcmp(tile_name, "NFC Hub") == 0) {
@@ -16312,7 +16321,7 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles_container, LV_SYMBOL_POWER,       "Go Dark",      lv_color_hex(0x8A8FA8), main_tile_event_cb, "Go Dark");
-    create_tile(tiles_container, MY_SYMBOL_SITEMAP,     "Zigbee",       lv_color_hex(0x00695C), main_tile_event_cb, "Zigbee");
+    create_tile(tiles_container, MY_SYMBOL_SITEMAP,     "IOT/OT",       lv_color_hex(0x00695C), main_tile_event_cb, "IOT/OT");
     // NFC/RFID Hub — always visible; works with RF-HAT PN532 (DIP 3) or standalone breakout on CN1
     create_tile(tiles_container, MY_SYMBOL_MICROCHIP, "NFC/\nRFID",  lv_color_hex(0x00695C), main_tile_event_cb, "NFC Hub");
     // NM-RF-HAT tiles — shown only when the addon board is enabled in Hardware Options
@@ -56928,6 +56937,265 @@ static void show_rf433_signal_list_screen(void)
     rfhat_add_back_btn(s_rf433_cur_remote, show_rf433_replay_screen);
 }
 
+// ── IOT/OT umbrella menu ────────────────────────────────────────────────────
+
+static void show_iot_ot_menu_screen(void)
+{
+    create_function_page_base("IOT/OT");
+    apply_menu_bg();
+
+    lv_obj_t *tiles = lv_obj_create(function_page);
+    lv_obj_set_size(tiles, lv_pct(100), LCD_V_RES - 30);
+    lv_obj_align(tiles, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(tiles, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tiles, 0, 0);
+    lv_obj_set_style_pad_all(tiles, 4, 0);
+    lv_obj_set_style_pad_gap(tiles, 4, 0);
+    lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(tiles, LV_OBJ_FLAG_SCROLLABLE);
+
+#if CONFIG_IEEE802154_ENABLED
+    lv_obj_t *zgwd_tile = create_tile(tiles, MY_SYMBOL_SITEMAP, "Zigbee\nScout",
+                                       lv_color_hex(0x00695C), main_tile_event_cb, "Zigbee Scout");
+    (void)zgwd_tile;
+#endif
+    lv_obj_t *ots_tile = create_tile(tiles, MY_SYMBOL_SATELLITE_DISH, "OT Air\nSurvey",
+                                      lv_color_hex(0x4A148C), main_tile_event_cb, "OT Air Survey");
+    (void)ots_tile;
+}
+
+// ── OT Air Survey screen ────────────────────────────────────────────────────
+
+/* UI state — NULLed by ot_survey_screen_stop so callbacks can NULL-guard */
+static lv_obj_t   *s_ots_cfg_cont   = NULL;  /* config panel (visible when idle) */
+static lv_obj_t   *s_ots_run_cont   = NULL;  /* running panel (visible when active) */
+static lv_obj_t   *s_ots_prof_lbl   = NULL;  /* current profile name */
+static lv_obj_t   *s_ots_site_ta    = NULL;  /* site text area */
+static lv_obj_t   *s_ots_dur_lbl    = NULL;  /* elapsed duration MM:SS */
+static lv_obj_t   *s_ots_cnt_lbl    = NULL;  /* total obs count */
+static lv_timer_t *s_ots_tmr        = NULL;  /* 1 s refresh timer */
+
+static ot_survey_session_t   s_ots_session;          /* lives in .bss */
+static ot_survey_profile_t   s_ots_sel_profile = OT_PROFILE_BALANCED;
+
+/* 1-second UI refresh: update duration and obs count while survey is running */
+static void s_ots_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!g_active_survey) return;
+
+    uint32_t now_s  = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    uint32_t elapsed = (now_s >= g_active_survey->start_time_s)
+                       ? (now_s - g_active_survey->start_time_s) : 0;
+    uint32_t mm = elapsed / 60, ss = elapsed % 60;
+
+    if (s_ots_dur_lbl)
+        lv_label_set_text_fmt(s_ots_dur_lbl, "Duration: %02"PRIu32":%02"PRIu32, mm, ss);
+    if (s_ots_cnt_lbl)
+        lv_label_set_text_fmt(s_ots_cnt_lbl, "Observations: %"PRIu32, g_active_survey->obs_count);
+}
+
+static void ot_survey_screen_stop(void)
+{
+    if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
+    s_ots_cfg_cont = NULL;
+    s_ots_run_cont = NULL;
+    s_ots_prof_lbl = NULL;
+    s_ots_site_ta  = NULL;
+    s_ots_dur_lbl  = NULL;
+    s_ots_cnt_lbl  = NULL;
+}
+
+/* Profile cycle buttons */
+static void s_ots_prof_prev_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_ots_sel_profile == 0)
+        s_ots_sel_profile = (ot_survey_profile_t)(OT_PROFILE_COUNT - 1);
+    else
+        s_ots_sel_profile = (ot_survey_profile_t)(s_ots_sel_profile - 1);
+    if (s_ots_prof_lbl)
+        lv_label_set_text(s_ots_prof_lbl, ot_survey_profile_name(s_ots_sel_profile));
+}
+static void s_ots_prof_next_cb(lv_event_t *e)
+{
+    (void)e;
+    s_ots_sel_profile = (ot_survey_profile_t)((s_ots_sel_profile + 1) % OT_PROFILE_COUNT);
+    if (s_ots_prof_lbl)
+        lv_label_set_text(s_ots_prof_lbl, ot_survey_profile_name(s_ots_sel_profile));
+}
+
+/* Start button: build config, call ot_survey_start(), show running panel */
+static void s_ots_start_cb(lv_event_t *e)
+{
+    (void)e;
+    ot_survey_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.profile = s_ots_sel_profile;
+    if (s_ots_site_ta)
+        strlcpy(cfg.site, lv_textarea_get_text(s_ots_site_ta), sizeof(cfg.site));
+
+    if (ot_survey_start(&cfg, &s_ots_session) != ESP_OK) {
+        ESP_LOGE(TAG, "[OTS] survey start failed");
+        return;
+    }
+    if (ot_radio_scheduler_start(cfg.profile) != ESP_OK) {
+        ot_survey_stop(&s_ots_session);
+        ESP_LOGE(TAG, "[OTS] scheduler start failed");
+        return;
+    }
+
+    /* Switch UI panels */
+    if (s_ots_cfg_cont) lv_obj_add_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_ots_run_cont) lv_obj_clear_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
+
+    /* Kick timer */
+    if (!s_ots_tmr)
+        s_ots_tmr = lv_timer_create(s_ots_timer_cb, 1000, NULL);
+    s_ots_timer_cb(NULL); /* immediate first render */
+}
+
+/* Stop button: stop scheduler and survey, show config panel */
+static void s_ots_stop_cb(lv_event_t *e)
+{
+    (void)e;
+    ot_radio_scheduler_stop();
+    if (g_active_survey) ot_survey_stop(g_active_survey);
+
+    if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
+    if (s_ots_run_cont) lv_obj_add_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_ots_cfg_cont) lv_obj_clear_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void show_ot_survey_screen(void)
+{
+    create_function_page_base("OT Air Survey");
+    g_screen_stop_fn = ot_survey_screen_stop;
+    apply_menu_bg();
+
+    lv_obj_t *cont = function_page;
+
+    /* ── Config panel (shown when no survey is running) ── */
+    s_ots_cfg_cont = lv_obj_create(cont);
+    lv_obj_set_size(s_ots_cfg_cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_align(s_ots_cfg_cont, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_set_style_bg_opa(s_ots_cfg_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_ots_cfg_cont, 0, 0);
+    lv_obj_set_style_pad_all(s_ots_cfg_cont, 4, 0);
+    lv_obj_set_flex_flow(s_ots_cfg_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_ots_cfg_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(s_ots_cfg_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Profile section: label then [<] [Profile Name] [>] row */
+    lv_obj_t *prof_hdr = lv_label_create(s_ots_cfg_cont);
+    lv_label_set_text(prof_hdr, "Profile:");
+    lv_obj_set_style_text_font(prof_hdr, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(prof_hdr, lv_color_white(), 0);
+
+    lv_obj_t *prof_row = lv_obj_create(s_ots_cfg_cont);
+    lv_obj_set_size(prof_row, lv_pct(100), 36);
+    lv_obj_set_style_bg_opa(prof_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(prof_row, 0, 0);
+    lv_obj_set_style_pad_all(prof_row, 2, 0);
+    lv_obj_set_flex_flow(prof_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(prof_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(prof_row, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *prev_btn = lv_btn_create(prof_row);
+    lv_obj_set_size(prev_btn, 30, 28);
+    lv_obj_set_style_bg_color(prev_btn, lv_color_hex(0x4A148C), 0);
+    lv_obj_add_event_cb(prev_btn, s_ots_prof_prev_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *prev_lbl = lv_label_create(prev_btn);
+    lv_label_set_text(prev_lbl, "<");
+    lv_obj_set_style_text_font(prev_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(prev_lbl);
+
+    s_ots_prof_lbl = lv_label_create(prof_row);
+    lv_label_set_text(s_ots_prof_lbl, ot_survey_profile_name(s_ots_sel_profile));
+    lv_obj_set_style_text_font(s_ots_prof_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ots_prof_lbl, lv_color_white(), 0);
+    lv_label_set_long_mode(s_ots_prof_lbl, LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(s_ots_prof_lbl, 120);
+
+    lv_obj_t *next_btn = lv_btn_create(prof_row);
+    lv_obj_set_size(next_btn, 30, 28);
+    lv_obj_set_style_bg_color(next_btn, lv_color_hex(0x4A148C), 0);
+    lv_obj_add_event_cb(next_btn, s_ots_prof_next_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *next_lbl = lv_label_create(next_btn);
+    lv_label_set_text(next_lbl, ">");
+    lv_obj_set_style_text_font(next_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(next_lbl);
+
+    /* Site row: label + text area */
+    lv_obj_t *site_hdr = lv_label_create(s_ots_cfg_cont);
+    lv_label_set_text(site_hdr, "Site (optional):");
+    lv_obj_set_style_text_font(site_hdr, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(site_hdr, lv_color_hex(0xBBBBBB), 0);
+
+    s_ots_site_ta = lv_textarea_create(s_ots_cfg_cont);
+    lv_obj_set_size(s_ots_site_ta, lv_pct(95), 36);
+    lv_textarea_set_placeholder_text(s_ots_site_ta, "Building / Zone...");
+    lv_textarea_set_one_line(s_ots_site_ta, true);
+    lv_textarea_set_max_length(s_ots_site_ta, OT_SURVEY_SITE_LEN - 1);
+    lv_obj_set_style_text_font(s_ots_site_ta, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_bg_color(s_ots_site_ta, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_text_color(s_ots_site_ta, lv_color_white(), 0);
+
+    /* Start button */
+    lv_obj_t *start_btn = lv_btn_create(s_ots_cfg_cont);
+    lv_obj_set_size(start_btn, lv_pct(80), 40);
+    lv_obj_set_style_bg_color(start_btn, lv_color_hex(0x1B5E20), 0);
+    lv_obj_add_event_cb(start_btn, s_ots_start_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *start_lbl = lv_label_create(start_btn);
+    lv_label_set_text(start_lbl, "START SURVEY");
+    lv_obj_set_style_text_font(start_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(start_lbl, lv_color_white(), 0);
+    lv_obj_center(start_lbl);
+
+    /* ── Running panel (hidden by default) ── */
+    s_ots_run_cont = lv_obj_create(cont);
+    lv_obj_set_size(s_ots_run_cont, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_align(s_ots_run_cont, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_set_style_bg_opa(s_ots_run_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_ots_run_cont, 0, 0);
+    lv_obj_set_style_pad_all(s_ots_run_cont, 8, 0);
+    lv_obj_set_style_pad_row(s_ots_run_cont, 10, 0);
+    lv_obj_set_flex_flow(s_ots_run_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_ots_run_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(s_ots_run_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
+
+    s_ots_dur_lbl = lv_label_create(s_ots_run_cont);
+    lv_label_set_text(s_ots_dur_lbl, "Duration: 00:00");
+    lv_obj_set_style_text_font(s_ots_dur_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ots_dur_lbl, lv_color_white(), 0);
+
+    s_ots_cnt_lbl = lv_label_create(s_ots_run_cont);
+    lv_label_set_text(s_ots_cnt_lbl, "Observations: 0");
+    lv_obj_set_style_text_font(s_ots_cnt_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_ots_cnt_lbl, lv_color_hex(0xAADDFF), 0);
+
+    lv_obj_t *stop_btn = lv_btn_create(s_ots_run_cont);
+    lv_obj_set_size(stop_btn, lv_pct(80), 40);
+    lv_obj_set_style_bg_color(stop_btn, lv_color_hex(0xB71C1C), 0);
+    lv_obj_add_event_cb(stop_btn, s_ots_stop_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *stop_lbl = lv_label_create(stop_btn);
+    lv_label_set_text(stop_lbl, "STOP SURVEY");
+    lv_obj_set_style_text_font(stop_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(stop_lbl, lv_color_white(), 0);
+    lv_obj_center(stop_lbl);
+
+    /* If a survey is already running when we enter this screen, show running panel */
+    if (g_ot_survey_active && g_active_survey) {
+        lv_obj_add_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
+        if (!s_ots_tmr)
+            s_ots_tmr = lv_timer_create(s_ots_timer_cb, 1000, NULL);
+        s_ots_timer_cb(NULL);
+    }
+}
+
 #if CONFIG_IEEE802154_ENABLED
 // =============================================================================
 // Zigbee Scout — passive 802.15.4 wardrive using ESP32-C5 built-in radio
@@ -57585,6 +57853,7 @@ static void s_zgwd_active_cb(lv_event_t *e)
     lv_obj_center(can_lbl);
     lv_obj_add_event_cb(cancel_btn, s_zgwd_popup_dismiss_cb, LV_EVENT_CLICKED, popup);
 }
+
 
 static void zgwd_scout_stop(void)
 {
