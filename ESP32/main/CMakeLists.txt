@@ -34,7 +34,7 @@ idf_component_register(
     PRIV_REQUIRES
         wifi_attacks wifi_cli wifi_scanner wifi_sniffer wifi_wardrive sniffer
         frame_analyzer hccapx_serializer pcap_serializer esp_driver_ledc
-        rf_hat rfid cc1101 nrf24 obs_store obs_detectors
+        rf_hat rfid cc1101 nrf24 obs_store obs_detectors ot_survey
     EMBED_TXTFILES
         "${C5_MAIN}/gts_root_r4.pem"
 )
