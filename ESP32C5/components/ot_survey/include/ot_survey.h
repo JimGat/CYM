@@ -86,6 +86,14 @@ typedef struct {
     char              dir_path[80];  /* /sdcard/lab/otsurvey/<uuid-hex>/ */
 } ot_survey_session_t;
 
+/* ── Active session pointer — set by ot_survey_start(), cleared by ot_survey_stop() ─ */
+/*
+ * g_active_survey is non-NULL while a survey is in OT_STATE_ACTIVE or OT_STATE_PAUSED.
+ * Main loop adapters (WiFi / BLE / ESP-NOW) read this to increment obs_count and route
+ * records to the survey.  Only ot_survey.c writes it.
+ */
+extern ot_survey_session_t *g_active_survey;
+
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
 /*

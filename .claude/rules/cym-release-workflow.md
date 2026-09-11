@@ -130,16 +130,29 @@ ESP32C5/binaries-ws-c5-28/partition-table.bin
 
 ## Version numbering across boards
 
-`PROJECT_VER` lives in each SoC's CMakeLists.txt. Each board build gets its own version bump.
-Workflow when building multiple boards in one session:
+**All boards are kept in version sync** — every development cycle uses the **same** version number
+for all boards that are built in that cycle.  This makes the version a meaningful release marker:
+"v2.13.73" means all three boards are at the same feature level.
 
-1. Bump version → v2.13.X → build NM-CYD-C5 → commit NM-CYD-C5 files
-2. Bump version → v2.13.X+1 → build WS-C5-28 → commit WS-C5-28 files
-3. Bump version → v2.13.X+2 → build CYD-2432S028 (in ESP32/) → commit CYD-2432S028 files
+The exception is a board that is **deliberately skipped** in a cycle (e.g., a C5-only feature
+that doesn't apply to CYD2USB).  When a board is skipped, it stays at its current version until
+the next cycle that includes it.
+
+### Re-sync rule (resolving version drift)
+If boards have drifted (one board is ahead), bring all boards up to `max_current + 1` in the
+next build cycle rather than continuing to diverge.  Current state after Phase 3:
+- NM-CYD-C5 / WS-C5-28 → v2.13.59 (`ESP32C5/CMakeLists.txt`)
+- CYD-2432S028 → v2.13.72 (`ESP32/CMakeLists.txt`)
+- **Next sync target: v2.13.73** — all three boards build to v2.13.73.
+
+### Workflow when building all boards in one session
+
+1. Set version → v2.13.X in **both** `ESP32C5/CMakeLists.txt` and `ESP32/CMakeLists.txt`
+2. Build NM-CYD-C5 → commit NM-CYD-C5 files at v2.13.X
+3. Build WS-C5-28 → commit WS-C5-28 files at v2.13.X (same CMakeLists)
+4. Build CYD-2432S028 (in `ESP32/`) → commit CYD-2432S028 files at v2.13.X
 
 For CI verification across all boards: `make all-boards` (builds nm-cyd-c5, ws-c5-28, cyd-2432s028 in sequence).
-
-Never build two different boards at the same version number.
 
 ---
 

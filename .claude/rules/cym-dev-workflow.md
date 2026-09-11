@@ -31,9 +31,10 @@ Before every build that produces a changed binary:
    - WS-C5-28: `strings ESP32C5/binaries-ws-c5-28/CYM-WS-C5-28.bin | grep vX.Y.Z+1`
    - CYD-2432S028: `strings ESP32/binaries-cyd-2432s028/CYM-CYD-2432S028.bin | grep vX.Y.Z+1`
 
-**No two different binaries may share a version number.**
-When building multiple boards in one session, each board gets its own version bump.
-See `cym-release-workflow.md` for the full multi-board build commands and staging lists.
+**All boards that are built in a session must use the same version number.**
+Set the same vX.Y.Z in both `ESP32C5/CMakeLists.txt` and `ESP32/CMakeLists.txt` before building.
+A board that is deliberately skipped in a cycle stays at its previous version.
+See `cym-release-workflow.md` for the full multi-board build commands and the re-sync rule.
 
 ## Session hygiene
 

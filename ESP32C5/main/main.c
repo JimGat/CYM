@@ -419,6 +419,7 @@ static lv_obj_t        *espnow_list           = NULL;
 static lv_obj_t        *espnow_status_lbl     = NULL;
 static lv_timer_t      *espnow_refresh_timer  = NULL;
 static volatile bool    espnow_ui_needs_update = false;
+static volatile bool    espnow_obs_pending     = false; /* Phase 4: set in promisc_cb; main loop feeds obs_store */
 
 /* ── ESP-NOW packet log + session state ─────────────────────────────────── */
 #define ESPNOW_PKT_LOG_MAX  200    // ring-buffer slots (PSRAM)
@@ -893,6 +894,9 @@ static gps_data_t g_gps_last_known = {0};  // persists across GPS dropouts; load
 // Passive observation store — PSRAM-backed ring buffer; shared by WiFi and BLE adapters below.
 static obs_store_t      g_obs_store;
 static obs_registry_t  *g_obs_registry = NULL;  /* built-in detector registry, init in app_main */
+/* Phase 4: survey flush timer fires every 30 s and sets this flag; main loop does the actual write. */
+static volatile bool    s_survey_flush_pending = false;
+static esp_timer_handle_t s_survey_flush_tmr   = NULL;
 #define OBS_EXPORT_DIR   "/sdcard/lab/obs"
 #define OBS_UI_MAX_SHOWN 64                      /* max cards rendered in the Passive Log screen */
 
@@ -6337,6 +6341,18 @@ static bool _ot_switch_to_154(void)
 #endif
 static void _ot_switch_to_idle(void) { radio_reset_to_idle(); }
 
+/* ── OT survey periodic flush timer callback ─────────────────────────────────
+ * Fires every 30 s from an esp_timer (any task context; ISR-safe).
+ * Only sets a flag; the actual fwrite() happens in the main loop under
+ * sd_spi_mutex so it is properly serialised with the LCD DMA path.
+ */
+static void survey_flush_timer_cb(void *arg)
+{
+    (void)arg;
+    if (g_active_survey && g_active_survey->state == OT_STATE_ACTIVE)
+        s_survey_flush_pending = true;
+}
+
 void app_main(void)
 {
     // Log active board identity so crash logs are unambiguous about which board built the binary.
@@ -6382,6 +6398,20 @@ void app_main(void)
     // OT Survey SD root directory — ensures /sdcard/lab/otsurvey/ exists after every mount.
     // Safe to call before SD is mounted; ot_survey_init() checks stat() and creates on demand.
     ot_survey_init();
+
+    /* Phase 4: start the periodic survey flush timer (30 s interval).
+     * The timer runs for the lifetime of the firmware; the callback only writes
+     * the flag — actual SD I/O happens in the main loop under sd_spi_mutex. */
+    {
+        esp_timer_create_args_t survey_tmr_args = {
+            .callback = survey_flush_timer_cb,
+            .name     = "survey_flush",
+        };
+        if (esp_timer_create(&survey_tmr_args, &s_survey_flush_tmr) == ESP_OK)
+            esp_timer_start_periodic(s_survey_flush_tmr, 30ULL * 1000000ULL);
+        else
+            ESP_LOGW(TAG, "survey_flush_tmr create failed — flush disabled");
+    }
 
 	//Initialize GPS UART and start background monitor task
 	if (init_gps_uart() == ESP_OK) {
@@ -7576,6 +7606,10 @@ void app_main(void)
                             obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                             if (stored && stored->hit_count > 1)
                                 obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
+                            /* Phase 4: count each stored AP towards the active survey */
+                            if (stored && g_active_survey &&
+                                g_active_survey->state == OT_STATE_ACTIVE)
+                                g_active_survey->obs_count++;
                         }
                     }
                 }
@@ -7973,7 +8007,61 @@ void app_main(void)
                         obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                         if (stored && stored->hit_count > 1)
                             obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
+                        /* Phase 4: count each stored BLE device towards the active survey */
+                        if (stored && g_active_survey &&
+                            g_active_survey->state == OT_STATE_ACTIVE)
+                            g_active_survey->obs_count++;
                     }
+                }
+            }
+
+            /* ── Phase 4: ESP-NOW → obs_store adapter ────────────────────────────────
+             * Runs in main loop (safe to call obs_store_add here).
+             * Drains espnow_devices[] into g_obs_store whenever the promisc callback
+             * has seen a new frame.  obs_store_add() merges by MAC so repeated calls
+             * are idempotent — only first_seen / hit_count changes.
+             */
+            if (espnow_obs_pending && g_obs_store.records) {
+                espnow_obs_pending = false;
+                const gps_data_t *gps = gps_best();
+                uint8_t gps_flags = 0;
+                if (gps && gps->valid) {
+                    gps_flags = (gps->accuracy < GPS_STALE_ACCURACY_M - 1.0f)
+                                ? OBS_FLAG_GPS_VALID : OBS_FLAG_GPS_STALE;
+                }
+                portENTER_CRITICAL(&espnow_mux);
+                int en_count = espnow_device_count;
+                portEXIT_CRITICAL(&espnow_mux);
+                for (int ei = 0; ei < en_count; ei++) {
+                    portENTER_CRITICAL(&espnow_mux);
+                    espnow_device_t snap = espnow_devices[ei];
+                    portEXIT_CRITICAL(&espnow_mux);
+                    obs_record_t obs = {0};
+                    obs.src_radio  = (uint8_t)OBS_RADIO_ESPNOW;
+                    obs.obs_type   = (uint8_t)OBS_TYPE_ESPNOW_OT;
+                    obs.flags      = gps_flags;
+                    memcpy(obs.mac,      snap.src_mac, 6);
+                    memcpy(obs.peer_mac, snap.dst_mac, 6);
+                    obs.rssi_cur   = snap.rssi;
+                    obs.rssi_peak  = snap.rssi;
+                    obs.channel    = snap.channel;
+                    obs.phy        = (uint8_t)OBS_PHY_11N; /* ESP-NOW rides 802.11 */
+                    obs.hit_count  = (uint16_t)(snap.pkt_count > UINT16_MAX
+                                               ? UINT16_MAX : snap.pkt_count);
+                    if (snap.label[0])
+                        strncpy(obs.label, snap.label, sizeof(obs.label) - 1);
+                    if (gps && gps->valid) {
+                        obs.latitude   = gps->latitude;
+                        obs.longitude  = gps->longitude;
+                        obs.altitude_m = gps->altitude;
+                        obs.accuracy_m = gps->accuracy;
+                    }
+                    obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
+                    if (stored && stored->hit_count > 1)
+                        obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
+                    if (stored && g_active_survey &&
+                        g_active_survey->state == OT_STATE_ACTIVE)
+                        g_active_survey->obs_count++;
                 }
             }
 
@@ -8453,6 +8541,15 @@ void app_main(void)
         if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
             ESP_LOGD(TAG, "[MAIN_LOOP] Acquired sd_spi_mutex at %llu us", sd_spi_try_us);
             wifi_attacks_process_pending_saves();
+
+            /* Phase 4: periodic OT survey flush — writes obs.jsonl to SD card.
+             * Flag is set by s_survey_flush_tmr every 30 s.  We piggyback on the
+             * existing sd_spi_mutex acquisition so SD access is properly serialised. */
+            if (s_survey_flush_pending && g_active_survey) {
+                s_survey_flush_pending = false;
+                ot_survey_flush(g_active_survey, &g_obs_store);
+            }
+
             xSemaphoreGive(sd_spi_mutex);
         } else {
             ESP_LOGD(TAG, "[MAIN_LOOP] sd_spi_mutex timeout (10ms) at %llu us", sd_spi_try_us);
@@ -57980,6 +58077,7 @@ static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     espnow_find_or_add(src_mac, dst_mac, ch, rssi);
     portEXIT_CRITICAL_ISR(&espnow_mux);
     espnow_ui_needs_update = true;
+    espnow_obs_pending     = true; /* Phase 4: drain to obs_store from main loop */
 
     // Capture raw payload to packet log when a session is active
     if (espnow_session_idx >= 0 && espnow_pktlog) {

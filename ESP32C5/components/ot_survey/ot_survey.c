@@ -25,6 +25,13 @@
 
 static const char *TAG = "ot_survey";
 
+/*
+ * g_active_survey — points to the running session while state is ACTIVE or PAUSED;
+ * NULL when idle.  Written only from ot_survey_start() / ot_survey_stop().
+ * Main loop adapters read it (without a mutex) to increment obs_count.
+ */
+ot_survey_session_t *g_active_survey = NULL;
+
 #define OT_SURVEY_ROOT "/sdcard/lab/otsurvey"
 
 /* ── UUID helpers ─────────────────────────────────────────────────────────── */
@@ -188,6 +195,9 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
          * radio will be statically in whatever mode the caller leaves it in. */
     }
 
+    /* Publish the active session pointer so main-loop adapters can tap in. */
+    g_active_survey = sess;
+
     ESP_LOGI(TAG, "Survey started: %s profile=%s dir=%s",
              uuid_str, ot_survey_profile_name(cfg->profile), sess->dir_path);
     return ESP_OK;
@@ -197,6 +207,9 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess)
 {
     if (!sess) return ESP_ERR_INVALID_ARG;
     if (sess->state == OT_STATE_STOPPED) return ESP_OK;
+
+    /* Clear active pointer before stopping so adapters stop tapping immediately. */
+    if (g_active_survey == sess) g_active_survey = NULL;
 
     sess->state       = OT_STATE_STOPPED;
     sess->stop_time_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
