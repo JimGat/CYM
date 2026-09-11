@@ -6,7 +6,8 @@ build_*/
 sdkconfig
 sdkconfig.old
 
-# Managed components
+# Managed components (downloaded by idf.py; use symlink locally to share with ESP32C5)
+managed_components
 managed_components/
 dependencies.lock
 

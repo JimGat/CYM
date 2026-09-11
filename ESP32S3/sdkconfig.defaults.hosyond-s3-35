@@ -1,26 +1,38 @@
-# Hosyond ESP32-S3 3.5" board-specific sdkconfig overrides
+# Hosyond 3.5" ESP32-S3 board-specific sdkconfig overrides
 # Layered on top of sdkconfig.defaults (shared ESP32-S3 base).
 #
-# Board: Hosyond ESP32-S3 Touchscreen Module 3.5" 240x320 (ASIN B0H28X8SQ4)
+# Board: Hosyond 3.5" ESP32-S3 Display Module
+# SKU:   ES3C35P / lcdwiki 3.5inch_ESP32-S3_Display
 # SoC:   ESP32-S3R8, dual-core Xtensa LX7 240 MHz
 # Flash: 16 MB
-# PSRAM: 8 MB
-# LCD:   ST7796U SPI, 240x320 IPS
-#   GPIO pins: TBD — verify with oscilloscope/board markings on arrival
-# Touch: FT6336 capacitive I2C
-#   GPIO pins: TBD — same driver family as hosyond-s3-28, likely same I2C address
-# USB:   Type-C
-#
-# Note: Product title says 240x320 — unusual for 3.5" (most are 320x480).
-# Confirm actual resolution with the display on first boot. ST7796 natively
-# supports 320x480 but may be initialized at 240x320 by the vendor firmware.
-#
-# Dual-core advantage: jammer task pins to Core 1.
-#
-# Phase 4 — fill in when porting begins.
+# PSRAM: 8 MB OPI (octal SPI, 80 MHz)
+# LCD:   ST77922 QSPI, 320x480 IPS  (SPI2_HOST, 80 MHz, 4-wire QSPI)
+# Touch: Custom I2C @ 0x55 (SCL=IO39, SDA=IO38, RST=IO48, INT=IO47)
+# SD:    SPI mode on SPI3_HOST (CS=IO3, SCK=IO5, MOSI=IO4, MISO=IO6)
 
-# 16 MB flash
+# ── Flash size ───────────────────────────────────────────────────────────────
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 
-# CONFIG_BOARD_HOSYOND_S3_35=y  (future Kconfig flag)
+# ── PSRAM — OPI mode at 80 MHz ───────────────────────────────────────────────
+# ESP32-S3R8 uses octal SPI PSRAM (not standard SPI), which needs SPIRAM_MODE_OCT.
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# ── Display: ST77922 QSPI ─────────────────────────────────────────────────────
+# QSPI display at 80 MHz; DMA buffer must be in internal SRAM (not PSRAM) to
+# avoid underrun at 80 MHz — same constraint as the ST7789 at 80 MHz on NM-CYD-C5.
+# LV_COLOR_16_SWAP=y: ST77922 expects big-endian RGB565 (same as all other boards).
+CONFIG_LV_COLOR_16_SWAP=y
+
+# Board Kconfig flag (referenced in main.c for #if guards)
+CONFIG_BOARD_HOSYOND_S3_35=y
+
+# ── SPI3 host for SD (reserved — not colliding with display SPI2) ─────────────
+# (No explicit sdkconfig needed; SPI3_HOST is always available on ESP32-S3.)
+
+# ── Dual-core: jammer task pinned to Core 1 ──────────────────────────────────
+# CONFIG_FREERTOS_UNICORE is not set  (default for ESP32-S3 — dual-core)
+
+# ── No 802.15.4 on ESP32-S3 ──────────────────────────────────────────────────
+# CONFIG_IEEE802154_ENABLED is not set
