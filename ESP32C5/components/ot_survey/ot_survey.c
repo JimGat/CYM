@@ -158,6 +158,9 @@ static esp_err_t write_metadata(const ot_survey_session_t *sess)
 
 esp_err_t ot_survey_init(void)
 {
+    /* Ensure /sdcard/lab/ exists before creating /sdcard/lab/otsurvey/.
+     * Other features (wardrives, handshakes) create this lazily — we need it here. */
+    ensure_dir("/sdcard/lab");
     return ensure_dir(OT_SURVEY_ROOT);
 }
 

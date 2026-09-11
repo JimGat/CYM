@@ -57119,12 +57119,21 @@ static lv_obj_t   *s_ots_prof_lbl   = NULL;  /* current profile name */
 static lv_obj_t   *s_ots_site_ta    = NULL;  /* site text area */
 static lv_obj_t   *s_ots_dur_lbl    = NULL;  /* elapsed duration MM:SS */
 static lv_obj_t   *s_ots_cnt_lbl    = NULL;  /* total obs count */
+static lv_obj_t   *s_ots_scan_lbl   = NULL;  /* animated scan activity indicator */
 static lv_timer_t *s_ots_tmr        = NULL;  /* 1 s refresh timer */
+static uint8_t     s_ots_scan_tick  = 0;     /* cycles 0-2 for dot animation */
 
 static ot_survey_session_t   s_ots_session;          /* lives in .bss */
 static ot_survey_profile_t   s_ots_sel_profile = OT_PROFILE_BALANCED;
 
-/* 1-second UI refresh: update duration and obs count while survey is running */
+/* Dot animation strings for the scan activity indicator (index = s_ots_scan_tick % 3) */
+static const char *const s_ots_scan_dots[] = {
+    "[*]   Scanning .  ",
+    "[*]   Scanning .. ",
+    "[*]   Scanning ...",
+};
+
+/* 1-second UI refresh: update duration, obs count, and animated activity indicator */
 static void s_ots_timer_cb(lv_timer_t *t)
 {
     (void)t;
@@ -57147,17 +57156,22 @@ static void s_ots_timer_cb(lv_timer_t *t)
             "Obs: %"PRIu32"\nW:%"PRIu32" B:%"PRIu32" EN:%"PRIu32" OT:%"PRIu32,
             g_active_survey->obs_count, w, b, en, ot);
     }
+    if (s_ots_scan_lbl)
+        lv_label_set_text(s_ots_scan_lbl, s_ots_scan_dots[s_ots_scan_tick % 3]);
+    s_ots_scan_tick++;
 }
 
 static void ot_survey_screen_stop(void)
 {
     if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
-    s_ots_cfg_cont = NULL;
-    s_ots_run_cont = NULL;
-    s_ots_prof_lbl = NULL;
-    s_ots_site_ta  = NULL;
-    s_ots_dur_lbl  = NULL;
-    s_ots_cnt_lbl  = NULL;
+    s_ots_cfg_cont  = NULL;
+    s_ots_run_cont  = NULL;
+    s_ots_prof_lbl  = NULL;
+    s_ots_site_ta   = NULL;
+    s_ots_dur_lbl   = NULL;
+    s_ots_cnt_lbl   = NULL;
+    s_ots_scan_lbl  = NULL;
+    s_ots_scan_tick = 0;
 }
 
 /* Profile cycle buttons */
@@ -57193,11 +57207,9 @@ static void s_ots_start_cb(lv_event_t *e)
         ESP_LOGE(TAG, "[OTS] survey start failed");
         return;
     }
-    if (ot_radio_scheduler_start(cfg.profile) != ESP_OK) {
-        ot_survey_stop(&s_ots_session);
-        ESP_LOGE(TAG, "[OTS] scheduler start failed");
-        return;
-    }
+    /* ot_survey_start() already calls ot_radio_scheduler_start() internally —
+     * calling it again here would get "Scheduler already running" → ESP_FAIL
+     * → ot_survey_stop() → _ot_switch_to_idle() → rapid SD I/O → LVGL freeze. */
 
     /* Load allowlist so obs labels can be applied during this session */
     s_ots_load_allowlist();
@@ -57334,6 +57346,12 @@ static void show_ot_survey_screen(void)
     lv_label_set_text(s_ots_cnt_lbl, "Observations: 0");
     lv_obj_set_style_text_font(s_ots_cnt_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_ots_cnt_lbl, lv_color_hex(0xAADDFF), 0);
+
+    /* Animated activity indicator — updated by s_ots_timer_cb every second */
+    s_ots_scan_lbl = lv_label_create(s_ots_run_cont);
+    lv_label_set_text(s_ots_scan_lbl, s_ots_scan_dots[0]);
+    lv_obj_set_style_text_font(s_ots_scan_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_ots_scan_lbl, lv_color_hex(0x76FF03), 0);
 
     lv_obj_t *stop_btn = lv_btn_create(s_ots_run_cont);
     lv_obj_set_size(stop_btn, lv_pct(80), 40);
