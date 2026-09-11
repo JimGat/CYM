@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.16)
 #     build
 # ─────────────────────────────────────────────────────────────────────────────
 
-set(PROJECT_VER "v2.13.78-s3-preview")
+set(PROJECT_VER "v2.13.79")
 
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/components")
 
