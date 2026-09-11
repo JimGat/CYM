@@ -1,6 +1,9 @@
 # CYM ESP32-S3 shared base sdkconfig defaults
 # Applies to all ESP32-S3 (Xtensa LX7 dual-core) boards.
 
+# Target chip (must be first — IDF uses this to set up the correct soc/hal components)
+CONFIG_IDF_TARGET="esp32s3"
+
 # PSRAM (all Hosyond S3 boards have 8 MB OPI PSRAM)
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
