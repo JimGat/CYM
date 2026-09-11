@@ -76,6 +76,7 @@
 #define BOARD_VIBRATOR_GPIO     -1
 #define BOARD_RGB_LED_GPIO      -1    // no WS2812; has discrete RGB instead
 #define BOARD_RGB_LED_COUNT      0
+#define BOARD_GPS_UART_NUM      UART_NUM_1   // gated by BOARD_GPS_TX_GPIO == -1; never opened
 #define BOARD_GPS_TX_GPIO       -1
 #define BOARD_GPS_RX_GPIO       -1
 #define BOARD_I2C_SDA           -1

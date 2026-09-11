@@ -6,6 +6,7 @@
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
 #include "led_strip.h"
+#include "board_hal.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,38 +37,25 @@ extern "C" {
 #define MAX_HTML_FILES 20
 #define MAX_HTML_FILENAME 64
 
-// GPIO pins
-#define NEOPIXEL_GPIO 27
-#define LED_COUNT 1
-#define RMT_RES_HZ (10 * 1000 * 1000)
+// GPIO pins — all board-variant values come from board_hal.h
+#define NEOPIXEL_GPIO BOARD_RGB_LED_GPIO   // WS2812 data pin (-1 = not present)
+#define LED_COUNT     BOARD_RGB_LED_COUNT  // number of LEDs in the strip
+#define RMT_RES_HZ    (10 * 1000 * 1000)
 
-// GPS UART pins — NM-CYD-C5 LP-UART
-#define GPS_UART_NUM UART_NUM_1
-#define GPS_TX_PIN 5
-#define GPS_RX_PIN 4
+// GPS UART pins — board-variant. Guard: BOARD_GPS_TX_GPIO == -1 means no GPS.
+#define GPS_UART_NUM BOARD_GPS_UART_NUM
+#define GPS_TX_PIN   BOARD_GPS_TX_GPIO
+#define GPS_RX_PIN   BOARD_GPS_RX_GPIO
 #define GPS_BUF_SIZE 1024
 
-// SD Card SPI pins — board-variant (CYD2USB uses separate HSPI bus for SD)
+// SD Card SPI pins — board-variant via board_hal.h BOARD_SD_* defines.
+// On shared-bus boards (NM-CYD-C5, WS-C5-28) BOARD_SD_SCK/MOSI/MISO alias
+// the main SPI bus pins. On CYD2USB the SD has its own HSPI bus.
 #include "sdkconfig.h"
-#if defined(CONFIG_BOARD_CYD2USB)
-// CYD2USB: SD card is on a separate HSPI bus
-#define SD_MISO_PIN 19   // BOARD_SD_MISO
-#define SD_MOSI_PIN 23   // BOARD_SD_MOSI
-#define SD_CLK_PIN  18   // BOARD_SD_SCK
-#define SD_CS_PIN    5   // BOARD_SD_CS
-#elif defined(CONFIG_BOARD_WS_C5_28)
-// WS-C5-28: SD shares SPI2_HOST with LCD; CS is GPIO23 (swapped vs NM-CYD-C5)
-#define SD_MISO_PIN  8   // BOARD_SPI_MISO
-#define SD_MOSI_PIN  7   // BOARD_SPI_MOSI
-#define SD_CLK_PIN   6   // BOARD_SPI_SCK
-#define SD_CS_PIN   23   // BOARD_SD_CS (NOTE: swapped — NM-CYD-C5 uses GPIO10)
-#else
-// NM-CYD-C5: shares SPI2_HOST with display + touch
-#define SD_MISO_PIN 2
-#define SD_MOSI_PIN 7
-#define SD_CLK_PIN  6
-#define SD_CS_PIN   10
-#endif
+#define SD_MISO_PIN  BOARD_SD_MISO
+#define SD_MOSI_PIN  BOARD_SD_MOSI
+#define SD_CLK_PIN   BOARD_SD_SCK
+#define SD_CS_PIN    BOARD_SD_CS
 
 // Application states
 typedef enum {

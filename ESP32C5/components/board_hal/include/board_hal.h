@@ -7,10 +7,9 @@
 //   #include "board_hal.h"
 //   gpio_set_level(BOARD_LCD_CS, 1);
 //
-// During the transition period: main.c still uses its own hardcoded defines
-// (LCD_CS=23, etc.). The goal is to migrate main.c to BOARD_* defines in
-// Phase 2 when Waveshare support begins, using this header as the single
-// source of truth for all board-variant GPIO assignments.
+// Phase 2 complete: main.c and wifi_common.h now use BOARD_* defines exclusively.
+// This header is the single source of truth for all board-variant GPIO assignments.
+// New boards: add a header under include/boards/, add a Kconfig choice, dispatch here.
 #pragma once
 
 #include "sdkconfig.h"

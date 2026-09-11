@@ -41,6 +41,11 @@
 #define BOARD_TOUCH_INT      5
 
 // ── SD card — NOTE SWAPPED CS vs NM-CYD-C5 ────────────────────────────────────
+// SD shares SPI2_HOST with LCD (same bus, different CS).
+#define BOARD_SD_SPI_HOST    SPI2_HOST       // shared with LCD
+#define BOARD_SD_SCK         BOARD_SPI_SCK   // GPIO6
+#define BOARD_SD_MOSI        BOARD_SPI_MOSI  // GPIO7
+#define BOARD_SD_MISO        BOARD_SPI_MISO  // GPIO8
 #define BOARD_SD_CS          23   // ← WAS 10 on NM-CYD-C5
 
 // ── CH32V003 IO Expander (I2C 0x24) ──────────────────────────────────────────

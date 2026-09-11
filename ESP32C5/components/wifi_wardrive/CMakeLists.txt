@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "wifi_wardrive.c" "wardrive_buffer.c"
     INCLUDE_DIRS "include" "../wifi_cli/include"
-    REQUIRES esp_wifi driver fatfs vfs wifi_scanner led_strip esp_driver_uart
+    REQUIRES esp_wifi driver fatfs vfs wifi_scanner led_strip esp_driver_uart board_hal
 )
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-function)

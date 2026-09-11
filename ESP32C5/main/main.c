@@ -535,22 +535,22 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 #define LCD_HOST        BOARD_SPI_HOST       // SPI2_HOST (shared with SD)
 
 #else
-// NM-CYD-C5 (RockBase-iot/NM-CYD-C5, User_Setup-NM-CYD-C5.h)
-// Display, touch, and SD all share SPI2_HOST. SD CS is GPIO10 (wifi_common.h).
-#define LCD_MOSI 7
-#define LCD_MISO 2
-#define LCD_CLK  6
-#define LCD_CS   23
-#define LCD_DC   24
-#define LCD_RST  -1   // Tied to board RST/EN — not a GPIO
-#define TOUCH_CS  1
-#define LCD_BL_IO 25
+// NM-CYD-C5 — see board_hal.h → boards/nm_cyd_c5.h for all BOARD_* values.
+// Display, touch, and SD all share SPI2_HOST. SD CS is GPIO10 (BOARD_SD_CS).
+#define LCD_MOSI        BOARD_SPI_MOSI        // GPIO7
+#define LCD_MISO        BOARD_SPI_MISO        // GPIO2
+#define LCD_CLK         BOARD_SPI_SCK         // GPIO6
+#define LCD_CS          BOARD_LCD_CS          // GPIO23
+#define LCD_DC          BOARD_LCD_DC          // GPIO24
+#define LCD_RST         BOARD_LCD_RST         // -1 (tied to board RST/EN)
+#define TOUCH_CS        BOARD_TOUCH_CS        // GPIO1
+#define LCD_BL_IO       BOARD_BACKLIGHT_GPIO  // GPIO25
 #define LCD_BL_ACTIVE_LEVEL 1
-#define BOOT_BTN_GPIO        28   // NM-CYD-C5 BOOT button = IO28 (strapping pin, input-safe)
+#define BOOT_BTN_GPIO   BOARD_BOOT_BTN_GPIO   // GPIO28
 #define GO_DARK_DBL_CLICK_MS 800
-#define LCD_H_RES 240
-#define LCD_V_RES 320
-#define LCD_HOST SPI2_HOST
+#define LCD_H_RES       BOARD_LCD_WIDTH       // 240
+#define LCD_V_RES       BOARD_LCD_HEIGHT      // 320
+#define LCD_HOST        BOARD_SPI_HOST        // SPI2_HOST
 #endif
 
 // NOTE: No battery ADC on NM-CYD-C5 — GPIO6 is SPI SCK, not battery monitor.
@@ -560,10 +560,10 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 #define SCREEN_BACKLIGHT_ACTIVE_PERCENT 80
 #define SCREEN_BACKLIGHT_DIM_PERCENT 0
 
-// Vibrator motor — GPIO26 → SC8002B amp (SPEAK_IN). LEDC PWM drives the amp
-// input; a Schottky diode + flyback diode on the speaker header rectify the BTL
-// output to give pulsed DC to the motor.
-#define VIBRATOR_GPIO        26
+// Vibrator motor — SC8002B amp (SPEAK_IN). LEDC PWM drives the amp input;
+// a Schottky diode + flyback diode on the speaker header rectify the BTL
+// output to give pulsed DC to the motor. -1 on boards without a vibrator.
+#define VIBRATOR_GPIO        BOARD_VIBRATOR_GPIO  // GPIO26 on NM-CYD-C5; -1 elsewhere
 #define VIBRATOR_LEDC_TIMER  LEDC_TIMER_2
 #define VIBRATOR_LEDC_CH     LEDC_CHANNEL_4
 #define VIBRATOR_FREQ_HZ     333              // 333 Hz — confirmed best haptic feel

@@ -32,7 +32,12 @@
 #define BOARD_TOUCH_INT      -1   // Not connected
 
 // ── SD card ───────────────────────────────────────────────────────────────────
-// Shares SPI2_HOST. Gated by sd_spi_mutex. GPIO10 also passes through FPC2.
+// Shares SPI2_HOST with display and touch. Gated by sd_spi_mutex.
+// GPIO10 (SD CS) also passes through the FPC2 expansion connector.
+#define BOARD_SD_SPI_HOST    SPI2_HOST       // shared with LCD + touch
+#define BOARD_SD_SCK         BOARD_SPI_SCK   // GPIO6
+#define BOARD_SD_MOSI        BOARD_SPI_MOSI  // GPIO7
+#define BOARD_SD_MISO        BOARD_SPI_MISO  // GPIO2
 #define BOARD_SD_CS          10
 
 // ── WS2812 RGB LED (NeoPixel) ─────────────────────────────────────────────────
