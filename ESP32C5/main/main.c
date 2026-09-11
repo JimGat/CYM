@@ -24928,6 +24928,7 @@ static const sd_provision_item_t SD_ITEMS[] = {
     { SD_ITEM_DIR,  "/sdcard/lab/tpms",                      NULL },  /* TPMS Monitor Schrader CSV captures */
     { SD_ITEM_DIR,  "/sdcard/lab/espnow",                    NULL },  /* ESP-NOW Scout device export JSON + pktlog */
     { SD_ITEM_DIR,  "/sdcard/lab/obs",                       NULL },  /* Passive Log JSONL exports (obs_store) */
+    { SD_ITEM_DIR,  "/sdcard/lab/otsurvey",                  NULL },  /* OT Air Survey sessions (ot_survey component) */
     { SD_ITEM_DIR,  "/sdcard/lab/rfid",                      NULL },  /* RFID/NFC card dumps (root) */
     { SD_ITEM_DIR,  "/sdcard/lab/rfid/lf",                  NULL },  /* LF cards (.rfid — EM410X, HID) */
     { SD_ITEM_DIR,  "/sdcard/lab/rfid/hf",                  NULL },  /* HF cards (.nfc — NTAG, MFC, UL) */
