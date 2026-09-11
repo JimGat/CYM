@@ -82,7 +82,9 @@ typedef struct {
     ot_survey_state_t state;
     uint32_t          start_time_s;
     uint32_t          stop_time_s;
-    uint32_t          obs_count;
+    uint32_t          obs_count;           /* total observations recorded */
+    uint32_t          obs_by_type[10];     /* per-type counters indexed by obs_type_t */
+    uint32_t          flush_head;          /* next obs index to write on incremental flush */
     char              dir_path[80];  /* /sdcard/lab/otsurvey/<uuid-hex>/ */
 } ot_survey_session_t;
 

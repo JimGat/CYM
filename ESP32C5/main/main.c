@@ -2851,6 +2851,8 @@ static void show_zgwd_flood(int pan_idx);
 #endif
 static void show_iot_ot_menu_screen(void);
 static void show_ot_survey_screen(void);
+static const char *s_ots_allowlist_label(const uint8_t mac[6]);
+static void s_ots_load_allowlist(void);
 static void show_ir_capture_screen(void);
 static void show_ir_replay_screen(void);
 static void show_ir_signal_list_screen(void);
@@ -7648,15 +7650,22 @@ void app_main(void)
                         }
                         obs.hit_count   = 1;
                         if (ap->ssid[0]) strncpy(obs.label, (const char *)ap->ssid, sizeof(obs.label) - 1);
+                        /* Allowlist: override label with user-defined name for known devices */
+                        if (g_active_survey) {
+                            const char *al = s_ots_allowlist_label(obs.mac);
+                            if (al) strlcpy(obs.label, al, sizeof(obs.label));
+                        }
                         if (g_obs_registry) obs_registry_run(g_obs_registry, &obs);
                         {
                             obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                             if (stored && stored->hit_count > 1)
                                 obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
-                            /* Phase 4: count each stored AP towards the active survey */
                             if (stored && g_active_survey &&
-                                g_active_survey->state == OT_STATE_ACTIVE)
+                                g_active_survey->state == OT_STATE_ACTIVE) {
                                 g_active_survey->obs_count++;
+                                if (obs.obs_type < 10)
+                                    g_active_survey->obs_by_type[obs.obs_type]++;
+                            }
                         }
                     }
                 }
@@ -8049,15 +8058,22 @@ void app_main(void)
                         else if (dev->is_matter)          strncpy(obs.label, "Matter",    sizeof(obs.label) - 1);
                         else if (dev->is_bthome)          strncpy(obs.label, "BTHome",    sizeof(obs.label) - 1);
                     }
+                    /* Allowlist: override label with user-defined name for known devices */
+                    if (g_active_survey) {
+                        const char *al = s_ots_allowlist_label(obs.mac);
+                        if (al) strlcpy(obs.label, al, sizeof(obs.label));
+                    }
                     if (g_obs_registry) obs_registry_run(g_obs_registry, &obs);
                     {
                         obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                         if (stored && stored->hit_count > 1)
                             obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
-                        /* Phase 4: count each stored BLE device towards the active survey */
                         if (stored && g_active_survey &&
-                            g_active_survey->state == OT_STATE_ACTIVE)
+                            g_active_survey->state == OT_STATE_ACTIVE) {
                             g_active_survey->obs_count++;
+                            if (obs.obs_type < 10)
+                                g_active_survey->obs_by_type[obs.obs_type]++;
+                        }
                     }
                 }
             }
@@ -8103,12 +8119,20 @@ void app_main(void)
                         obs.altitude_m = gps->altitude;
                         obs.accuracy_m = gps->accuracy;
                     }
+                    /* Allowlist: override label with user-defined name for known devices */
+                    if (g_active_survey) {
+                        const char *al = s_ots_allowlist_label(obs.mac);
+                        if (al) strlcpy(obs.label, al, sizeof(obs.label));
+                    }
                     obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                     if (stored && stored->hit_count > 1)
                         obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
                     if (stored && g_active_survey &&
-                        g_active_survey->state == OT_STATE_ACTIVE)
+                        g_active_survey->state == OT_STATE_ACTIVE) {
                         g_active_survey->obs_count++;
+                        if (obs.obs_type < 10)
+                            g_active_survey->obs_by_type[obs.obs_type]++;
+                    }
                 }
             }
 
@@ -8728,12 +8752,20 @@ void app_main(void)
                         obs154.accuracy_m = gps154->accuracy;
                     }
 
+                    /* Allowlist: override label with user-defined name for known OT devices */
+                    if (g_active_survey) {
+                        const char *al = s_ots_allowlist_label(obs154.mac);
+                        if (al) strlcpy(obs154.label, al, sizeof(obs154.label));
+                    }
                     obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
                     if (stored154 && stored154->hit_count > 1)
                         obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
                     if (stored154 && g_active_survey &&
-                        g_active_survey->state == OT_STATE_ACTIVE)
+                        g_active_survey->state == OT_STATE_ACTIVE) {
                         g_active_survey->obs_count++;
+                        if (obs154.obs_type < 10)
+                            g_active_survey->obs_by_type[obs154.obs_type]++;
+                    }
 
                     /* ── Write raw PSDU to PCAPNG ──────────────────────────── */
                     ot_survey_write_154_frame(fr.psdu, fr.psdu_len,
@@ -56965,6 +56997,115 @@ static void show_iot_ot_menu_screen(void)
     (void)ots_tile;
 }
 
+// ── OT survey allowlist — user-labelled known devices ──────────────────────
+//
+// Format: /sdcard/lab/otsurvey/allowlist.json
+// One JSON object per line: {"mac":"AA:BB:CC:DD:EE:FF","label":"MyDevice"}
+// Loaded at survey start; looked up at every obs creation site to override label.
+
+#define OTS_ALLOWLIST_MAX 64
+
+typedef struct {
+    uint8_t mac[6];
+    char    label[32]; /* matches obs_record_t.label size */
+} s_ots_allowlist_entry_t;
+
+/* Heap-allocated at survey start; NULL when no survey is active.
+ * Avoids placing 2+ KB in DRAM BSS (critical on ESP32 with no PSRAM). */
+static s_ots_allowlist_entry_t *s_ots_allowlist = NULL;
+static int                      s_ots_allowlist_count = 0;
+
+/* Return user-defined label for mac if found in the allowlist, NULL otherwise. */
+static const char *s_ots_allowlist_label(const uint8_t mac[6])
+{
+    if (!s_ots_allowlist) return NULL;
+    for (int i = 0; i < s_ots_allowlist_count; i++) {
+        if (memcmp(s_ots_allowlist[i].mac, mac, 6) == 0)
+            return s_ots_allowlist[i].label;
+    }
+    return NULL;
+}
+
+/*
+ * Load allowlist from SD card at survey start.
+ * Called from s_ots_start_cb() after ot_survey_start() succeeds.
+ * Allocates from PSRAM on capable boards; falls back to default heap.
+ * NOTE: acquires sd_spi_mutex internally; caller must not hold it.
+ */
+static void s_ots_load_allowlist(void)
+{
+    /* Free any residual allocation from a previous session */
+    if (s_ots_allowlist) {
+        free(s_ots_allowlist);
+        s_ots_allowlist = NULL;
+    }
+    s_ots_allowlist_count = 0;
+
+    /* Allocate from PSRAM when available; fall back to default heap */
+#ifdef CONFIG_BOARD_HAS_PSRAM
+    s_ots_allowlist = heap_caps_malloc(
+        OTS_ALLOWLIST_MAX * sizeof(*s_ots_allowlist),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    s_ots_allowlist = malloc(OTS_ALLOWLIST_MAX * sizeof(*s_ots_allowlist));
+#endif
+    if (!s_ots_allowlist) {
+        ESP_LOGW(TAG, "[OTS] allowlist alloc failed — no device labels");
+        return;
+    }
+    memset(s_ots_allowlist, 0, OTS_ALLOWLIST_MAX * sizeof(*s_ots_allowlist));
+
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(300)) != pdTRUE) {
+        ESP_LOGW(TAG, "[OTS] allowlist: SD mutex timeout");
+        return;
+    }
+
+    FILE *f = fopen("/sdcard/lab/otsurvey/allowlist.json", "r");
+    if (!f) {
+        xSemaphoreGive(sd_spi_mutex);
+        ESP_LOGD(TAG, "[OTS] no allowlist file — proceeding without labels");
+        return;
+    }
+
+    char line[128];
+    while (fgets(line, sizeof(line), f) &&
+           s_ots_allowlist_count < OTS_ALLOWLIST_MAX) {
+        /* Simple per-line parser: find "mac":".." and "label":".." */
+        char *mp = strstr(line, "\"mac\":");
+        char *lp = strstr(line, "\"label\":");
+        if (!mp || !lp) continue;
+
+        /* Extract quoted mac value */
+        mp = strchr(mp + 6, '"');
+        if (!mp) continue;
+        mp++;
+        char mac_str[18] = {0};
+        int j = 0;
+        while (*mp && *mp != '"' && j < 17) mac_str[j++] = *mp++;
+
+        /* Extract quoted label value */
+        lp = strchr(lp + 8, '"');
+        if (!lp) continue;
+        lp++;
+        char lbl[32] = {0};
+        j = 0;
+        while (*lp && *lp != '"' && j < 31) lbl[j++] = *lp++;
+
+        /* Parse MAC bytes */
+        uint8_t m[6];
+        if (sscanf(mac_str, "%hhx:%hhx:%hhx:%hhx:%hhx:%hhx",
+                   &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) == 6) {
+            memcpy(s_ots_allowlist[s_ots_allowlist_count].mac, m, 6);
+            strlcpy(s_ots_allowlist[s_ots_allowlist_count].label, lbl,
+                    sizeof(s_ots_allowlist[0].label));
+            s_ots_allowlist_count++;
+        }
+    }
+    fclose(f);
+    xSemaphoreGive(sd_spi_mutex);
+    ESP_LOGI(TAG, "[OTS] allowlist loaded: %d entries", s_ots_allowlist_count);
+}
+
 // ── OT Air Survey screen ────────────────────────────────────────────────────
 
 /* UI state — NULLed by ot_survey_screen_stop so callbacks can NULL-guard */
@@ -56992,8 +57133,16 @@ static void s_ots_timer_cb(lv_timer_t *t)
 
     if (s_ots_dur_lbl)
         lv_label_set_text_fmt(s_ots_dur_lbl, "Duration: %02"PRIu32":%02"PRIu32, mm, ss);
-    if (s_ots_cnt_lbl)
-        lv_label_set_text_fmt(s_ots_cnt_lbl, "Observations: %"PRIu32, g_active_survey->obs_count);
+    if (s_ots_cnt_lbl) {
+        uint32_t w  = g_active_survey->obs_by_type[0] + g_active_survey->obs_by_type[1];
+        uint32_t b  = g_active_survey->obs_by_type[2] + g_active_survey->obs_by_type[3];
+        uint32_t en = g_active_survey->obs_by_type[8];
+        uint32_t ot = g_active_survey->obs_by_type[4] + g_active_survey->obs_by_type[5]
+                    + g_active_survey->obs_by_type[6] + g_active_survey->obs_by_type[7];
+        lv_label_set_text_fmt(s_ots_cnt_lbl,
+            "Obs: %"PRIu32"\nW:%"PRIu32" B:%"PRIu32" EN:%"PRIu32" OT:%"PRIu32,
+            g_active_survey->obs_count, w, b, en, ot);
+    }
 }
 
 static void ot_survey_screen_stop(void)
@@ -57046,6 +57195,9 @@ static void s_ots_start_cb(lv_event_t *e)
         return;
     }
 
+    /* Load allowlist so obs labels can be applied during this session */
+    s_ots_load_allowlist();
+
     /* Switch UI panels */
     if (s_ots_cfg_cont) lv_obj_add_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
     if (s_ots_run_cont) lv_obj_clear_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
@@ -57062,6 +57214,9 @@ static void s_ots_stop_cb(lv_event_t *e)
     (void)e;
     ot_radio_scheduler_stop();
     if (g_active_survey) ot_survey_stop(g_active_survey);
+    /* Release allowlist memory — no longer needed after survey ends */
+    if (s_ots_allowlist) { free(s_ots_allowlist); s_ots_allowlist = NULL; }
+    s_ots_allowlist_count = 0;
 
     if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
     if (s_ots_run_cont) lv_obj_add_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);

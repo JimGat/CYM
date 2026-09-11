@@ -310,7 +310,11 @@ esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store)
     char path[96];
     snprintf(path, sizeof(path), "%s/obs.jsonl", sess->dir_path);
 
-    FILE *f = fopen(path, "w");
+    uint32_t count = obs_store_count(store);
+    if (sess->flush_head >= count)
+        return ESP_OK; /* nothing new to write */
+
+    FILE *f = fopen(path, "a");  /* append — only write records added since last flush */
     if (!f) {
         ESP_LOGE(TAG, "Cannot open %s: %s", path, strerror(errno));
         return ESP_FAIL;
@@ -318,10 +322,9 @@ esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store)
 
     /* JSON serialisation buffer — min 384 bytes per obs_record_to_json() spec. */
     char buf[400];
-    uint32_t count   = obs_store_count(store);
     uint32_t written = 0;
 
-    for (uint32_t i = 0; i < count; i++) {
+    for (uint32_t i = sess->flush_head; i < count; i++) {
         const obs_record_t *r = &store->records[i];
         int n = obs_record_to_json(r, buf, sizeof(buf));
         if (n > 0) {
@@ -332,8 +335,10 @@ esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store)
     }
     fclose(f);
 
-    ESP_LOGI(TAG, "Flushed %lu/%lu records to %s", (unsigned long)written,
-             (unsigned long)count, path);
+    sess->flush_head = count; /* advance cursor past written records */
+
+    ESP_LOGI(TAG, "Flushed %lu new records (total=%lu) to %s",
+             (unsigned long)written, (unsigned long)count, path);
     return ESP_OK;
 }
 
