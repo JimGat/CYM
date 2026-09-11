@@ -25159,8 +25159,10 @@ static void settings_tile_event_cb(lv_event_t *e)
         show_gps_info_screen();
     } else if (strcmp(tile_name, "Hardware Options") == 0) {
         show_hardware_options_screen();
+#if CONFIG_BOARD_HAS_VIBRATOR
     } else if (strcmp(tile_name, "Vibrator Test") == 0) {
         show_vibrator_test_popup();
+#endif
     }
 }
 
@@ -25190,7 +25192,9 @@ static void show_settings_screen(void)
     create_tile(tiles, MY_SYMBOL_SATELLITE_DISH, "GPS\nInfo",          lv_color_hex(0x00BCD4),  settings_tile_event_cb, "GPS Info");
     create_tile(tiles, MY_SYMBOL_MICROCHIP,      "Hardware\nOptions",  lv_color_hex(0x607D8B),  settings_tile_event_cb, "Hardware Options");
     create_tile(tiles, MY_SYMBOL_SERVER,         "Data\nTransfer",     lv_color_hex(0xE91E63),  settings_tile_event_cb, "Data Transfer");
+#if CONFIG_BOARD_HAS_VIBRATOR
     create_tile(tiles, LV_SYMBOL_AUDIO,          "Vibrator\nTest",     lv_color_hex(0x9C27B0),  settings_tile_event_cb, "Vibrator Test");
+#endif
 
     lv_obj_t *ver = lv_label_create(function_page);
     lv_label_set_text(ver, "LAB5 " FW_VERSION);

@@ -6,6 +6,8 @@ menu "CYM Board Selection"
         help
             Select the target hardware board. This controls pin definitions,
             capability flags, and HAL driver selection throughout the firmware.
+            New boards: add a header under include/boards/, add a choice entry
+            here, dispatch in include/board_hal.h, add sdkconfig.defaults.<name>.
 
         config BOARD_NM_CYD_C5
             bool "NM-CYD-C5 (NerdMiner ESP32-C5 CYD) [PRIMARY]"
@@ -28,6 +30,25 @@ menu "CYM Board Selection"
                 Display+touch share VSPI (SPI3_HOST); SD card on separate HSPI
                 (SPI2_HOST). RGB LED active-LOW common-anode on GPIO 4/16/17.
 
+        config BOARD_HOSYOND_S3_35
+            bool "Hosyond 3.5\" ES3C35P (ESP32-S3, ST77922 QSPI) [Phase 4]"
+            help
+                Hosyond 3.5\" ESP32-S3 display board (SKU ES3C35P). ST77922 QSPI
+                display (320x480), custom I2C touch (0x55), SD on SPI3, WS2812
+                RGB LED on IO40. 8 MB OPI PSRAM, 16 MB flash, dual-core LX7 240 MHz.
+
+        config BOARD_HOSYOND_S3_28
+            bool "Hosyond 2.8\" (ESP32-S3, ILI9341V + FT6336G) [Pending GPIO]"
+            help
+                Hosyond 2.8\" ESP32-S3 board (ASIN B0FKG7WRWV). ILI9341V SPI
+                display, FT6336G capacitive touch. GPIO map to be confirmed on
+                hardware arrival.
+
+        config BOARD_HOSYOND_S3_40
+            bool "Hosyond 4.0\" (ESP32-S3) [Not yet owned]"
+            help
+                Hosyond 4.0\" ESP32-S3 board. GPIO map TBD on hardware arrival.
+
     endchoice
 
     # ── Capability flags — automatically derived from board selection ──────────
@@ -36,7 +57,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_PSRAM
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
             Board has PSRAM. Enables large buffer allocations, LVGL PSRAM draw
             buffers, and the 1 MB captive-portal HTML buffer.
@@ -46,10 +67,11 @@ menu "CYM Board Selection"
         default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28
         help
             WiFi 6 dual-band (2.4 + 5 GHz). Set band mode WIFI_BAND_MODE_AUTO.
+            ESP32-C5 only. ESP32, ESP32-S3 are 2.4 GHz only (default n).
 
     config BOARD_HAS_DUAL_CORE
         bool
-        default y if BOARD_CYD2USB
+        default y if BOARD_CYD2USB || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
             Dual-core SoC (ESP32 / ESP32-S3). When set, the nRF24 jammer task
             should be pinned to Core 1 via xTaskCreatePinnedToCore to isolate it
@@ -60,7 +82,7 @@ menu "CYM Board Selection"
         default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28
         help
             Built-in 802.15.4 radio (Zigbee/Thread passive scanner).
-            Not present on ESP32 (CYD2USB).
+            ESP32-C5 only. Not present on ESP32 (CYD2USB) or ESP32-S3 (Hosyond).
 
     config BOARD_HAS_VIBRATOR
         bool
@@ -71,10 +93,11 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_RGB_LED
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_CYD2USB
+        default y if BOARD_NM_CYD_C5 || BOARD_CYD2USB || BOARD_HOSYOND_S3_35
         help
-            Addressable or discrete RGB LED. NM-CYD-C5 uses WS2812 (NeoPixel).
-            CYD2USB uses a common-anode RGB LED (active-LOW) on GPIO 4/16/17.
+            Addressable or discrete RGB LED. NM-CYD-C5 / Hosyond-S3-35: WS2812
+            (NeoPixel) on BOARD_RGB_LED_GPIO. CYD2USB: common-anode RGB LED
+            (active-LOW) on GPIO 4/16/17.
 
     config BOARD_LCD_INVERT_COLOR
         bool
@@ -98,11 +121,11 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_DUAL_SPI_BUS
         bool
-        default y if BOARD_CYD2USB
+        default y if BOARD_CYD2USB || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
-            Board uses two separate SPI buses — one for display+touch (VSPI/SPI3)
-            and a second for the SD card (HSPI/SPI2). Single-bus boards share one
-            bus for all three peripherals with separate CS lines.
+            Board uses two separate SPI buses. CYD2USB: display+touch on VSPI
+            (SPI3), SD on HSPI (SPI2). Hosyond S3: display on SPI2 (QSPI),
+            SD on SPI3. Single-bus boards share one bus for all peripherals.
 
     config BOARD_HAS_IMU
         bool
@@ -142,6 +165,16 @@ menu "CYM Board Selection"
             CH32V003 secondary MCU on I2C 0x24. Controls LCD RST, touch RST,
             audio amp enable, and backlight PWM.
 
+    # ── LCD driver type ────────────────────────────────────────────────────────
+
+    config BOARD_LCD_IS_QSPI
+        bool
+        default y if BOARD_HOSYOND_S3_35
+        help
+            Display uses 4-data-line QSPI (ST77922) instead of standard SPI.
+            No DC pin — command bytes are embedded in the QSPI protocol.
+            BOARD_LCD_D0..D3 carry the data lines; BOARD_LCD_DC is -1.
+
     # ── Touch driver selection ─────────────────────────────────────────────────
 
     config BOARD_HAS_RF_HAT
@@ -170,6 +203,14 @@ menu "CYM Board Selection"
         default y if BOARD_WS_C5_28
         help
             CST3530 capacitive I2C touch. Interrupt-driven via BOARD_TOUCH_INT.
+            No calibration needed.
+
+    config BOARD_TOUCH_I2C
+        bool
+        default y if BOARD_HOSYOND_S3_35
+        help
+            Generic capacitive touch on I2C. No SPI CS (BOARD_TOUCH_CS = -1).
+            Hosyond S3-35: custom IC at 0x55 (BOARD_TOUCH_I2C_ADDR) on IO38/IO39.
             No calibration needed.
 
 endmenu

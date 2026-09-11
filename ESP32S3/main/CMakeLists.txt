@@ -21,4 +21,15 @@ idf_component_register(
         sdmmc
         lvgl
         board_hal
+        wifi_cli
+        wifi_scanner
+        wifi_wardrive
+        wifi_sniffer
+        wifi_attacks
+        obs_store
+        obs_detectors
+        led_strip
+        hccapx_serializer
+        pcap_serializer
+        frame_analyzer
 )

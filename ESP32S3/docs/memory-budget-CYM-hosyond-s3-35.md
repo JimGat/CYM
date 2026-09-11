@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.13.79 |
+| Version | v2.13.80 |
 | Build date | 2026-09-11 |
 | .iram0.text | 68,875 B (67.3 KB) |
 | .dram0.data | 17,421 B (17.0 KB) |
 | .dram0.bss  (internal) | 37,104 B (36.2 KB) |
 | .ext_ram.bss  (PSRAM) | 0 B |
-| App binary size | 586,400 B (572.7 KB) |
+| App binary size | 586,800 B (573.0 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -29,6 +29,16 @@
 | `libesp_libc.a` | 540 B |
 | `libtfpsacrypto.a` | 472 B |
 | `libefuse.a` | 364 B |
+| `libesp_system.a` | 333 B |
+| `libesp_hw_support.a` | 322 B |
+| `liblog.a` | 276 B |
+| `libmain.a` | 164 B |
+| `libesp_psram.a` | 62 B |
+| `libfatfs.a` | 56 B |
+| `libesp_driver_ledc.a` | 48 B |
+| `libesp_mm.a` | 48 B |
+| `libvfs.a` | 44 B |
+| `libnvs_flash.a` | 40 B |
 <!-- BSS_TABLE_END -->
 
 ---

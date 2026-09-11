@@ -22,6 +22,12 @@
 #  include "boards/ws_c5_28.h"
 #elif defined(CONFIG_BOARD_CYD2USB)
 #  include "boards/cyd2usb.h"
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
+#  include "boards/hosyond_s3_35.h"
+#elif defined(CONFIG_BOARD_HOSYOND_S3_28)
+#  include "boards/hosyond_s3_28.h"
+#elif defined(CONFIG_BOARD_HOSYOND_S3_40)
+#  include "boards/hosyond_s3_40.h"
 #else
 // Fallback: default to NM-CYD-C5 if no board is explicitly configured.
 // This ensures the existing build (which predates Kconfig board selection)

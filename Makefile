@@ -29,9 +29,9 @@ all: nm-cyd-c5
 # Note: each board uses a separate version bump before release; this just
 # verifies the shared code compiles cleanly for all targets.
 
-all-boards: nm-cyd-c5 ws-c5-28 cyd-2432s028
+all-boards: nm-cyd-c5 ws-c5-28 cyd-2432s028 hosyond-s3-35
 	@echo ""
-	@echo "=== all-boards complete: NM-CYD-C5, WS-C5-28, CYD-2432S028 all built ==="
+	@echo "=== all-boards complete: NM-CYD-C5, WS-C5-28, CYD-2432S028, hosyond-s3-35 all built ==="
 	@echo ""
 
 # ── ESP32-C5 boards ──────────────────────────────────────────────────────────

@@ -16,14 +16,27 @@ cmake_minimum_required(VERSION 3.16)
 #     build
 # ─────────────────────────────────────────────────────────────────────────────
 
-set(PROJECT_VER "v2.13.79")
+set(PROJECT_VER "v2.13.80")
 
-set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/components")
+# S3-specific components first (esp_lcd_st77922), then shared C5 components.
+# Ordering matters: ESP-IDF uses the first occurrence when two directories
+# contain a component with the same name, so S3's overrides come first.
+set(EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/components"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../ESP32C5/components"
+)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 # Suppress warnings-as-errors globally (pre-existing warnings in vendor drivers)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error" APPEND)
+
+# Propagate PROJECT_VER as FW_VERSION so main.c and shared components see the
+# correct version string via #define FW_VERSION "vX.Y.Z" at every build.
+idf_build_set_property(COMPILE_DEFINITIONS "FW_VERSION=\"${PROJECT_VER}\"" APPEND)
+
+# Make ESP32C5/main headers (lvgl_memory.h, etc.) available to shared components.
+idf_build_set_property(COMPILE_OPTIONS "-I${CMAKE_SOURCE_DIR}/../ESP32C5/main" APPEND)
 
 project(CYM-S3)
 
