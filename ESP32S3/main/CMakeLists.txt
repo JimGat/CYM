@@ -20,4 +20,5 @@ idf_component_register(
         fatfs
         sdmmc
         lvgl
+        board_hal
 )

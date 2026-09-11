@@ -1,0 +1,78 @@
+menu "CYM Board Selection (ESP32-S3)"
+
+    choice BOARD_SELECT
+        prompt "Target board"
+        default BOARD_HOSYOND_S3_35
+        help
+            Select the target ESP32-S3 hardware board. Controls pin definitions,
+            capability flags, and driver selection. New boards: add a header under
+            components/board_hal/include/boards/, add a choice entry here, and
+            dispatch in board_hal.h — no changes to main.c required.
+
+        config BOARD_HOSYOND_S3_35
+            bool "Hosyond 3.5\" ES3C35P (ST77922 QSPI, 320x480) [PRIMARY]"
+            help
+                Hosyond 3.5\" ESP32-S3 display board (SKU ES3C35P / lcdwiki
+                3.5inch_ESP32-S3_Display). ST77922 QSPI display, custom I2C touch
+                (0x55), SD card on SPI3, WS2812 RGB LED on IO40. 8 MB OPI PSRAM,
+                16 MB flash, dual-core LX7 240 MHz.
+
+        config BOARD_HOSYOND_S3_28
+            bool "Hosyond 2.8\" (ILI9341V + FT6336G) [Pending GPIO confirmation]"
+            help
+                Hosyond 2.8\" ESP32-S3 board (ASIN B0FKG7WRWV). ILI9341V SPI
+                display, FT6336G capacitive touch. GPIO map to be confirmed on
+                hardware arrival.
+
+        config BOARD_HOSYOND_S3_40
+            bool "Hosyond 4.0\" [Not yet owned]"
+            help
+                Hosyond 4.0\" ESP32-S3 board. GPIO map TBD on hardware arrival.
+
+    endchoice
+
+    # ── Capability flags — derived from board selection ────────────────────────
+
+    config BOARD_HAS_PSRAM
+        bool
+        default y
+        help
+            All ESP32-S3 Hosyond boards have 8 MB OPI PSRAM.
+
+    config BOARD_HAS_DUAL_CORE
+        bool
+        default y
+        help
+            ESP32-S3 is dual-core Xtensa LX7. Pin RF/jammer tasks to Core 1.
+
+    config BOARD_HAS_RGB_LED
+        bool
+        default y if BOARD_HOSYOND_S3_35
+        default n
+        help
+            WS2812-compatible RGB LED on BOARD_RGB_LED_GPIO.
+
+    config BOARD_HAS_VIBRATOR
+        bool
+        default n
+        help
+            No vibrator motor on any current Hosyond S3 board.
+
+    config BOARD_LCD_IS_QSPI
+        bool
+        default y if BOARD_HOSYOND_S3_35
+        default n
+        help
+            Display uses 4-data-line QSPI (ST77922) instead of standard SPI.
+            No DC pin — command bytes are embedded in the QSPI protocol.
+            BOARD_LCD_D0..D3 carry the data lines; BOARD_LCD_DC is -1.
+
+    config BOARD_TOUCH_I2C
+        bool
+        default y if BOARD_HOSYOND_S3_35
+        default n
+        help
+            Capacitive touch controller on I2C bus. No SPI CS (BOARD_TOUCH_CS = -1).
+            Hosyond 3.5\": custom IC at 0x55 on IO38/IO39.
+
+endmenu

@@ -37,7 +37,7 @@
 #include "driver/sdspi_host.h"
 #include "sdmmc_cmd.h"
 
-#include "board_hal_hosyond_s3_35.h"
+#include "board_hal.h"
 
 static const char *TAG = "CYM-S3";
 
@@ -68,7 +68,7 @@ static void bl_init(void)
     ledc_timer_config(&timer);
 
     ledc_channel_config_t ch = {
-        .gpio_num   = H35S3_LCD_BL,
+        .gpio_num   = BOARD_BACKLIGHT_GPIO,
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .channel    = LEDC_CHANNEL_1,
         .timer_sel  = LEDC_TIMER_0,
@@ -129,27 +129,27 @@ static void display_init(lv_disp_t **ret_disp)
 {
     /* QSPI bus */
     spi_bus_config_t buscfg = ST77922_PANEL_BUS_QSPI_CONFIG(
-        H35S3_LCD_SCLK, H35S3_LCD_D0, H35S3_LCD_D1, H35S3_LCD_D2, H35S3_LCD_D3,
-        H35S3_LCD_H_RES * H35S3_LCD_BUF_LINES * 2
+        BOARD_LCD_SCK, BOARD_LCD_D0, BOARD_LCD_D1, BOARD_LCD_D2, BOARD_LCD_D3,
+        BOARD_LCD_WIDTH * BOARD_LCD_BUF_LINES * 2
     );
     /* DMA_CH_AUTO: let IDF pick a DMA channel */
-    ESP_ERROR_CHECK(spi_bus_initialize(H35S3_LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
+    ESP_ERROR_CHECK(spi_bus_initialize(BOARD_LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
     /* Panel IO: QSPI mode, 80 MHz, trans_done callback wired for flush */
     esp_lcd_panel_io_handle_t io_handle;
     esp_lcd_panel_io_spi_config_t io_config = ST77922_PANEL_IO_QSPI_CONFIG(
-        H35S3_LCD_CS, on_color_trans_done, NULL   /* user_ctx set after disp created */
+        BOARD_LCD_CS, on_color_trans_done, NULL   /* user_ctx set after disp created */
     );
     /* Attach LCD to SPI bus */
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
-        (esp_lcd_spi_bus_handle_t)H35S3_LCD_HOST, &io_config, &io_handle));
+        (esp_lcd_spi_bus_handle_t)BOARD_LCD_HOST, &io_config, &io_handle));
 
     /* Panel: ST77922, 320×480, 16-bit colour */
     st77922_vendor_config_t vendor_cfg = {
         .flags = { .use_qspi_interface = 1 },
     };
     esp_lcd_panel_dev_config_t panel_cfg = {
-        .reset_gpio_num = H35S3_LCD_RST,
+        .reset_gpio_num = BOARD_LCD_RST,
         .data_endian    = LCD_RGB_DATA_ENDIAN_BIG,
         .bits_per_pixel = 16,
         .vendor_config  = &vendor_cfg,
@@ -162,8 +162,8 @@ static void display_init(lv_disp_t **ret_disp)
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     /* LVGL: two buffers in internal SRAM (PSRAM too slow at 80 MHz QSPI) */
-    s_buf1 = heap_caps_malloc(H35S3_LCD_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    s_buf2 = heap_caps_malloc(H35S3_LCD_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    s_buf1 = heap_caps_malloc(BOARD_LCD_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    s_buf2 = heap_caps_malloc(BOARD_LCD_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     assert(s_buf1 && s_buf2);
 
     lv_init();
@@ -171,9 +171,9 @@ static void display_init(lv_disp_t **ret_disp)
     static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
     lv_disp_draw_buf_init(&s_draw_buf, s_buf1, s_buf2,
-                           H35S3_LCD_H_RES * H35S3_LCD_BUF_LINES);
-    disp_drv.hor_res    = H35S3_LCD_H_RES;
-    disp_drv.ver_res    = H35S3_LCD_V_RES;
+                           BOARD_LCD_WIDTH * BOARD_LCD_BUF_LINES);
+    disp_drv.hor_res    = BOARD_LCD_WIDTH;
+    disp_drv.ver_res    = BOARD_LCD_HEIGHT;
     disp_drv.flush_cb   = lvgl_flush_cb;
     disp_drv.draw_buf   = &s_draw_buf;
     *ret_disp = lv_disp_drv_register(&disp_drv);
@@ -192,9 +192,9 @@ static void touch_init(lv_disp_t *disp)
 {
     /* I2C master bus */
     i2c_master_bus_config_t bus_cfg = {
-        .i2c_port      = H35S3_TOUCH_I2C_NUM,
-        .sda_io_num    = H35S3_TOUCH_SDA,
-        .scl_io_num    = H35S3_TOUCH_SCL,
+        .i2c_port      = BOARD_I2C_NUM,
+        .sda_io_num    = BOARD_I2C_SDA,
+        .scl_io_num    = BOARD_I2C_SCL,
         .clk_source    = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
@@ -209,10 +209,10 @@ static void touch_init(lv_disp_t *disp)
 
     /* Touch driver */
     esp_lcd_touch_config_t tp_cfg = {
-        .x_max      = H35S3_LCD_H_RES,
-        .y_max      = H35S3_LCD_V_RES,
-        .rst_gpio_num = H35S3_TOUCH_RST,
-        .int_gpio_num = H35S3_TOUCH_INT,
+        .x_max      = BOARD_LCD_WIDTH,
+        .y_max      = BOARD_LCD_HEIGHT,
+        .rst_gpio_num = BOARD_TOUCH_RST,
+        .int_gpio_num = BOARD_TOUCH_INT,
         .levels = {
             .reset     = 0,
             .interrupt = 0,
@@ -242,7 +242,7 @@ static void sd_init(void)
 
     /* Pull D1/D2 high: unused in SPI mode; card checks them during init */
     gpio_config_t pull_cfg = {
-        .pin_bit_mask = (1ULL << H35S3_SD_PULLUP_D1) | (1ULL << H35S3_SD_PULLUP_D2),
+        .pin_bit_mask = (1ULL << BOARD_SD_PULLUP_D1) | (1ULL << BOARD_SD_PULLUP_D2),
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -251,21 +251,21 @@ static void sd_init(void)
     gpio_config(&pull_cfg);
 
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = H35S3_SD_HOST;
+    host.slot = BOARD_SD_SPI_HOST;
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs   = H35S3_SD_CS;
-    slot_config.host_id   = H35S3_SD_HOST;
+    slot_config.gpio_cs   = BOARD_SD_CS;
+    slot_config.host_id   = BOARD_SD_SPI_HOST;
 
     /* SPI bus for SD (separate from display SPI2) */
     spi_bus_config_t sd_buscfg = {
-        .mosi_io_num = H35S3_SD_MOSI,
-        .miso_io_num = H35S3_SD_MISO,
-        .sclk_io_num = H35S3_SD_SCK,
+        .mosi_io_num = BOARD_SD_MOSI,
+        .miso_io_num = BOARD_SD_MISO,
+        .sclk_io_num = BOARD_SD_SCK,
         .quadhd_io_num = -1,
         .quadwp_io_num = -1,
     };
-    ESP_ERROR_CHECK(spi_bus_initialize(H35S3_SD_HOST, &sd_buscfg, SPI_DMA_CH_AUTO));
+    ESP_ERROR_CHECK(spi_bus_initialize(BOARD_SD_SPI_HOST, &sd_buscfg, SPI_DMA_CH_AUTO));
 
     esp_vfs_fat_sdmmc_mount_config_t mount_cfg = {
         .format_if_mount_failed = false,
@@ -274,14 +274,14 @@ static void sd_init(void)
     };
 
     sdmmc_card_t *card;
-    esp_err_t ret = esp_vfs_fat_sdspi_mount(H35S3_SD_MOUNT_POINT, &host,
+    esp_err_t ret = esp_vfs_fat_sdspi_mount(BOARD_SD_MOUNT_POINT, &host,
                                               &slot_config, &mount_cfg, &card);
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "SD mount failed: %s — continuing without SD", esp_err_to_name(ret));
         return;
     }
     sdmmc_card_print_info(stdout, card);
-    ESP_LOGI(TAG, "SD mounted at %s", H35S3_SD_MOUNT_POINT);
+    ESP_LOGI(TAG, "SD mounted at %s", BOARD_SD_MOUNT_POINT);
 }
 
 /* ── LVGL main loop task ─────────────────────────────────────────────────────*/
