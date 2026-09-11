@@ -187,6 +187,8 @@ LV_IMG_DECLARE(deedee_img);
 #include "gatt_walker.h"
 #include "obs_store.h"
 #include "obs_detectors.h"
+#include "ot_radio.h"
+#include "ot_survey.h"
 #include "ble_honeypair.h"
 #include "chameleon_ble.h"
 #include "ble_blueduck.h"
@@ -6317,6 +6319,24 @@ static void create_home_ui(void)
     show_main_tiles();
 }
 
+/* ── OT Radio scheduler hooks (wrappers for static functions) ────────────── */
+/*
+ * These thin wrappers allow ot_radio.c (a separate component) to call
+ * main.c-local radio-switch functions via function pointers.  Pointers are
+ * injected into the scheduler at boot via ot_radio_init().
+ */
+static bool _ot_switch_to_wifi(void) { return ensure_wifi_mode(); }
+static bool _ot_switch_to_ble(void)  { return ensure_ble_mode(); }
+#if CONFIG_IEEE802154_ENABLED
+static bool _ot_switch_to_154(void)
+{
+    /* Quiesce WS2812 RMT channel before 802.15.4 PHY enable. */
+    if (g_led_strip) { led_strip_clear(g_led_strip); vTaskDelay(pdMS_TO_TICKS(5)); }
+    return esp_ieee802154_enable() == ESP_OK;
+}
+#endif
+static void _ot_switch_to_idle(void) { radio_reset_to_idle(); }
+
 void app_main(void)
 {
     // Log active board identity so crash logs are unambiguous about which board built the binary.
@@ -6341,6 +6361,27 @@ void app_main(void)
         ESP_LOGE(TAG, "obs_store_init failed — observation store disabled");
     }
     g_obs_registry = obs_detectors_default_registry();
+
+    // OT Air Survey radio scheduler — inject radio-switch hooks so the scheduler
+    // (a separate component) can control the radio without calling static functions
+    // directly.  Must be called before any ot_survey_start().
+    {
+        ot_radio_hooks_t ot_hooks = {
+            .switch_to_wifi  = _ot_switch_to_wifi,
+            .switch_to_ble   = _ot_switch_to_ble,
+#if CONFIG_IEEE802154_ENABLED
+            .switch_to_154   = _ot_switch_to_154,
+#else
+            .switch_to_154   = NULL,  /* CYD2USB: no 802.15.4 */
+#endif
+            .switch_to_idle  = _ot_switch_to_idle,
+        };
+        ot_radio_init(&ot_hooks);
+    }
+
+    // OT Survey SD root directory — ensures /sdcard/lab/otsurvey/ exists after every mount.
+    // Safe to call before SD is mounted; ot_survey_init() checks stat() and creates on demand.
+    ot_survey_init();
 
 	//Initialize GPS UART and start background monitor task
 	if (init_gps_uart() == ESP_OK) {
@@ -35918,6 +35959,14 @@ static void show_bt_conflict_warning(const char *fname, void (*proceed_fn)(void)
                         (void *)proceed_fn);
 }
 
+// ── OT Survey lock notice auto-dismiss timer ──────────────────────────────────
+static void survey_lock_notice_dismiss_tmr(lv_timer_t *tmr)
+{
+    lv_obj_t *obj = (lv_obj_t *)tmr->user_data;
+    if (obj && lv_obj_is_valid(obj)) lv_obj_del(obj);
+    lv_timer_del(tmr);
+}
+
 // ── Active-Attack authorization warning popup ─────────────────────────────────
 static void attack_warning_dismiss_cb(lv_event_t *e)
 {
@@ -35940,6 +35989,33 @@ static void attack_warning_proceed_cb(lv_event_t *e)
 
 static void show_attack_warning(void (*proceed_fn)(void))
 {
+    /* Survey lock: OT Survey owns the radio — attacks must not interrupt it. */
+    if (g_ot_survey_active) {
+        static lv_obj_t *s_survey_lock_notice = NULL;
+        if (s_survey_lock_notice && lv_obj_is_valid(s_survey_lock_notice)) {
+            lv_obj_del(s_survey_lock_notice);
+            s_survey_lock_notice = NULL;
+        }
+        s_survey_lock_notice = lv_obj_create(lv_layer_top());
+        lv_obj_set_size(s_survey_lock_notice, LV_PCT(90), LV_SIZE_CONTENT);
+        lv_obj_center(s_survey_lock_notice);
+        lv_obj_set_style_bg_color(s_survey_lock_notice, lv_color_make(0x20, 0x20, 0x00), 0);
+        lv_obj_set_style_border_color(s_survey_lock_notice, lv_color_make(0xFF, 0xCC, 0x00), 0);
+        lv_obj_set_style_border_width(s_survey_lock_notice, 2, 0);
+        lv_obj_set_style_radius(s_survey_lock_notice, 8, 0);
+        lv_obj_set_style_pad_all(s_survey_lock_notice, 12, 0);
+        lv_obj_t *lbl = lv_label_create(s_survey_lock_notice);
+        lv_label_set_text(lbl, LV_SYMBOL_WARNING " OT Survey active\nStop survey before launching an attack.");
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_center(lbl);
+        /* Tap to close; also auto-dismiss after 3 seconds. */
+        lv_obj_add_flag(s_survey_lock_notice, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_survey_lock_notice, attack_warning_dismiss_cb,
+                            LV_EVENT_CLICKED, NULL);
+        lv_timer_create(survey_lock_notice_dismiss_tmr, 3000, s_survey_lock_notice);
+        return;
+    }
+
     if (s_attack_warning_popup && lv_obj_is_valid(s_attack_warning_popup)) {
         lv_obj_del(s_attack_warning_popup);
         s_attack_warning_popup = NULL;
@@ -48352,6 +48428,12 @@ static void cc1101_jam_screen_stop(void)
 
 static void show_cc1101_jammer_screen(void)
 {
+    /* Survey lock: sub-1GHz jammer must not run during OT passive survey. */
+    if (g_ot_survey_active) {
+        s_cc1101_stub_screen(LV_SYMBOL_WARNING "  Survey Active",
+                             "Stop OT Survey\nbefore using the jammer.");
+        return;
+    }
     if (!cc1101_is_init()) {
         if (cc1101_init() != ESP_OK) {
             s_cc1101_stub_screen(MY_SYMBOL_SKULL_CROSS "  Jammer - No CC1101",
@@ -50320,6 +50402,12 @@ static void s_n24_mode_btn_cb(lv_event_t *e)
 
 static void show_nrf24_jammer_screen(void)
 {
+    /* Survey lock: 2.4 GHz jammer must not run during OT passive survey. */
+    if (g_ot_survey_active) {
+        s_n24_stub_screen(LV_SYMBOL_WARNING "  Survey Active",
+                          "Stop OT Survey\nbefore using the jammer.");
+        return;
+    }
     if (!nrf24_is_init()) {
         nrf24_hat_claim();
         if (nrf24_init() != ESP_OK) {

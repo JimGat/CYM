@@ -11,6 +11,7 @@
  */
 
 #include "ot_survey.h"
+#include "ot_radio.h"
 #include "obs_store.h"
 #include "esp_log.h"
 #include "esp_random.h"
@@ -179,6 +180,14 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
         return rc;
     }
 
+    /* Start radio scheduler — activates survey lock and begins radio time-slicing. */
+    rc = ot_radio_scheduler_start(cfg->profile);
+    if (rc != ESP_OK) {
+        ESP_LOGW(TAG, "Radio scheduler start failed (%d) — session active, scheduler idle", rc);
+        /* Non-fatal: session is still created and can collect obs_store records;
+         * radio will be statically in whatever mode the caller leaves it in. */
+    }
+
     ESP_LOGI(TAG, "Survey started: %s profile=%s dir=%s",
              uuid_str, ot_survey_profile_name(cfg->profile), sess->dir_path);
     return ESP_OK;
@@ -191,6 +200,9 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess)
 
     sess->state       = OT_STATE_STOPPED;
     sess->stop_time_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+
+    /* Stop radio scheduler and release survey lock. */
+    ot_radio_scheduler_stop();
 
     esp_err_t rc = write_metadata(sess);
     if (rc != ESP_OK) {
@@ -209,6 +221,9 @@ esp_err_t ot_survey_pause(ot_survey_session_t *sess)
     if (!sess) return ESP_ERR_INVALID_ARG;
     if (sess->state != OT_STATE_ACTIVE) return ESP_ERR_INVALID_STATE;
     sess->state = OT_STATE_PAUSED;
+    /* Pause scheduler — radio goes idle, survey lock stays OFF during pause
+     * so other features can be used temporarily. */
+    ot_radio_scheduler_stop();
     return write_metadata(sess);
 }
 
@@ -217,6 +232,8 @@ esp_err_t ot_survey_resume(ot_survey_session_t *sess)
     if (!sess) return ESP_ERR_INVALID_ARG;
     if (sess->state != OT_STATE_PAUSED) return ESP_ERR_INVALID_STATE;
     sess->state = OT_STATE_ACTIVE;
+    /* Restart scheduler for the same profile. */
+    ot_radio_scheduler_start(sess->cfg.profile);
     return write_metadata(sess);
 }
 
