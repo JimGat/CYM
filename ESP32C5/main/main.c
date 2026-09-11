@@ -219,7 +219,8 @@ LV_IMG_DECLARE(deedee_img);
 typedef enum {
     RADIO_MODE_NONE,
     RADIO_MODE_WIFI,
-    RADIO_MODE_BLE
+    RADIO_MODE_BLE,
+    RADIO_MODE_154   /* 802.15.4 promiscuous capture — C5 only */
 } radio_mode_t;
 
 static radio_mode_t current_radio_mode = RADIO_MODE_NONE;
@@ -897,6 +898,29 @@ static obs_registry_t  *g_obs_registry = NULL;  /* built-in detector registry, i
 /* Phase 4: survey flush timer fires every 30 s and sets this flag; main loop does the actual write. */
 static volatile bool    s_survey_flush_pending = false;
 static esp_timer_handle_t s_survey_flush_tmr   = NULL;
+
+#if CONFIG_IEEE802154_ENABLED
+/* ── Phase 5: 802.15.4 ISR ring buffer ─────────────────────────────────────
+ * ISR copies each PSDU into a ring slot and bumps the write index.
+ * Main loop drains slots: obs_store record + PCAPNG write.
+ * 64 slots × 131 bytes = 8.4 KB in DRAM (always, regardless of PSRAM).
+ * s_154_next_channel cycles 11-26 on each scheduler slot entry.
+ */
+#define OT154_RING_SLOTS   64u
+#define OT154_PSDU_MAX    127u   /* 802.15.4 max PSDU length */
+typedef struct {
+    uint8_t  psdu[OT154_PSDU_MAX];
+    uint8_t  psdu_len;
+    int8_t   rssi;
+    uint8_t  lqi;
+    uint8_t  channel;
+    uint64_t ts_us;
+} ot154_frame_t;
+static ot154_frame_t          s_154_ring[OT154_RING_SLOTS];
+static volatile uint32_t      s_154_wr = 0;   /* written by ISR */
+static volatile uint32_t      s_154_rd = 0;   /* read by main loop */
+static uint8_t                s_154_next_channel = 11; /* next channel for scheduler slot */
+#endif /* CONFIG_IEEE802154_ENABLED */
 #define OBS_EXPORT_DIR   "/sdcard/lab/obs"
 #define OBS_UI_MAX_SHOWN 64                      /* max cards rendered in the Passive Log screen */
 
@@ -6336,7 +6360,21 @@ static bool _ot_switch_to_154(void)
 {
     /* Quiesce WS2812 RMT channel before 802.15.4 PHY enable. */
     if (g_led_strip) { led_strip_clear(g_led_strip); vTaskDelay(pdMS_TO_TICKS(5)); }
-    return esp_ieee802154_enable() == ESP_OK;
+
+    if (esp_ieee802154_enable() != ESP_OK) return false;
+
+    /* Enable promiscuous mode: receive all frames regardless of PAN/address. */
+    esp_ieee802154_set_promiscuous(true);
+
+    /* Advance channel 11-26 on each scheduler slot entry. */
+    if (s_154_next_channel < 11 || s_154_next_channel > 26) s_154_next_channel = 11;
+    esp_ieee802154_set_channel(s_154_next_channel);
+    s_154_next_channel = (s_154_next_channel >= 26) ? 11 : (s_154_next_channel + 1);
+
+    /* Start RX mode — ISR fires esp_ieee802154_receive_done() on each frame. */
+    esp_ieee802154_receive();
+    current_radio_mode = RADIO_MODE_154;
+    return true;
 }
 #endif
 static void _ot_switch_to_idle(void) { radio_reset_to_idle(); }
@@ -8549,6 +8587,120 @@ void app_main(void)
                 s_survey_flush_pending = false;
                 ot_survey_flush(g_active_survey, &g_obs_store);
             }
+
+#if CONFIG_IEEE802154_ENABLED
+            /* ── Phase 5: 802.15.4 ring buffer drain ────────────────────────────
+             * Drains ISR ring buffer into obs_store records + PCAPNG file.
+             * Both operations go here so the PCAPNG fwrite is under sd_spi_mutex.
+             * PASSIVE ONLY — no frames are ever transmitted.
+             */
+            if (g_obs_store.records) {
+                const gps_data_t *gps154 = gps_best();
+                uint8_t gps154_flags = 0;
+                if (gps154 && gps154->valid) {
+                    gps154_flags = (gps154->accuracy < GPS_STALE_ACCURACY_M - 1.0f)
+                                   ? OBS_FLAG_GPS_VALID : OBS_FLAG_GPS_STALE;
+                }
+
+                while (s_154_rd != s_154_wr) {
+                    uint32_t rd = s_154_rd;
+                    ot154_frame_t fr;
+                    memcpy(&fr, &s_154_ring[rd], sizeof(fr));
+                    s_154_rd = (rd + 1u) % OT154_RING_SLOTS;
+
+                    /* ── Parse 802.15.4 MAC header ────────────────────────── */
+                    obs_ext_ieee154_t x154 = {0};
+                    if (fr.psdu_len >= 3) {
+                        uint16_t fcf = (uint16_t)(fr.psdu[0] | (fr.psdu[1] << 8));
+                        uint8_t  frame_type = fcf & 0x07u;
+                        uint8_t  dst_mode   = (fcf >> 10) & 0x03u; /* 0=none,2=short,3=ext */
+                        uint8_t  src_mode   = (fcf >> 14) & 0x03u;
+                        uint8_t  fv         = (fcf >> 12) & 0x03u;
+                        uint8_t  sec_en     = (fcf >> 3) & 0x01u;
+
+                        x154.frame_type    = frame_type;
+                        x154.frame_version = fv;
+                        x154.seq_num       = fr.psdu[2];
+                        x154.addr_mode     = src_mode;
+                        x154.security_level = sec_en ? 1 : 0;
+                        x154.lqi           = fr.lqi;
+                        x154.proto_class   = (uint8_t)OBS_154_CLASS_UNKNOWN;
+
+                        /* Decode addressing fields */
+                        uint8_t off = 3;
+                        bool have_dst_pan = false;
+                        if (dst_mode == 2 || dst_mode == 3) {
+                            if (off + 2 <= fr.psdu_len) {
+                                x154.pan_id = (uint16_t)(fr.psdu[off] | (fr.psdu[off+1] << 8));
+                                off += 2;
+                                have_dst_pan = true;
+                            }
+                            if (dst_mode == 2 && off + 2 <= fr.psdu_len) {
+                                x154.dst_addr_short = (uint16_t)(fr.psdu[off] | (fr.psdu[off+1] << 8));
+                                off += 2;
+                            } else if (dst_mode == 3 && off + 8 <= fr.psdu_len) {
+                                memcpy(&x154.dst_addr_ext, fr.psdu + off, 8);
+                                off += 8;
+                            }
+                        }
+                        /* Source PAN: omitted if intra-PAN (bit 6 of FCF = PAN ID compress) */
+                        bool pan_compress = (fcf >> 6) & 0x01u;
+                        if (src_mode != 0 && !pan_compress && !have_dst_pan) {
+                            if (off + 2 <= fr.psdu_len) {
+                                x154.pan_id = (uint16_t)(fr.psdu[off] | (fr.psdu[off+1] << 8));
+                                off += 2;
+                            }
+                        }
+                        if (src_mode == 2 && off + 2 <= fr.psdu_len) {
+                            x154.src_addr_short = (uint16_t)(fr.psdu[off] | (fr.psdu[off+1] << 8));
+                            off += 2;
+                        } else if (src_mode == 3 && off + 8 <= fr.psdu_len) {
+                            memcpy(&x154.src_addr_ext, fr.psdu + off, 8);
+                            off += 8;
+                        }
+                        (void)off;  /* off not used after address parsing */
+                    }
+
+                    /* ── Build obs_record ──────────────────────────────────── */
+                    obs_record_t obs154 = {0};
+                    obs154.src_radio  = (uint8_t)OBS_RADIO_IEEE802154;
+                    obs154.obs_type   = (uint8_t)OBS_TYPE_IEEE802154;
+                    obs154.flags      = gps154_flags;
+                    obs154.channel    = fr.channel;
+                    obs154.rssi_cur   = fr.rssi;
+                    obs154.rssi_peak  = fr.rssi;
+                    obs154.phy        = (uint8_t)OBS_PHY_154_OQPSK;
+                    obs154.hit_count  = 1;
+                    memcpy(&obs154.ext.ieee154, &x154, sizeof(x154));
+
+                    /* Use src EUI-64 low 6 bytes as obs.mac (unique per device). */
+                    if (x154.src_addr_ext) {
+                        uint8_t *ep = (uint8_t *)&x154.src_addr_ext;
+                        memcpy(obs154.mac, ep + 2, 6);
+                    } else if (x154.src_addr_short) {
+                        obs154.mac[0] = (uint8_t)(x154.src_addr_short >> 8);
+                        obs154.mac[1] = (uint8_t)(x154.src_addr_short & 0xFF);
+                    }
+                    if (gps154 && gps154->valid) {
+                        obs154.latitude   = gps154->latitude;
+                        obs154.longitude  = gps154->longitude;
+                        obs154.altitude_m = gps154->altitude;
+                        obs154.accuracy_m = gps154->accuracy;
+                    }
+
+                    obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
+                    if (stored154 && stored154->hit_count > 1)
+                        obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
+                    if (stored154 && g_active_survey &&
+                        g_active_survey->state == OT_STATE_ACTIVE)
+                        g_active_survey->obs_count++;
+
+                    /* ── Write raw PSDU to PCAPNG ──────────────────────────── */
+                    ot_survey_write_154_frame(fr.psdu, fr.psdu_len,
+                                              fr.rssi, fr.lqi, fr.ts_us);
+                }
+            }
+#endif /* CONFIG_IEEE802154_ENABLED */
 
             xSemaphoreGive(sd_spi_mutex);
         } else {
@@ -56776,10 +56928,46 @@ static IRAM_ATTR void s_zgwd_rx_done_cb(uint8_t *frame,
     portYIELD_FROM_ISR(woken);
 }
 
+// ── Phase 5: OT survey 802.15.4 ISR tap ─────────────────────────────────────
+// Copies frame into ring buffer WITHOUT calling receive_handle_done — that is
+// left to s_zgwd_rx_done_cb which ALWAYS calls it.  This function MUST be
+// called BEFORE s_zgwd_rx_done_cb so the frame pointer is still valid.
+static IRAM_ATTR void s_ot154_rx_done_cb(uint8_t *frame,
+                                          esp_ieee802154_frame_info_t *fi)
+{
+    if (!g_active_survey || g_active_survey->state != OT_STATE_ACTIVE) return;
+
+    /* frame[0] = PSDU length + 2 (FCS slot replaced by RSSI+LQI in promisc mode).
+     * frame[1 .. frame[0]-2] = MAC payload (no FCS).
+     * frame[frame[0]-1] = RSSI (signed), frame[frame[0]] = LQI.
+     */
+    uint8_t raw_len = frame[0];
+    if (raw_len < 2) return;
+    uint8_t psdu_len = raw_len - 2;
+    if (psdu_len == 0 || psdu_len > OT154_PSDU_MAX) return;
+
+    uint32_t wr   = s_154_wr;
+    uint32_t next = (wr + 1u) % OT154_RING_SLOTS;
+    if (next == s_154_rd) return;   /* ring full — drop frame */
+
+    ot154_frame_t *slot = &s_154_ring[wr];
+    memcpy(slot->psdu, frame + 1, psdu_len);
+    slot->psdu_len = psdu_len;
+    slot->rssi     = fi->rssi;
+    slot->lqi      = fi->lqi;
+    slot->channel  = fi->channel;
+    slot->ts_us    = fi->timestamp;
+    s_154_wr       = next;
+}
+
 // Required 802.15.4 weak-symbol stubs (only rx done is used here)
 void IRAM_ATTR esp_ieee802154_receive_done(uint8_t *frame,
                                             esp_ieee802154_frame_info_t *frame_info)
 {
+    /* OT survey tap MUST come first — s_zgwd_rx_done_cb always calls
+     * receive_handle_done(), freeing the frame buffer.  After that call the
+     * pointer is invalid and must not be read. */
+    s_ot154_rx_done_cb(frame, frame_info);
     s_zgwd_rx_done_cb(frame, frame_info);
 }
 void IRAM_ATTR esp_ieee802154_receive_sfd_done(void) {}

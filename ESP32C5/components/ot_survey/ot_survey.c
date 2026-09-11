@@ -13,6 +13,7 @@
 #include "ot_survey.h"
 #include "ot_radio.h"
 #include "obs_store.h"
+#include "pcapng.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -24,6 +25,11 @@
 #include <time.h>
 
 static const char *TAG = "ot_survey";
+
+#if CONFIG_IEEE802154_ENABLED
+/* PCAPNG file handle for the active survey session; NULL when idle. */
+static pcapng_writer_t *s_pcapng = NULL;
+#endif
 
 /*
  * g_active_survey — points to the running session while state is ACTIVE or PAUSED;
@@ -198,6 +204,19 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
     /* Publish the active session pointer so main-loop adapters can tap in. */
     g_active_survey = sess;
 
+#if CONFIG_IEEE802154_ENABLED
+    {
+        char pcap_path[96];
+        snprintf(pcap_path, sizeof(pcap_path), "%s/ieee802154.pcapng", sess->dir_path);
+        s_pcapng = pcapng_open(pcap_path, PCAPNG_LINKTYPE_IEEE802_15_4_NOFCS);
+        if (!s_pcapng)
+            ESP_LOGW(TAG, "Failed to open PCAPNG file %s — 802.15.4 capture disabled",
+                     pcap_path);
+        else
+            ESP_LOGI(TAG, "802.15.4 PCAPNG open: %s", pcap_path);
+    }
+#endif
+
     ESP_LOGI(TAG, "Survey started: %s profile=%s dir=%s",
              uuid_str, ot_survey_profile_name(cfg->profile), sess->dir_path);
     return ESP_OK;
@@ -216,6 +235,14 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess)
 
     /* Stop radio scheduler and release survey lock. */
     ot_radio_scheduler_stop();
+
+#if CONFIG_IEEE802154_ENABLED
+    if (s_pcapng) {
+        pcapng_close(s_pcapng);
+        s_pcapng = NULL;
+        ESP_LOGI(TAG, "802.15.4 PCAPNG closed (%lu frames)", (unsigned long)0);
+    }
+#endif
 
     esp_err_t rc = write_metadata(sess);
     if (rc != ESP_OK) {
@@ -309,3 +336,20 @@ esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store)
              (unsigned long)count, path);
     return ESP_OK;
 }
+
+/* ── 802.15.4 PCAPNG writer ───────────────────────────────────────────────── */
+
+#if CONFIG_IEEE802154_ENABLED
+esp_err_t ot_survey_write_154_frame(const uint8_t *psdu, uint8_t psdu_len,
+                                     int8_t rssi, uint8_t lqi, uint64_t ts_us)
+{
+    (void)rssi;  /* captured in obs_store; not embedded in PCAPNG frame body */
+    (void)lqi;
+
+    if (!psdu || psdu_len == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_pcapng)              return ESP_ERR_INVALID_STATE;
+
+    pcapng_write_frame(s_pcapng, psdu, psdu_len, ts_us);
+    return ESP_OK;
+}
+#endif /* CONFIG_IEEE802154_ENABLED */

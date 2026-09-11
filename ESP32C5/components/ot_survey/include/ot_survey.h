@@ -147,6 +147,29 @@ void ot_survey_uuid_str(const ot_uuid_t *uuid, char buf[33]);
  */
 const char *ot_survey_profile_name(ot_survey_profile_t profile);
 
+#if CONFIG_IEEE802154_ENABLED
+/*
+ * ot_survey_write_154_frame — append one 802.15.4 PSDU to the session PCAPNG.
+ *
+ * Called from the main loop 802.15.4 adapter (never from ISR context).
+ * Caller must hold sd_spi_mutex before calling (write goes to SD card).
+ *
+ * psdu / psdu_len : MAC frame bytes WITHOUT FCS (ESP-IDF strips FCS in
+ *                   promiscuous mode and replaces the slot with RSSI+LQI;
+ *                   the PCAPNG link type is DLT_IEEE802_15_4_NOFCS = 230).
+ * rssi            : signed dBm value from frame_info.rssi
+ * lqi             : 0-255 LQI from frame_info.lqi
+ * ts_us           : capture timestamp in microseconds (esp_timer_get_time())
+ *
+ * Returns ESP_OK on success, ESP_ERR_INVALID_STATE if no PCAPNG file is open,
+ * ESP_ERR_INVALID_ARG on bad arguments.
+ *
+ * PASSIVE ONLY — this function never transmits.
+ */
+esp_err_t ot_survey_write_154_frame(const uint8_t *psdu, uint8_t psdu_len,
+                                     int8_t rssi, uint8_t lqi, uint64_t ts_us);
+#endif /* CONFIG_IEEE802154_ENABLED */
+
 #ifdef __cplusplus
 }
 #endif
