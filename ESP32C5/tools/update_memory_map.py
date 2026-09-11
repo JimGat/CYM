@@ -21,19 +21,21 @@ except Exception:
 
 # ── Argument handling ───────────────────────────────────────────────────────
 if len(sys.argv) < 5:
-    print("usage: update_memory_map.py <map> <docs_dir> <version> <bin_size_bytes>")
+    print("usage: update_memory_map.py <map> <docs_dir> <version> <bin_size_bytes> [output_filename]")
     sys.exit(1)
 
 MAP_PATH   = sys.argv[1]
 DOCS_DIR   = sys.argv[2]
 VERSION    = sys.argv[3]
 _bin_arg   = sys.argv[4]
+# Optional 5th argument: output filename inside DOCS_DIR (default: memory-budget.md)
+OUT_FNAME  = sys.argv[5] if len(sys.argv) >= 6 else "memory-budget.md"
 # Accept either a file path or a raw byte count
 if os.path.exists(_bin_arg):
     BIN_BYTES = os.path.getsize(_bin_arg)
 else:
     BIN_BYTES = int(_bin_arg)
-DOC_PATH   = os.path.join(DOCS_DIR, "memory-budget.md")
+DOC_PATH   = os.path.join(DOCS_DIR, OUT_FNAME)
 
 # ── Parse map file ──────────────────────────────────────────────────────────
 def parse_map(path):

@@ -1,3 +1,12 @@
+# CYM-NM28C5 — Memory Budget (deprecated — see per-board files)
+
+> **This file is superseded.** As of v2.13.75 each board has its own memory budget:
+> - NM-CYD-C5: [`memory-budget-CYM-NM28C5.md`](memory-budget-CYM-NM28C5.md)
+> - WS-C5-28: [`memory-budget-CYM-WS-C5-28.md`](memory-budget-CYM-WS-C5-28.md)
+> - CYD-2432S028: [`ESP32/docs/memory-budget-CYM-CYD-2432S028.md`](../../ESP32/docs/memory-budget-CYM-CYD-2432S028.md)
+>
+> The `update_memory_map.py` script no longer writes to this file.
+
 # CYM-NM28C5 — Firmware Memory Budget
 
 > **Living reference.** The "Current build metrics" table below is rewritten automatically
@@ -15,13 +24,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.13.74 |
+| Version | v2.13.75 |
 | Build date | 2026-09-11 |
 | .iram0.text | 138,486 B (135.2 KB) |
 | .dram0.data | 23,881 B (23.3 KB) |
-| .dram0.bss  (internal) | 90,616 B (88.5 KB) |
+| .dram0.bss  (internal) | 90,888 B (88.8 KB) |
 | .ext_ram.bss  (PSRAM) | 193,992 B (189.4 KB) |
-| App binary size | 3,080,240 B (3008.0 KB) |
+| App binary size | 3,080,832 B (3008.6 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -29,7 +38,7 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 58,954 B (57.6 KB) |
+| `libmain.a` | 59,212 B (57.8 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |

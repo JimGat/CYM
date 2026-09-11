@@ -9,7 +9,7 @@ set(EXTRA_COMPONENT_DIRS "../ESP32C5/components")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 
 # ── Single source of truth for firmware version ──────────────────────────────
-set(PROJECT_VER "v2.13.74")
+set(PROJECT_VER "v2.13.75")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -54,6 +54,23 @@ else()
     set(BOOTLOADER_OFFSET "0x1000")
 endif()
 file(MAKE_DIRECTORY "${EXPORT_DIR}")
+
+# ===== POST-BUILD: per-board memory-budget doc =====
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_FOUND)
+    add_custom_command(
+        TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_SOURCE_DIR}/../ESP32C5/tools/update_memory_map.py"
+                "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.map"
+                "${CMAKE_SOURCE_DIR}/docs"
+                "${PROJECT_VER}"
+                "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin"
+                "memory-budget-${OUTPUT_BIN_NAME}.md"
+        COMMENT "Updating docs/memory-budget-${OUTPUT_BIN_NAME}.md from linker map"
+        VERBATIM
+    )
+endif()
 
 add_custom_command(
     TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD

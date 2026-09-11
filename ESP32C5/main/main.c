@@ -189,6 +189,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "obs_detectors.h"
 #include "ot_radio.h"
 #include "ot_survey.h"
+#include "wh_detect.h"
 #include "ble_honeypair.h"
 #include "chameleon_ble.h"
 #include "ble_blueduck.h"
@@ -920,6 +921,12 @@ static ot154_frame_t          s_154_ring[OT154_RING_SLOTS];
 static volatile uint32_t      s_154_wr = 0;   /* written by ISR */
 static volatile uint32_t      s_154_rd = 0;   /* read by main loop */
 static uint8_t                s_154_next_channel = 11; /* next channel for scheduler slot */
+
+/* Phase 6: WirelessHART heuristic detector — PAN state table (256 bytes DRAM).
+ * Tracks which channels each PAN ID has been seen on; reset when a new survey
+ * session starts. */
+static wh_pan_table_t         s_wh_pan_tbl;
+static ot_survey_session_t   *s_154_last_survey = NULL; /* detect session change */
 #endif /* CONFIG_IEEE802154_ENABLED */
 #define OBS_EXPORT_DIR   "/sdcard/lab/obs"
 #define OBS_UI_MAX_SHOWN 64                      /* max cards rendered in the Passive Log screen */
@@ -8589,12 +8596,20 @@ void app_main(void)
             }
 
 #if CONFIG_IEEE802154_ENABLED
-            /* ── Phase 5: 802.15.4 ring buffer drain ────────────────────────────
+            /* ── Phase 5/6: 802.15.4 ring buffer drain + WH classifier ─────────
              * Drains ISR ring buffer into obs_store records + PCAPNG file.
              * Both operations go here so the PCAPNG fwrite is under sd_spi_mutex.
+             * Phase 6 adds WirelessHART heuristic scoring: security-enabled frames
+             * seen on multiple channels are reclassified to OBS_TYPE_WIRELESSHART.
              * PASSIVE ONLY — no frames are ever transmitted.
              */
             if (g_obs_store.records) {
+                /* Phase 6: reset PAN table when a new survey session starts. */
+                if (g_active_survey != s_154_last_survey) {
+                    wh_detect_reset(&s_wh_pan_tbl);
+                    s_154_last_survey = g_active_survey;
+                }
+
                 const gps_data_t *gps154 = gps_best();
                 uint8_t gps154_flags = 0;
                 if (gps154 && gps154->valid) {
@@ -8661,10 +8676,33 @@ void app_main(void)
                         (void)off;  /* off not used after address parsing */
                     }
 
+                    /* ── Phase 6: WirelessHART heuristic classification ───────
+                     * Update PAN state, then score for WH confidence.
+                     * Frames with confidence >= 40 are classified as WH.
+                     * Confidence threshold:
+                     *   40-69 : possible  — promote obs_type to WIRELESSHART
+                     *   70-89 : probable  — WIRELESSHART
+                     *   90-100: confirmed — WIRELESSHART
+                     */
+                    wh_detect_update(&s_wh_pan_tbl, x154.pan_id,
+                                     x154.frame_type, x154.security_level,
+                                     fr.channel);
+                    uint8_t wh_conf = wh_detect_score(
+                        &s_wh_pan_tbl, x154.pan_id,
+                        x154.frame_type, x154.frame_version,
+                        x154.security_level, x154.addr_mode);
+                    x154.wh_confidence = wh_conf;
+                    if (wh_conf >= 40) {
+                        x154.proto_class = (uint8_t)OBS_154_CLASS_WIRELESSHART;
+                    }
+
                     /* ── Build obs_record ──────────────────────────────────── */
                     obs_record_t obs154 = {0};
                     obs154.src_radio  = (uint8_t)OBS_RADIO_IEEE802154;
-                    obs154.obs_type   = (uint8_t)OBS_TYPE_IEEE802154;
+                    /* Reclassify to WirelessHART if confidence warrants it. */
+                    obs154.obs_type   = (wh_conf >= 40)
+                                        ? (uint8_t)OBS_TYPE_WIRELESSHART
+                                        : (uint8_t)OBS_TYPE_IEEE802154;
                     obs154.flags      = gps154_flags;
                     obs154.channel    = fr.channel;
                     obs154.rssi_cur   = fr.rssi;
