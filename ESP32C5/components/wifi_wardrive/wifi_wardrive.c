@@ -260,7 +260,7 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
      * sees ≥74 idle clocks with CS HIGH (SD SPI specification requirement).
      *
      * Implementation: add a temporary no-CS SPI device on the already-initialised
-     * SPI2_HOST (shared with display) and send 10 bytes of 0xFF = 80 clock pulses.
+     * BOARD_SPI_HOST (shared with display) and send 10 bytes of 0xFF = 80 clock pulses.
      * The SPI master driver arbitrates the bus correctly with the display.
      * On failure (bus not yet init'd on very early calls) the step is skipped. */
     gpio_set_direction(SD_CS_PIN, GPIO_MODE_OUTPUT);
@@ -273,7 +273,7 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
             .spics_io_num   = -1,       // no CS pin – SD_CS stays HIGH throughout
             .queue_size     = 1,
         };
-        if (spi_bus_add_device(SPI2_HOST, &clk_cfg, &hclk) == ESP_OK) {
+        if (spi_bus_add_device(BOARD_SPI_HOST, &clk_cfg, &hclk) == ESP_OK) {
             uint8_t dummies[10];
             memset(dummies, 0xFF, sizeof(dummies));   // all-ones = idle pattern
             spi_transaction_t t = {
@@ -295,7 +295,7 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
 
     ESP_LOGI(TAG, "[SD] Configuring SPI host at %lu kHz...", (unsigned long)freq_khz);
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    host.slot = SPI2_HOST;
+    host.slot = BOARD_SPI_HOST;
     host.max_freq_khz = freq_khz;
     host.flags = SDMMC_HOST_FLAG_SPI | SDMMC_HOST_FLAG_DEINIT_ARG;
     host.command_timeout_ms = 2000; /* allow slow/fresh cards up to 2 s for CMD0 response */
@@ -306,7 +306,7 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
     slot_config.gpio_cs = SD_CS_PIN;
     slot_config.gpio_cd = -1;
     slot_config.gpio_wp = -1;
-    slot_config.host_id = (spi_host_device_t)SPI2_HOST;  // ✅ Explicit enum cast
+    slot_config.host_id = (spi_host_device_t)BOARD_SPI_HOST;
     
     ESP_LOGI(TAG, "[SD] Attempting to mount filesystem...");
     ESP_LOGI(TAG, "[SD] This may take a few seconds...");
