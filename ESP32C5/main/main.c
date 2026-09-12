@@ -57495,7 +57495,17 @@ static void s_ots_start_cb(lv_event_t *e)
     if (s_ots_site_ta)
         strlcpy(cfg.site, lv_textarea_get_text(s_ots_site_ta), sizeof(cfg.site));
 
-    if (ot_survey_start(&cfg, &s_ots_session) != ESP_OK) {
+    ot_survey_geo_t start_geo = {0};
+    const gps_data_t *gps = gps_best();
+    if (gps && gps->valid) {
+        start_geo.valid      = true;
+        start_geo.latitude   = gps->latitude;
+        start_geo.longitude  = gps->longitude;
+        start_geo.altitude_m = gps->altitude;
+        start_geo.accuracy_m = gps->accuracy;
+    }
+
+    if (ot_survey_start(&cfg, &s_ots_session, &start_geo) != ESP_OK) {
         ESP_LOGE(TAG, "[OTS] survey start failed");
         return;
     }
@@ -57521,7 +57531,18 @@ static void s_ots_stop_task(void *arg)
 {
     (void)arg;
     ot_radio_scheduler_stop();
-    if (g_active_survey) ot_survey_stop(g_active_survey);
+    if (g_active_survey) {
+        ot_survey_geo_t end_geo = {0};
+        const gps_data_t *gps = gps_best();
+        if (gps && gps->valid) {
+            end_geo.valid      = true;
+            end_geo.latitude   = gps->latitude;
+            end_geo.longitude  = gps->longitude;
+            end_geo.altitude_m = gps->altitude;
+            end_geo.accuracy_m = gps->accuracy;
+        }
+        ot_survey_stop(g_active_survey, &end_geo);
+    }
     s_ots_stop_done = true;  /* consumed by s_ots_timer_cb, which does the UI swap */
     vTaskDelete(NULL);
 }

@@ -134,7 +134,9 @@ static esp_err_t write_metadata(const ot_survey_session_t *sess)
         "  \"start_time\": %lu,\n"
         "  \"stop_time\": %lu,\n"
         "  \"obs_count\": %lu,\n"
-        "  \"privacy_flags\": %u\n"
+        "  \"privacy_flags\": %u,\n"
+        "  \"geo_start\": {\"valid\": %s, \"lat\": %.6f, \"lon\": %.6f, \"alt\": %.1f, \"acc\": %.1f},\n"
+        "  \"geo_end\": {\"valid\": %s, \"lat\": %.6f, \"lon\": %.6f, \"alt\": %.1f, \"acc\": %.1f}\n"
         "}\n",
         uuid_str,
         state_str,
@@ -148,7 +150,13 @@ static esp_err_t write_metadata(const ot_survey_session_t *sess)
         (unsigned long)sess->start_time_s,
         (unsigned long)sess->stop_time_s,
         (unsigned long)sess->obs_count,
-        (unsigned)sess->cfg.privacy);
+        (unsigned)sess->cfg.privacy,
+        sess->geo_start.valid ? "true" : "false",
+        (double)sess->geo_start.latitude, (double)sess->geo_start.longitude,
+        (double)sess->geo_start.altitude_m, (double)sess->geo_start.accuracy_m,
+        sess->geo_end.valid ? "true" : "false",
+        (double)sess->geo_end.latitude, (double)sess->geo_end.longitude,
+        (double)sess->geo_end.altitude_m, (double)sess->geo_end.accuracy_m);
 
     fclose(f);
     return ESP_OK;
@@ -164,7 +172,8 @@ esp_err_t ot_survey_init(void)
     return ensure_dir(OT_SURVEY_ROOT);
 }
 
-esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *sess)
+esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *sess,
+                           const ot_survey_geo_t *start_geo)
 {
     if (!cfg || !sess) return ESP_ERR_INVALID_ARG;
 
@@ -173,6 +182,7 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
     memcpy(&sess->cfg, cfg, sizeof(*cfg));
     sess->state = OT_STATE_ACTIVE;
     sess->start_time_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    if (start_geo) sess->geo_start = *start_geo;  /* else zeroed by memset above (valid=false) */
 
     /* Build /sdcard/lab/otsurvey/<uuid>/ */
     char uuid_str[33];
@@ -225,7 +235,7 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
     return ESP_OK;
 }
 
-esp_err_t ot_survey_stop(ot_survey_session_t *sess)
+esp_err_t ot_survey_stop(ot_survey_session_t *sess, const ot_survey_geo_t *end_geo)
 {
     if (!sess) return ESP_ERR_INVALID_ARG;
     if (sess->state == OT_STATE_STOPPED) return ESP_OK;
@@ -235,6 +245,7 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess)
 
     sess->state       = OT_STATE_STOPPED;
     sess->stop_time_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    if (end_geo) sess->geo_end = *end_geo;  /* else left zeroed (valid=false) */
 
     /* Stop radio scheduler and release survey lock. */
     ot_radio_scheduler_stop();

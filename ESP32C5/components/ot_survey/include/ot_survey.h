@@ -53,6 +53,23 @@ typedef enum {
     OT_STATE_ERROR   = 4,
 } ot_survey_state_t;
 
+/* ── Geo stamp ────────────────────────────────────────────────────────────── */
+/*
+ * Single GPS fix, captured by the caller (main.c owns the GPS driver; this
+ * component has no GPS access of its own) and handed to ot_survey_start() /
+ * ot_survey_stop() so metadata.json can record where the survey began and
+ * ended. valid=false (the zero value) means no fix was available at that
+ * moment — every field is then written as 0 in metadata.json rather than
+ * omitted, so parsers don't need to treat the key as optional.
+ */
+typedef struct {
+    float latitude;
+    float longitude;
+    float altitude_m;
+    float accuracy_m;
+    bool  valid;
+} ot_survey_geo_t;
+
 /* ── Session configuration ────────────────────────────────────────────────── */
 
 #define OT_SURVEY_ORG_LEN      32
@@ -85,6 +102,8 @@ typedef struct {
     uint32_t          obs_count;           /* total observations recorded */
     uint32_t          obs_by_type[10];     /* per-type counters indexed by obs_type_t */
     uint32_t          flush_head;          /* next obs index to write on incremental flush */
+    ot_survey_geo_t   geo_start;           /* GPS fix at ot_survey_start(), if any */
+    ot_survey_geo_t   geo_end;             /* GPS fix at ot_survey_stop(), if any */
     char              dir_path[80];  /* /sdcard/lab/otsurvey/<uuid-hex>/ */
 } ot_survey_session_t;
 
@@ -107,16 +126,20 @@ esp_err_t ot_survey_init(void);
 /*
  * ot_survey_start — allocate a session, generate UUID, create per-session
  * SD directory, write metadata.json.
+ * start_geo: GPS fix at survey start, or NULL if unavailable (recorded in
+ * metadata.json as geo_start; valid=false if NULL or *start_geo.valid==false).
  * Returns ESP_OK and fills *sess on success.
  * *sess must remain valid until ot_survey_stop().
  */
-esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *sess);
+esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *sess,
+                           const ot_survey_geo_t *start_geo);
 
 /*
- * ot_survey_stop — finalise metadata.json (end timestamp, obs_count), set state
- * to OT_STATE_STOPPED.  Does not free any underlying store.
+ * ot_survey_stop — finalise metadata.json (end timestamp, obs_count, geo_end),
+ * set state to OT_STATE_STOPPED.  Does not free any underlying store.
+ * end_geo: GPS fix at survey stop, or NULL if unavailable.
  */
-esp_err_t ot_survey_stop(ot_survey_session_t *sess);
+esp_err_t ot_survey_stop(ot_survey_session_t *sess, const ot_survey_geo_t *end_geo);
 
 /*
  * ot_survey_pause / resume — freezes radio scheduler slice allocation but keeps
