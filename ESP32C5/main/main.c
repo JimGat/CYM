@@ -57160,6 +57160,7 @@ static lv_obj_t   *s_ots_cfg_cont   = NULL;  /* config panel (visible when idle)
 static lv_obj_t   *s_ots_run_cont   = NULL;  /* running panel (visible when active) */
 static lv_obj_t   *s_ots_prof_lbl   = NULL;  /* current profile name */
 static lv_obj_t   *s_ots_site_ta    = NULL;  /* site text area */
+static lv_obj_t   *s_ots_kb         = NULL;  /* on-screen keyboard for s_ots_site_ta */
 static lv_obj_t   *s_ots_dur_lbl    = NULL;  /* elapsed duration MM:SS */
 static lv_obj_t   *s_ots_cnt_lbl    = NULL;  /* total obs count */
 static lv_obj_t   *s_ots_scan_lbl   = NULL;  /* animated scan activity indicator */
@@ -57240,6 +57241,7 @@ static void ot_survey_screen_stop(void)
     s_ots_run_cont  = NULL;
     s_ots_prof_lbl  = NULL;
     s_ots_site_ta   = NULL;
+    s_ots_kb        = NULL;
     s_ots_dur_lbl   = NULL;
     s_ots_cnt_lbl   = NULL;
     s_ots_scan_lbl  = NULL;
@@ -57330,6 +57332,25 @@ static void s_ots_stop_cb(lv_event_t *e)
     xTaskCreate(s_ots_stop_task, "ots_stop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
 }
 
+/* On-screen keyboard for the Site field — same pattern as gps_edit_ta_focus_cb. */
+static void s_ots_site_ta_focus_cb(lv_event_t *e)
+{
+    lv_obj_t *ta = lv_event_get_target(e);
+    lv_obj_t *kb = (lv_obj_t *)lv_event_get_user_data(e);
+    if (kb) {
+        lv_keyboard_set_textarea(kb, ta);
+        lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void s_ots_kb_event_cb(lv_event_t *e)
+{
+    lv_obj_t *kb = lv_event_get_target(e);
+    if (lv_event_get_code(e) == LV_EVENT_READY || lv_event_get_code(e) == LV_EVENT_CANCEL) {
+        lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void show_ot_survey_screen(void)
 {
     create_function_page_base("OT Air Survey");
@@ -57403,6 +57424,25 @@ static void show_ot_survey_screen(void)
     lv_obj_set_style_text_font(s_ots_site_ta, &lv_font_montserrat_12, 0);
     lv_obj_set_style_bg_color(s_ots_site_ta, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_text_color(s_ots_site_ta, lv_color_white(), 0);
+    /* Same focused-cursor treatment as every other textarea in the project
+     * (portal_ssid_ta, gps_edit_*_ta, s_save_name_ta, ...). */
+    lv_obj_set_style_bg_opa(s_ots_site_ta,    LV_OPA_TRANSP, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(s_ots_site_ta, UI_ACCENT_CYAN, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_width(s_ots_site_ta, 2, LV_PART_CURSOR | LV_STATE_FOCUSED);
+    lv_obj_set_style_border_side(s_ots_site_ta,  LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
+
+    /* On-screen keyboard — same click-to-show/READY-to-hide pattern as the GPS
+     * coordinate edit overlay (gps_edit_ta_focus_cb / gps_edit_kb_event_cb).
+     * Hidden until the field is tapped; created here (not lazily) so it's
+     * always ready and doesn't need its own NULL-init dance. */
+    s_ots_kb = lv_keyboard_create(cont);
+    lv_keyboard_set_mode(s_ots_kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_set_size(s_ots_kb, LCD_H_RES, 130);
+    lv_obj_align(s_ots_kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_flag(s_ots_kb, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_ots_kb, s_ots_kb_event_cb, LV_EVENT_READY,  NULL);
+    lv_obj_add_event_cb(s_ots_kb, s_ots_kb_event_cb, LV_EVENT_CANCEL, NULL);
+    lv_obj_add_event_cb(s_ots_site_ta, s_ots_site_ta_focus_cb, LV_EVENT_CLICKED, s_ots_kb);
 
     /* Start button */
     lv_obj_t *start_btn = lv_btn_create(s_ots_cfg_cont);
