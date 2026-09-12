@@ -109,6 +109,26 @@ typedef enum {
     OBS_EV_WH_NET_LAYER   = 11,  /* WirelessHART network-layer header decoded */
 } obs_evidence_t;
 
+/* ── BLE address subtype ─────────────────────────────────────────────────── */
+/*
+ * Derived passively from the top 2 bits of a BLE random address (no pairing
+ * needed) — see BT Core spec Vol 6, Part B, 1.3.2. A stable persistent BLE
+ * identity (the IRK-resolved identity address) requires actually bonding
+ * with the device, which OT Survey deliberately never does (passive-only,
+ * never transmits/connects). This is the closest passively-available signal
+ * to "will this MAC still mean the same device next time": PUBLIC and
+ * STATIC addresses persist across a session; RPA/NRPA are expected to
+ * rotate (RPA typically every ~15 min) — a run of new-looking MACs may
+ * still be the same physical device.
+ */
+typedef enum {
+    OBS_BLE_ADDR_PUBLIC  = 0,   /* fixed, manufacturer-assigned */
+    OBS_BLE_ADDR_STATIC  = 1,   /* random, top 2 bits 11 — persists until reboot/reset */
+    OBS_BLE_ADDR_RPA     = 2,   /* resolvable private, top 2 bits 10 — rotates; needs IRK to resolve */
+    OBS_BLE_ADDR_NRPA    = 3,   /* non-resolvable private, top 2 bits 00 — rotates, no identity relation */
+    OBS_BLE_ADDR_UNKNOWN = 4,   /* reserved bit pattern (01) — should not occur on real hardware */
+} obs_ble_addr_subtype_t;
+
 /* ── Protocol-specific ext payloads (40 bytes each) ─────────────────────── */
 
 /*
@@ -154,6 +174,20 @@ typedef struct {
 } obs_ext_espnow_t;
 
 /*
+ * BLE advertisement extension.
+ * addr_subtype is the only field populated today (see obs_ble_addr_subtype_t
+ * above); the rest is reserved for a future known-device IRK resolving-list
+ * feature (bonded devices only — see the header comment on
+ * obs_ble_addr_subtype_t for why arbitrary strangers' devices can't get a
+ * stable ID passively).
+ */
+typedef struct {
+    uint8_t addr_subtype;    /*  1 — obs_ble_addr_subtype_t */
+    uint8_t _pad[39];        /* 39 — reserved */
+    /* Total: 1+39 = 40 bytes */
+} obs_ext_ble_t;
+
+/*
  * OpenDroneID / Drone Remote ID extension.
  * drone_lat/lon/alt carry the position reported in the Remote ID frame (the
  * drone's self-reported position, not the observer's GPS position).
@@ -176,8 +210,9 @@ typedef struct {
  *
  * ext union occupies bytes 88-127.  Which member is active is indicated by
  * obs_type (OBS_TYPE_IEEE802154 / ZIGBEE / THREAD_MATTER / WIRELESSHART
- * → ext.ieee154; OBS_TYPE_ESPNOW_OT → ext.espnow; OBS_TYPE_DRONE_ID
- * → ext.drone_id; all others → ext.raw is zeroed).
+ * → ext.ieee154; OBS_TYPE_ESPNOW_OT → ext.espnow; OBS_TYPE_BLE_ADV /
+ * OBS_TYPE_BLE_EXT → ext.ble; OBS_TYPE_DRONE_ID → ext.drone_id; all
+ * others → ext.raw is zeroed).
  *
  * Field ordering satisfies natural alignment on 32-bit RISC-V; a
  * _Static_assert in obs_store.c confirms sizeof == 128.
@@ -227,8 +262,9 @@ typedef struct {
     union {
         obs_ext_ieee154_t ieee154;   /* OBS_TYPE_IEEE802154 / WIRELESSHART / ZIGBEE */
         obs_ext_espnow_t  espnow;    /* OBS_TYPE_ESPNOW_OT */
+        obs_ext_ble_t     ble;       /* OBS_TYPE_BLE_ADV / OBS_TYPE_BLE_EXT */
         obs_ext_drone_t   drone_id;  /* OBS_TYPE_DRONE_ID */
-        uint8_t           raw[40];   /* zeroed for WiFi / BLE types */
+        uint8_t           raw[40];   /* zeroed for WiFi type */
     } ext;
 } obs_record_t; /* expected sizeof == 128 */
 

@@ -49,6 +49,7 @@ _Static_assert(offsetof(obs_record_t, ext)          == 88, "ext union offset");
 /* ext sub-struct sizes must each be exactly 40 bytes. */
 _Static_assert(sizeof(obs_ext_ieee154_t) == 40, "obs_ext_ieee154_t must be 40 bytes");
 _Static_assert(sizeof(obs_ext_espnow_t)  == 40, "obs_ext_espnow_t must be 40 bytes");
+_Static_assert(sizeof(obs_ext_ble_t)     == 40, "obs_ext_ble_t must be 40 bytes");
 _Static_assert(sizeof(obs_ext_drone_t)   == 40, "obs_ext_drone_t must be 40 bytes");
 
 /* ── Privacy / redaction ─────────────────────────────────────────────────── */
@@ -328,6 +329,14 @@ int obs_record_to_json(const obs_record_t *rec, char *buf, size_t buflen)
         ext_n = snprintf(buf + used, buflen - used,
             ",\"plen\":%u,\"ttl\":%u",
             (unsigned)e->payload_len, (unsigned)e->espnow_ttl);
+        break;
+    }
+    case OBS_TYPE_BLE_ADV:
+    case OBS_TYPE_BLE_EXT: {
+        const obs_ext_ble_t *b = &rec->ext.ble;
+        /* addr_sub: 0=public 1=static 2=resolvable-private(rotates) 3=non-resolvable-private(rotates) 4=unknown */
+        ext_n = snprintf(buf + used, buflen - used,
+            ",\"addr_sub\":%u", (unsigned)b->addr_subtype);
         break;
     }
     case OBS_TYPE_DRONE_ID: {

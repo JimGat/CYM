@@ -3286,6 +3286,7 @@ static int bt_find_device_index(const uint8_t *addr);
 static void bt_add_found_device(const uint8_t *addr);
 static void bt_reset_counters(void);
 static void bt_format_addr(const uint8_t *addr, char *str);
+static uint8_t ble_addr_subtype(uint8_t addr_type, const uint8_t addr[6]);
 static bool bt_is_apple_airtag(const uint8_t *data, uint8_t len, bool has_name);
 static bool bt_is_samsung_smarttag(const uint8_t *data, uint8_t len);
 
@@ -7735,7 +7736,11 @@ void app_main(void)
                             obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                             if (stored && stored->hit_count > 1)
                                 obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
-                            if (stored && g_active_survey &&
+                            /* hit_count==1 means obs_store_add() just created this
+                             * record (first sighting) rather than merging into an
+                             * existing one — obs_count/obs_by_type must only count
+                             * unique devices, not every re-sighting. */
+                            if (stored && stored->hit_count == 1 && g_active_survey &&
                                 g_active_survey->state == OT_STATE_ACTIVE) {
                                 g_active_survey->obs_count++;
                                 if (obs.obs_type < 10)
@@ -8102,6 +8107,7 @@ void app_main(void)
                     obs.obs_type   = (uint8_t)OBS_TYPE_BLE_ADV;
                     obs.flags      = gps_flags;
                     if (dev->addr_type != 0) obs.flags |= OBS_FLAG_RANDOM_ADDR;
+                    obs.ext.ble.addr_subtype = ble_addr_subtype(dev->addr_type, dev->addr);
                     memcpy(obs.mac, dev->addr, 6);
                     obs.rssi_cur   = dev->rssi;
                     obs.rssi_peak  = dev->rssi;
@@ -8143,7 +8149,9 @@ void app_main(void)
                         obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                         if (stored && stored->hit_count > 1)
                             obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
-                        if (stored && g_active_survey &&
+                        /* hit_count==1 → unique device just created; don't count
+                         * every re-sighting toward the survey's obs totals. */
+                        if (stored && stored->hit_count == 1 && g_active_survey &&
                             g_active_survey->state == OT_STATE_ACTIVE) {
                             g_active_survey->obs_count++;
                             if (obs.obs_type < 10)
@@ -8202,7 +8210,9 @@ void app_main(void)
                     obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                     if (stored && stored->hit_count > 1)
                         obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
-                    if (stored && g_active_survey &&
+                    /* hit_count==1 → unique device just created; don't count
+                     * every re-sighting toward the survey's obs totals. */
+                    if (stored && stored->hit_count == 1 && g_active_survey &&
                         g_active_survey->state == OT_STATE_ACTIVE) {
                         g_active_survey->obs_count++;
                         if (obs.obs_type < 10)
@@ -8264,7 +8274,9 @@ void app_main(void)
                     obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                     if (stored && stored->hit_count > 1)
                         obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
-                    if (stored && g_active_survey &&
+                    /* hit_count==1 → unique device just created; don't count
+                     * every re-sighting toward the survey's obs totals. */
+                    if (stored && stored->hit_count == 1 && g_active_survey &&
                         g_active_survey->state == OT_STATE_ACTIVE) {
                         g_active_survey->obs_count++;
                         if (obs.obs_type < 10)
@@ -8897,7 +8909,9 @@ void app_main(void)
                     obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
                     if (stored154 && stored154->hit_count > 1)
                         obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
-                    if (stored154 && g_active_survey &&
+                    /* hit_count==1 → unique device just created; don't count
+                     * every re-sighting toward the survey's obs totals. */
+                    if (stored154 && stored154->hit_count == 1 && g_active_survey &&
                         g_active_survey->state == OT_STATE_ACTIVE) {
                         g_active_survey->obs_count++;
                         if (obs154.obs_type < 10)
@@ -38589,6 +38603,27 @@ static void bt_format_addr(const uint8_t *addr, char *str)
 {
     sprintf(str, "%02X:%02X:%02X:%02X:%02X:%02X",
             addr[5], addr[4], addr[3], addr[2], addr[1], addr[0]);
+}
+
+/**
+ * Derive the BLE random-address subtype (public / static / resolvable-private
+ * / non-resolvable-private) from the top 2 bits of the address's MSB byte —
+ * addr[5], per bt_format_addr() above. Passive-only: this does NOT resolve a
+ * rotating RPA back to a stable device identity — that requires the device's
+ * IRK, only obtainable by actually bonding with it (see the
+ * obs_ble_addr_subtype_t doc comment in obs_store.h for why). It does tell
+ * you whether a given MAC is *expected* to persist (PUBLIC/STATIC) or rotate
+ * (RPA/NRPA), which is the closest signal available without pairing.
+ */
+static uint8_t ble_addr_subtype(uint8_t addr_type, const uint8_t addr[6])
+{
+    if (addr_type == 0) return (uint8_t)OBS_BLE_ADDR_PUBLIC;
+    switch (addr[5] >> 6) {
+        case 0x3: return (uint8_t)OBS_BLE_ADDR_STATIC;   /* 11xxxxxx */
+        case 0x2: return (uint8_t)OBS_BLE_ADDR_RPA;      /* 10xxxxxx */
+        case 0x0: return (uint8_t)OBS_BLE_ADDR_NRPA;     /* 00xxxxxx */
+        default:  return (uint8_t)OBS_BLE_ADDR_UNKNOWN;  /* 01xxxxxx — reserved */
+    }
 }
 
 /**
