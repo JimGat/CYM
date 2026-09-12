@@ -89,6 +89,39 @@ esp_err_t wifi_scanner_start_scan(void) {
     return ESP_OK;
 }
 
+esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
+    if (g_scan_in_progress) {
+        ESP_LOGW(TAG, "Scan already in progress");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (per_channel_ms > 1500) per_channel_ms = 1500;
+
+    wifi_scan_config_t scan_cfg = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = true,
+        .scan_type = WIFI_SCAN_TYPE_PASSIVE,
+        .scan_time.passive = per_channel_ms,
+    };
+
+    g_scan_in_progress = true;
+    g_scan_done = false;
+    g_shared_scan_count = 0;
+
+    ESP_LOGI(TAG, "Starting passive WiFi scan (%lu ms/channel)...", (unsigned long)per_channel_ms);
+    esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
+
+    if (ret != ESP_OK) {
+        g_scan_in_progress = false;
+        ESP_LOGE(TAG, "Failed to start passive scan: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    return ESP_OK;
+}
+
 int wifi_scanner_get_results(wifi_ap_record_t *results, uint16_t max_results) {
     if (!results) return 0;
     

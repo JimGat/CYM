@@ -422,6 +422,7 @@ static lv_obj_t        *espnow_status_lbl     = NULL;
 static lv_timer_t      *espnow_refresh_timer  = NULL;
 static volatile bool    espnow_ui_needs_update = false;
 static volatile bool    espnow_obs_pending     = false; /* Phase 4: set in promisc_cb; main loop feeds obs_store */
+static volatile bool    ot_wifi_obs_pending    = false; /* OT Survey: set on WIFI_EVENT_SCAN_DONE while survey active; main loop feeds g_shared_scan_results -> obs_store */
 
 /* ── ESP-NOW packet log + session state ─────────────────────────────────── */
 #define ESPNOW_PKT_LOG_MAX  200    // ring-buffer slots (PSRAM)
@@ -3277,7 +3278,9 @@ static void bt_on_sync(void);
 static void bt_on_reset(int reason);
 static void nimble_host_task(void *param);
 static int bt_start_scan(void);
+static int bt_start_scan_passive(void);
 static void bt_stop_scan(void);
+static void _ot_ble_dwell_end(void);
 static bool bt_is_device_found(const uint8_t *addr);
 static int bt_find_device_index(const uint8_t *addr);
 static void bt_add_found_device(const uint8_t *addr);
@@ -6374,11 +6377,69 @@ static void create_home_ui(void)
  * main.c-local radio-switch functions via function pointers.  Pointers are
  * injected into the scheduler at boot via ot_radio_init().
  */
-static bool _ot_switch_to_wifi(void) { return ensure_wifi_mode(); }
-static bool _ot_switch_to_ble(void)  { return ensure_ble_mode(); }
+/* True only while a BLE discovery was started BY the OT Survey scheduler
+ * (not some other BLE screen) — guards _ot_ble_dwell_end() so it only stops
+ * scans it owns. */
+static bool s_ot_ble_scan_owned = false;
+
+/* WIFI_EVENT_SCAN_DONE listener for the OT Survey's own WiFi dwell scans.
+ * Separate from wifi_scan_done_cb (below) which only fires when the WiFi
+ * Scan & Attack screen is open and drives UI navigation, and from
+ * wifi_scanner_event_handler (component-level, always registered) which
+ * just caches results into g_shared_scan_results. This one only sets a
+ * flag — the main loop does the actual obs_store conversion (see
+ * ot_wifi_obs_pending consumer) so it never touches LVGL or blocks the
+ * event-loop task. Registered once, unconditionally, in app_main(). */
+static void ot_wifi_scan_done_handler(void *arg, esp_event_base_t event_base,
+                                       int32_t event_id, void *event_data)
+{
+    (void)arg; (void)event_data;
+    if (event_base != WIFI_EVENT || event_id != WIFI_EVENT_SCAN_DONE) return;
+    if (g_ot_survey_active && g_active_survey) ot_wifi_obs_pending = true;
+}
+
+/* Passive WiFi/BLE listeners for the OT Survey dwell slots — see
+ * ot_wifi_scan_done_handler (WiFi results) and the BLE->obs_store adapter in
+ * the main loop (ble_obs_store_pending) for where results actually land in
+ * g_obs_store. Both scans are passive (WIFI_SCAN_TYPE_PASSIVE / BLE
+ * .passive=1) per ot_radio.c's "PASSIVE ONLY — never transmits" design. */
+static bool _ot_switch_to_wifi(void)
+{
+    if (!ensure_wifi_mode()) return false;
+    /* Kick a passive scan if one isn't already running — covers the WIFI and
+     * ESP-NOW slots, which share this same hook (see ot_radio.c comment) and
+     * so share one continuous scan across both dwells rather than
+     * restarting per slot. */
+    if (!wifi_scanner_is_scanning())
+        wifi_scanner_start_passive_scan(150);
+    return true;
+}
+
+static bool _ot_switch_to_ble(void)
+{
+    if (!ensure_ble_mode()) return false;
+    if (!s_ot_ble_scan_owned) {
+        /* bt_reset_counters() (not just bt_device_count=0) — it also clears
+         * bt_found_devices[], the dedup table bt_gap_event_callback checks
+         * via bt_is_device_found(). Without that, every device seen in a
+         * PRIOR dwell (OT Survey's or another BLE screen's) is treated as
+         * "already seen" forever and silently dropped from bt_devices[]. */
+        bt_reset_counters();
+        if (bt_start_scan_passive() == 0)
+            s_ot_ble_scan_owned = true;
+    }
+    return true;
+}
+
 #if CONFIG_IEEE802154_ENABLED
 static bool _ot_switch_to_154(void)
 {
+    /* Leaving WiFi/BLE for the radio-exclusive 802.15.4 PHY — stop whatever
+     * passive listening we started on those slots and flush what was found
+     * so it isn't silently lost when the radio switches out from under it. */
+    if (wifi_scanner_is_scanning()) wifi_scanner_abort();
+    if (current_radio_mode == RADIO_MODE_BLE) _ot_ble_dwell_end();
+
     /* Quiesce WS2812 RMT channel before 802.15.4 PHY enable. */
     if (g_led_strip) { led_strip_clear(g_led_strip); vTaskDelay(pdMS_TO_TICKS(5)); }
 
@@ -6509,6 +6570,10 @@ void app_main(void)
         current_radio_mode = RADIO_MODE_WIFI;
         wifi_initialized = true;
         ESP_LOGI(TAG, "[INIT] WiFi initialized at boot (shared wardrive capture enabled)");
+        /* OT Survey's WiFi-dwell scan listener — must come after wifi_cli_init(),
+         * which is what creates the default event loop this registration needs. */
+        esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE,
+                                    &ot_wifi_scan_done_handler, NULL);
     } else {
         ESP_LOGE(TAG, "[INIT] WiFi init failed at boot: 0x%x", wifi_init_ret);
     }
@@ -8134,6 +8199,68 @@ void app_main(void)
                         const char *al = s_ots_allowlist_label(obs.mac);
                         if (al) strlcpy(obs.label, al, sizeof(obs.label));
                     }
+                    obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
+                    if (stored && stored->hit_count > 1)
+                        obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
+                    if (stored && g_active_survey &&
+                        g_active_survey->state == OT_STATE_ACTIVE) {
+                        g_active_survey->obs_count++;
+                        if (obs.obs_type < 10)
+                            g_active_survey->obs_by_type[obs.obs_type]++;
+                    }
+                }
+            }
+
+            /* ── OT Survey: WiFi passive-scan → obs_store adapter ────────────
+             * Set by ot_wifi_scan_done_handler on WIFI_EVENT_SCAN_DONE while a
+             * survey is active. Deliberately independent of scan_done_ui_flag
+             * above — that path also drives UI navigation to the WiFi Scan &
+             * Attack screen, which must NOT happen here. Same conversion as
+             * that block, minus anything UI-related. */
+            if (ot_wifi_obs_pending && g_obs_store.records) {
+                ot_wifi_obs_pending = false;
+                const gps_data_t *gps = gps_best();
+                uint8_t gps_flags = 0;
+                if (gps && gps->valid) {
+                    gps_flags = (gps->accuracy < GPS_STALE_ACCURACY_M - 1.0f)
+                                ? OBS_FLAG_GPS_VALID : OBS_FLAG_GPS_STALE;
+                }
+                for (uint16_t wi = 0; wi < g_shared_scan_count && wi < MAX_SCAN_RESULTS; wi++) {
+                    const wifi_ap_record_t *ap = &g_shared_scan_results[wi];
+                    obs_record_t obs = {0};
+                    obs.src_radio   = (uint8_t)OBS_RADIO_WIFI;
+                    obs.obs_type    = (uint8_t)OBS_TYPE_WIFI_AP;
+                    obs.flags       = gps_flags;
+                    if (ap->ssid[0] == '\0') obs.flags |= OBS_FLAG_HIDDEN_SSID;
+                    memcpy(obs.mac, ap->bssid, 6);
+                    obs.rssi_cur    = (int8_t)ap->rssi;
+                    obs.rssi_peak   = (int8_t)ap->rssi;
+                    obs.channel     = ap->primary;
+                    obs.auth_mode   = (uint8_t)ap->authmode;
+                    if (ap->phy_11ax)      obs.phy = (uint8_t)OBS_PHY_11AX;
+                    else if (ap->phy_11ac) obs.phy = (uint8_t)OBS_PHY_11AC;
+                    else if (ap->phy_11n)  obs.phy = (uint8_t)OBS_PHY_11N;
+                    else if (ap->phy_11g)  obs.phy = (uint8_t)OBS_PHY_11G;
+                    else if (ap->phy_11b)  obs.phy = (uint8_t)OBS_PHY_11B;
+                    if (ap->authmode == WIFI_AUTH_WPA3_PSK ||
+                        ap->authmode == WIFI_AUTH_WPA2_WPA3_PSK ||
+                        ap->authmode == WIFI_AUTH_WPA3_ENTERPRISE ||
+                        ap->authmode == WIFI_AUTH_WPA3_ENT_192) {
+                        obs.flags |= OBS_FLAG_PMF_INFERRED;
+                    }
+                    if (gps && gps->valid) {
+                        obs.latitude    = gps->latitude;
+                        obs.longitude   = gps->longitude;
+                        obs.altitude_m  = gps->altitude;
+                        obs.accuracy_m  = gps->accuracy;
+                    }
+                    obs.hit_count = 1;
+                    if (ap->ssid[0]) strncpy(obs.label, (const char *)ap->ssid, sizeof(obs.label) - 1);
+                    if (g_active_survey) {
+                        const char *al = s_ots_allowlist_label(obs.mac);
+                        if (al) strlcpy(obs.label, al, sizeof(obs.label));
+                    }
+                    if (g_obs_registry) obs_registry_run(g_obs_registry, &obs);
                     obs_record_t *stored = obs_store_add(&g_obs_store, &obs);
                     if (stored && stored->hit_count > 1)
                         obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
@@ -15813,6 +15940,7 @@ static void radio_reset_to_idle(void)
         if (honeypair_is_active()) {
             honeypair_stop();
         }
+        _ot_ble_dwell_end();  /* flush any OT Survey BLE scan before it's wiped below */
         bt_nimble_deinit();
         current_radio_mode = RADIO_MODE_NONE;
     }
@@ -38311,6 +38439,7 @@ static bool ensure_wifi_mode(void)
         case RADIO_MODE_BLE:
             // Deinitialize BLE and switch to WiFi
             ESP_LOGI(TAG, "Switching from BLE to WiFi mode...");
+            _ot_ble_dwell_end();  /* flush any OT Survey BLE scan before it's wiped below */
             bt_nimble_deinit();
             current_radio_mode = RADIO_MODE_NONE;
             // Now initialize WiFi (recursive call with RADIO_MODE_NONE)
@@ -38917,6 +39046,55 @@ static int bt_start_scan(void)
 static void bt_stop_scan(void)
 {
     ble_gap_disc_cancel();
+}
+
+/**
+ * Start a PASSIVE BLE discovery (no SCAN_REQ transmitted, ADV_IND only) —
+ * used by the OT Survey scheduler, which is passive-only by design (see
+ * ot_radio.c header). Reuses bt_gap_event_callback / bt_devices[] exactly
+ * like bt_start_scan(), so results reach obs_store via the existing
+ * ble_obs_store_pending adapter in the main loop once _ot_ble_dwell_end()
+ * stops the scan and sets that flag.
+ */
+static int bt_start_scan_passive(void)
+{
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    struct ble_gap_ext_disc_params pcoded = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    return ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC,
+                            0, 0, 0,
+                            BLE_HCI_SCAN_FILT_NO_WL,
+                            0,
+                            &p1m, &pcoded,
+                            bt_gap_event_callback, NULL);
+#else
+    struct ble_gap_disc_params scan_params = {
+        .itvl = 0x60,
+        .window = 0x60,
+        .filter_policy = BLE_HCI_SCAN_FILT_NO_WL,
+        .limited = 0,
+        .passive = 1,
+        .filter_duplicates = 0,
+    };
+    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &scan_params,
+                        bt_gap_event_callback, NULL);
+#endif
+}
+
+/**
+ * Stop the OT Survey's own BLE discovery (if it started one) and hand the
+ * gathered bt_devices[] to the existing BLE->obs_store adapter in the main
+ * loop. Called just before anything that would leave BLE-active radio state
+ * (switching to WiFi/154, or a full radio_reset_to_idle) so a dwell's
+ * results aren't lost when bt_nimble_deinit() wipes bt_device_count. A no-op
+ * when some other screen owns the current BLE scan.
+ */
+static void _ot_ble_dwell_end(void)
+{
+    if (!s_ot_ble_scan_owned) return;
+    bt_stop_scan();
+    ble_obs_store_pending = true;
+    s_ot_ble_scan_owned    = false;
 }
 
 /**

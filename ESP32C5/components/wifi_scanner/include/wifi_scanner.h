@@ -23,6 +23,16 @@ esp_err_t wifi_scanner_init(void);
 esp_err_t wifi_scanner_start_scan(void);
 
 /**
+ * @brief Start a background PASSIVE WiFi scan (listen for beacons only —
+ * never transmits a probe request). Used by OT Air Survey, which is a
+ * passive-only listener by design. Results land in the same shared
+ * g_shared_scan_results[] as wifi_scanner_start_scan().
+ * @param per_channel_ms Passive listen time per channel, ms (capped to 1500 —
+ *   ESP-IDF warns higher values can cause the station to disconnect from an AP).
+ */
+esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms);
+
+/**
  * @brief Get scan results
  * @param results Buffer to store results
  * @param max_results Maximum results to return
