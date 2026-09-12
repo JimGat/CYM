@@ -5870,10 +5870,12 @@ static int show_sd_error_screen(bool offer_format)
         lv_obj_add_event_cb(retry_btn, s_sd_err_retry_cb, LV_EVENT_CLICKED, NULL);
 
         if (offer_format) {
-            /* Format — centre bottom */
+            /* Format — bottom-right (BOTTOM_MID overlapped the bottom-left Retry
+             * button on a 240px-wide portrait screen: MID spans x=70-170 vs
+             * Retry's x=14-114). Match the confirm dialog's LEFT/RIGHT pairing. */
             lv_obj_t *fmt_btn = lv_btn_create(scr);
             lv_obj_set_size(fmt_btn, 100, 32);
-            lv_obj_align(fmt_btn, LV_ALIGN_BOTTOM_MID, 0, -12);
+            lv_obj_align(fmt_btn, LV_ALIGN_BOTTOM_RIGHT, -14, -12);
             lv_obj_set_style_bg_color(fmt_btn, COLOR_MATERIAL_AMBER, 0);
             lv_obj_set_style_border_width(fmt_btn, 0, 0);
             lv_obj_set_style_radius(fmt_btn, 8, 0);
@@ -15812,6 +15814,13 @@ static void radio_reset_to_idle(void)
             honeypair_stop();
         }
         bt_nimble_deinit();
+        current_radio_mode = RADIO_MODE_NONE;
+    }
+
+    // ---- 3b. 802.15.4 cleanup (OT Survey scheduler's switch_to_idle hook) ----
+    if (current_radio_mode == RADIO_MODE_154) {
+        esp_ieee802154_sleep();
+        esp_ieee802154_disable();
         current_radio_mode = RADIO_MODE_NONE;
     }
 
@@ -38306,6 +38315,19 @@ static bool ensure_wifi_mode(void)
             current_radio_mode = RADIO_MODE_NONE;
             // Now initialize WiFi (recursive call with RADIO_MODE_NONE)
             return ensure_wifi_mode();
+
+#if CONFIG_IEEE802154_ENABLED
+        case RADIO_MODE_154:
+            // Disable 802.15.4 before switching — leaving it enabled leaks the
+            // ZB_MAC interrupt handle on the next esp_ieee802154_enable() call
+            // (OT Survey scheduler cycling through slots) and eventually exhausts
+            // available interrupt inputs ("No free interrupt inputs for ZB_MAC").
+            ESP_LOGI(TAG, "Switching from 802.15.4 to WiFi mode...");
+            esp_ieee802154_sleep();
+            esp_ieee802154_disable();
+            current_radio_mode = RADIO_MODE_NONE;
+            return ensure_wifi_mode();
+#endif
     }
     return false;
 }
@@ -38357,6 +38379,19 @@ static bool ensure_ble_mode(void)
             // Now initialize BLE (recursive call with RADIO_MODE_NONE)
             return ensure_ble_mode();
         }
+
+#if CONFIG_IEEE802154_ENABLED
+        case RADIO_MODE_154:
+            // Disable 802.15.4 before switching — see matching comment in
+            // ensure_wifi_mode(). Without this, current_radio_mode stays stuck at
+            // RADIO_MODE_154 forever since this switch has no case for it, and every
+            // subsequent WiFi/BLE/ESP-NOW slot switch in the OT Survey scheduler fails.
+            ESP_LOGI(TAG, "Switching from 802.15.4 to BLE mode...");
+            esp_ieee802154_sleep();
+            esp_ieee802154_disable();
+            current_radio_mode = RADIO_MODE_NONE;
+            return ensure_ble_mode();
+#endif
     }
     return false;
 }
@@ -57258,7 +57293,7 @@ static void show_ot_survey_screen(void)
     /* ── Config panel (shown when no survey is running) ── */
     s_ots_cfg_cont = lv_obj_create(cont);
     lv_obj_set_size(s_ots_cfg_cont, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_align(s_ots_cfg_cont, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_align(s_ots_cfg_cont, LV_ALIGN_TOP_MID, 0, 34);  // clear the 30px page title bar
     lv_obj_set_style_bg_opa(s_ots_cfg_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_ots_cfg_cont, 0, 0);
     lv_obj_set_style_pad_all(s_ots_cfg_cont, 4, 0);
@@ -57335,7 +57370,7 @@ static void show_ot_survey_screen(void)
     /* ── Running panel (hidden by default) ── */
     s_ots_run_cont = lv_obj_create(cont);
     lv_obj_set_size(s_ots_run_cont, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_align(s_ots_run_cont, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_align(s_ots_run_cont, LV_ALIGN_TOP_MID, 0, 34);  // clear the 30px page title bar
     lv_obj_set_style_bg_opa(s_ots_run_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_ots_run_cont, 0, 0);
     lv_obj_set_style_pad_all(s_ots_run_cont, 8, 0);
