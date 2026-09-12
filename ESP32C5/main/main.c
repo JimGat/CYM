@@ -57163,8 +57163,19 @@ static lv_obj_t   *s_ots_site_ta    = NULL;  /* site text area */
 static lv_obj_t   *s_ots_dur_lbl    = NULL;  /* elapsed duration MM:SS */
 static lv_obj_t   *s_ots_cnt_lbl    = NULL;  /* total obs count */
 static lv_obj_t   *s_ots_scan_lbl   = NULL;  /* animated scan activity indicator */
+static lv_obj_t   *s_ots_stop_btn   = NULL;  /* STOP SURVEY button (disabled while stopping) */
 static lv_timer_t *s_ots_tmr        = NULL;  /* 1 s refresh timer */
 static uint8_t     s_ots_scan_tick  = 0;     /* cycles 0-2 for dot animation */
+
+/* Stop is handed off to a background task (see s_ots_stop_task) because
+ * ot_radio_scheduler_stop() blocks up to ~1-3s waiting on the scheduler task
+ * (radio teardown + full WiFi reinit), and ot_survey_stop() then does SD I/O
+ * on top of that. Running that inline in s_ots_stop_cb froze the whole UI for
+ * over a second (measured: "LONG lv_timer_handler() took 1022.4 ms" — flagged
+ * as a WDT-timeout risk by the firmware's own instrumentation) because that
+ * callback runs synchronously inside lv_timer_handler(). */
+static volatile bool s_ots_stopping   = false;  /* stop requested, background task running */
+static volatile bool s_ots_stop_done  = false;  /* background task finished; consumed by timer */
 
 static ot_survey_session_t   s_ots_session;          /* lives in .bss */
 static ot_survey_profile_t   s_ots_sel_profile = OT_PROFILE_BALANCED;
@@ -57180,6 +57191,24 @@ static const char *const s_ots_scan_dots[] = {
 static void s_ots_timer_cb(lv_timer_t *t)
 {
     (void)t;
+
+    if (s_ots_stopping) {
+        if (!s_ots_stop_done) {
+            /* Background stop still in flight — just show "Stopping..." and
+             * leave duration/obs counts frozen at their last value. */
+            if (s_ots_scan_lbl) lv_label_set_text(s_ots_scan_lbl, "Stopping...");
+            return;
+        }
+        /* s_ots_stop_task finished off the main task — swap panels back now. */
+        s_ots_stopping  = false;
+        s_ots_stop_done = false;
+        if (s_ots_stop_btn) lv_obj_clear_state(s_ots_stop_btn, LV_STATE_DISABLED);
+        if (s_ots_run_cont) lv_obj_add_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
+        if (s_ots_cfg_cont) lv_obj_clear_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
+        if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
+        return;
+    }
+
     if (!g_active_survey) return;
 
     uint32_t now_s  = (uint32_t)(esp_timer_get_time() / 1000000ULL);
@@ -57214,7 +57243,12 @@ static void ot_survey_screen_stop(void)
     s_ots_dur_lbl   = NULL;
     s_ots_cnt_lbl   = NULL;
     s_ots_scan_lbl  = NULL;
+    s_ots_stop_btn  = NULL;
     s_ots_scan_tick = 0;
+    /* NOTE: s_ots_stopping / s_ots_stop_done are deliberately left as-is — a
+     * background s_ots_stop_task may still be in flight independent of this
+     * screen's lifecycle; they're consumed by the next s_ots_timer_cb once
+     * created (screen re-entry or a fresh survey run). */
 }
 
 /* Profile cycle buttons */
@@ -57267,19 +57301,33 @@ static void s_ots_start_cb(lv_event_t *e)
     s_ots_timer_cb(NULL); /* immediate first render */
 }
 
-/* Stop button: stop scheduler and survey, show config panel */
+/* Runs off the main/LVGL task — see s_ots_stopping comment above for why. */
+static void s_ots_stop_task(void *arg)
+{
+    (void)arg;
+    ot_radio_scheduler_stop();
+    if (g_active_survey) ot_survey_stop(g_active_survey);
+    s_ots_stop_done = true;  /* consumed by s_ots_timer_cb, which does the UI swap */
+    vTaskDelete(NULL);
+}
+
+/* Stop button: hand off scheduler/survey teardown to a background task so this
+ * LVGL click callback (which runs synchronously inside lv_timer_handler())
+ * returns immediately instead of blocking the UI for the ~1-3s teardown takes. */
 static void s_ots_stop_cb(lv_event_t *e)
 {
     (void)e;
-    ot_radio_scheduler_stop();
-    if (g_active_survey) ot_survey_stop(g_active_survey);
-    /* Release allowlist memory — no longer needed after survey ends */
+    if (s_ots_stopping) return;  /* already stopping — ignore repeat taps */
+    s_ots_stopping  = true;
+    s_ots_stop_done = false;
+    if (s_ots_stop_btn) lv_obj_add_state(s_ots_stop_btn, LV_STATE_DISABLED);
+    if (s_ots_scan_lbl) lv_label_set_text(s_ots_scan_lbl, "Stopping...");
+
+    /* Release allowlist memory now — no longer needed once stop is requested */
     if (s_ots_allowlist) { free(s_ots_allowlist); s_ots_allowlist = NULL; }
     s_ots_allowlist_count = 0;
 
-    if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
-    if (s_ots_run_cont) lv_obj_add_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
-    if (s_ots_cfg_cont) lv_obj_clear_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
+    xTaskCreate(s_ots_stop_task, "ots_stop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
 }
 
 static void show_ot_survey_screen(void)
@@ -57396,7 +57444,8 @@ static void show_ot_survey_screen(void)
     lv_obj_set_style_text_font(s_ots_scan_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_ots_scan_lbl, lv_color_hex(0x76FF03), 0);
 
-    lv_obj_t *stop_btn = lv_btn_create(s_ots_run_cont);
+    s_ots_stop_btn = lv_btn_create(s_ots_run_cont);
+    lv_obj_t *stop_btn = s_ots_stop_btn;
     lv_obj_set_size(stop_btn, lv_pct(80), 40);
     lv_obj_set_style_bg_color(stop_btn, lv_color_hex(0xB71C1C), 0);
     lv_obj_add_event_cb(stop_btn, s_ots_stop_cb, LV_EVENT_CLICKED, NULL);

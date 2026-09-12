@@ -4,8 +4,10 @@
  * PASSIVE ONLY — never transmits.  Multiplexes radio hardware across WiFi,
  * BLE, ESP-NOW, and 802.15.4 according to a profile-weighted time schedule.
  *
- * Scheduler task: priority 2, single FreeRTOS task, cooperative (yields every
- * pdMS_TO_TICKS(20) minimum).  Calls radio-switch hooks supplied by main.c.
+ * Scheduler task: priority 0 (below the main LVGL/WDT task's priority 1 — see
+ * OT_SCHED_TASK_PRIO below), single FreeRTOS task, cooperative (yields every
+ * pdMS_TO_TICKS(20) minimum during dwell).  Calls radio-switch hooks supplied
+ * by main.c.
  *
  * Cycle: 10 000 ms.  Each slot's dwell = weight[slot] × 100 ms, floored to
  * OT_SCHED_MIN_DWELL_MS (500 ms) when non-zero.
@@ -26,6 +28,17 @@ static const char *TAG = "ot_radio";
 #define OT_SCHED_MIN_DWELL_MS    500u  /* minimum per-slot dwell when weight > 0 */
 #define OT_SCHED_YIELD_MS         20u  /* intra-dwell yield granularity */
 #define OT_SCHED_STOP_WAIT_MS   3000u  /* max wait for task exit on stop */
+
+/* Task priority — MUST stay below ESP_TASK_MAIN_PRIO (1), the priority the
+ * main LVGL/WDT loop's task runs at (see esp_task.h: ESP_TASK_MAIN_PRIO =
+ * ESP_TASK_PRIO_MIN + 1). Unlike the RF-HAT scan tasks (priority 2, brief
+ * per-channel busy-waits), each slot switch here can run a full WiFi or BLE
+ * stack init/deinit (300-700ms of largely non-yielding driver code). At
+ * priority 2 that fully preempted the main task for the whole call, starving
+ * lv_timer_handler() for up to ~1s at a time and tripping the firmware's own
+ * "WDT timeout at 10s risk" warning. Priority 0 (tskIDLE_PRIORITY) guarantees
+ * the main task always preempts this one when ready. */
+#define OT_SCHED_TASK_PRIO        0u
 
 /* ── Profile weight table ────────────────────────────────────────────────── */
 /*
@@ -183,7 +196,7 @@ esp_err_t ot_radio_scheduler_start(ot_survey_profile_t profile)
         sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
     if (stack && tcb) {
         s_task = xTaskCreateStaticPinnedToCore(
-            scheduler_task, "ot_sched", 4096, NULL, 2, stack, tcb, 0);
+            scheduler_task, "ot_sched", 4096, NULL, OT_SCHED_TASK_PRIO, stack, tcb, 0);
     } else {
         if (stack) heap_caps_free(stack);
         if (tcb)   heap_caps_free(tcb);
@@ -191,10 +204,10 @@ esp_err_t ot_radio_scheduler_start(ot_survey_profile_t profile)
     }
     if (!s_task) {
         /* Static create failed, fall back to dynamic. */
-        xTaskCreate(scheduler_task, "ot_sched", 4096, NULL, 2, &s_task);
+        xTaskCreate(scheduler_task, "ot_sched", 4096, NULL, OT_SCHED_TASK_PRIO, &s_task);
     }
 #else
-    xTaskCreate(scheduler_task, "ot_sched", 4096, NULL, 2, &s_task);
+    xTaskCreate(scheduler_task, "ot_sched", 4096, NULL, OT_SCHED_TASK_PRIO, &s_task);
 #endif
 
     if (!s_task) {
