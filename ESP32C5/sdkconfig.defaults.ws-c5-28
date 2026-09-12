@@ -8,8 +8,7 @@
 # RF:    NM-RF-HAT via SD shim + JST wires (GPIO2/GPIO3 as control signals)
 # Extra: QMI8658 IMU, SHTC3 temp/humidity, PCF85063A RTC, ES8311 audio codec
 #
-# Phase 2 — board on order (tracking 2026-09-07).
-# Fill in once porting work begins.
+# Board received 2026-09-07. Port complete at v2.13.51+.
 #
 # Key differences from NM-CYD-C5:
 #   LCD CS:  GPIO10 (NM-CYD-C5 has LCD CS=23, SD CS=10)

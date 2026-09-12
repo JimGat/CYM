@@ -4519,7 +4519,11 @@ void go_dark_enable(void)
     if (g_gps_last_known.valid)
         nvs_save_last_gps_force(&g_gps_last_known, true);
     led_set(0, 0, 0);
+#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+    if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 0);
+#else
     gpio_set_level(LCD_BL_IO, 0);
+#endif
     if (panel_handle) esp_lcd_panel_disp_on_off(panel_handle, false);
 }
 
@@ -4528,7 +4532,11 @@ void go_dark_disable(void)
     if (!go_dark_active) return;
     go_dark_active = false;
     if (panel_handle) esp_lcd_panel_disp_on_off(panel_handle, true);
+#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+    if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 255);
+#else
     gpio_set_level(LCD_BL_IO, LCD_BL_ACTIVE_LEVEL);
+#endif
     set_backlight_percent(screen_brightness_pct);
     led_update_mode();
     last_input_ms = esp_timer_get_time() / 1000;
