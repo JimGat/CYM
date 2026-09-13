@@ -7746,13 +7746,11 @@ void app_main(void)
                             /* hit_count==1 means obs_store_add() just created this
                              * record (first sighting) rather than merging into an
                              * existing one — obs_count/obs_by_type must only count
-                             * unique devices, not every re-sighting. */
-                            if (stored && stored->hit_count == 1 && g_active_survey &&
-                                g_active_survey->state == OT_STATE_ACTIVE) {
-                                g_active_survey->obs_count++;
-                                if (obs.obs_type < 10)
-                                    g_active_survey->obs_by_type[obs.obs_type]++;
-                            }
+                             * unique devices, not every re-sighting. Centralised in
+                             * ot_survey_queue_export(), which also queues the record
+                             * for durable obs.jsonl export (see its doc comment). */
+                            if (stored && stored->hit_count == 1)
+                                ot_survey_queue_export(g_active_survey, stored);
                         }
                     }
                 }
@@ -8157,13 +8155,10 @@ void app_main(void)
                         if (stored && stored->hit_count > 1)
                             obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
                         /* hit_count==1 → unique device just created; don't count
-                         * every re-sighting toward the survey's obs totals. */
-                        if (stored && stored->hit_count == 1 && g_active_survey &&
-                            g_active_survey->state == OT_STATE_ACTIVE) {
-                            g_active_survey->obs_count++;
-                            if (obs.obs_type < 10)
-                                g_active_survey->obs_by_type[obs.obs_type]++;
-                        }
+                         * every re-sighting toward the survey's obs totals. Also
+                         * queues the record for durable obs.jsonl export. */
+                        if (stored && stored->hit_count == 1)
+                            ot_survey_queue_export(g_active_survey, stored);
                     }
                 }
             }
@@ -8218,13 +8213,10 @@ void app_main(void)
                     if (stored && stored->hit_count > 1)
                         obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
                     /* hit_count==1 → unique device just created; don't count
-                     * every re-sighting toward the survey's obs totals. */
-                    if (stored && stored->hit_count == 1 && g_active_survey &&
-                        g_active_survey->state == OT_STATE_ACTIVE) {
-                        g_active_survey->obs_count++;
-                        if (obs.obs_type < 10)
-                            g_active_survey->obs_by_type[obs.obs_type]++;
-                    }
+                     * every re-sighting toward the survey's obs totals. Also
+                     * queues the record for durable obs.jsonl export. */
+                    if (stored && stored->hit_count == 1)
+                        ot_survey_queue_export(g_active_survey, stored);
                 }
             }
 
@@ -8282,13 +8274,10 @@ void app_main(void)
                     if (stored && stored->hit_count > 1)
                         obs_record_ev_add(stored, (uint8_t)OBS_EV_RECURRENCE);
                     /* hit_count==1 → unique device just created; don't count
-                     * every re-sighting toward the survey's obs totals. */
-                    if (stored && stored->hit_count == 1 && g_active_survey &&
-                        g_active_survey->state == OT_STATE_ACTIVE) {
-                        g_active_survey->obs_count++;
-                        if (obs.obs_type < 10)
-                            g_active_survey->obs_by_type[obs.obs_type]++;
-                    }
+                     * every re-sighting toward the survey's obs totals. Also
+                     * queues the record for durable obs.jsonl export. */
+                    if (stored && stored->hit_count == 1)
+                        ot_survey_queue_export(g_active_survey, stored);
                 }
             }
 
@@ -8774,7 +8763,7 @@ void app_main(void)
              * existing sd_spi_mutex acquisition so SD access is properly serialised. */
             if (s_survey_flush_pending && g_active_survey) {
                 s_survey_flush_pending = false;
-                ot_survey_flush(g_active_survey, &g_obs_store);
+                ot_survey_flush(g_active_survey);
             }
 
 #if CONFIG_IEEE802154_ENABLED
@@ -8928,13 +8917,10 @@ void app_main(void)
                         if (stored154 && stored154->hit_count > 1)
                             obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
                         /* hit_count==1 → unique device just created; don't count
-                         * every re-sighting toward the survey's obs totals. */
-                        if (stored154 && stored154->hit_count == 1 && g_active_survey &&
-                            g_active_survey->state == OT_STATE_ACTIVE) {
-                            g_active_survey->obs_count++;
-                            if (obs154.obs_type < 10)
-                                g_active_survey->obs_by_type[obs154.obs_type]++;
-                        }
+                         * every re-sighting toward the survey's obs totals. Also
+                         * queues the record for durable obs.jsonl export. */
+                        if (stored154 && stored154->hit_count == 1)
+                            ot_survey_queue_export(g_active_survey, stored154);
                     }
 
                     /* ── Write raw PSDU to PCAPNG ──────────────────────────── */

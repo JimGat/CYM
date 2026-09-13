@@ -99,9 +99,10 @@ typedef struct {
     ot_survey_state_t state;
     uint32_t          start_time_s;
     uint32_t          stop_time_s;
-    uint32_t          obs_count;           /* total observations recorded */
+    uint32_t          obs_count;           /* total unique observations recorded */
     uint32_t          obs_by_type[10];     /* per-type counters indexed by obs_type_t */
-    uint32_t          flush_head;          /* next obs index to write on incremental flush */
+    uint32_t          obs_export_dropped;  /* records dropped from obs.jsonl export — see
+                                             * ot_survey_queue_export()'s doc comment */
     ot_survey_geo_t   geo_start;           /* GPS fix at ot_survey_start(), if any */
     ot_survey_geo_t   geo_end;             /* GPS fix at ot_survey_stop(), if any */
     char              dir_path[80];  /* /sdcard/lab/otsurvey/<uuid-hex>/ */
@@ -156,11 +157,46 @@ esp_err_t ot_survey_record_obs(ot_survey_session_t *sess, obs_store_t *store,
                                 const obs_record_t *rec);
 
 /*
- * ot_survey_flush — write all records in store to /session_dir/obs.jsonl.
- * Truncates and rewrites the whole file (suitable for incremental flush calls
- * from a timer; Phase 5 will switch to append-mode PCAPNG).
+ * ot_survey_queue_export — call once for every NEWLY-CREATED (not re-sighted)
+ * observation a main-loop radio adapter just inserted into g_obs_store, right
+ * after confirming obs_store_add() returned hit_count==1. No-op if sess is
+ * not OT_STATE_ACTIVE.
+ *
+ * Increments sess->obs_count / obs_by_type[] (centralising what all five
+ * main.c call sites used to do inline — see git history for the v2.13.87 fix
+ * that had to patch that duplicated logic in five places) AND copies the
+ * record into a small per-survey pending queue that ot_survey_flush() drains
+ * to obs.jsonl on its next call.
+ *
+ * Why a separate queue instead of reading g_obs_store directly (as the old
+ * ot_survey_flush() did): g_obs_store is a single GLOBAL ring buffer shared
+ * by every feature (WiFi Scan, BLE, ESP-NOW, 802.15.4, this survey) for the
+ * device's whole uptime. Once its capacity is reached, new inserts evict the
+ * oldest record via write_head wraparound and obs_store_count() FREEZES at
+ * capacity permanently — so any old code that paginated store->records[] by
+ * index against obs_store_count() silently stopped seeing new records forever
+ * once the store saturated, even though evicted-and-recreated "new" sightings
+ * kept inflating obs_count/obs_by_type (field bug, v2.13.89/90, 2026-09-13).
+ * This queue is copied out of the record at the moment of creation — before
+ * it could ever be evicted — so export durability no longer depends on
+ * g_obs_store's capacity, eviction order, or lifetime-wide usage at all.
+ *
+ * Bounded: if the queue fills between flushes (default cap generous relative
+ * to observed field churn), further records are dropped and counted in
+ * sess->obs_export_dropped rather than blocking the main loop or growing
+ * unbounded — a warning is logged once per survey the first time this
+ * happens. obs_count/obs_by_type still increment even if the queue is full
+ * or unallocated; only the SD export is affected by queue pressure.
  */
-esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store);
+void ot_survey_queue_export(ot_survey_session_t *sess, const obs_record_t *rec);
+
+/*
+ * ot_survey_flush — write every record queued by ot_survey_queue_export()
+ * since the last call to /session_dir/obs.jsonl (append mode), then clear
+ * the queue. Call periodically (e.g. from a timer) under sd_spi_mutex, same
+ * as before. No-op (returns ESP_OK) if the queue is currently empty.
+ */
+esp_err_t ot_survey_flush(ot_survey_session_t *sess);
 
 /*
  * ot_survey_uuid_str — render uuid as 32 lowercase hex chars into buf[33].

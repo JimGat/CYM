@@ -18,6 +18,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
@@ -30,6 +31,18 @@ static const char *TAG = "ot_survey";
 /* PCAPNG file handle for the active survey session; NULL when idle. */
 static pcapng_writer_t *s_pcapng = NULL;
 #endif
+
+/* ── Export queue — see ot_survey_queue_export()'s doc comment in the header
+ * for why this exists (fixes obs.jsonl silently freezing once g_obs_store
+ * saturates). Allocated in ot_survey_start(), freed in ot_survey_stop(); a
+ * plain array + count, not a ring — ot_survey_flush() drains it completely
+ * each call and resets count to 0, so it never needs to wrap. */
+#define OT_EXPORT_QUEUE_CAP  2048u   /* 2048 * 128B = 256KB PSRAM; ~5x the
+                                      * largest single-flush-window burst
+                                      * observed in the field (399/30s, 2026-09-13) */
+static obs_record_t *s_export_pending       = NULL;
+static uint32_t      s_export_pending_count = 0;
+static bool          s_export_overflow_logged = false;
 
 /*
  * g_active_survey — points to the running session while state is ACTIVE or PAUSED;
@@ -184,6 +197,26 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
     sess->start_time_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
     if (start_geo) sess->geo_start = *start_geo;  /* else zeroed by memset above (valid=false) */
 
+    /* Export queue for ot_survey_queue_export()/ot_survey_flush() — see their
+     * doc comments. Defensive free first in case a prior session's stop()
+     * was skipped (should not happen, but leaking PSRAM across many survey
+     * cycles would be worse than a redundant free-of-NULL). */
+    if (s_export_pending) { heap_caps_free(s_export_pending); s_export_pending = NULL; }
+    s_export_pending = (obs_record_t *)heap_caps_malloc(
+        (size_t)OT_EXPORT_QUEUE_CAP * sizeof(obs_record_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_export_pending) {
+        /* Fall back to internal RAM rather than losing the whole export path —
+         * MALLOC_CAP_8BIT alone still succeeds on CYD2USB (no PSRAM at all). */
+        s_export_pending = (obs_record_t *)heap_caps_malloc(
+            (size_t)OT_EXPORT_QUEUE_CAP * sizeof(obs_record_t), MALLOC_CAP_8BIT);
+        if (!s_export_pending)
+            ESP_LOGW(TAG, "export queue allocation failed — obs.jsonl export disabled "
+                          "this session (obs_count/obs_by_type still track normally)");
+    }
+    s_export_pending_count   = 0;
+    s_export_overflow_logged = false;
+
     /* Build /sdcard/lab/otsurvey/<uuid>/ */
     char uuid_str[33];
     ot_survey_uuid_str(&sess->uuid, uuid_str);
@@ -258,6 +291,20 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess, const ot_survey_geo_t *end_g
     }
 #endif
 
+    /* Drain anything queued since the last periodic flush (up to one flush
+     * interval's worth) before freeing the queue, so stopping doesn't lose
+     * the tail end of the session. Same unguarded-by-sd_spi_mutex I/O
+     * pattern this function already has for write_metadata()/pcapng_close()
+     * immediately below/above — not introducing a new risk category. */
+    ot_survey_flush(sess);
+    if (s_export_pending) { heap_caps_free(s_export_pending); s_export_pending = NULL; }
+    s_export_pending_count = 0;
+
+    if (sess->obs_export_dropped > 0)
+        ESP_LOGW(TAG, "Survey %s: %lu observations dropped from obs.jsonl export "
+                      "(export queue was full) — obs_count/obs_by_type are unaffected",
+                 sess->dir_path, (unsigned long)sess->obs_export_dropped);
+
     esp_err_t rc = write_metadata(sess);
     if (rc != ESP_OK) {
         ESP_LOGW(TAG, "Failed to finalise metadata for %s", sess->dir_path);
@@ -315,32 +362,55 @@ esp_err_t ot_survey_record_obs(ot_survey_session_t *sess, obs_store_t *store,
     return ESP_OK;
 }
 
-esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store)
+void ot_survey_queue_export(ot_survey_session_t *sess, const obs_record_t *rec)
 {
-    if (!sess || !store) return ESP_ERR_INVALID_ARG;
+    if (!sess || !rec || sess->state != OT_STATE_ACTIVE) return;
+
+    /* Centralised counting — see the header doc comment for why this used to
+     * be duplicated inline across five main.c call sites. */
+    sess->obs_count++;
+    if (rec->obs_type < 10) sess->obs_by_type[rec->obs_type]++;
+
+    if (!s_export_pending) return;  /* allocation failed at start() — already logged there */
+
+    if (s_export_pending_count >= OT_EXPORT_QUEUE_CAP) {
+        sess->obs_export_dropped++;
+        if (!s_export_overflow_logged) {
+            ESP_LOGW(TAG, "export queue full (%u) — dropping records from obs.jsonl until "
+                          "the next flush; obs_count/obs_by_type keep counting normally",
+                     OT_EXPORT_QUEUE_CAP);
+            s_export_overflow_logged = true;
+        }
+        return;
+    }
+
+    s_export_pending[s_export_pending_count++] = *rec;
+}
+
+esp_err_t ot_survey_flush(ot_survey_session_t *sess)
+{
+    if (!sess) return ESP_ERR_INVALID_ARG;
     if (sess->state == OT_STATE_IDLE || sess->state == OT_STATE_ERROR)
         return ESP_ERR_INVALID_STATE;
+
+    if (s_export_pending_count == 0)
+        return ESP_OK; /* nothing new to write */
 
     char path[96];
     snprintf(path, sizeof(path), "%s/obs.jsonl", sess->dir_path);
 
-    uint32_t count = obs_store_count(store);
-    if (sess->flush_head >= count)
-        return ESP_OK; /* nothing new to write */
-
-    FILE *f = fopen(path, "a");  /* append — only write records added since last flush */
+    FILE *f = fopen(path, "a");  /* append — only ever write records queued since last flush */
     if (!f) {
         ESP_LOGE(TAG, "Cannot open %s: %s", path, strerror(errno));
-        return ESP_FAIL;
+        return ESP_FAIL; /* queue is left intact — retried on the next flush call */
     }
 
     /* JSON serialisation buffer — min 384 bytes per obs_record_to_json() spec. */
     char buf[400];
     uint32_t written = 0;
 
-    for (uint32_t i = sess->flush_head; i < count; i++) {
-        const obs_record_t *r = &store->records[i];
-        int n = obs_record_to_json(r, buf, sizeof(buf));
+    for (uint32_t i = 0; i < s_export_pending_count; i++) {
+        int n = obs_record_to_json(&s_export_pending[i], buf, sizeof(buf));
         if (n > 0) {
             fwrite(buf, 1, (size_t)n, f);
             fputc('\n', f);
@@ -349,10 +419,10 @@ esp_err_t ot_survey_flush(ot_survey_session_t *sess, obs_store_t *store)
     }
     fclose(f);
 
-    sess->flush_head = count; /* advance cursor past written records */
+    ESP_LOGI(TAG, "Flushed %lu new records (session total=%lu) to %s",
+             (unsigned long)written, (unsigned long)sess->obs_count, path);
 
-    ESP_LOGI(TAG, "Flushed %lu new records (total=%lu) to %s",
-             (unsigned long)written, (unsigned long)count, path);
+    s_export_pending_count = 0; /* drained — queue is reused, not reallocated, between flushes */
     return ESP_OK;
 }
 
