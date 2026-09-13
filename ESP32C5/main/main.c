@@ -6499,7 +6499,8 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_ret);
 
-    // Passive observation store: 512-record PSRAM ring buffer
+    // Passive observation store: 8192-record PSRAM ring buffer (OBS_STORE_DEFAULT_CAPACITY —
+    // see obs_store.h for why 512 was too small for a real OT Air Survey session)
     if (!obs_store_init(&g_obs_store, 0)) {
         ESP_LOGE(TAG, "obs_store_init failed — observation store disabled");
     }

@@ -277,7 +277,27 @@ typedef uint8_t obs_privacy_flags_t;
 void obs_redact(obs_record_t *rec, obs_privacy_flags_t policy);
 
 /* ── Bounded store ───────────────────────────────────────────────────────── */
-#define OBS_STORE_DEFAULT_CAPACITY  512u
+/*
+ * 512 was too small for a real OT Air Survey session: this store is a single
+ * GLOBAL ring buffer shared across every feature (WiFi Scan screen, BLE, ESP-
+ * NOW, 802.15.4, OT Survey's own adapters) for the device's whole uptime, not
+ * reset per survey. Once store->count hits capacity, obs_store_add() keeps
+ * inserting via write_head wraparound, evicting the OLDEST record every time
+ * — including a still-present, non-rotating WiFi AP BSSID, if enough BLE (RPA
+ * rotation) or 802.15.4 traffic churned through in between. The next sighting
+ * of that evicted-but-still-real AP then looks like hit_count==1 (a "new"
+ * device) to every caller, which is why even the WiFi bucket kept climbing in
+ * a static environment (field report 2026-09-13, v2.13.89): 512 records
+ * filled inside ~30s of a Balanced-profile survey. 8192 (1MB PSRAM, ample
+ * headroom off the ~7MB typically free at runtime) buys roughly an
+ * order-of-magnitude longer survey before the same eviction-driven overcount
+ * resurfaces — a mitigation, not a structural fix. The store is still a ring
+ * buffer: any survey long/busy enough will eventually refill it, and nothing
+ * here changes that a rotating BLE RPA/NRPA address is *expected* to look
+ * like a distinct device on every rotation with no bonding-based identity
+ * resolution in place (see ble_addr_subtype() in main.c).
+ */
+#define OBS_STORE_DEFAULT_CAPACITY  8192u
 
 typedef struct {
     obs_record_t *records;
