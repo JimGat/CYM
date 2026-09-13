@@ -15989,11 +15989,16 @@ static void radio_reset_to_idle(void)
     }
 
     // ---- 3b. 802.15.4 cleanup (OT Survey scheduler's switch_to_idle hook) ----
+    // RADIO_MODE_154 only exists on chips with an 802.15.4 radio (C5/C6/H2); guard
+    // the esp_ieee802154_* calls the same way every other 802.15.4 call site in this
+    // file does, so this file still builds for ESP32 (Xtensa, no 802.15.4 hardware).
+#if CONFIG_IEEE802154_ENABLED
     if (current_radio_mode == RADIO_MODE_154) {
         esp_ieee802154_sleep();
         esp_ieee802154_disable();
         current_radio_mode = RADIO_MODE_NONE;
     }
+#endif
 
     // ---- 4. WiFi reset ----
     if (!wifi_initialized || current_radio_mode == RADIO_MODE_NONE) {
