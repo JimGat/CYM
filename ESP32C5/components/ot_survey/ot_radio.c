@@ -11,6 +11,21 @@
  *
  * Cycle: 10 000 ms.  Each slot's dwell = weight[slot] × 100 ms, floored to
  * OT_SCHED_MIN_DWELL_MS (500 ms) when non-zero.
+ *
+ * Why full radio-switch instead of the WiFi/BT/802.15.4 coexistence arbiter:
+ * ESP-IDF's own coexistence guide (docs.espressif.com/projects/esp-idf/en/
+ * stable/esp32c5/api-guides/coexist.html) marks BLE-Scan + 802.15.4-Scan as
+ * an unsupported combination on the shared single-radio C5, and calls
+ * continuous-RX WiFi + 802.15.4 (router/border-router style) unsupported on
+ * one RF path — Espressif's own fix for that case is a second SoC. Since OT
+ * Survey needs WiFi scan, BLE scan, and 802.15.4 scan all in the same
+ * session, running them under CONFIG_ESP_COEX_SW_COEXIST_ENABLE concurrently
+ * is a documented non-starter; sequential full deinit/reinit per slot (never
+ * two stacks live at once) sidesteps the arbiter entirely instead of fighting
+ * an unsupported combination. Contrast with wardrive's WiFi+BLE concurrency
+ * (main.c), which the same doc DOES list as a supported/stable pairing and
+ * which we tuned empirically to <=12.5% BLE duty — that one legitimately
+ * rides the coex arbiter's time-slicing instead of avoiding it.
  */
 
 #include "ot_radio.h"

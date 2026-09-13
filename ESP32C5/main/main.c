@@ -707,6 +707,12 @@ static volatile bool screen_dimmed = false;
 static volatile bool ignore_touch_until_release = false;
 static lv_timer_t *screen_idle_timer = NULL;
 static volatile bool go_dark_active          = false;
+/* Suppress LVGL touch until this ms timestamp. Set around radio_reset_to_idle(): the WiFi/802.15.4
+ * stop+restart disturbs the shared SPI bus / GPIO2 (= XPT2046 touch MISO), which makes the very next
+ * XPT2046 read return a corrupted sample (z2 collapses ~63 → inflated pressure passes the gate; raw
+ * x/y map to a top-right corner press) that can spuriously fire the top-bar Go-Dark button. Ignoring
+ * touch during the short reset+settle window drops that glitch without affecting real touches. */
+static volatile int64_t g_radio_settle_until_ms = 0;
 static bool          boot_btn_prev_pressed   = false; // true = was pressed last poll
 static uint8_t       boot_btn_click_count    = 0;
 static uint32_t      boot_btn_last_release_ms = 0;   // timestamp of most recent release
@@ -8906,16 +8912,28 @@ void app_main(void)
                         const char *al = s_ots_allowlist_label(obs154.mac);
                         if (al) strlcpy(obs154.label, al, sizeof(obs154.label));
                     }
-                    obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
-                    if (stored154 && stored154->hit_count > 1)
-                        obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
-                    /* hit_count==1 → unique device just created; don't count
-                     * every re-sighting toward the survey's obs totals. */
-                    if (stored154 && stored154->hit_count == 1 && g_active_survey &&
-                        g_active_survey->state == OT_STATE_ACTIVE) {
-                        g_active_survey->obs_count++;
-                        if (obs154.obs_type < 10)
-                            g_active_survey->obs_by_type[obs154.obs_type]++;
+                    /* Frames with no source address at all (e.g. ACKs, or data frames
+                     * using PAN ID compression with only a destination address) leave
+                     * obs154.mac all-zero. obs_store_find() can never dedupe an all-zero
+                     * MAC against itself, so every such frame would be treated as a
+                     * brand-new "unique" device forever — hit_count==1 every single time
+                     * — which runs obs_count away unbounded in a busy 802.15.4
+                     * environment and churns the ring buffer, evicting real devices.
+                     * Skip storing/counting these; the raw PSDU is still captured to
+                     * PCAPNG below regardless of addressing. */
+                    bool has_src_addr154 = (x154.src_addr_ext != 0) || (x154.src_addr_short != 0);
+                    if (has_src_addr154) {
+                        obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
+                        if (stored154 && stored154->hit_count > 1)
+                            obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
+                        /* hit_count==1 → unique device just created; don't count
+                         * every re-sighting toward the survey's obs totals. */
+                        if (stored154 && stored154->hit_count == 1 && g_active_survey &&
+                            g_active_survey->state == OT_STATE_ACTIVE) {
+                            g_active_survey->obs_count++;
+                            if (obs154.obs_type < 10)
+                                g_active_survey->obs_by_type[obs154.obs_type]++;
+                        }
                     }
 
                     /* ── Write raw PSDU to PCAPNG ──────────────────────────── */
@@ -9120,6 +9138,14 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         data->state = LV_INDEV_STATE_RELEASED;
         touch_pressed_flag = false;
         return;
+    }
+
+    /* [FIX] Ignore touches inside the radio-settle window (WiFi/802.15.4 reset glitches the
+     * shared GPIO2 touch MISO into a spurious corner press). The read above still ran, so the
+     * ghost is logged for diagnosis, but we drop it here so it never fires a button. */
+    if (touched && (esp_timer_get_time() / 1000) < g_radio_settle_until_ms) {
+        ESP_LOGD(TAG, "touch ignored during radio-settle window (%u,%u)", touch_x, touch_y);
+        touched = false;
     }
 
     if (touched) {
@@ -15870,6 +15896,9 @@ static void create_function_page_base(const char *name)
 static void radio_reset_to_idle(void)
 {
     ESP_LOGI(TAG, "radio_reset_to_idle: stopping all attacks, resetting radio...");
+    /* [FIX] Radio stop/restart glitches GPIO2 (touch MISO) → spurious corner touch.
+     * Suppress touch for the whole reset + settle window so the glitch can't fire a button. */
+    g_radio_settle_until_ms = (esp_timer_get_time() / 1000) + 1200;
 
     // ---- 1. Component-level attacks (wifi_attacks module) ----
     wifi_attacks_stop_all();
