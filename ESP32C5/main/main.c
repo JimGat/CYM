@@ -6424,6 +6424,30 @@ static bool _ot_switch_to_wifi(void)
 
 static bool _ot_switch_to_ble(void)
 {
+    /* Cleanly stop any in-flight WiFi scan BEFORE tearing WiFi down for BLE —
+     * mirrors the wifi_scanner_abort() call _ot_switch_to_154() already makes
+     * for the same reason. Without this, ensure_ble_mode() unconditionally
+     * calls esp_wifi_stop()/esp_wifi_deinit(); if the passive scan
+     * _ot_switch_to_wifi() started (150 ms/channel, every 2.4+5GHz channel in
+     * WIFI_BAND_MODE_AUTO — 24+ 5GHz channels alone in some regulatory
+     * domains, e.g. 5.5+ s total) is still running when the 3 s WIFI dwell
+     * ends — which, at that duration vs. dwell, is close to guaranteed rather
+     * than occasional — deiniting WiFi mid-scan leaves WIFI_EVENT_SCAN_DONE
+     * reporting count > 0 with zero-BSSID (not-yet-populated) slots instead
+     * of either real results or a clean count == 0. That is the root cause
+     * @birolt29 traced on the WiFi feed (2026-09-14): a 20-min stationary
+     * session with 14357 total records, 13952 (97.2%) all-zero-MAC, only 3
+     * real APs. obs_store_add() now rejects an all-zero MAC outright
+     * (v2.13.92), which stops the counter/export damage, but this is the
+     * actual mechanism creating the flood in the first place. A short yield
+     * after the clean stop gives its WIFI_EVENT_SCAN_DONE a chance to reach
+     * the event-loop task before WiFi is torn down; esp_wifi_scan_stop() is
+     * asynchronous so this is a mitigation, not a hard guarantee — field
+     * validation requested from @birolt29 before relying on it fully. */
+    if (wifi_scanner_is_scanning()) {
+        wifi_scanner_abort();
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
     if (!ensure_ble_mode()) return false;
     if (!s_ot_ble_scan_owned) {
         /* bt_reset_counters() (not just bt_device_count=0) — it also clears
@@ -8904,24 +8928,19 @@ void app_main(void)
                     }
                     /* Frames with no source address at all (e.g. ACKs, or data frames
                      * using PAN ID compression with only a destination address) leave
-                     * obs154.mac all-zero. obs_store_find() can never dedupe an all-zero
-                     * MAC against itself, so every such frame would be treated as a
-                     * brand-new "unique" device forever — hit_count==1 every single time
-                     * — which runs obs_count away unbounded in a busy 802.15.4
-                     * environment and churns the ring buffer, evicting real devices.
-                     * Skip storing/counting these; the raw PSDU is still captured to
-                     * PCAPNG below regardless of addressing. */
-                    bool has_src_addr154 = (x154.src_addr_ext != 0) || (x154.src_addr_short != 0);
-                    if (has_src_addr154) {
-                        obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
-                        if (stored154 && stored154->hit_count > 1)
-                            obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
-                        /* hit_count==1 → unique device just created; don't count
-                         * every re-sighting toward the survey's obs totals. Also
-                         * queues the record for durable obs.jsonl export. */
-                        if (stored154 && stored154->hit_count == 1)
-                            ot_survey_queue_export(g_active_survey, stored154);
-                    }
+                     * obs154.mac all-zero. obs_store_add() rejects all-zero MACs at the
+                     * store boundary (@birolt29, v2.13.92) — this used to be a per-feed
+                     * check here, now redundant/covered centrally, same as the WiFi AP
+                     * feed's zero-BSSID empty-scan-slot case. Raw PSDU is still captured
+                     * to PCAPNG below regardless of addressing. */
+                    obs_record_t *stored154 = obs_store_add(&g_obs_store, &obs154);
+                    if (stored154 && stored154->hit_count > 1)
+                        obs_record_ev_add(stored154, (uint8_t)OBS_EV_RECURRENCE);
+                    /* hit_count==1 → unique device just created; don't count
+                     * every re-sighting toward the survey's obs totals. Also
+                     * queues the record for durable obs.jsonl export. */
+                    if (stored154 && stored154->hit_count == 1)
+                        ot_survey_queue_export(g_active_survey, stored154);
 
                     /* ── Write raw PSDU to PCAPNG ──────────────────────────── */
                     ot_survey_write_154_frame(fr.psdu, fr.psdu_len,

@@ -199,6 +199,17 @@ obs_record_t *obs_store_add(obs_store_t *store, const obs_record_t *rec)
 {
     if (!store || !store->records || !rec) return NULL;
 
+    /* Reject all-zero MACs — symmetric with obs_store_find(), which already
+     * refuses to match a zero MAC. Without this, an all-zero MAC can never be
+     * found/merged, so every insert creates a fresh slot with hit_count==1,
+     * making the "unique device" gate true forever: obs_count runs away and
+     * the ring buffer churns, evicting real devices. This is the same failure
+     * mode Jim fixed for addressless 802.15.4 frames in v2.13.89 (cebf766c),
+     * but it also hits the WiFi AP feed via empty/zero-BSSID scan slots
+     * (main.c g_shared_scan_results). Guarding here covers every feed at once.
+     * Raw PCAPNG capture is unaffected (it does not go through obs_store). */
+    if (mac_is_zero(rec->mac)) return NULL;
+
     obs_record_t *existing = obs_store_find(store, rec->mac);
     if (existing) {
         merge_record(existing, rec);

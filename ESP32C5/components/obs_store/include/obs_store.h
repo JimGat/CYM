@@ -281,21 +281,38 @@ void obs_redact(obs_record_t *rec, obs_privacy_flags_t policy);
  * 512 was too small for a real OT Air Survey session: this store is a single
  * GLOBAL ring buffer shared across every feature (WiFi Scan screen, BLE, ESP-
  * NOW, 802.15.4, OT Survey's own adapters) for the device's whole uptime, not
- * reset per survey. Once store->count hits capacity, obs_store_add() keeps
- * inserting via write_head wraparound, evicting the OLDEST record every time
- * — including a still-present, non-rotating WiFi AP BSSID, if enough BLE (RPA
- * rotation) or 802.15.4 traffic churned through in between. The next sighting
- * of that evicted-but-still-real AP then looks like hit_count==1 (a "new"
- * device) to every caller, which is why even the WiFi bucket kept climbing in
- * a static environment (field report 2026-09-13, v2.13.89): 512 records
- * filled inside ~30s of a Balanced-profile survey. 8192 (1MB PSRAM, ample
- * headroom off the ~7MB typically free at runtime) buys roughly an
- * order-of-magnitude longer survey before the same eviction-driven overcount
- * resurfaces — a mitigation, not a structural fix. The store is still a ring
- * buffer: any survey long/busy enough will eventually refill it, and nothing
- * here changes that a rotating BLE RPA/NRPA address is *expected* to look
- * like a distinct device on every rotation with no bonding-based identity
- * resolution in place (see ble_addr_subtype() in main.c).
+ * reset per survey. Field report 2026-09-13 (v2.13.89): the WiFi ("W") bucket
+ * kept climbing in a static environment where it shouldn't (real BSSIDs don't
+ * rotate). Initially attributed to ring eviction (512 records filled in ~30s
+ * under combined WiFi+BLE+802.15.4+ESP-NOW churn, so real APs looked "new"
+ * again once evicted) — that mechanism is real and 8192 (1MB PSRAM, ample
+ * headroom off the ~7MB typically free at runtime) buys roughly an order of
+ * magnitude longer survey before it resurfaces. But @birolt29 device-
+ * validated the DOMINANT cause a day later (v2.13.92): the OT WiFi passive-
+ * scan adapter (main.c) iterated g_shared_scan_results[0..g_shared_scan_count)
+ * without checking each slot's BSSID — the survey's WiFi scan intermittently
+ * returns count > 0 with mostly zero-BSSID (empty/not-yet-populated) slots,
+ * and every such slot hit the exact same all-zero-MAC bug as the 802.15.4
+ * case below: unfindable/unmergeable, so hit_count==1 forever. Measured
+ * 20-min session: 14357 total records, 13952 (97.2%) all-zero-MAC, only 3
+ * real APs. Fixed at the store boundary — obs_store_add() now rejects an
+ * all-zero MAC outright (symmetric with obs_store_find()'s existing zero-MAC
+ * guard) — which covers the WiFi feed, the 802.15.4 addressless-frame case,
+ * and any future feed at once, and eliminates that dominant flood entirely
+ * (post-fix 22-min session: 478 total records, 0 zero-MAC, all real).
+ *
+ * 8192 capacity is still worth keeping as a mitigation for the remaining,
+ * smaller ring-eviction effect: the store is a ring buffer, so any survey
+ * long/busy enough with genuine traffic will eventually refill it, and a
+ * rotating BLE RPA/NRPA address is *expected* to look like a distinct device
+ * on every rotation with no bonding-based identity resolution in place (see
+ * ble_addr_subtype() in main.c) — that part is not a bug.
+ *
+ * Separate, NOT yet root-caused: why the survey's WiFi scan so often returns
+ * count > 0 with empty slots in the first place (a plain WiFi Scan on the
+ * same hardware sees dozens of real APs) — see @birolt29's email, 2026-09-14.
+ * The zero-MAC guard above neutralises the counting damage but the survey's
+ * WiFi AP capture rate itself still needs investigating separately.
  */
 #define OBS_STORE_DEFAULT_CAPACITY  8192u
 
