@@ -373,7 +373,10 @@ static volatile bool ble_spoof_needs_ui_update = false;
 // Passive ESP-NOW frame detector using WiFi promiscuous + channel hopper.
 // Identifies ESP-NOW action frames by exact 5-field fingerprint so that no
 // other 802.11 protocol triggers a false positive:
-//   [0]  FC lo-byte = 0xD0   → Management / Action subtype
+//   [0]  FC lo-byte = 0xD0 or 0xE0 → Management / Action or Action-No-Ack subtype
+//        (unicast ESP-NOW = Action/0xD0, needs an ACK from its one peer;
+//         broadcast ESP-NOW = Action-No-Ack/0xE0, no single recipient to ACK it —
+//         missing 0xE0 here meant broadcast ESP-NOW was invisible; fixed 2026-09-14)
 //   [24] Category  = 0x7F   → Vendor Specific
 //   [25..27] OUI   = 18:FE:34 → Espressif vendor OUI
 //   [28] Type      = 0x04   → ESP-NOW
@@ -59143,8 +59146,14 @@ static void show_zgwd_flood(int pan_idx)
 static bool espnow_is_espnow_frame(const uint8_t *buf, uint16_t len)
 {
     if (len < 29) return false;
-    /* FC lo-byte: type=00 (mgmt), subtype=1101 (action) → 0xD0 */
-    if (buf[0] != 0xD0) return false;
+    /* FC lo-byte: type=00 (mgmt). Two subtypes carry ESP-NOW, and this only checked
+     * one: subtype=1101 (Action, 0xD0) is used for unicast ESP-NOW, which needs an
+     * ACK from the specific peer it's addressed to. Broadcast ESP-NOW (dest
+     * FF:FF:FF:FF:FF:FF — no single recipient to ACK) instead uses subtype=1110
+     * (Action No Ack, 0xE0). Missing 0xE0 here meant every broadcast ESP-NOW frame
+     * was silently invisible to both Scout and OT Survey — field report 2026-09-14
+     * (Jim, Biscuit Pro sending broadcast ESP-NOW beacons showed up in neither). */
+    if (buf[0] != 0xD0 && buf[0] != 0xE0) return false;
     if (buf[24] != 0x7F) return false;                           /* Category: Vendor Specific */
     if (buf[25] != 0x18 || buf[26] != 0xFE || buf[27] != 0x34) return false; /* Espressif OUI */
     if (buf[28] != 0x04) return false;                           /* ESP-NOW type */
