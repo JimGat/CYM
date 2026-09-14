@@ -290,15 +290,15 @@
                 <button class="sel-btn" data-ch="dev">Dev</button>
               </div>
 
-              <!-- Board selector -->
-              <div class="selector-row">
+              <!-- Board selector — buttons are injected by renderBoardButtons() from the
+                   BOARDS object, filtered to DEFAULT_BOARD_IDS unless ?beta=1 is in the
+                   URL (see the boot section at the bottom of the script). -->
+              <div class="selector-row" id="boardSelectorRow">
                 <span class="selector-label">Board</span>
-                <button class="sel-btn active" data-board="nm-cyd-c5">NM-CYD-C5</button>
-                <button class="sel-btn" data-board="ws-c5-28">WS-C5-28</button>
-                <button class="sel-btn" data-board="cyd-2432s028">CYD-2432S028</button>
               </div>
 
               <div id="devWarning" class="dev-warn" style="display:none;"><strong>Development build</strong> &mdash; binaries fetched live from the <code>Jimgat_Dev</code> branch. May be unstable.</div>
+              <div id="betaBoardWarning" class="dev-warn" style="display:none;"><strong>Beta board support</strong> &mdash; we're still gathering field feedback on this board. Binaries are functional but less tested than NM-CYD-C5.</div>
 
               <div class="actions">
                 <button id="connectBtn">Connect</button>
@@ -390,7 +390,7 @@
     <footer>
       <a id="repoLink" href="https://github.com/JimGat/CYM">JimGat/cym</a> &mdash;
       <a href="https://discord.gg/Vuq2SmCbk5" target="_blank" rel="noopener">LAB5 Discord</a> &mdash;
-      <span id="pageVersion" class="mono">Web flasher v2.10.0</span>
+      <span id="pageVersion" class="mono">Web flasher v2.11.0</span>
     </footer>
 
     <script type="module">
@@ -420,6 +420,8 @@
         monitorInput:  document.getElementById("monitorInput"),
         monitorSendBtn: document.getElementById("monitorSendBtn"),
         devWarning:    document.getElementById("devWarning"),
+        betaBoardWarning: document.getElementById("betaBoardWarning"),
+        boardSelectorRow: document.getElementById("boardSelectorRow"),
         boardPill:     document.getElementById("boardPill"),
         headerDesc:    document.getElementById("headerDesc"),
         dlApp:         document.getElementById("dlApp"),
@@ -447,6 +449,7 @@
           binDir:  "binaries-esp32c5",
           appBin:  "CYM-NM28C5.bin",
           manifest: "docs/manifest.json",
+          beta:    false, // original board — not beta
         },
         "ws-c5-28": {
           label:   "WS-C5-28",
@@ -456,6 +459,7 @@
           binDir:  "binaries-ws-c5-28",
           appBin:  "CYM-WS-C5-28.bin",
           manifest: "docs/manifest.ws-c5-28.json",
+          beta:    true, // multi-board support is new — mark beta until field feedback comes in
         },
         "cyd-2432s028": {
           label:   "CYD-2432S028",
@@ -465,12 +469,26 @@
           binDir:  "binaries-cyd-2432s028",
           appBin:  "CYM-CYD-2432S028.bin",
           manifest: "docs/manifest.cyd-2432s028.json",
+          beta:    true, // multi-board support is new — mark beta until field feedback comes in
         },
       };
 
+      // Boards shown by default (any channel, no URL flag needed). A future board
+      // added to BOARDS above stays hidden from the selector until either it's
+      // added here or a visitor passes ?beta=1 (see betaUnlock below), which shows
+      // every board BOARDS defines regardless of this list.
+      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028"];
+
+      // Hidden opt-in: ?beta=1 in the URL starts the flasher on the Dev channel
+      // (instead of Stable) and unlocks every board BOARDS defines, not just
+      // DEFAULT_BOARD_IDS — for testing boards/builds before they're promoted to
+      // the default list. Not linked from the UI; share the URL directly.
+      const urlParams  = new URLSearchParams(window.location.search);
+      const betaUnlock = urlParams.get("beta") === "1";
+
       const state = {
         manifest:          null,
-        channel:           "stable",
+        channel:           betaUnlock ? "dev" : "stable",
         board:             "nm-cyd-c5",
         port:             null,
         onDisconnect:     null,
@@ -487,7 +505,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.10.0"; // multi-board support
+      const PAGE_VERSION    = "2.11.0"; // beta board flagging + hidden ?beta=1 unlock
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -917,12 +935,36 @@
         loadManifest().catch(manifestError);
       };
 
+      const updateBetaBoardWarning = () => {
+        ui.betaBoardWarning.style.display = BOARDS[state.board]?.beta ? "" : "none";
+      };
+
       const switchBoard = (board) => {
         if (board === state.board) return;
         state.board    = board;
         state.manifest = null;
         document.querySelectorAll("[data-board]").forEach(b => b.classList.toggle("active", b.dataset.board === board));
+        updateBetaBoardWarning();
         loadManifest().catch(manifestError);
+      };
+
+      // Board buttons are generated (not hardcoded) so a visitor with ?beta=1
+      // sees every board BOARDS defines, not just DEFAULT_BOARD_IDS — see the
+      // constants above. Beta-flagged boards get a "(Beta)" suffix regardless of
+      // channel; updateBetaBoardWarning() shows the explanatory note above when
+      // the currently-selected board carries that flag.
+      const renderBoardButtons = () => {
+        const ids = betaUnlock ? Object.keys(BOARDS) : DEFAULT_BOARD_IDS.filter(id => BOARDS[id]);
+        ui.boardSelectorRow.querySelectorAll("[data-board]").forEach(b => b.remove());
+        ids.forEach(id => {
+          const board = BOARDS[id];
+          const btn = document.createElement("button");
+          btn.className = "sel-btn" + (id === state.board ? " active" : "");
+          btn.dataset.board = id;
+          btn.textContent = board.label + (board.beta ? " (Beta)" : "");
+          btn.addEventListener("click", () => switchBoard(id));
+          ui.boardSelectorRow.appendChild(btn);
+        });
       };
 
       const manifestError = (err) => {
@@ -946,9 +988,17 @@
       });
 
       document.querySelectorAll("[data-ch]").forEach(b    => b.addEventListener("click", () => switchChannel(b.dataset.ch)));
-      document.querySelectorAll("[data-board]").forEach(b => b.addEventListener("click", () => switchBoard(b.dataset.board)));
+      // Board buttons are wired inside renderBoardButtons() — they're generated, not static.
 
       // ── Boot ──────────────────────────────────────────────────────────────────
+      // Reflect betaUnlock's channel override in the Channel selector's active
+      // state and the dev-build notice — mirrors what switchChannel() does, but
+      // switchChannel() no-ops when called with the value state.channel already
+      // holds, so it can't be reused verbatim here.
+      document.querySelectorAll("[data-ch]").forEach(b => b.classList.toggle("active", b.dataset.ch === state.channel));
+      ui.devWarning.style.display = state.channel === "dev" ? "" : "none";
+      renderBoardButtons();
+      updateBetaBoardWarning();
       setRepoLink();
       loadManifest().catch(manifestError);
     </script>
