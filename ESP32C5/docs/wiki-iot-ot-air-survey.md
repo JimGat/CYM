@@ -1,6 +1,6 @@
 # IOT/OT Air Survey — Wiki
 
-> **Version:** v2.13.88 | **Branch:** Jimgat_Dev | **Scope:** All three boards (NM-CYD-C5, WS-C5-28, CYD-2432S028)
+> **Version:** v2.13.93 | **Branch:** Jimgat_Dev | **Scope:** All three boards (NM-CYD-C5, WS-C5-28, CYD-2432S028)
 
 ## Overview
 
@@ -112,22 +112,71 @@ addresses are the ones worth treating as a stable per-device identifier across a
 
 ### Per-session counters (v2.13.77+)
 
-`ot_survey_session_t` now carries:
-- `obs_count` — **unique** devices recorded (v2.13.87+ — see note below)
+`ot_survey_session_t` carries:
+- `obs_count` — **unique** devices recorded (v2.13.87+, see note below; **not** reliably
+  accurate until v2.13.92 — see the accuracy-history note)
 - `obs_by_type[10]` — per-type breakdown (indexed by `obs_type_t`), same unique-only counting
-- `flush_head` — append-mode cursor: next index to write on flush
+- `obs_export_dropped` — records dropped from `obs.jsonl` export because the per-survey
+  pending queue was full between flushes (v2.13.91+; see "obs.jsonl" below).
+  `flush_head` (an index cursor into the shared `obs_store`) was **removed** in v2.13.91
+  and replaced by this queue-based design — see the export-durability note below for why.
 
-> **Uniqueness fix (v2.13.87):** `obs_count`/`obs_by_type` previously incremented on
-> *every* `obs_store_add()` call, including re-sightings of an already-known MAC — a
-> device seen 50 times inflated the total by 50. `obs_store_add()` returns
-> `hit_count == 1` only when it creates a brand-new record (an existing MAC instead
-> merges into its record and increments that record's own `hit_count`), so all five
-> obs-store adapters (WiFi Scan screen, BLE, ESP-NOW, 802.15.4, OT WiFi passive scan)
-> now gate the counter on `hit_count == 1`. The counters reflect unique devices seen,
-> not total sightings — `obs.jsonl` still logs every distinct device once (as before;
-> repeated sightings update that device's own `rssi_cur`/`hit_count`/`last_seen_s`
-> rather than adding new lines), and `hit_count` on each record is how you see how many
-> times that specific device was re-observed.
+> **Counting-accuracy history — four separate bugs, all now fixed as of v2.13.93:**
+>
+> 1. **Double-counting re-sightings (fixed v2.13.87).** `obs_count`/`obs_by_type`
+>    originally incremented on *every* `obs_store_add()` call, including re-sightings of
+>    an already-known MAC — a device seen 50 times inflated the total by 50.
+>    `obs_store_add()` returns `hit_count == 1` only when it creates a brand-new record
+>    (an existing MAC instead merges into its record and increments that record's own
+>    `hit_count`), so all five obs-store adapters (WiFi Scan screen, BLE, ESP-NOW,
+>    802.15.4, OT WiFi passive scan) gate the counter on `hit_count == 1`.
+> 2. **Addressless 802.15.4 frames counted as new forever (fixed v2.13.89, superseded
+>    v2.13.92).** A frame with no source address at all (ACKs, PAN-ID-compressed data
+>    frames) left `mac[6]` all-zero. `obs_store_find()` refuses to match a zero MAC
+>    against itself, so every such frame passed the `hit_count == 1` gate from bug #1
+>    above — permanently. v2.13.89 added a per-feed `has_src_addr154` guard in main.c;
+>    v2.13.92 (below) made it redundant and it was removed.
+> 3. **Empty WiFi scan slots hit the identical bug on the WiFi feed (fixed v2.13.92,
+>    found + device-validated by @birolt29).** The OT WiFi passive-scan adapter iterated
+>    `g_shared_scan_results[0..g_shared_scan_count)` without checking each slot's BSSID.
+>    The survey's WiFi scan intermittently returns `count > 0` with mostly zero-BSSID
+>    (not-yet-populated) slots — see bug #4 below for why — and every such slot hit the
+>    same "unfindable zero MAC" failure as bug #2. This was the **dominant** cause of
+>    runaway counts, not ring eviction: one 20-minute stationary field session logged
+>    14,357 total records, 13,952 (97.2%) all-zero-MAC, only 3 real APs. Fixed at the
+>    store boundary — `obs_store_add()` now rejects `mac_is_zero(rec->mac)` outright,
+>    symmetric with `obs_store_find()`'s existing guard, covering every feed (WiFi,
+>    802.15.4, and any future one) at once. Post-fix 22-minute session: 478 total
+>    records, 0 zero-MAC, all real.
+> 4. **WiFi scan corrupted by a mid-scan radio teardown (fixed v2.13.92).**
+>    `_ot_switch_to_ble()` called `ensure_ble_mode()` unconditionally — which does a full
+>    `esp_wifi_stop()`/`esp_wifi_deinit()` — with no check for an in-flight WiFi scan.
+>    The WIFI dwell's passive scan (150 ms/channel × every WIFI_BAND_MODE_AUTO channel,
+>    24+ 5GHz channels alone in some regulatory domains → 5.5s+ total) almost never
+>    finishes inside the 3s WIFI dwell slot, so WiFi was getting deinit'd mid-scan on
+>    nearly every WIFI→BLE transition — exactly the kind of operation that produces
+>    `WIFI_EVENT_SCAN_DONE` with `count > 0` but unpopulated (zero-BSSID) slots (feeding
+>    bug #3 above) instead of real results or a clean `count == 0`. `_ot_switch_to_154()`
+>    already guarded this (`wifi_scanner_abort()` before switching away from WiFi);
+>    `_ot_switch_to_ble()` now does the same, plus a 50ms yield so
+>    `WIFI_EVENT_SCAN_DONE` has a chance to reach the event-loop task before WiFi is torn
+>    down. `esp_wifi_scan_stop()` is asynchronous, so this is a mitigation, not a hard
+>    guarantee — field validation in progress.
+>
+> Separately, `OBS_STORE_DEFAULT_CAPACITY` was raised 512 → 8192 (v2.13.90) — `g_obs_store`
+> is a single **global** ring buffer shared by every CYM feature (not just this survey,
+> and not reset per session), so once full it evicts the oldest record on every new
+> insert; a still-present, non-rotating device (e.g. a stable WiFi AP) can then look
+> "new" again once evicted. This is a mitigation, not a structural fix — any survey
+> long/busy enough with genuine traffic will eventually refill even 8192 slots, and a
+> rotating BLE RPA/NRPA address is *expected* to look like a new device on every
+> rotation regardless of capacity (no bonding-based identity resolution exists — see
+> the BLE note above).
+>
+> `obs.jsonl` logs every distinct device once (repeated sightings update that device's
+> own `rssi_cur`/`hit_count`/`last_seen_s` rather than adding new lines), and
+> `hit_count` on each record is how you see how many times that specific device was
+> re-observed.
 
 ---
 
@@ -201,12 +250,34 @@ config screen only exposes `site`; the rest default to empty strings.
 
 ### obs.jsonl
 
-JSONL (newline-delimited JSON). Each line is one serialised `obs_record_t`. Flushed
-incrementally via `ot_survey_flush()` — as of v2.13.77, flush uses **append mode** so
-each call only writes new records (those after `flush_head`), avoiding full-file rewrites.
-Since `obs_store_add()` merges by MAC, one unique device gets exactly one line — a
+JSONL (newline-delimited JSON). Each line is one serialised `obs_record_t`. Since
+`obs_store_add()` merges by MAC, one unique device gets exactly one line — a
 re-sighting updates that record's `rssi_cur`/`hit_count`/`last_seen_s`/etc. in place
-rather than appending a new line (see the uniqueness note above).
+rather than appending a new line (see the counting-accuracy note above).
+
+**Export architecture (rewritten v2.13.91):** every main-loop obs-store adapter that
+confirms `hit_count == 1` (a genuinely new record) calls `ot_survey_queue_export(sess,
+rec)`, which copies that record into a small per-survey pending queue (2048 entries /
+256KB PSRAM, allocated in `ot_survey_start()`, freed in `ot_survey_stop()`) at the
+moment of creation. A periodic timer (`ot_survey_flush()`, every 30s, called under
+`sd_spi_mutex`) drains that queue to `obs.jsonl` in append mode and resets it to empty;
+`ot_survey_stop()` also flushes any remaining tail so the last <30s of a session isn't
+lost. If the queue itself fills between flushes (bounded — logged once per survey, does
+not affect `obs_count`/`obs_by_type`), further records are dropped from export only and
+counted in `sess->obs_export_dropped`.
+
+> **Why this changed — a real data-loss bug (found + fixed v2.13.91):** the original
+> design had `ot_survey_flush()` paginate `g_obs_store.records[]` by index against
+> `obs_store_count()`. That count **freezes at capacity** once the shared global ring
+> wraps (only `store->overflow` keeps incrementing past that point) — so once *any*
+> feature (not just this survey) had ever pushed `g_obs_store` past capacity over the
+> device's uptime, every subsequent `ot_survey_flush()` call saw its cursor already
+> `>=` that frozen count and silently wrote nothing, forever, for that survey and every
+> survey after it until reboot — while the live `obs_count`/`obs_by_type` UI counters
+> kept climbing normally via the `hit_count == 1` gate, with no visible sign export had
+> stopped. The queue-based design above decouples export durability from
+> `g_obs_store`'s capacity, eviction order, and lifetime-wide usage entirely — the copy
+> happens before the shared store could ever evict the record.
 
 Example lines below use readable field names (`ssid`, `auth: "WPA3"`) for illustration —
 the literal wire format uses the abbreviated numeric keys documented in the Base
@@ -251,6 +322,33 @@ assign known labels to specific MACs:
 - MAC matching is exact (6 bytes, no OUI wildcards)
 - Format: `{"mac":"HH:HH:HH:HH:HH:HH","label":"..."}` — lowercase or uppercase hex accepted
 
+### ESP-NOW device profiles (`/sdcard/lab/espnow/profiles.json`)
+
+A second, independent label source for `OBS_TYPE_ESPNOW_OT` records — a JSON **array**
+(not one-object-per-line like the allowlist above), originally written for the
+dedicated ESP-NOW Scout screen and now also loaded at survey start (v2.13.93):
+
+```json
+[
+  { "mac": "AA:BB:CC:DD:EE:FF", "label": "Cowboy Hat" },
+  { "mac": "11:22:33:44:55:66", "label": "Biscuit Pro" }
+]
+```
+
+- Parsed by `espnow_load_profiles()` into `espnow_profiles[]` (max `ESPNOW_MAX_PROFILES`
+  = 16); matched by `espnow_find_or_add()` against every detected ESP-NOW source MAC,
+  regardless of which feature (Scout screen or this survey) triggered the detection.
+- Optional `lmk` field (32 hex chars = 16 bytes) records a device's known Local Master
+  Key for a future decrypt feature — parsed into `espnow_profile_t.lmk` but not used by
+  anything yet; safe to omit.
+- If both this and `allowlist.json` above match the same MAC, `allowlist.json` (via
+  `s_ots_allowlist_label()`) wins — it's applied second, after the profiles.json label
+  is used as the initial value.
+- Until v2.13.93, ESP-NOW detection was never actually enabled during a survey at all
+  (see the Gaps/Roadmap entry below) — profiles.json had no effect in an OT Air Survey
+  context before that fix, even though it worked correctly in the dedicated Scout
+  screen the whole time.
+
 ---
 
 ## WirelessHART Detection
@@ -274,7 +372,7 @@ channels), network layer indicators in the frame control field.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Append-mode JSONL flush | Done (v2.13.77) | Per-session flush_head cursor |
+| Append-mode JSONL flush | Done (v2.13.77) | Per-session `flush_head` cursor — **redesigned v2.13.91**, see the export-freeze fix row below and the export-architecture note under obs.jsonl. |
 | Per-type counters | Done (v2.13.77) | obs_by_type[10] in session + UI breakdown |
 | Device allowlist | Done (v2.13.77) | /sdcard/lab/otsurvey/allowlist.json |
 | 802.15.4 radio-mode deadlock | Fixed (v2.13.83) | Leaving the 154 slot never disabled it; every later WiFi/BLE switch failed and esp_ieee802154_enable() leaked a ZB_MAC interrupt each retry until the interrupt pool was exhausted. ensure_wifi_mode()/ensure_ble_mode()/radio_reset_to_idle() now handle the RADIO_MODE_154 transition. |
@@ -284,6 +382,15 @@ channels), network layer indicators in the frame control field.
 | Unique-device counting | Fixed (v2.13.87) | obs_count/obs_by_type incremented on every re-sighting of an already-known MAC, not just new devices (one busy environment hit 1100+). All five obs-store adapters now gate on obs_store_add()'s hit_count==1. |
 | BLE address-type classification | Done (v2.13.87) | `ext.ble.addr_subtype` ("addr_sub" in JSONL) — public/static/RPA/NRPA, derived passively from the address bits. Not identity resolution (see BLE note above). |
 | Survey start/end GPS stamp | Done (v2.13.88) | `geo_start`/`geo_end` in metadata.json — see above. Distinct from per-device lat/lon already in obs.jsonl. |
+| 802.15.4 cleanup unguarded for non-C5 boards | Fixed (v2.13.89) | `radio_reset_to_idle()`'s 802.15.4 cleanup called `esp_ieee802154_sleep/disable()` unguarded — compiled fine on C5, hard-failed on CYD-2432S028 (Xtensa, no 802.15.4 hardware). Shipped unnoticed 6 versions because that board's build wasn't run in the interim; now `#if CONFIG_IEEE802154_ENABLED`-guarded like every other 802.15.4 call site. Prompted a new project rule: any board whose CMakeLists.txt compiles a changed shared file must be rebuilt in the same session as the change. |
+| Addressless 802.15.4 frames inflating obs_count | Fixed (v2.13.89), superseded (v2.13.92) | See counting-accuracy note above (bug #2). |
+| XPT2046 touch glitch after radio teardown (spurious Go-Dark popup) | Fixed (v2.13.89, @birolt29) | On some NM-CYD-C5 hardware variants, `radio_reset_to_idle()`'s WiFi/802.15.4 stop+restart disturbs the shared SPI bus enough to produce one corrupted XPT2046 read that spuriously "taps" the top-right corner (where the Go-Dark button lives). Fixed with a 1200ms touch-suppression window starting at `radio_reset_to_idle()`. Board-layout-dependent — didn't reproduce on all hardware, but the fix is harmless everywhere. |
+| obs_store capacity 512 → 8192 | Done (v2.13.90) | Mitigation for ring-buffer eviction under combined-radio churn — see counting-accuracy note above. Not a structural fix on its own. |
+| obs.jsonl export silently freezing once shared store saturates | Fixed (v2.13.91) | Real data-loss bug, not just a counting issue — see the export-architecture note under obs.jsonl above. |
+| WiFi AP feed zero-MAC flood (dominant cause of runaway obs_count) | Fixed (v2.13.92, @birolt29) | See counting-accuracy note above (bug #3). Device-validated: 97.2% zero-MAC records → 0% after the fix. |
+| WiFi/BLE radio-switch scan-abort race | Fixed (v2.13.92) | See counting-accuracy note above (bug #4). Root cause behind bug #3's "empty scan slots" — mitigation, not a hard guarantee (`esp_wifi_scan_stop()` is async). |
+| ESP-NOW detection never enabled during a survey (EN always 0) | Fixed (v2.13.93) | The ESP-NOW dwell slot shared `_ot_switch_to_wifi()` with the WIFI slot, which only ever ran a passive AP scan — it never enabled WiFi promiscuous mode, so `espnow_scout_promisc_cb()` (gated on state owned exclusively by the dedicated ESP-NOW Scout screen) was never invoked. `EN` read 0 in every survey regardless of real ESP-NOW traffic. Fixed by enabling promiscuous mode (MGMT filter, same callback) alongside the passive scan, gated by a new `g_ot_espnow_capture_active` flag; piggybacks on the scan's existing channel-hopping, no separate hopper task needed. |
+| ESP-NOW device profiles (profiles.json) loaded at survey start | Done (v2.13.93) | See "ESP-NOW device profiles" above — previously only loaded by the dedicated Scout screen, so labels didn't apply in a survey unless that screen had been opened first this session. |
 | Known-device BLE identity (IRK resolving list) | Deferred | Would let a *specific bonded* device's rotating BLE address auto-resolve during passive scans. Requires a new NimBLE Security Manager / bonding subsystem — none exists in this firmware today. Scoped as a separate feature, not started. |
 | SD mutex in s_ots_start_cb | Pending | ot_survey_start() does direct SD I/O without mutex |
 | SIEM export | Deferred | Will be a separate headless-device project |
@@ -307,10 +414,13 @@ levels:
    transmit paths.
 4. The PCAPNG writer (`pcapng_write_frame`) only stores frames already received; it has
    no transmit interface.
+5. ESP-NOW detection (v2.13.93) uses WiFi promiscuous receive mode
+   (`esp_wifi_set_promiscuous`) with an MGMT-frame filter — receive-only; there is no
+   ESP-NOW send/peer-registration path wired to the survey.
 
 Do not add any transmit capability to any code path guarded by or called from an active
 survey session.
 
 ---
 
-*Generated by Claude Code — Jimgat_Dev — v2.13.88*
+*Generated by Claude Code — Jimgat_Dev — v2.13.93*
