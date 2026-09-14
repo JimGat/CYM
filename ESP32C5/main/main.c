@@ -423,6 +423,13 @@ static lv_timer_t      *espnow_refresh_timer  = NULL;
 static volatile bool    espnow_ui_needs_update = false;
 static volatile bool    espnow_obs_pending     = false; /* Phase 4: set in promisc_cb; main loop feeds obs_store */
 static volatile bool    ot_wifi_obs_pending    = false; /* OT Survey: set on WIFI_EVENT_SCAN_DONE while survey active; main loop feeds g_shared_scan_results -> obs_store */
+static volatile bool    g_ot_espnow_capture_active = false; /* OT Survey's WIFI+ESPNOW dwell owns promiscuous ESP-NOW
+                                                              * detection via espnow_scout_promisc_cb — see
+                                                              * _ot_switch_to_wifi()/_ot_espnow_capture_stop(). Separate
+                                                              * from espnow_scout_active (the dedicated ESP-NOW Scout
+                                                              * screen's own flag) so the two features don't stomp on
+                                                              * each other's state; espnow_scout_promisc_cb's early-return
+                                                              * guard accepts either. */
 
 /* ── ESP-NOW packet log + session state ─────────────────────────────────── */
 #define ESPNOW_PKT_LOG_MAX  200    // ring-buffer slots (PSRAM)
@@ -3405,6 +3412,8 @@ static void show_wscope_screen(void);
 static void wscope_task(void *p);
 static void show_obs_store_screen(void);
 static void show_obs_device_detail_screen(void);
+static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type);
+static void espnow_load_profiles(void);
 static void show_obs_device_locate_screen(void);
 static void show_espnow_scout_screen(void);
 static void espnow_scout_stop(void);
@@ -6410,6 +6419,18 @@ static void ot_wifi_scan_done_handler(void *arg, esp_event_base_t event_base,
  * the main loop (ble_obs_store_pending) for where results actually land in
  * g_obs_store. Both scans are passive (WIFI_SCAN_TYPE_PASSIVE / BLE
  * .passive=1) per ot_radio.c's "PASSIVE ONLY — never transmits" design. */
+/* Stops OT Survey's own use of the ESP-NOW promiscuous detector (does not
+ * touch espnow_scout_active/espnow_session_idx — those belong to the
+ * dedicated ESP-NOW Scout screen and are independent of this flag). Call
+ * before tearing WiFi down for BLE/802.15.4, same as wifi_scanner_abort(). */
+static void _ot_espnow_capture_stop(void)
+{
+    if (!g_ot_espnow_capture_active) return;
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    g_ot_espnow_capture_active = false;
+}
+
 static bool _ot_switch_to_wifi(void)
 {
     if (!ensure_wifi_mode()) return false;
@@ -6419,6 +6440,25 @@ static bool _ot_switch_to_wifi(void)
      * restarting per slot. */
     if (!wifi_scanner_is_scanning())
         wifi_scanner_start_passive_scan(150);
+
+    /* ESP-NOW slot detection: promiscuous mode is a receive-side hook that
+     * fires for frames matching the filter regardless of scan/channel state,
+     * so it can run concurrently with the passive AP scan above and piggyback
+     * on the same channel-hopping — no separate hopper task needed, unlike
+     * the dedicated ESP-NOW Scout screen (espnow_hopper_task). Reuses that
+     * screen's own detector callback (espnow_scout_promisc_cb), which already
+     * writes into espnow_devices[]/sets espnow_obs_pending for the existing
+     * main-loop adapter that drains it into g_obs_store — that consumer side
+     * was already correct; only the producer (this) was never wired up, which
+     * is why EN always read 0 in a survey regardless of real ESP-NOW traffic
+     * nearby (field report 2026-09-14). PASSIVE ONLY — never transmits. */
+    if (!g_ot_espnow_capture_active) {
+        wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+        esp_wifi_set_promiscuous_filter(&filt);
+        esp_wifi_set_promiscuous_rx_cb(espnow_scout_promisc_cb);
+        esp_wifi_set_promiscuous(true);
+        g_ot_espnow_capture_active = true;
+    }
     return true;
 }
 
@@ -6444,6 +6484,7 @@ static bool _ot_switch_to_ble(void)
      * the event-loop task before WiFi is torn down; esp_wifi_scan_stop() is
      * asynchronous so this is a mitigation, not a hard guarantee — field
      * validation requested from @birolt29 before relying on it fully. */
+    _ot_espnow_capture_stop();
     if (wifi_scanner_is_scanning()) {
         wifi_scanner_abort();
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -6468,6 +6509,7 @@ static bool _ot_switch_to_154(void)
     /* Leaving WiFi/BLE for the radio-exclusive 802.15.4 PHY — stop whatever
      * passive listening we started on those slots and flush what was found
      * so it isn't silently lost when the radio switches out from under it. */
+    _ot_espnow_capture_stop();
     if (wifi_scanner_is_scanning()) wifi_scanner_abort();
     if (current_radio_mode == RADIO_MODE_BLE) _ot_ble_dwell_end();
 
@@ -15905,6 +15947,14 @@ static void radio_reset_to_idle(void)
     /* [FIX] Radio stop/restart glitches GPIO2 (touch MISO) → spurious corner touch.
      * Suppress touch for the whole reset + settle window so the glitch can't fire a button. */
     g_radio_settle_until_ms = (esp_timer_get_time() / 1000) + 1200;
+
+    /* OT Survey's ESP-NOW promiscuous capture (if any) — must clear this before
+     * the generic promiscuous-mode teardown below, or g_ot_espnow_capture_active
+     * is left stale (true) after the hardware has already been taken out of
+     * promiscuous mode here, silently breaking ESP-NOW detection on the NEXT
+     * survey's WIFI+ESPNOW dwell (_ot_switch_to_wifi() would wrongly skip
+     * re-enabling it, seeing the flag already "active"). */
+    _ot_espnow_capture_stop();
 
     // ---- 1. Component-level attacks (wifi_attacks module) ----
     wifi_attacks_stop_all();
@@ -57555,6 +57605,15 @@ static void s_ots_start_cb(lv_event_t *e)
 
     /* Load allowlist so obs labels can be applied during this session */
     s_ots_load_allowlist();
+    /* Also load ESP-NOW device profiles (/sdcard/lab/espnow/profiles.json —
+     * {"mac":"AA:BB:CC:DD:EE:FF","label":"..."} per entry) so ESP-NOW devices
+     * detected during this survey get a friendly label without requiring the
+     * user to have opened the dedicated ESP-NOW Scout screen first this
+     * session — espnow_find_or_add() matches against this table regardless
+     * of which feature triggered the detection. s_ots_allowlist_label()
+     * above still wins if both are set (checked after this in every ESP-NOW
+     * obs adapter call site). */
+    espnow_load_profiles();
 
     /* Switch UI panels */
     if (s_ots_cfg_cont) lv_obj_add_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
@@ -59135,8 +59194,9 @@ static int espnow_find_or_add(const uint8_t *src_mac, const uint8_t *dst_mac,
 /* ── Promiscuous callback (runs in WiFi task context — not LVGL safe) ──────── */
 static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
-    // Active in discovery mode (hopping) OR when locked into a session
-    if (!espnow_scout_active && espnow_session_idx < 0) return;
+    // Active in discovery mode (hopping), locked into a session, or OT Survey's
+    // WIFI+ESPNOW dwell owns this callback (g_ot_espnow_capture_active).
+    if (!espnow_scout_active && espnow_session_idx < 0 && !g_ot_espnow_capture_active) return;
     if (type != WIFI_PKT_MGMT) return;
 
     const wifi_promiscuous_pkt_t *ppkt = (const wifi_promiscuous_pkt_t *)buf;
