@@ -5,11 +5,11 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.13.43</b>
+  <b>v2.14.00</b>
 </p>
 
 <p align="center">
-  WiFi 6 &amp; BLE security toolkit with SigInt &amp; Wardriving built on NerdMiner ESP32-C5 CYD
+  WiFi 6 &amp; BLE security toolkit with SigInt &amp; Wardriving — now running on three boards
 </p>
 
 <p align="center">
@@ -55,7 +55,9 @@
 
 ## Cheap Yellow Monster — CYM-NM28C5
 
-**Cheap Yellow Monster** is a portable, touchscreen-driven ESP32-C5 wireless security, BLE, GPS wardriving, and RF experimentation toolkit built specifically for the **NM-CYD-C5 / MonsterC5-style ESP32-C5-WIFI6-KIT** hardware family.
+**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It runs on three boards from a single shared firmware source tree — see [Supported Hardware](#supported-hardware) below.
+
+The **NM-CYD-C5 / MonsterC5-style ESP32-C5-WIFI6-KIT** hardware family remains the primary, preferred platform: it's the board CYM was originally built for, it's where new features land first, and — paired with the optional **NM-RF-HAT** expansion board — it has by far the widest RF hardware support (Sub-GHz, nRF24, NFC/RFID, IR, and more).
 
 CYM brings together many of the workflows people normally jump between separate ESP32 firmwares to get: WiFi scanning, WiFi analysis, deauth monitoring, Evil Portal-style testing, handshake capture, BLE scanning, BLE capture workflows, GPS wardriving, RF expansion support, and touchscreen-driven field use. It is designed to be a compact handheld platform for wireless research, education, defensive testing, and hardware hacking.
 
@@ -75,9 +77,24 @@ The NM-CYD-C5 can be purchased at [nmminer.com](https://www.nmminer.com/product/
 
 ---
 
+## Supported Hardware
+
+CYM builds and flashes for three boards from one shared firmware source tree.
+
+| Board | Status | What you get |
+|---|---|---|
+| **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original single-core ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, GPS wardriving. No 802.15.4 (the chip has no 802.15.4 radio). NM-RF-HAT reachable via an SD Card Shim adapter. |
+| **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported — new | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard hardware NM-CYD-C5 doesn't have: 6-axis IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Many new features planned to take advantage of that extra hardware. |
+
+All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/) (board selector at the top) and build from the same `main.c`.
+
+---
+
 ## Table of Contents
 
 - [Featured Videos](#-featured-videos)
+- [Supported Hardware](#supported-hardware)
 - [Features Overview](#features-overview)
 - [Menu Map](#menu-map)
 - [Screenshots](#screenshots)
@@ -343,6 +360,8 @@ Home
 ---
 
 ## Hardware
+
+> This section (and the [Pinout](#pinout) section below) documents the **NM-CYD-C5** — the primary/preferred board, see [Supported Hardware](#supported-hardware). For Classic CYD and Waveshare WS-C5-28 pin maps, see the [wiki](https://github.com/JimGat/CYM/wiki).
 
 | Component | Model | Interface |
 |-----------|-------|-----------|
