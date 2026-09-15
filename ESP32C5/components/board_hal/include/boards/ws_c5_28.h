@@ -25,7 +25,10 @@
 // ── ST7789 display — NOTE SWAPPED CS vs NM-CYD-C5 ────────────────────────────
 #define BOARD_LCD_CS         10   // ← WAS 23 on NM-CYD-C5
 #define BOARD_LCD_DC         9
-#define BOARD_LCD_RST        -1   // Driven via CH32V003 PIN_1 (IO expander)
+#define BOARD_LCD_RST        -1   // Driven via CH32V003 PIN_1 — main.c's init_i2c_bus()
+                                   // must explicitly pulse this pin (esp_io_expander_set_level);
+                                   // the IO expander driver's own reset() leaves every pin as
+                                   // INPUT, so this net floats until actively driven.
 #define BOARD_LCD_WIDTH      240
 #define BOARD_LCD_HEIGHT     320
 // Backlight: CH32V003 EXIO_PWM via I2C 0x24.

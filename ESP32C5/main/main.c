@@ -529,13 +529,16 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 // ST7789 + SD share SPI2_HOST. CST3530 touch is I2C on GPIO0/GPIO1.
 // CRITICAL: LCD CS=GPIO10, SD CS=GPIO23 — SWAPPED vs NM-CYD-C5.
 // Backlight: CH32V003 IO expander via I2C (BOARD_BACKLIGHT_GPIO = -1).
-// LCD RST: CH32V003 PIN_1 via I2C (BOARD_LCD_RST = -1; SWRESET used instead).
+// LCD RST: CH32V003 PIN_1 via I2C (BOARD_LCD_RST = -1). NOT SWRESET-only — see
+// init_i2c_bus()'s RST pulse (esp_io_expander_set_level on PIN_0/PIN_1); an
+// earlier "SWRESET suffices" assumption here was field-proven wrong 2026-09-15
+// (backlight on, black screen) until that explicit hardware pulse was added.
 #define LCD_MOSI        BOARD_SPI_MOSI       // GPIO7
 #define LCD_MISO        BOARD_SPI_MISO       // GPIO8 (SD only; ST7789 write-only)
 #define LCD_CLK         BOARD_SPI_SCK        // GPIO6
 #define LCD_CS          BOARD_LCD_CS         // GPIO10 (swapped vs NM-CYD-C5 GPIO23)
 #define LCD_DC          BOARD_LCD_DC         // GPIO9
-#define LCD_RST         BOARD_LCD_RST        // -1 (CH32V003 PIN_1; SWRESET suffices)
+#define LCD_RST         BOARD_LCD_RST        // -1 (CH32V003 PIN_1 — see init_i2c_bus())
 #define TOUCH_CS        -1                   // CST3530 is I2C — no SPI CS
 #define LCD_BL_IO       BOARD_BACKLIGHT_GPIO // -1 (CH32V003 EXIO_PWM via I2C 0x24)
 #define LCD_BL_ACTIVE_LEVEL 1
@@ -5379,32 +5382,44 @@ static void init_i2c_bus(void)
     }
     ESP_LOGI(TAG, "CH32V003 IO expander OK (I2C 0x%02X)", BOARD_IO_EXPANDER_I2C_ADDR);
 
-    /* Pulse Touch RST (CH32V003 PIN_0 / IO_LCD_TOUCH_RST) before init_touch() talks
-     * to the CST3530 over I2C. custom_io_expander_new_i2c_ch32v003()'s own internal
+    /* Pulse Touch RST (PIN_0) and LCD RST (PIN_1) before init_touch()/init_display()
+     * talk to their chips. custom_io_expander_new_i2c_ch32v003()'s own internal
      * reset() (called above, inside the constructor) writes the TCA9554-style
-     * direction register to its power-up default 0xFF — i.e. every pin, PIN_0
-     * included, ends up configured as INPUT. Nothing else in this codebase ever
-     * switches PIN_0 to output, so the touch chip's RST line is left floating
-     * instead of being actively driven — init_touch()'s comment claiming "RST via
-     * CH32V003 (handled here)" was aspirational, not actually implemented. Result:
-     * the CST3530 ACKs its I2C address fine (bus/addressing both work) but never
-     * received a defined power-up reset, so touch_cst3530_read_cfg() gets no
-     * sensible response and esp_lcd_touch_new_i2c_cst3530() fails after retries —
-     * field report 2026-09-15 (Jim, first WS-C5-28 hardware boot; this surfaced
-     * only after v2.13.96 fixed the separate driver_data bug that was masking it).
-     * Active-low, matching esp_lcd_touch_config_t.levels.reset=0 in init_touch()
-     * (standard convention for this class of touch IC) — unverified on real
-     * hardware as of this fix; flagged for field confirmation. Does not touch
-     * PIN_1 (LCD RST) — the display works today, so that path is left alone. */
-    esp_err_t rst_ret = esp_io_expander_set_dir(s_io_expander, IO_EXPANDER_PIN_NUM_0, IO_EXPANDER_OUTPUT);
+     * direction register to its power-up default 0xFF — i.e. every pin, PIN_0 and
+     * PIN_1 included, ends up configured as INPUT. Nothing else in this codebase
+     * ever switches either pin to output, so both RST lines are left floating
+     * instead of being actively driven. init_touch()'s comment claiming "RST via
+     * CH32V003 (handled here)" and this file's original LCD_RST comment ("SWRESET
+     * suffices") were both aspirational, not actually implemented.
+     *
+     * Confirmed on real WS-C5-28 hardware (field session 2026-09-15, Jim):
+     * Touch RST — the CST3530 ACKs its I2C address fine (bus/addressing both work)
+     * but never received a defined power-up reset, so touch_cst3530_read_cfg() got
+     * no sensible response and esp_lcd_touch_new_i2c_cst3530() failed after
+     * retries. Fixed for PIN_0 first (this pulse), which got touch working —
+     * confirmed responsive on hardware.
+     * LCD RST — with only PIN_0 fixed, boot proceeded (no abort — SPI has no
+     * ACK-based error the way I2C does, so esp_lcd_panel_init() "succeeds" whether
+     * or not the panel is in a sane state) but the screen stayed black with the
+     * backlight on: exactly what an ST7789 that never received a real hardware
+     * reset looks like. The "SWRESET suffices" assumption for PIN_1 turned out to
+     * be exactly as wrong as the equivalent assumption was for PIN_0 — same bug,
+     * same fix, now applied to both pins together, before init_display() runs.
+     *
+     * Active-low for both (matching esp_lcd_touch_config_t.levels.reset=0, already
+     * used for touch, and standard convention for both chip classes). LCD RST
+     * timing/polarity not yet independently confirmed as of this fix — field
+     * validation requested, same as PIN_0 originally was. */
+    esp_err_t rst_ret = esp_io_expander_set_dir(s_io_expander,
+        IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT);
     if (rst_ret == ESP_OK) {
-        esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_0, 0);  // assert reset
+        esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 0);  // assert reset
         vTaskDelay(pdMS_TO_TICKS(10));
-        esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_0, 1);  // release reset
-        vTaskDelay(pdMS_TO_TICKS(50));  // CST3530 power-up settle before any I2C access
-        ESP_LOGI(TAG, "Touch RST pulsed via CH32V003 PIN_0");
+        esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 1);  // release reset
+        vTaskDelay(pdMS_TO_TICKS(50));  // power-up settle before any I2C/SPI access to either chip
+        ESP_LOGI(TAG, "Touch RST (PIN_0) + LCD RST (PIN_1) pulsed via CH32V003");
     } else {
-        ESP_LOGW(TAG, "Touch RST pulse failed: %s (touch init may fail)", esp_err_to_name(rst_ret));
+        ESP_LOGW(TAG, "Touch/LCD RST pulse failed: %s (touch/display init may fail)", esp_err_to_name(rst_ret));
     }
 }
 #endif
