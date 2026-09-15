@@ -5333,6 +5333,19 @@ static void init_touch(void)
             .mirror_x = 0,
             .mirror_y = 0,
         },
+        /* esp_lcd_touch_cst3530.c bypasses esp_lcd_panel_io_* for actual reads
+         * (negative 32-bit command words like 0xD0070000 get misread as "no
+         * command" by that layer) and instead does direct I2C via its own
+         * device handle — but it can only add that device if it's handed the
+         * raw I2C *bus* handle through driver_data; tp_io above is only used
+         * to satisfy esp_lcd_touch_new_i2c_cst3530()'s io parameter. Leaving
+         * this unset (as it was) means the driver's internal
+         * "i2c_master_bus_handle_t bus = tp->config.driver_data" reads NULL,
+         * logs "No I2C bus handle in driver_data", every register read then
+         * fails ("I2C ctx not ready"), read_cfg exhausts its retries, and the
+         * ESP_ERROR_CHECK() below aborts the boot. Field report 2026-09-15
+         * (Jim, first WS-C5-28 hardware boot on this firmware). */
+        .driver_data = (void *)s_i2c_bus,
     };
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst3530(tp_io, &tp_cfg, &touch_handle));
     ESP_LOGI(TAG, "CST3530 touch initialised (I2C, INT=GPIO%d)", BOARD_TOUCH_INT);
