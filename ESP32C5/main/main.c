@@ -5378,6 +5378,34 @@ static void init_i2c_bus(void)
         return;
     }
     ESP_LOGI(TAG, "CH32V003 IO expander OK (I2C 0x%02X)", BOARD_IO_EXPANDER_I2C_ADDR);
+
+    /* Pulse Touch RST (CH32V003 PIN_0 / IO_LCD_TOUCH_RST) before init_touch() talks
+     * to the CST3530 over I2C. custom_io_expander_new_i2c_ch32v003()'s own internal
+     * reset() (called above, inside the constructor) writes the TCA9554-style
+     * direction register to its power-up default 0xFF — i.e. every pin, PIN_0
+     * included, ends up configured as INPUT. Nothing else in this codebase ever
+     * switches PIN_0 to output, so the touch chip's RST line is left floating
+     * instead of being actively driven — init_touch()'s comment claiming "RST via
+     * CH32V003 (handled here)" was aspirational, not actually implemented. Result:
+     * the CST3530 ACKs its I2C address fine (bus/addressing both work) but never
+     * received a defined power-up reset, so touch_cst3530_read_cfg() gets no
+     * sensible response and esp_lcd_touch_new_i2c_cst3530() fails after retries —
+     * field report 2026-09-15 (Jim, first WS-C5-28 hardware boot; this surfaced
+     * only after v2.13.96 fixed the separate driver_data bug that was masking it).
+     * Active-low, matching esp_lcd_touch_config_t.levels.reset=0 in init_touch()
+     * (standard convention for this class of touch IC) — unverified on real
+     * hardware as of this fix; flagged for field confirmation. Does not touch
+     * PIN_1 (LCD RST) — the display works today, so that path is left alone. */
+    esp_err_t rst_ret = esp_io_expander_set_dir(s_io_expander, IO_EXPANDER_PIN_NUM_0, IO_EXPANDER_OUTPUT);
+    if (rst_ret == ESP_OK) {
+        esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_0, 0);  // assert reset
+        vTaskDelay(pdMS_TO_TICKS(10));
+        esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_0, 1);  // release reset
+        vTaskDelay(pdMS_TO_TICKS(50));  // CST3530 power-up settle before any I2C access
+        ESP_LOGI(TAG, "Touch RST pulsed via CH32V003 PIN_0");
+    } else {
+        ESP_LOGW(TAG, "Touch RST pulse failed: %s (touch init may fail)", esp_err_to_name(rst_ret));
+    }
 }
 #endif
 
