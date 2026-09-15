@@ -117,12 +117,12 @@ typedef struct {
 extern ot_survey_session_t *g_active_survey;
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
-
-/*
- * ot_survey_init — must be called once at boot before any other API.
- * Ensures /sdcard/lab/otsurvey/ exists (called again on SD remount).
- */
-esp_err_t ot_survey_init(void);
+/* No init function — nothing needs calling before ot_survey_start(). Removed in
+ * v2.13.99: ot_survey_init() used to eagerly create /sdcard/lab/otsurvey/ at
+ * boot, before SD was mounted, so it always failed and logged spurious errors
+ * every boot. ot_survey_start() below now creates both directory levels itself,
+ * lazily, when a survey actually starts (its caller ensures SD is mounted first
+ * — see main.c's s_ots_start_cb()). */
 
 /*
  * ot_survey_start — allocate a session, generate UUID, create per-session

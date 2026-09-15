@@ -6648,9 +6648,17 @@ void app_main(void)
         ot_radio_init(&ot_hooks);
     }
 
-    // OT Survey SD root directory — ensures /sdcard/lab/otsurvey/ exists after every mount.
-    // Safe to call before SD is mounted; ot_survey_init() checks stat() and creates on demand.
-    ot_survey_init();
+    /* NOTE: ot_survey_init() is deliberately NOT called here anymore (was, until
+     * v2.13.99). SD is not mounted yet at this point in boot — it's mounted lazily
+     * a few seconds later (see the "SD loading popup" sequence below) — so calling
+     * it here always failed, every boot, on every board, logging two ERROR lines
+     * ("mkdir /sdcard/lab failed", "mkdir /sdcard/lab/otsurvey failed") for a
+     * condition that isn't actually an error. Field report 2026-09-15 (Jim): the
+     * directories only need to exist when a survey actually starts, which
+     * s_ots_start_cb() -> ot_survey_start() now ensures directly (calls
+     * ensure_sd_mounted() first, then ot_survey_start() creates both directory
+     * levels itself) — matching how wardrive/handshake capture already create
+     * their own SD directories on demand rather than eagerly at boot. */
 
     /* Phase 4: start the periodic survey flush timer (30 s interval).
      * The timer runs for the lifetime of the firmware; the callback only writes
@@ -57638,6 +57646,13 @@ static void s_ots_prof_next_cb(lv_event_t *e)
 static void s_ots_start_cb(lv_event_t *e)
 {
     (void)e;
+    /* ot_survey_start() creates the session directory tree on SD — make sure SD is
+     * actually mounted before it tries (no-op / instant return if already mounted,
+     * same as every other on-demand SD feature in this file). Boot no longer does
+     * this eagerly (see the removed ot_survey_init() call and its comment) since
+     * SD isn't mounted that early anyway. */
+    ensure_sd_mounted();
+
     ot_survey_config_t cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.profile = s_ots_sel_profile;

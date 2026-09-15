@@ -176,14 +176,11 @@ static esp_err_t write_metadata(const ot_survey_session_t *sess)
 }
 
 /* ── Public API ───────────────────────────────────────────────────────────── */
-
-esp_err_t ot_survey_init(void)
-{
-    /* Ensure /sdcard/lab/ exists before creating /sdcard/lab/otsurvey/.
-     * Other features (wardrives, handshakes) create this lazily — we need it here. */
-    ensure_dir("/sdcard/lab");
-    return ensure_dir(OT_SURVEY_ROOT);
-}
+/* ot_survey_init() (eager boot-time /sdcard/lab/otsurvey creation) was removed in
+ * v2.13.99 — it always failed at boot (SD isn't mounted yet that early) and was
+ * redundant with ot_survey_start()'s own directory creation below, which now
+ * does both directory levels itself and is only ever called once a survey
+ * actually starts. See main.c's app_main() and s_ots_start_cb() comments. */
 
 esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *sess,
                            const ot_survey_geo_t *start_geo)
@@ -222,7 +219,18 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
     ot_survey_uuid_str(&sess->uuid, uuid_str);
     snprintf(sess->dir_path, sizeof(sess->dir_path), "%s/%s", OT_SURVEY_ROOT, uuid_str);
 
-    esp_err_t rc = ensure_dir(OT_SURVEY_ROOT);
+    /* mkdir() is not recursive — /sdcard/lab must exist before OT_SURVEY_ROOT
+     * ("/sdcard/lab/otsurvey") can be created underneath it. This used to be
+     * ot_survey_init()'s job, called eagerly at boot; that always failed (SD
+     * isn't mounted that early) and was removed in v2.13.99 in favor of doing
+     * both directory levels here, lazily, when a survey actually starts (the
+     * caller, s_ots_start_cb(), now calls ensure_sd_mounted() first). */
+    esp_err_t rc = ensure_dir("/sdcard/lab");
+    if (rc != ESP_OK) {
+        sess->state = OT_STATE_ERROR;
+        return rc;
+    }
+    rc = ensure_dir(OT_SURVEY_ROOT);
     if (rc != ESP_OK) {
         sess->state = OT_STATE_ERROR;
         return rc;

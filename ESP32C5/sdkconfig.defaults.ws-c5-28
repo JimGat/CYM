@@ -22,3 +22,13 @@ CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
 
 # board_hal Kconfig — select Waveshare C5-28 board variant
 CONFIG_BOARD_WS_C5_28=y
+
+# This board's ST7789 module is a color-inverted variant (confirmed on real
+# hardware 2026-09-15, Jim: first boot after the RST fixes showed colors as a
+# photographic negative — black displayed as white, blue as red). Same class
+# of issue the BOARD_LCD_INVERT_COLOR Kconfig help text already documents for
+# CYD2USB's ILI9341: panels from this supply chain come in both normal and
+# inverted polarity, and NM-CYD-C5's ST7789 (which does NOT set this) is
+# evidently the other polarity from this board's ST7789, despite both being
+# "ST7789." Calls esp_lcd_panel_invert_color(handle, true) in init_display().
+CONFIG_BOARD_LCD_INVERT_COLOR=y

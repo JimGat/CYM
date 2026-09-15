@@ -100,12 +100,32 @@ menu "CYM Board Selection"
             (active-LOW) on GPIO 4/16/17.
 
     config BOARD_LCD_INVERT_COLOR
-        bool
+        bool "Invert LCD color output"
         help
-            Invert LCD color output. ILI9341 panels on CYD family boards come in
-            both normal and color-inverted variants. Set y for boards confirmed to
-            need inversion; n for normal panels. Calls esp_lcd_panel_invert_color().
+            Invert LCD color output. Panels from this supply chain (ILI9341 on CYD
+            family boards, ST7789 on WS-C5-28) come in both normal and
+            color-inverted variants. Set y for boards confirmed to need inversion;
+            n for normal panels. Calls esp_lcd_panel_invert_color().
             CYD2USB (2432S028): inversion IS required — set y in sdkconfig.defaults.cyd2usb.
+            WS-C5-28: inversion IS required — set y in sdkconfig.defaults.ws-c5-28
+            (confirmed on real hardware 2026-09-15 — colors displayed as a negative
+            without it: black as white, blue as red).
+            --
+            IMPORTANT: this config previously had no prompt string (just "bool"
+            with no quoted text after it). A promptless bool is invisible to
+            Kconfig's defconfig/sdkconfig.defaults merge — its value can only come
+            from another symbol's default/select, never from a defaults file or a
+            direct sdkconfig edit, so it silently stayed unset (=n, the implicit
+            default) no matter what any sdkconfig.defaults.<board> file said. This
+            was discovered while debugging WS-C5-28's inverted colors (2026-09-15):
+            adding =y to sdkconfig.defaults.ws-c5-28 had zero effect, and the SAME
+            was true for CYD2USB's pre-existing "=y" in sdkconfig.defaults.cyd2usb
+            — inversion has likely never actually been applied on ANY board via
+            this option until the prompt string above was added. If CYD2USB's
+            on-device colors have looked correct regardless, that board's ILI9341
+            may not need inversion after all (worth independently reverifying,
+            separate from this fix) — do not assume the old CYD2USB comment was
+            correct just because it was there.
 
     config BOARD_LCD_BRIGHTNESS_DEFAULT
         int "Default LCD brightness on first boot (%)"
