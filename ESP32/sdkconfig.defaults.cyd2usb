@@ -32,10 +32,24 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
 CONFIG_BOARD_CYD2USB=y
 
-# ILI9341 on CYD-2432S028 requires color inversion — without it, the dark-themed
-# LVGL UI renders as washed-out light colors (0x0000 black shows as white).
-# This is a panel-variant hardware characteristic, not a firmware default.
-CONFIG_BOARD_LCD_INVERT_COLOR=y
+# Color inversion — NOT needed on Jim's CYD-2432S028 unit.
+#
+# History: this was set to `y` from v2.13.66 onward on the (mistaken) belief
+# that this panel variant needs inversion. That belief was never actually
+# hardware-verified: CONFIG_BOARD_LCD_INVERT_COLOR was a Kconfig `bool` with
+# no prompt string the entire time (fixed in v2.13.99), which meant it could
+# never be set via sdkconfig.defaults no matter what this file said — the
+# option silently stayed at its unset/false default, so every CYD-2432S028
+# build through v2.13.98 actually ran with NO inversion applied, regardless
+# of this line. v2.13.99's Kconfig fix made the flag real for the first time,
+# which actually inverted colors on real hardware — and broke a display that
+# had been correct the entire time. Jim confirmed on real hardware that
+# v2.13.70 (running with the bug, i.e. no inversion) looked perfect. Left
+# explicitly `n` here so a future contributor doesn't flip it back on a stale
+# assumption. If a different panel-variant unit is confirmed (by someone
+# actually looking at their screen post-v2.13.99) to need inversion, that's a
+# real per-unit hardware difference, not a firmware default to restore blindly.
+CONFIG_BOARD_LCD_INVERT_COLOR=n
 
 # Disable WiFi IRAM speed optimizations to free ~10-17 KB IRAM each.
 # Saves >10 KB (IRAM_OPT) + >17 KB (RX_IRAM_OPT) at the cost of reduced WiFi throughput.

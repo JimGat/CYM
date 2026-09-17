@@ -106,7 +106,11 @@ menu "CYM Board Selection"
             family boards, ST7789 on WS-C5-28) come in both normal and
             color-inverted variants. Set y for boards confirmed to need inversion;
             n for normal panels. Calls esp_lcd_panel_invert_color().
-            CYD2USB (2432S028): inversion IS required — set y in sdkconfig.defaults.cyd2usb.
+            CYD2USB (2432S028): inversion is NOT needed on Jim's unit — set n in
+            sdkconfig.defaults.cyd2usb (confirmed on real hardware 2026-09-17,
+            after this option's promptless-bool bug below was fixed and briefly
+            made inversion actually apply for the first time — see the history
+            comment in sdkconfig.defaults.cyd2usb before changing this back to y).
             WS-C5-28: inversion IS required — set y in sdkconfig.defaults.ws-c5-28
             (confirmed on real hardware 2026-09-15 — colors displayed as a negative
             without it: black as white, blue as red).
