@@ -61,8 +61,11 @@ static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
 {
     if (handle->use_sw_spi) return xpt2046_read_raw_sw(handle, cmd);
 
-    uint8_t tx[3] = {cmd, 0x00, 0x00};
-    uint8_t rx[3] = {0, 0, 0};
+    // Static DMA-safe buffers - queued spi_device_transmit uses the ISR/DMA path.
+    static uint8_t tx[3];
+    static uint8_t rx[3];
+    tx[0] = cmd; tx[1] = 0x00; tx[2] = 0x00;
+    rx[0] = 0;   rx[1] = 0;    rx[2] = 0;
 
     spi_transaction_t t = {
         .length    = 24,
@@ -70,10 +73,18 @@ static uint16_t xpt2046_read_raw(xpt2046_handle_t *handle, uint8_t cmd)
         .rx_buffer = rx,
     };
 
-    // CS driven manually — driver has spics_io_num=-1 so it never touches the pin.
+#if defined(CONFIG_BOARD_CYD2USB)
+    // CYD2USB: manual CS + polling. SD is on a SEPARATE SPI2 bus so no contention.
     gpio_set_level(handle->cs_gpio, 0);
     esp_err_t ret = spi_device_polling_transmit(handle->spi, &t);
     gpio_set_level(handle->cs_gpio, 1);
+#else
+    // Shared-bus boards (nm-cyd-c5): ISR-queued transmit + driver CS. polling_transmit
+    // here grabs the polling_mutex the SD/sdspi driver holds via spi_device_acquire_bus
+    // during file I/O -> touch collided with SD reads -> sdmmc 0x108 timeouts + CRC in
+    // wardrive, 0 networks logged. See GH #18.
+    esp_err_t ret = spi_device_transmit(handle->spi, &t);
+#endif
 
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SPI tx failed (cmd=0x%02x): %s", cmd, esp_err_to_name(ret));
@@ -130,13 +141,19 @@ esp_err_t xpt2046_init(xpt2046_handle_t *handle,
     // Configure CS GPIO manually — driver gets spics_io_num=-1 so it never
     // touches the pin. xpt2046_read_raw() toggles it via gpio_set_level() which
     // correctly handles any GPIO number including GPIO32-39.
+#if defined(CONFIG_BOARD_CYD2USB)
     gpio_set_direction((gpio_num_t)cs_gpio, GPIO_MODE_OUTPUT);
     gpio_set_level((gpio_num_t)cs_gpio, 1);   // idle HIGH (de-asserted)
+#endif
 
     spi_device_interface_config_t devcfg = {
         .clock_speed_hz = XPT2046_SPI_CLK_HZ,
         .mode           = 0,               // SPI mode 0 (CPOL=0, CPHA=0)
-        .spics_io_num   = -1,              // manual CS — driver must not touch it
+#if defined(CONFIG_BOARD_CYD2USB)
+        .spics_io_num   = -1,              // CYD2USB: manual CS (GPIO33 not asserted in ISR mode)
+#else
+        .spics_io_num   = cs_gpio,         // shared-bus boards: driver-managed CS (SD-safe, GH #18)
+#endif
         .queue_size     = 1,
         .pre_cb         = NULL,
         .post_cb        = NULL,
