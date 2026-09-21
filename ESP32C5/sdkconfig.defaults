@@ -2,7 +2,7 @@
 # These override the chip defaults and are preserved across set-target/fullclean
 
 # Main task stack — must be large enough for LVGL UI construction + large local buffers
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 
 # Coexistence: WiFi + BLE + 802.15.4 share the single RF front-end via software
 # arbitration. Required for wardrive simultaneous WiFi+BLE scanning and for the
