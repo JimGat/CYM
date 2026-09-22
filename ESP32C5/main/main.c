@@ -28212,8 +28212,12 @@ static void gps_show_edit_overlay(lv_event_t *e)
     (void)e;
     if (gps_edit_overlay) return;  // already open
 
+    int hor = lv_disp_get_hor_res(NULL);
+    int ver = lv_disp_get_ver_res(NULL);
+    bool landscape = hor > ver;
+
     gps_edit_overlay = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(gps_edit_overlay, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    lv_obj_set_size(gps_edit_overlay, hor, ver);
     lv_obj_set_pos(gps_edit_overlay, 0, 0);
     lv_obj_set_style_bg_color(gps_edit_overlay, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(gps_edit_overlay, LV_OPA_80, 0);
@@ -28223,18 +28227,34 @@ static void gps_show_edit_overlay(lv_event_t *e)
     lv_obj_set_style_radius(gps_edit_overlay, 0, 0);
 
     // ── Card (TOP_MID, above keyboard) ──────────────────────────────────────
+    // Landscape: the un-adapted portrait layout (title+sub+3 stacked label/field
+    // rows+button row, LV_SIZE_CONTENT height) needed ~256px against a 240px-tall
+    // landscape screen -- the Save/Cancel button row at the bottom rendered off
+    // the physical display entirely (field report 2026-09-22, both boards). Fixed
+    // by putting Lat/Lon side-by-side (saves ~48px of stacking), tightening
+    // padding/gaps, and bounding the card's height with vertical scroll enabled
+    // as a safety net -- Save/Cancel are always reachable even if content still
+    // runs long. Portrait is unchanged; it already fit with room to spare.
     lv_obj_t *card = lv_obj_create(gps_edit_overlay);
-    lv_obj_set_size(card, lv_disp_get_hor_res(NULL) - 12, LV_SIZE_CONTENT);
-    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 4);
+    lv_obj_set_width(card, hor - 12);
+    if (landscape) {
+        lv_obj_set_height(card, ver - 8);
+        lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 4);
+        lv_obj_set_scroll_dir(card, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_AUTO);
+    } else {
+        lv_obj_set_height(card, LV_SIZE_CONTENT);
+        lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 4);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);  // portrait fits with room to spare
+    }
     lv_obj_set_style_bg_color(card, ui_card_color(), 0);
     lv_obj_set_style_border_color(card, COLOR_MATERIAL_AMBER, 0);
     lv_obj_set_style_border_width(card, 2, 0);
     lv_obj_set_style_radius(card, 10, 0);
-    lv_obj_set_style_pad_all(card, 8, 0);
-    lv_obj_set_style_pad_row(card, 4, 0);
+    lv_obj_set_style_pad_all(card, landscape ? 6 : 8, 0);
+    lv_obj_set_style_pad_row(card, landscape ? 2 : 4, 0);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(card);
     lv_label_set_text(title, LV_SYMBOL_GPS "  Set Fallback Position");
@@ -28255,13 +28275,50 @@ static void gps_show_edit_overlay(lv_event_t *e)
         snprintf(alt_buf, sizeof(alt_buf), "%.1f",  (double)pre->altitude);
     }
 
+    // Lat/Lon: side-by-side columns in landscape (saves ~48px of vertical
+    // stacking vs portrait's one-per-row layout — see the overflow note on
+    // the card creation above).
+    lv_obj_t *pLat = card, *pLon = card;
+    if (landscape) {
+        lv_obj_t *latlon_row = lv_obj_create(card);
+        lv_obj_set_width(latlon_row, lv_pct(100));
+        lv_obj_set_height(latlon_row, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(latlon_row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(latlon_row, 0, 0);
+        lv_obj_set_style_pad_all(latlon_row, 0, 0);
+        lv_obj_set_style_pad_column(latlon_row, 8, 0);
+        lv_obj_clear_flag(latlon_row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(latlon_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(latlon_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        pLat = lv_obj_create(latlon_row);
+        lv_obj_set_flex_grow(pLat, 1);
+        lv_obj_set_height(pLat, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(pLat, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(pLat, 0, 0);
+        lv_obj_set_style_pad_all(pLat, 0, 0);
+        lv_obj_clear_flag(pLat, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(pLat, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(pLat, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+        pLon = lv_obj_create(latlon_row);
+        lv_obj_set_flex_grow(pLon, 1);
+        lv_obj_set_height(pLon, LV_SIZE_CONTENT);
+        lv_obj_set_style_bg_opa(pLon, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(pLon, 0, 0);
+        lv_obj_set_style_pad_all(pLon, 0, 0);
+        lv_obj_clear_flag(pLon, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(pLon, LV_FLEX_FLOW_COLUMN);
+        lv_obj_set_flex_align(pLon, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    }
+
     // Lat row
-    lv_obj_t *lat_lbl = lv_label_create(card);
-    lv_label_set_text(lat_lbl, "Latitude (-90 to 90):");
+    lv_obj_t *lat_lbl = lv_label_create(pLat);
+    lv_label_set_text(lat_lbl, landscape ? "Latitude:" : "Latitude (-90 to 90):");
     lv_obj_set_style_text_font(lat_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lat_lbl, ui_text_color(), 0);
 
-    gps_edit_lat_ta = lv_textarea_create(card);
+    gps_edit_lat_ta = lv_textarea_create(pLat);
     lv_obj_set_width(gps_edit_lat_ta, lv_pct(100));
     lv_textarea_set_one_line(gps_edit_lat_ta, true);
     lv_textarea_set_max_length(gps_edit_lat_ta, 16);
@@ -28277,12 +28334,12 @@ static void gps_show_edit_overlay(lv_event_t *e)
     lv_obj_set_style_border_side(gps_edit_lat_ta, LV_BORDER_SIDE_LEFT, LV_PART_CURSOR | LV_STATE_FOCUSED);
 
     // Lon row
-    lv_obj_t *lon_lbl = lv_label_create(card);
-    lv_label_set_text(lon_lbl, "Longitude (-180 to 180):");
+    lv_obj_t *lon_lbl = lv_label_create(pLon);
+    lv_label_set_text(lon_lbl, landscape ? "Longitude:" : "Longitude (-180 to 180):");
     lv_obj_set_style_text_font(lon_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(lon_lbl, ui_text_color(), 0);
 
-    gps_edit_lon_ta = lv_textarea_create(card);
+    gps_edit_lon_ta = lv_textarea_create(pLon);
     lv_obj_set_width(gps_edit_lon_ta, lv_pct(100));
     lv_textarea_set_one_line(gps_edit_lon_ta, true);
     lv_textarea_set_max_length(gps_edit_lon_ta, 17);
