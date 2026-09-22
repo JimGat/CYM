@@ -512,7 +512,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.12.1"; // link CYM-SD-Assets (footer + getting-started list)
+      const PAGE_VERSION    = "2.12.2"; // fix manual stub-upload fallback hardcoded to esp32c5.json regardless of detected chip
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -667,11 +667,22 @@
           } catch (e) {
             if (!e.message?.includes("atob") && !e.message?.includes("correctly encoded")) throw e;
             log("runStub() hit esm.sh JSON module bug — uploading stub manually...");
+            // Stub binary is architecture-specific (RISC-V for C-series, Xtensa for
+            // classic/S-series) - must match the chip actually detected above, not be
+            // hardcoded to one board. Was hardcoded to esp32c5.json regardless of
+            // state.chip, so this fallback path silently uploaded a RISC-V stub into
+            // a classic ESP32 (Xtensa)'s RAM whenever the esm.sh bug forced this path
+            // on CYD-2432S028 - the mismatched stub can never run, so the "OHAI"
+            // handshake below always timed out ("Timed out waiting for packet header",
+            // field-reported 2026-09-22). Filename convention confirmed against
+            // https://github.com/Jason2866/WebSerial_ESPTool/tree/development/src/stubs
+            // (esp32.json, esp32c2/c3/c5/c6/c61.json, esp32h2/h4.json, esp32s2/s3.json, ...).
+            const stubChip = state.chip.toLowerCase().replace(/[^a-z0-9]/g, "");
             const sResp = await fetch(
-              "https://raw.githubusercontent.com/Jason2866/WebSerial_ESPTool/development/src/stubs/esp32c5.json",
+              `https://raw.githubusercontent.com/Jason2866/WebSerial_ESPTool/development/src/stubs/${stubChip}.json`,
               { cache: "force-cache" }
             );
-            if (!sResp.ok) throw new Error(`Stub fetch failed: ${sResp.status}`);
+            if (!sResp.ok) throw new Error(`Stub fetch failed for ${state.chip} (${stubChip}.json): ${sResp.status}`);
             const sData = await sResp.json();
             const dec = (s) => Array.from(atob(s), c => c.charCodeAt(0));
             const textBytes = dec(sData.text);
