@@ -389,9 +389,32 @@ static volatile bool ble_spoof_needs_ui_update = false;
 #  define ESPNOW_MAX_DEVICES   8
 #endif
 #define ESPNOW_MAX_PROFILES  16
-#define ESPNOW_DWELL_MS      200
+#define ESPNOW_DWELL_MS      200   /* minimum time on every channel, both hop modes */
+#define ESPNOW_STAY_MS       1000  /* adaptive mode: how long to keep dwelling past
+                                     * ESPNOW_DWELL_MS after the last NEW device heard
+                                     * on this channel, before giving up and hopping */
 #define ESPNOW_EXPORT_DIR    "/sdcard/lab/espnow"
 #define ESPNOW_PROFILES_PATH "/sdcard/lab/espnow/profiles.json"
+
+/* Hop mode — field report 2026-09-22: fixed 200ms/channel round-robin found
+ * only 3 of 11 known devices in ~160s (49s gap between two finds) because the
+ * nodes transmit infrequently and the hopper moves on long before a sparse
+ * transmitter gets a chance to be heard. ADAPTIVE ("police scanner": dwell
+ * longer on a channel that's actively producing new devices, move on once it
+ * goes quiet) is the requested default; FIXED preserves the old uniform
+ * round-robin as a selectable alternative. */
+typedef enum {
+    ESPNOW_HOP_ADAPTIVE = 0,
+    ESPNOW_HOP_FIXED    = 1,
+} espnow_hop_mode_t;
+static espnow_hop_mode_t espnow_hop_mode = ESPNOW_HOP_ADAPTIVE;
+/* Set by espnow_scout_promisc_cb (WiFi task context) whenever a NEW device is
+ * found; read by espnow_hopper_task to decide whether to keep dwelling. Reset
+ * to 0 by the hopper each time it actually hops to a new channel. Plain
+ * int64_t, not behind espnow_mux: single-writer, single-reader, and a torn
+ * read only ever costs one extra 20ms poll tick of staying vs hopping a
+ * moment early — not worth a lock for. */
+static volatile int64_t espnow_last_new_us = 0;
 
 typedef struct {
     uint8_t  src_mac[6];
@@ -422,6 +445,8 @@ static portMUX_TYPE     espnow_mux            = portMUX_INITIALIZER_UNLOCKED;
 /* UI handles (discovery screen) */
 static lv_obj_t        *espnow_list           = NULL;
 static lv_obj_t        *espnow_status_lbl     = NULL;
+static lv_obj_t        *espnow_hopmode_btn    = NULL;
+static lv_obj_t        *espnow_hopmode_lbl    = NULL;
 static lv_timer_t      *espnow_refresh_timer  = NULL;
 static volatile bool    espnow_ui_needs_update = false;
 static volatile bool    espnow_obs_pending     = false; /* Phase 4: set in promisc_cb; main loop feeds obs_store */
@@ -61365,6 +61390,7 @@ static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
      * possible to see exactly which MACs/channels/RSSI were actually caught
      * (or that the table filled, via table_full) without guessing blind. */
     if (is_new) {
+        espnow_last_new_us = esp_timer_get_time();  /* tells the hopper (adaptive mode) to keep dwelling here */
         ESP_LOGI(TAG, "[ESPNOW] new device #%d: %02X:%02X:%02X:%02X:%02X:%02X ch%u %ddBm dst=%02X:%02X:%02X:%02X:%02X:%02X",
                  espnow_device_count, src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
                  ch, rssi, dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
@@ -61404,17 +61430,60 @@ static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     }
 }
 
-/* ── Channel hopper task ────────────────────────────────────────────────────── */
+/* ── Channel hopper task ──────────────────────────────────────────────────────
+ * Two modes (espnow_hop_mode):
+ *
+ * FIXED — the original behaviour: exactly ESPNOW_DWELL_MS (200ms) per channel,
+ * uniform round-robin 1-13, no awareness of what's being heard.
+ *
+ * ADAPTIVE (default) — "police scanner": always dwell at least ESPNOW_DWELL_MS
+ * on a channel (fair minimum coverage even if it's silent), then keep dwelling
+ * past that as long as a NEW device keeps being heard here (espnow_last_new_us,
+ * set by espnow_scout_promisc_cb), for up to ESPNOW_STAY_MS since the last new
+ * find. Once a channel goes ESPNOW_STAY_MS without producing a new device, hop
+ * on. A channel that's already fully discovered (repeat sightings only, no new
+ * devices) gets exactly the base dwell and moves on quickly, so the extra time
+ * budget concentrates on channels that are actually still producing finds --
+ * field motivation: fixed dwell found only 3 of 11 known devices in ~160s
+ * (2026-09-22) because most nodes transmit too infrequently for a 200ms window
+ * to reliably catch. Polls every 20ms (not just once per ESPNOW_DWELL_MS) so a
+ * new-device event extends the stay promptly rather than up to one full dwell
+ * period late. */
 static void espnow_hopper_task(void *pv)
 {
     (void)pv;
     uint8_t ch = 1;
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    espnow_current_ch = ch;
+    espnow_ui_needs_update = true;
+    espnow_last_new_us = 0;
+    int64_t channel_start_us = esp_timer_get_time();
+
     while (espnow_scout_active) {
-        esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-        espnow_current_ch = ch;
-        espnow_ui_needs_update = true;
-        vTaskDelay(pdMS_TO_TICKS(ESPNOW_DWELL_MS));
-        ch = (ch % 13) + 1;   /* cycle 1→13→1 */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        int64_t now = esp_timer_get_time();
+        int64_t on_channel_us = now - channel_start_us;
+
+        bool should_hop;
+        if (espnow_hop_mode == ESPNOW_HOP_FIXED) {
+            should_hop = on_channel_us >= (ESPNOW_DWELL_MS * 1000LL);
+        } else if (on_channel_us < (ESPNOW_DWELL_MS * 1000LL)) {
+            should_hop = false;   /* always take the base dwell first */
+        } else {
+            int64_t since_last_new = (espnow_last_new_us > 0)
+                                        ? (now - espnow_last_new_us)
+                                        : INT64_MAX;
+            should_hop = since_last_new >= (ESPNOW_STAY_MS * 1000LL);
+        }
+
+        if (should_hop) {
+            ch = (ch % 13) + 1;   /* cycle 1→13→1 */
+            esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+            espnow_current_ch = ch;
+            espnow_ui_needs_update = true;
+            espnow_last_new_us = 0;
+            channel_start_us = now;
+        }
     }
     espnow_hopper_handle = NULL;
     vTaskDelete(NULL);
@@ -62605,6 +62674,20 @@ static void espnow_stop(void)
     if (espnow_refresh_timer) { lv_timer_del(espnow_refresh_timer); espnow_refresh_timer = NULL; }
     espnow_list        = NULL;
     espnow_status_lbl  = NULL;
+    espnow_hopmode_btn = NULL;
+    espnow_hopmode_lbl = NULL;
+}
+
+/* Hop-mode toggle — flips espnow_hop_mode and relabels the button. The
+ * running hopper task reads espnow_hop_mode on its own next poll tick (20ms),
+ * no restart needed. */
+static void espnow_hopmode_toggle_cb(lv_event_t *e)
+{
+    (void)e;
+    espnow_hop_mode = (espnow_hop_mode == ESPNOW_HOP_ADAPTIVE) ? ESPNOW_HOP_FIXED : ESPNOW_HOP_ADAPTIVE;
+    if (espnow_hopmode_lbl && lv_obj_is_valid(espnow_hopmode_lbl)) {
+        lv_label_set_text(espnow_hopmode_lbl, espnow_hop_mode == ESPNOW_HOP_ADAPTIVE ? "Adaptive" : "Fixed");
+    }
 }
 
 static void espnow_export_cb(lv_event_t *e)
@@ -62644,12 +62727,32 @@ static void show_espnow_scout_screen_impl(bool reset_table)
     create_function_page_base("ESP-NOW Scout");
     g_screen_stop_fn = espnow_stop;
 
-    /* Status label */
+    /* Status label — width capped to leave room for the hop-mode toggle at
+     * TOP_RIGHT on the same row (lv_pct so it still leaves the right amount
+     * of room in landscape's wider frame, not a portrait-tuned fixed width). */
     espnow_status_lbl = lv_label_create(function_page);
     lv_label_set_text(espnow_status_lbl, "Starting channel hopper...");
     lv_obj_set_style_text_color(espnow_status_lbl, ui_text_color(), 0);
     lv_obj_set_style_text_font(espnow_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_width(espnow_status_lbl, lv_pct(62));
+    lv_label_set_long_mode(espnow_status_lbl, LV_LABEL_LONG_CLIP);
     lv_obj_align(espnow_status_lbl, LV_ALIGN_TOP_LEFT, 5, 35);
+
+    /* Hop-mode toggle — tap to cycle Adaptive <-> Fixed. Adaptive ("police
+     * scanner") is the default; see espnow_hopper_task()'s doc comment. */
+    espnow_hopmode_btn = lv_btn_create(function_page);
+    lv_obj_set_size(espnow_hopmode_btn, 76, 24);
+    lv_obj_align(espnow_hopmode_btn, LV_ALIGN_TOP_RIGHT, -4, 33);
+    lv_obj_set_style_bg_color(espnow_hopmode_btn, lv_color_hex(0x37474F), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(espnow_hopmode_btn, lv_color_hex(0x546E7A), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(espnow_hopmode_btn, 0, 0);
+    lv_obj_set_style_radius(espnow_hopmode_btn, 6, 0);
+    lv_obj_add_event_cb(espnow_hopmode_btn, espnow_hopmode_toggle_cb, LV_EVENT_CLICKED, NULL);
+    espnow_hopmode_lbl = lv_label_create(espnow_hopmode_btn);
+    lv_label_set_text(espnow_hopmode_lbl, espnow_hop_mode == ESPNOW_HOP_ADAPTIVE ? "Adaptive" : "Fixed");
+    lv_obj_set_style_text_font(espnow_hopmode_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(espnow_hopmode_lbl, lv_color_white(), 0);
+    lv_obj_center(espnow_hopmode_lbl);
 
     /* Scrollable device list — follows BT Observer pattern */
     espnow_list = lv_obj_create(function_page);
