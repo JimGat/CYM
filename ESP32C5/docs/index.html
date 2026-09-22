@@ -512,7 +512,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.12.2"; // fix manual stub-upload fallback hardcoded to esp32c5.json regardless of detected chip
+      const PAGE_VERSION    = "2.12.2"; // fix stub-upload fallback hardcoded to esp32c5.json; add chip/board compatibility gate before flashing
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -622,6 +622,31 @@
         throw new Error("Web Serial unavailable");
       };
 
+      // Canonicalizes a chip-name string (from esptool-js detection, e.g. "ESP32-C5",
+      // or from a manifest's chipFamily field) down to a stable family key -
+      // "esp32c5", "esp32s3", "esp32", etc. Also used to pick the correct manual-stub
+      // JSON filename (see runStub() fallback below), since that upstream repo uses
+      // the same naming convention. Order matters: more specific variants (c5/s3/s2/
+      // c3/c6) must be checked before the bare "esp32" fallback, since e.g. "esp32-c5"
+      // contains "esp32" as a substring too - a naive .includes("esp32") match would
+      // wrongly classify an ESP32-C5 string as the generic ESP32 family.
+      const chipFamilyOf = (name) => {
+        const n = (name || "").toLowerCase();
+        if (n.includes("8266")) return "esp8266";
+        if (n.includes("c61")) return "esp32c61";
+        if (n.includes("c6"))  return "esp32c6";
+        if (n.includes("c5"))  return "esp32c5";
+        if (n.includes("c3"))  return "esp32c3";
+        if (n.includes("c2"))  return "esp32c2";
+        if (n.includes("h4"))  return "esp32h4";
+        if (n.includes("h2"))  return "esp32h2";
+        if (n.includes("p4"))  return "esp32p4";
+        if (n.includes("s3"))  return "esp32s3";
+        if (n.includes("s2"))  return "esp32s2";
+        if (n.includes("esp32")) return "esp32";
+        return n.replace(/[^a-z0-9]/g, "");
+      };
+
       const connect = async () => {
         ensureSupport();
         if (state.connected) return disconnect();
@@ -677,7 +702,7 @@
             // field-reported 2026-09-22). Filename convention confirmed against
             // https://github.com/Jason2866/WebSerial_ESPTool/tree/development/src/stubs
             // (esp32.json, esp32c2/c3/c5/c6/c61.json, esp32h2/h4.json, esp32s2/s3.json, ...).
-            const stubChip = state.chip.toLowerCase().replace(/[^a-z0-9]/g, "");
+            const stubChip = chipFamilyOf(state.chip);
             const sResp = await fetch(
               `https://raw.githubusercontent.com/Jason2866/WebSerial_ESPTool/development/src/stubs/${stubChip}.json`,
               { cache: "force-cache" }
@@ -742,6 +767,32 @@
       const flash = async (appOnly = false) => {
         ensureSupport();
         if (!state.esploader) await connect();
+        if (!state.manifest) await loadManifest();
+
+        // Chip compatibility gate. Nothing previously checked that the physically
+        // connected chip (state.chip, from detectChip() in connect()) actually
+        // matches the chip family the selected board's manifest was built for
+        // (state.manifest.chipFamily) - e.g. picking "NM-CYD-C5" in the board
+        // dropdown while a classic ESP32 (CYD-2432S028) is plugged in, or switching
+        // the board dropdown after already connecting to a different chip. Flash
+        // offsets, bootloader, and partition table are chip-specific and
+        // incompatible across families, so writing the wrong one is not a
+        // recoverable "it just won't boot" situation on every board - refuse
+        // before touching the flash rather than failing confusingly (or bricking)
+        // partway through. Re-checked on every flash attempt so a board-dropdown
+        // change after connecting is still caught, not just checked once at connect
+        // time.
+        if (state.chip && state.manifest?.chipFamily &&
+            chipFamilyOf(state.chip) !== chipFamilyOf(state.manifest.chipFamily)) {
+          const msg = `Chip mismatch: connected device is ${state.chip}, but the selected `
+                     + `firmware (${state.manifest.name || state.board}) is built for `
+                     + `${state.manifest.chipFamily}. Not flashing - select the matching board `
+                     + `or connect the right device.`;
+          setStatus(msg, "error");
+          log(`Error: ${msg}`);
+          throw new Error(msg);
+        }
+
         ui.flashBtn.disabled      = true;
         ui.quickFlashBtn.disabled = true;
         ui.connectBtn.disabled    = true;
