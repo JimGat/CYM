@@ -70,9 +70,9 @@ add_custom_command(
             "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
             "${EXPORT_DIR}/partition-table.bin"
     # Merged flat image — flash at 0x0000 with any single-binary flasher.
-    COMMAND python -m esptool --chip esp32s3 merge_bin
+    COMMAND python -m esptool --chip esp32s3 merge-bin
             -o "${EXPORT_DIR}/${OUTPUT_BIN_NAME}-full.bin"
-            --flash_mode dio --flash_freq 80m --flash_size ${FLASH_SIZE}
+            --flash-mode dio --flash-freq 80m --flash-size ${FLASH_SIZE}
             0x0000  "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
             0x8000  "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
             0x10000 "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"

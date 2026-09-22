@@ -9,7 +9,7 @@ set(EXTRA_COMPONENT_DIRS "../ESP32C5/components")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 
 # ── Single source of truth for firmware version ──────────────────────────────
-set(PROJECT_VER "v2.15.00")
+set(PROJECT_VER "v2.15.01")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -86,9 +86,9 @@ add_custom_command(
     # Merge bootloader + partition table + firmware into one flat image.
     # ESP32 bootloader is at 0x1000 (not 0x2000 as on ESP32-C5).
     # Flash at 0x0000 with any flasher that accepts a full binary.
-    COMMAND python -m esptool --chip esp32 merge_bin
+    COMMAND python -m esptool --chip esp32 merge-bin
             -o "${EXPORT_DIR}/${OUTPUT_BIN_NAME}-full.bin"
-            --flash_mode dio --flash_freq ${FLASH_FREQ} --flash_size ${FLASH_SIZE}
+            --flash-mode dio --flash-freq ${FLASH_FREQ} --flash-size ${FLASH_SIZE}
             ${BOOTLOADER_OFFSET} "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
             0x8000              "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
             0x10000             "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"

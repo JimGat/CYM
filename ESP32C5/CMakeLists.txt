@@ -7,7 +7,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 # Update ONLY this line when bumping the version. It is automatically propagated
 # to both the IDF boot log (app_init: App version) and to the FW_VERSION macro
 # used throughout the firmware — no need to edit wifi_common.h separately.
-set(PROJECT_VER "v2.15.00")
+set(PROJECT_VER "v2.15.01")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -64,9 +64,9 @@ add_custom_command(
             "${EXPORT_DIR}/partition-table.bin"
     # Merge bootloader + partition table + firmware into one flat image.
     # Flash at 0x0000 with any flasher that accepts a single full binary.
-    COMMAND python -m esptool --chip esp32c5 merge_bin
+    COMMAND python -m esptool --chip esp32c5 merge-bin
             -o "${EXPORT_DIR}/${OUTPUT_BIN_NAME}-full.bin"
-            --flash_mode dio --flash_freq 80m --flash_size ${FLASH_SIZE}
+            --flash-mode dio --flash-freq 80m --flash-size ${FLASH_SIZE}
             0x2000  "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
             0x8000  "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
             0x10000 "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
