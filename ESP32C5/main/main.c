@@ -59101,22 +59101,31 @@ static void s_ots_timer_cb(lv_timer_t *t)
     s_ots_scan_tick++;
 }
 
-static void s_ots_stop_task(void *arg);  /* defined below; used by the stop hook */
+static void s_ots_stop_task(void *arg);         /* defined below; used by the Stop button */
+static void s_ots_orphan_stop_task(void *arg);  /* defined below; used by the screen stop hook */
 
 static void ot_survey_screen_stop(void)
 {
     if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
     /* If a survey is still running when the user leaves via top ‹ Back / Home, stop it
-     * on the SAME background task the STOP button uses (ot_radio_scheduler_stop +
-     * ot_survey_stop take ~1-3s — running that inline in this hook, which fires from the
-     * main/LVGL loop, would freeze the UI / risk the WDT). Otherwise the survey kept
-     * running after the user navigated away. */
+     * on a background task (ot_radio_scheduler_stop + ot_survey_stop take ~1-3s —
+     * running that inline in this hook, which fires from the main/LVGL loop, would
+     * freeze the UI / risk the WDT). Otherwise the survey kept running after the user
+     * navigated away.
+     *
+     * Uses s_ots_orphan_stop_task, NOT s_ots_stop_task — this path must NOT touch
+     * s_ots_stopping/s_ots_stop_done. s_ots_tmr is always deleted (just above) before
+     * this fires, so nothing here is left watching those flags; if they were set
+     * anyway, they'd sit dangling until whatever s_ots_tmr gets created next, which
+     * could belong to a completely different, later survey — silently hijacking it
+     * into auto-showing an unrelated results screen instead of the config/running
+     * panel the user expects. The !s_ots_stopping guard here still matters: it means
+     * a Stop-button-initiated stop (s_ots_stop_task) is already in flight, so don't
+     * also spawn a redundant concurrent teardown. */
     if (g_ot_survey_active && !s_ots_stopping) {
-        s_ots_stopping  = true;
-        s_ots_stop_done = false;
         if (s_ots_allowlist) { free(s_ots_allowlist); s_ots_allowlist = NULL; }
         s_ots_allowlist_count = 0;
-        xTaskCreate(s_ots_stop_task, "ots_stop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
+        xTaskCreate(s_ots_orphan_stop_task, "ots_ostop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
     }
     s_ots_cfg_cont  = NULL;
     s_ots_run_cont  = NULL;
@@ -59128,10 +59137,6 @@ static void ot_survey_screen_stop(void)
     s_ots_scan_lbl  = NULL;
     s_ots_stop_btn  = NULL;
     s_ots_scan_tick = 0;
-    /* NOTE: s_ots_stopping / s_ots_stop_done are deliberately left as-is — a
-     * background s_ots_stop_task may still be in flight independent of this
-     * screen's lifecycle; they're consumed by the next s_ots_timer_cb once
-     * created (screen re-entry or a fresh survey run). */
 }
 
 /* Profile cycle buttons */
@@ -59228,6 +59233,40 @@ static void s_ots_stop_task(void *arg)
         ot_survey_stop(g_active_survey, &end_geo);
     }
     s_ots_stop_done = true;  /* consumed by s_ots_timer_cb, which does the UI swap */
+    vTaskDelete(NULL);
+}
+
+/* Identical radio/session teardown to s_ots_stop_task(), used when the user
+ * leaves the OT Survey screen via top Back/Home mid-survey (ot_survey_screen_stop()
+ * below) instead of tapping the in-screen Stop button. Deliberately does NOT touch
+ * s_ots_stopping/s_ots_stop_done. Those flags exist so the SAME timer instance that
+ * requested a stop can watch for its own completion and auto-show results — they
+ * are meant for the Stop-button path, where s_ots_tmr keeps running throughout.
+ * ot_survey_screen_stop() always deletes s_ots_tmr synchronously before this task
+ * even starts, so nothing is left to legitimately consume them here. Before this
+ * split (fixed 2026-09-22), Home/Back mid-survey DID set them, and they'd sit
+ * "dangling" until whatever s_ots_tmr got created next — including a brand new
+ * timer from a *different*, later survey the user had since started — silently
+ * hijacking it into showing an old/unrelated results screen instead of the fresh
+ * config or running panel the user was expecting. Field report: "I did navigate
+ * home a couple of times to try to get the scan to re run but... it gave me a
+ * screen as if the scan had already ran and there were no results." */
+static void s_ots_orphan_stop_task(void *arg)
+{
+    (void)arg;
+    ot_radio_scheduler_stop();
+    if (g_active_survey) {
+        ot_survey_geo_t end_geo = {0};
+        const gps_data_t *gps = gps_best();
+        if (gps && gps->valid) {
+            end_geo.valid      = true;
+            end_geo.latitude   = gps->latitude;
+            end_geo.longitude  = gps->longitude;
+            end_geo.altitude_m = gps->altitude;
+            end_geo.accuracy_m = gps->accuracy;
+        }
+        ot_survey_stop(g_active_survey, &end_geo);
+    }
     vTaskDelete(NULL);
 }
 
