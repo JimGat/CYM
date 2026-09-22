@@ -61285,8 +61285,10 @@ static bool espnow_is_espnow_frame(const uint8_t *buf, uint16_t len)
 
 /* ── Find or create a device entry (call inside portMUX) ──────────────────── */
 static int espnow_find_or_add(const uint8_t *src_mac, const uint8_t *dst_mac,
-                               uint8_t ch, int8_t rssi)
+                               uint8_t ch, int8_t rssi, bool *out_new, bool *out_table_full)
 {
+    if (out_new) *out_new = false;
+    if (out_table_full) *out_table_full = false;
     /* search for existing entry */
     for (int i = 0; i < espnow_device_count; i++) {
         if (memcmp(espnow_devices[i].src_mac, src_mac, 6) == 0) {
@@ -61299,7 +61301,11 @@ static int espnow_find_or_add(const uint8_t *src_mac, const uint8_t *dst_mac,
         }
     }
     /* add new entry if room */
-    if (espnow_device_count >= ESPNOW_MAX_DEVICES) return -1;
+    if (espnow_device_count >= ESPNOW_MAX_DEVICES) {
+        if (out_table_full) *out_table_full = true;
+        return -1;
+    }
+    if (out_new) *out_new = true;
     int idx = espnow_device_count++;
     espnow_device_t *d = &espnow_devices[idx];
     memset(d, 0, sizeof(*d));
@@ -61343,11 +61349,29 @@ static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     uint8_t ch   = (uint8_t)ppkt->rx_ctrl.channel;
 
     // Update the device discovery table
+    bool is_new = false, table_full = false;
     portENTER_CRITICAL_ISR(&espnow_mux);
-    espnow_find_or_add(src_mac, dst_mac, ch, rssi);
+    espnow_find_or_add(src_mac, dst_mac, ch, rssi, &is_new, &table_full);
     portEXIT_CRITICAL_ISR(&espnow_mux);
     espnow_ui_needs_update = true;
     espnow_obs_pending     = true; /* Phase 4: drain to obs_store from main loop */
+
+    /* Log only on a genuinely NEW device (rare — at most ESPNOW_MAX_DEVICES
+     * times per Scout session, not per-packet) so this is safe to call from
+     * the promiscuous RX task context without the packet-rate volume the
+     * removed v2.13.95 [ESPNOW_DIAG] block had. Field report 2026-09-22:
+     * Jim has 11 known ESP-NOW devices (10 nodes + 1 master) on the bench but
+     * Scout only showed 5 after the 0x04 type-byte fix -- this makes it
+     * possible to see exactly which MACs/channels/RSSI were actually caught
+     * (or that the table filled, via table_full) without guessing blind. */
+    if (is_new) {
+        ESP_LOGI(TAG, "[ESPNOW] new device #%d: %02X:%02X:%02X:%02X:%02X:%02X ch%u %ddBm dst=%02X:%02X:%02X:%02X:%02X:%02X",
+                 espnow_device_count, src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5],
+                 ch, rssi, dst_mac[0], dst_mac[1], dst_mac[2], dst_mac[3], dst_mac[4], dst_mac[5]);
+    } else if (table_full) {
+        ESP_LOGW(TAG, "[ESPNOW] device table full (%d) — %02X:%02X:%02X:%02X:%02X:%02X on ch%u not added",
+                 ESPNOW_MAX_DEVICES, src_mac[0], src_mac[1], src_mac[2], src_mac[3], src_mac[4], src_mac[5], ch);
+    }
 
     // Capture raw payload to packet log when a session is active
     if (espnow_session_idx >= 0 && espnow_pktlog) {
@@ -62600,7 +62624,17 @@ static void espnow_export_cb(lv_event_t *e)
 }
 
 /* ── Screen entry point ─────────────────────────────────────────────────────── */
-static void show_espnow_scout_screen(void)
+/* reset_table: true for a fresh entry from the WiFi/IOT menu (start clean);
+ * false when resuming from the session sub-screen's top-bar Back (keep
+ * whatever was already discovered — field report 2026-09-22: Back from a
+ * drilled-into device was wiping the whole list and restarting the scan,
+ * losing already-found devices for no reason the user asked for). Either
+ * way, promiscuous mode + the hopper task need to be re-armed here: entering
+ * the session screen sets espnow_scout_active=false (stops hopping, locks to
+ * one channel) and its own stop-hook (espnow_session_stop) fully disables
+ * promiscuous mode + the RX callback on the way back out — that part of the
+ * teardown is not something Back should skip, only the table wipe is. */
+static void show_espnow_scout_screen_impl(bool reset_table)
 {
     if (!ensure_wifi_mode()) return;
 
@@ -62646,12 +62680,13 @@ static void show_espnow_scout_screen(void)
 
     // Bottom "Stop / Exit" removed — top-bar ‹ Back stops scout (g_screen_stop_fn = espnow_stop).
 
-    /* Reset device table for a fresh scan */
-    portENTER_CRITICAL(&espnow_mux);
-    espnow_device_count = 0;
-    memset(espnow_devices, 0, sizeof(espnow_devices));
-    portEXIT_CRITICAL(&espnow_mux);
-    espnow_current_ch       = 1;
+    if (reset_table) {
+        portENTER_CRITICAL(&espnow_mux);
+        espnow_device_count = 0;
+        memset(espnow_devices, 0, sizeof(espnow_devices));
+        portEXIT_CRITICAL(&espnow_mux);
+        espnow_current_ch = 1;
+    }
     espnow_ui_needs_update  = true;
     espnow_scout_active     = true;
 
@@ -62673,6 +62708,20 @@ static void show_espnow_scout_screen(void)
 
     /* 500 ms LVGL refresh timer */
     espnow_refresh_timer = lv_timer_create(espnow_refresh_cb, 500, NULL);
+}
+
+/* Fresh entry — from the WiFi/IOT menu tile. Starts a clean scan. */
+static void show_espnow_scout_screen(void)
+{
+    show_espnow_scout_screen_impl(true);
+}
+
+/* Resume — the session sub-screen's top-bar Back target. Re-arms promiscuous
+ * capture + the hopper task exactly like a fresh entry, but keeps every
+ * device already discovered instead of wiping the list back to zero. */
+static void show_espnow_scout_screen_resume(void)
+{
+    show_espnow_scout_screen_impl(false);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
@@ -62749,9 +62798,10 @@ static void show_espnow_session_screen(int dev_idx)
 {
     create_function_page_base("ESP-NOW Session");
     g_screen_stop_fn = espnow_session_stop;
-    // Top ‹ Back → ESP-NOW Scout (parent title not in NAV_SHOW_TABLE → would
-    // otherwise fall through to Home).
-    g_screen_back_fn = show_espnow_scout_screen;
+    // Top ‹ Back → ESP-NOW Scout, resuming with the already-discovered device
+    // list intact rather than wiping it (show_espnow_scout_screen_resume, not
+    // show_espnow_scout_screen — see that function's doc comment).
+    g_screen_back_fn = show_espnow_scout_screen_resume;
 
     espnow_session_idx = dev_idx;
     espnow_device_t *d = &espnow_devices[dev_idx];
