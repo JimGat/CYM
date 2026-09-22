@@ -1882,7 +1882,7 @@ Settings
 ├── Screen              (screen timeout + brightness + orientation — combined popup)
 │   ├── Timeout         (inactivity timer before dimming)
 │   ├── Brightness      (software brightness overlay 10–100%)
-│   └── Orientation     (0/90/180/270° — NM-CYD-C5 only, reboots to apply)
+│   └── Orientation     (0/90/180/270° — NM-CYD-C5 + WS-C5-28, reboots to apply)
 ├── SD Card             (provision / file tree / free space)
 ├── GPS Info            (live fix status)
 ├── Hardware Options    ← hardware addon configuration
@@ -1899,7 +1899,7 @@ All settings are persisted via **NVS** (Non-Volatile Storage) across reboots. Th
 | Setting | Description |
 |---------|-------------|
 | **Timing** | Combined timing popup — WiFi scan dwell time sliders, BT scan duration slider (10–30 s), and GATT connect timeout slider |
-| **Screen** | Combined screen popup — inactivity timeout dropdown, brightness overlay slider, and (NM-CYD-C5 only) screen **Orientation** — 0°/90°/180°/270°, NVS-persisted, applied via LVGL software rotation on reboot. See [Screen Orientation](#screen-orientation) below. |
+| **Screen** | Combined screen popup — inactivity timeout dropdown, brightness overlay slider, and (NM-CYD-C5 + WS-C5-28) screen **Orientation** — 0°/90°/180°/270°, NVS-persisted, applied via LVGL software rotation on reboot. See [Screen Orientation](#screen-orientation) below. |
 | **SD Card** | Validate/provision (creates `/sdcard/lab/` structure, shows completion status); browse file tree; check free space |
 | **GPS Info** | Live GPS fix status — latitude, longitude, altitude, satellite count, UTC time, and UART reference. When no live fix, last-known coordinates are shown in amber with `*` suffix and `Accuracy: 150 m (stale)`. **Set Position** button opens manual coordinate editor (see below). Refreshes every second. |
 | **Hardware Options** | Sub-menu for hardware addon configuration — **Power Mode** (Normal / Max TX power) and **NM-RF-HAT** enable/disable toggle. NVS-persisted. |
@@ -1932,7 +1932,9 @@ The `*`-suffix values are what the device is actually using as its GPS fallback 
 
 #### Screen Orientation
 
-**NM-CYD-C5 only.** Accessible via **Settings → Screen → Orientation**: pick `0 Portrait` (default), `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. The device reboots into the new orientation — every screen is sized from the live display resolution, so a reboot guarantees correct layout everywhere, including screens you haven't opened yet this session. The setting is saved to NVS and persists across reboots and updates. Touch calibration always runs in native portrait and restores your chosen orientation afterward.
+**NM-CYD-C5 and WS-C5-28.** Accessible via **Settings → Screen → Orientation**: pick `0 Portrait` (default), `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. The device reboots into the new orientation — every screen is sized from the live display resolution, so a reboot guarantees correct layout everywhere, including screens you haven't opened yet this session. The setting is saved to NVS and persists across reboots and updates. Touch calibration (NM-CYD-C5's resistive XPT2046 only — WS-C5-28's capacitive CST3530 needs none) always runs in native portrait and restores your chosen orientation afterward.
+
+> WS-C5-28 support was added in v2.15.01 on the strength of both boards sharing an identical 240×320 ST7789 panel and a native-portrait touch driver contract — it has not yet been verified on physical WS-C5-28 hardware. If you hit anything odd (touch offset after rotating, layout glitches), please report it.
 
 Dozens of screens got dedicated landscape layouts — Universal Remote, LED Remote, Bluetooth Lookout, Evil Portal, Timing Settings, Chameleon Ultra, GPS Info, and the Main Menu among them. Portrait behavior is unchanged throughout; landscape was added as additional layout branches, not a replacement.
 
