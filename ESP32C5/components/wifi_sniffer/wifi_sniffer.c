@@ -474,10 +474,16 @@ esp_err_t wifi_sniffer_start(void) {
             return ESP_FAIL;
         }
         
-        // Set promiscuous mode
+        // Set promiscuous mode - explicitly assert MGMT+DATA filter rather than
+        // relying on whatever another screen (e.g. ESP-NOW Scout, which sets a
+        // sticky driver-level MGMT-only filter) left behind. Without this, client
+        // detection (which parses DATA frames) silently sees zero packets even
+        // though beacons still get through and the AP list looks populated.
+        wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
+        esp_wifi_set_promiscuous_filter(&filt);
         esp_wifi_set_promiscuous(true);
         esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
-        
+
         // Initialize channel hopping with selected channels
         sniffer_channel_index = 0;
         sniffer_current_channel = sniffer_selected_channels[0];
@@ -504,12 +510,14 @@ esp_err_t wifi_sniffer_start(void) {
         //    handle scan results and then enable promiscuous mode
         // For now, we'll just start promiscuous mode immediately
         
+        wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
+        esp_wifi_set_promiscuous_filter(&filt);
         esp_wifi_set_promiscuous(true);
         esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
-        
+
         sniffer_active = true;
         sniffer_channel_index = 0;
-        
+
         // Start channel hopping task
         xTaskCreate(sniffer_channel_hop_task, "sniffer_ch_hop", 16384, NULL, 5, &sniffer_channel_task_handle);
         
@@ -757,10 +765,14 @@ esp_err_t wifi_sniffer_start_noscan(void) {
     sniffer_scan_phase = false;
     sniffer_selected_mode = false;
     
-    // Set promiscuous mode
+    // Set promiscuous mode - see the noscan-mode comment above for why this
+    // filter must be asserted explicitly rather than left to whatever a
+    // previously-visited screen configured.
+    wifi_promiscuous_filter_t noscan_filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
+    esp_wifi_set_promiscuous_filter(&noscan_filt);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
-    
+
     sniffer_channel_index = 0;
     sniffer_current_channel = channel_list[0];
     esp_wifi_set_channel(sniffer_current_channel, WIFI_SECOND_CHAN_NONE);
@@ -846,10 +858,13 @@ esp_err_t wifi_sniffer_dog_start(void) {
     // Clear previous data
     probe_request_count = 0;
     
-    // Set promiscuous mode
+    // Set promiscuous mode - SnifferDog only needs probe requests (MGMT), but
+    // still assert it explicitly rather than trust leftover driver state.
+    wifi_promiscuous_filter_t dog_filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+    esp_wifi_set_promiscuous_filter(&dog_filt);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
-    
+
     sniffer_dog_active = true;
     sniffer_dog_channel_index = 0;
     

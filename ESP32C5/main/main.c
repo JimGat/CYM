@@ -61658,6 +61658,13 @@ static void espnow_scout_stop(void)
 static void espnow_rebuild_list(void)
 {
     if (!espnow_list || !lv_obj_is_valid(espnow_list)) return;
+
+    /* lv_obj_clean() destroys every card and resets scroll to (0,0) - without
+     * saving/restoring it here, the list snaps back to the top on every
+     * refresh tick (every new device found), making it impossible to scroll
+     * down to see devices past the first screenful. */
+    lv_coord_t scroll_y = lv_obj_get_scroll_y(espnow_list);
+
     lv_obj_clean(espnow_list);
 
     portENTER_CRITICAL(&espnow_mux);
@@ -61726,6 +61733,10 @@ static void espnow_rebuild_list(void)
         lv_label_set_long_mode(l3, LV_LABEL_LONG_CLIP);
         lv_obj_set_width(l3, lv_pct(100));
     }
+
+    /* Restore scroll position - lv_obj_scroll_to_y clamps to the new content
+     * height automatically, so this is safe even if the list got shorter. */
+    lv_obj_scroll_to_y(espnow_list, scroll_y, LV_ANIM_OFF);
 }
 
 /* ── LVGL refresh timer (500 ms) ────────────────────────────────────────────── */
