@@ -208,6 +208,110 @@ void ot_survey_uuid_str(const ot_uuid_t *uuid, char buf[33]);
  */
 const char *ot_survey_profile_name(ot_survey_profile_t profile);
 
+/* ── Results (post-survey summary, read back from SD) ────────────────────── */
+/*
+ * A results view loaded from a session's metadata.json + obs.jsonl — either
+ * the session that was just stopped (main.c calls this right after
+ * ot_survey_stop() returns), or an older session picked from
+ * ot_survey_list_sessions(). This is a read-only snapshot: it does not touch
+ * g_active_survey or any live radio/obs_store state.
+ *
+ * obs_by_type[] is an EXACT full-file count (every line in obs.jsonl is
+ * scanned once for this). entries[] is a bounded, deduplicated-by-MAC list
+ * for the on-device drill-down UI — same find-or-add-by-MAC idiom already
+ * used by obs_store_add()/espnow_find_or_add(), so it naturally caps at the
+ * number of *unique devices*, not total observation lines, and a very busy
+ * session degrades to "some devices missing from the list" rather than
+ * "list truncated mid-alphabet" — entries_truncated is set if the file had
+ * more unique devices than entries_cap.
+ */
+#define OT_RESULT_LABEL_LEN  24
+
+typedef struct {
+    uint8_t  obs_type;                        /* obs_type_t */
+    uint8_t  src_radio;                       /* obs_radio_t */
+    uint8_t  mac[6];
+    int8_t   rssi_cur;
+    int8_t   rssi_peak;
+    uint8_t  confidence;                      /* 0-100 */
+    uint8_t  evidence[OBS_MAX_EVIDENCE];
+    uint8_t  evidence_count;
+    uint16_t hit_count;
+    uint32_t first_seen_s;
+    uint32_t last_seen_s;
+    char     label[OT_RESULT_LABEL_LEN];
+} ot_result_entry_t;
+
+typedef struct {
+    char     uuid[33];
+    char     dir_path[80];
+    char     site[OT_SURVEY_SITE_LEN];
+    char     building[OT_SURVEY_BUILDING_LEN];
+    char     zone[OT_SURVEY_ZONE_LEN];
+    char     operator_id[OT_SURVEY_OPERATOR_LEN];
+    char     profile_name[20];
+    uint32_t start_time_s;
+    uint32_t stop_time_s;
+    uint32_t obs_count;                       /* exact — full obs.jsonl scan */
+    uint32_t obs_by_type[10];                 /* exact — full obs.jsonl scan */
+    bool     geo_start_valid, geo_end_valid;
+    float    geo_start_lat, geo_start_lon;
+    float    geo_end_lat, geo_end_lon;
+
+    ot_result_entry_t *entries;                /* heap_caps_malloc'd — free via ot_survey_results_free() */
+    uint16_t            entries_count;
+    uint16_t            entries_cap;
+    bool                 entries_truncated;
+} ot_survey_results_t;
+
+/*
+ * ot_survey_results_load — parse metadata.json + obs.jsonl from session_dir
+ * into *out. max_entries bounds the drill-down device list (obs_by_type[]
+ * counts are always exact regardless of this cap). Caller must call
+ * ot_survey_results_free() when done, even on a partial/error return, to
+ * release the entries array.
+ *
+ * Must be called with sd_spi_mutex held (reads from SD), same convention as
+ * ot_survey_flush().
+ */
+esp_err_t ot_survey_results_load(const char *session_dir, ot_survey_results_t *out,
+                                  uint16_t max_entries);
+
+/*
+ * ot_survey_results_free — release *out's entries array. Safe to call on a
+ * zero-initialised or already-freed struct (idempotent).
+ */
+void ot_survey_results_free(ot_survey_results_t *out);
+
+/* ── Session listing (for the Past Surveys browser) ──────────────────────── */
+
+#define OT_SESSION_LIST_MAX  40   /* newest-first; older sessions beyond this
+                                    * are still on SD and can be reached by
+                                    * clearing/rotating old sessions, just not
+                                    * listed in one screen */
+
+typedef struct {
+    char     dir_path[80];
+    char     site[OT_SURVEY_SITE_LEN];
+    uint32_t start_time_s;
+    uint32_t obs_count;              /* from metadata.json — may be stale if the
+                                       * session crashed before a final flush;
+                                       * ot_survey_results_load()'s obs_by_type
+                                       * total is always the authoritative count */
+} ot_session_summary_t;
+
+/*
+ * ot_survey_list_sessions — scan /sdcard/lab/otsurvey/ for session
+ * directories, read each one's metadata.json header (site, start_time,
+ * obs_count only — NOT the full obs.jsonl), and fill out[] newest-first.
+ * Returns the number of sessions found (capped at OT_SESSION_LIST_MAX; the
+ * total directory count, if larger, is written to *total_found when
+ * total_found is non-NULL).
+ *
+ * Must be called with sd_spi_mutex held.
+ */
+int ot_survey_list_sessions(ot_session_summary_t out[OT_SESSION_LIST_MAX], int *total_found);
+
 #if CONFIG_IEEE802154_ENABLED
 /*
  * ot_survey_write_154_frame — append one 802.15.4 PSDU to the session PCAPNG.

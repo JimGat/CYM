@@ -60693,7 +60693,19 @@ static bool espnow_is_espnow_frame(const uint8_t *buf, uint16_t len)
     if (buf[0] != 0xD0 && buf[0] != 0xE0) return false;
     if (buf[24] != 0x7F) return false;                           /* Category: Vendor Specific */
     if (buf[25] != 0x18 || buf[26] != 0xFE || buf[27] != 0x34) return false; /* Espressif OUI */
-    if (buf[28] != 0x04) return false;                           /* ESP-NOW type */
+    /* buf[28] used to be required == 0x04 ("ESP-NOW type"), on the assumption the
+     * vendor-specific body has a fixed 1-byte protocol-type field right after the
+     * OUI. Field evidence says otherwise: a confirmed ESP-NOW sender (Master S3,
+     * AC:27:6E:CE:49:B0) produced Category=0x7F + Espressif OUI on every single
+     * frame, but buf[28] took a different value almost every time (0xDF, 0x35,
+     * 0xAC, 0xD3, 0xFE, 0x88, 0x50, ...) — that's live payload content, not a
+     * fixed protocol field, so the check was rejecting 100% of real ESP-NOW
+     * traffic from three separate confirmed devices across two field reports
+     * (Biscuit Pro 2026-09-14, an ESP-NOW hat + Master S3 2026-09-22). Category
+     * + Espressif OUI on a WIFI_PKT_MGMT Action/Action-No-Ack frame is already a
+     * strong, sufficient signal — essentially nothing else produces that
+     * combination — so the type-byte check is dropped entirely rather than
+     * guessing at a replacement offset/value blind. */
     return true;
 }
 
@@ -60749,29 +60761,7 @@ static void espnow_scout_promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     const uint8_t *frame = ppkt->payload;
     uint16_t       len   = ppkt->rx_ctrl.sig_len;
 
-    if (!espnow_is_espnow_frame(frame, len)) {
-        /* Diagnostic (2026-09-14): the 0xD0/0xE0 fix alone didn't surface Jim's
-         * Biscuit Pro broadcast in Scout. Rather than guess a third theory blind,
-         * log any Action/Action-No-Ack frame that reaches here but fails the
-         * OUI/type match, so the real frame format can be read off the serial
-         * monitor instead. Gated to just these two FC values — excludes the much
-         * larger volume of beacons/probes/etc. that also carry WIFI_PKT_MGMT, so
-         * this should not spam the log in a normal environment. Remove once the
-         * Biscuit Pro's actual frame layout is known and the filter (or this
-         * device's own transmit format) is fixed to match. */
-        if (frame[0] == 0xD0 || frame[0] == 0xE0) {
-            if (len < 29) {
-                ESP_LOGI(TAG, "[ESPNOW_DIAG] short action frame: fc=0x%02X len=%u (need >=29 for OUI check)",
-                         frame[0], (unsigned)len);
-            } else {
-                ESP_LOGI(TAG, "[ESPNOW_DIAG] non-matching action frame: fc=0x%02X len=%u "
-                              "cat=0x%02X oui=%02X:%02X:%02X type=0x%02X src=%02X:%02X:%02X:%02X:%02X:%02X",
-                         frame[0], (unsigned)len, frame[24], frame[25], frame[26], frame[27],
-                         frame[28], frame[10], frame[11], frame[12], frame[13], frame[14], frame[15]);
-            }
-        }
-        return;
-    }
+    if (!espnow_is_espnow_frame(frame, len)) return;
 
     const uint8_t *dst_mac = frame + 4;    /* DA  */
     const uint8_t *src_mac = frame + 10;   /* SA  */
