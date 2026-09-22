@@ -188,6 +188,39 @@ Never create a release without all binaries from all boards attached.
 
 ---
 
+## SD card assets — refresh on every release
+
+`ouilist.bin` (OUI vendor table, loaded from `/sdcard/lab/ouilist.bin` at runtime — it is
+**not** baked into the firmware binary) goes stale as new MAC vendor blocks are registered.
+Refresh it as part of every release cycle, not just when someone notices it's old (it went
+~5 months stale between the 2026-04-29 and 2026-09-22 refreshes before anyone caught it):
+
+```bash
+curl -L https://standards-oui.ieee.org/oui/oui.csv -o /tmp/oui-fresh.csv
+python3 tools/oui_convert.py /tmp/oui-fresh.csv /tmp/ouilist-fresh.bin
+# sanity check before committing anywhere:
+python3 -c "import struct; f=open('/tmp/ouilist-fresh.bin','rb'); print(f.read(4), struct.unpack('<I', f.read(4))[0])"
+```
+
+This must be pushed to **two** places, both required:
+
+1. **`docs/support_files/`** in this repo (`oui.csv` + `ouilist.bin`) — the staging/source
+   copy tracked alongside the firmware that generated it.
+2. **[JimGat/CYM-SD-Assets](https://github.com/JimGat/CYM-SD-Assets)** — the actual
+   distribution repo end users download onto their SD card
+   (`oui.csv` at root + `sdcard/lab/ouilist.bin`). Update `ASSET_MANIFEST.md` there too
+   (generation date, entry count, SHA256 of both files) — that repo has its own copy of
+   `tools/oui_convert.py` and documents this exact refresh procedure in its own README.
+
+CYM-SD-Assets is a separate repo (`git@github.com:JimGat/CYM-SD-Assets.git`) — clone it
+locally if not already present, don't try to push SD-asset changes through this repo.
+
+The RFID key dictionary (`mf_keys.dic`, sourced from RfidResearchGroup's Proxmark3
+dictionaries) lives in CYM-SD-Assets only, not here — refresh it the same release cycle if
+it's gone stale (see that repo's README for the source URL and refresh command).
+
+---
+
 ## Web flasher (ESP32C5/docs/index.html)
 
 The flasher supports board selection at runtime:
