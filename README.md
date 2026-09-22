@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.14.00</b>
+  <b>v2.15.00</b>
 </p>
 
 <p align="center">
@@ -133,6 +133,7 @@ All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/)
     - [Wardrive File Format](#wardrive-file-format)
     - [Wardriving Workflow — Field Use](#wardriving-workflow--field-use)
   - [Settings](#4-settings)
+    - [Screen Orientation](#screen-orientation)
     - [TX Power Mode](#tx-power-mode)
     - [GATT Connect Timeout](#gatt-connect-timeout)
     - [Data Transfer](#data-transfer)
@@ -1878,9 +1879,10 @@ Settings
 │   ├── BT Scan         (BLE initial scan duration — 10–30 s slider, default 10 s)
 │   └── GATT Timeout    (BLE connect timeout — 3–30 s slider)
 ├── Download Mode       (reboot into bootloader)
-├── Screen              (screen timeout + brightness — combined popup)
+├── Screen              (screen timeout + brightness + orientation — combined popup)
 │   ├── Timeout         (inactivity timer before dimming)
-│   └── Brightness      (software brightness overlay 10–100%)
+│   ├── Brightness      (software brightness overlay 10–100%)
+│   └── Orientation     (0/90/180/270° — NM-CYD-C5 only, reboots to apply)
 ├── SD Card             (provision / file tree / free space)
 ├── GPS Info            (live fix status)
 ├── Hardware Options    ← hardware addon configuration
@@ -1897,7 +1899,7 @@ All settings are persisted via **NVS** (Non-Volatile Storage) across reboots. Th
 | Setting | Description |
 |---------|-------------|
 | **Timing** | Combined timing popup — WiFi scan dwell time sliders, BT scan duration slider (10–30 s), and GATT connect timeout slider |
-| **Screen** | Combined screen popup — inactivity timeout dropdown and brightness overlay slider |
+| **Screen** | Combined screen popup — inactivity timeout dropdown, brightness overlay slider, and (NM-CYD-C5 only) screen **Orientation** — 0°/90°/180°/270°, NVS-persisted, applied via LVGL software rotation on reboot. See [Screen Orientation](#screen-orientation) below. |
 | **SD Card** | Validate/provision (creates `/sdcard/lab/` structure, shows completion status); browse file tree; check free space |
 | **GPS Info** | Live GPS fix status — latitude, longitude, altitude, satellite count, UTC time, and UART reference. When no live fix, last-known coordinates are shown in amber with `*` suffix and `Accuracy: 150 m (stale)`. **Set Position** button opens manual coordinate editor (see below). Refreshes every second. |
 | **Hardware Options** | Sub-menu for hardware addon configuration — **Power Mode** (Normal / Max TX power) and **NM-RF-HAT** enable/disable toggle. NVS-persisted. |
@@ -1927,6 +1929,19 @@ Accessible via **Settings → GPS Info**. Refreshes every second.
 | Accuracy | `150 m (stale)` in amber |
 
 The `*`-suffix values are what the device is actually using as its GPS fallback for wardrive logging, GATT Walker geotags, and GPS waypoints.
+
+#### Screen Orientation
+
+**NM-CYD-C5 only.** Accessible via **Settings → Screen → Orientation**: pick `0 Portrait` (default), `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. The device reboots into the new orientation — every screen is sized from the live display resolution, so a reboot guarantees correct layout everywhere, including screens you haven't opened yet this session. The setting is saved to NVS and persists across reboots and updates. Touch calibration always runs in native portrait and restores your chosen orientation afterward.
+
+Dozens of screens got dedicated landscape layouts — Universal Remote, LED Remote, Bluetooth Lookout, Evil Portal, Timing Settings, Chameleon Ultra, GPS Info, and the Main Menu among them. Portrait behavior is unchanged throughout; landscape was added as additional layout branches, not a replacement.
+
+<p align="center">
+  <img src="docs/screenshots/Main_Menu_Landscape_and_Portrait.jpg" width="45%" alt="Main Menu — landscape and portrait"/>
+  <img src="docs/screenshots/Screen_Settings_Landscape_and_Portrait.jpg" width="45%" alt="Screen Settings — landscape and portrait"/>
+</p>
+
+See the wiki's [Screen Orientation](https://github.com/JimGat/CYM/wiki/Screen-Orientation) page for the full before/after gallery across every redesigned screen.
 
 **Set Position button (amber):**
 
@@ -3143,7 +3158,7 @@ This project wouldn't be where it is without the brilliant minds and generous ti
 
 **Heartfelt thanks to:**
 
-- **@birolt29** — An extraordinary contributor who has gone far above and beyond at every stage of this project. @birolt29 performed deep ESP32-C5 DMA and render pipeline analysis on real hardware, submitted multiple major patch sets, and caught critical bugs before they ever reached users. Contributions include: the v2.10.15 hardware optimization patch (upload stability, mbedTLS PSRAM routing, BLE Spam memory hardening); the v2.11.x render performance series (LCD SPI 40→80 MHz, internal DMA draw buffers, -O2 optimization, LVGL memcpy, 15 ms refresh period, PSRAM 80 MHz — bringing full-frame render from 148 ms to ~77 ms); the SD remount mutex fix that eliminated a hard reset race; moving 17.4 KB of IR/RF433 name tables to PSRAM BSS; the GATT Walker double-init reset fix; diagnosing and fixing the wardrive GPS crash (GitHub issue #12 — stack-allocated `lv_msgbox` button map dangling after function return); and for v2.12.0, an entire wardrive overhaul: fixing a silent SD mutex self-deadlock that froze the device mid-session; root-causing and fixing BLE-only wardrive which had been collecting zero devices for months (`esp_wifi_deinit()` needed before NimBLE); +52% DMA headroom by moving five large arrays to PSRAM BSS (internal BSS 129 KB → 113 KB, wardrive DMA floor 20,807 → 31,615 bytes); GPS boot-time baud auto-detect and optional 115200 / 5 Hz with multi-vendor commands (CASIC, MTK, u-blox); adaptive speed-based capture profiles with D-UCB bandit and DFS tier-weighting; GPS status icon in the top bar; FirstSeen fix (was hardcoded 2025-09-26); CSV fsync power-cut safety; journey-grouped CSV rotation; BLE active scan with SCAN_RSP name backfill; BLE-mode dashboard; AltitudeMeters and AccuracyMeters filled from real GPS; and serial-validated testing of every change on real hardware. The firmware is faster, more stable, and more reliable because of @birolt29. 🙏
+- **@birolt29** — Co-developer of CYM, not merely a contributor. @birolt29 has driven some of the largest feature and architectural work in the project's history, performed deep ESP32-C5 DMA and render pipeline analysis on real hardware, submitted multiple major patch sets, and caught critical bugs before they ever reached users. For v2.15.00: the **[Screen Orientation](https://github.com/JimGat/CYM/wiki/Screen-Orientation)** feature (landscape/portrait/flipped rotation, built over 75+ build/test cycles with dozens of screens individually redesigned for landscape — Universal Remote, LED Remote, Bluetooth Lookout, Evil Portal, Timing Settings, Chameleon Ultra, GPS Info, and the Main Menu among them); a wardrive-style redesign of the WiFi Scan & Attack list with deauth-feasibility color coding; dual-band (2.4 + 5 GHz) coverage for the Handshaker with GPS-free regulatory domain detection and a PMKID (hashcat 22000) capture path; and crash fixes for MITM active-capture, PN532 Clone/Write/Emulate, and two Chameleon Ultra BLE reconnect bugs. Earlier contributions include: the v2.10.15 hardware optimization patch (upload stability, mbedTLS PSRAM routing, BLE Spam memory hardening); the v2.11.x render performance series (LCD SPI 40→80 MHz, internal DMA draw buffers, -O2 optimization, LVGL memcpy, 15 ms refresh period, PSRAM 80 MHz — bringing full-frame render from 148 ms to ~77 ms); the SD remount mutex fix that eliminated a hard reset race; moving 17.4 KB of IR/RF433 name tables to PSRAM BSS; the GATT Walker double-init reset fix; diagnosing and fixing the wardrive GPS crash (GitHub issue #12 — stack-allocated `lv_msgbox` button map dangling after function return); and for v2.12.0, an entire wardrive overhaul: fixing a silent SD mutex self-deadlock that froze the device mid-session; root-causing and fixing BLE-only wardrive which had been collecting zero devices for months (`esp_wifi_deinit()` needed before NimBLE); +52% DMA headroom by moving five large arrays to PSRAM BSS (internal BSS 129 KB → 113 KB, wardrive DMA floor 20,807 → 31,615 bytes); GPS boot-time baud auto-detect and optional 115200 / 5 Hz with multi-vendor commands (CASIC, MTK, u-blox); adaptive speed-based capture profiles with D-UCB bandit and DFS tier-weighting; GPS status icon in the top bar; FirstSeen fix (was hardcoded 2025-09-26); CSV fsync power-cut safety; journey-grouped CSV rotation; BLE active scan with SCAN_RSP name backfill; BLE-mode dashboard; AltitudeMeters and AccuracyMeters filled from real GPS; and serial-validated testing of every change on real hardware. The firmware is faster, more stable, more capable, and more reliable because of @birolt29. 🙏
 
 - **Anubis** — For creating the first community video showcase of CYM in the wild. Taking the time to film, edit, and publish a video of this project means the world — it helps new users discover what CYM can do and gives the project a presence beyond GitHub. Thank you! 🎬
 
