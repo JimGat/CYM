@@ -84,7 +84,7 @@ CYM builds and flashes for three boards from one shared firmware source tree.
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original single-core ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, GPS wardriving. No 802.15.4 (the chip has no 802.15.4 radio). NM-RF-HAT reachable via an SD Card Shim adapter. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original single-core ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4 (the chip has no 802.15.4 radio), no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported — new | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard hardware NM-CYD-C5 doesn't have: 6-axis IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Many new features planned to take advantage of that extra hardware. |
 
 All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/) (board selector at the top) and build from the same `main.c`.
@@ -1932,9 +1932,11 @@ The `*`-suffix values are what the device is actually using as its GPS fallback 
 
 #### Screen Orientation
 
-**NM-CYD-C5 and WS-C5-28.** Accessible via **Settings → Screen → Orientation**: pick `0 Portrait` (default), `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. The device reboots into the new orientation — every screen is sized from the live display resolution, so a reboot guarantees correct layout everywhere, including screens you haven't opened yet this session. The setting is saved to NVS and persists across reboots and updates. Touch calibration (NM-CYD-C5's resistive XPT2046 only — WS-C5-28's capacitive CST3530 needs none) always runs in native portrait and restores your chosen orientation afterward.
+**NM-CYD-C5 and WS-C5-28 only — not available on Classic CYD.** Accessible via **Settings → Screen → Orientation**: pick `0 Portrait` (default), `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. The device reboots into the new orientation — every screen is sized from the live display resolution, so a reboot guarantees correct layout everywhere, including screens you haven't opened yet this session. The setting is saved to NVS and persists across reboots and updates. Touch calibration (NM-CYD-C5's resistive XPT2046 only — WS-C5-28's capacitive CST3530 needs none) always runs in native portrait and restores your chosen orientation afterward.
 
 > WS-C5-28 support was added in v2.15.01 on the strength of both boards sharing an identical 240×320 ST7789 panel and a native-portrait touch driver contract — it has not yet been verified on physical WS-C5-28 hardware. If you hit anything odd (touch offset after rotating, layout glitches), please report it.
+
+> **Classic CYD does not support this feature**, and there's no near-term plan to add it. Its ILI9341 panel already needs a board-specific `swap_xy` + mirror transform just to display correctly in native portrait, and its XPT2046 touch runs over software-bit-banged SPI on a separate dedicated bus rather than the shared hardware-SPI setup NM-CYD-C5/WS-C5-28 use — layering LVGL rotation on top of that combination hasn't been attempted or verified.
 
 Dozens of screens got dedicated landscape layouts — Universal Remote, LED Remote, Bluetooth Lookout, Evil Portal, Timing Settings, Chameleon Ultra, GPS Info, and the Main Menu among them. Portrait behavior is unchanged throughout; landscape was added as additional layout branches, not a replacement.
 
