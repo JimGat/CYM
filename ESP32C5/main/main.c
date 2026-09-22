@@ -28377,7 +28377,16 @@ static void show_gps_info_screen(void)
 
     lv_obj_t *card = lv_obj_create(function_page);
     if (landscape) {
-        // Landscape: narrower/shorter card on the LEFT, controls move to the right
+        // Landscape: narrower/shorter card on the LEFT, controls move to the right.
+        // Height is capped by the 240px landscape screen (card top at y=30, so only
+        // 210px of vertical room exists before running off the bottom edge at all).
+        // Content (7 data rows + divider + 2-line UART block) needed ~178-180px
+        // against a 186px interior (206 - 2*10 padding) -- a razor-thin margin that
+        // real font metrics (line-height, wrap spacing) could tip into clipping the
+        // bottom of the UART line. Tightened row spacing below to build real
+        // headroom, and left scrolling enabled here (unlike portrait, which has
+        // comfortable room) as a safety net so any future content growth degrades
+        // to a scroll instead of an invisible clip.
         lv_obj_set_size(card, 196, 206);
         lv_obj_align(card, LV_ALIGN_TOP_LEFT, 4, 30);
     } else {
@@ -28389,13 +28398,18 @@ static void show_gps_info_screen(void)
     lv_obj_set_style_border_color(card, ui_border_color(), 0);
     lv_obj_set_style_radius(card, 10, 0);
     lv_obj_set_style_pad_all(card, 10, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    if (landscape) {
+        lv_obj_set_scroll_dir(card, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_AUTO);
+    } else {
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);  // portrait fits with room to spare
+    }
 
     int y = 0;
-    int s_fix = landscape ? 24 : 26;
-    int s_row = landscape ? 20 : 22;
-    int s_acc = landscape ? 20 : 28;
-    int s_div = landscape ?  6 :  8;
+    int s_fix = landscape ? 20 : 26;
+    int s_row = landscape ? 17 : 22;
+    int s_acc = landscape ? 17 : 28;
+    int s_div = landscape ?  5 :  8;
 
     gps_info_fix_lbl = lv_label_create(card);
     lv_obj_set_style_text_font(gps_info_fix_lbl, &g_font_icon16, 0);
