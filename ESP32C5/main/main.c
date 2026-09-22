@@ -59435,6 +59435,7 @@ static uint8_t    s_otrd_type = 0;    /* which obs_type the drill-down screen is
 static lv_obj_t  *s_otrd_list = NULL;
 
 static lv_obj_t  *s_otrb_list = NULL; /* past-surveys browser's scrollable list */
+static ot_session_summary_t *s_otrb_sessions = NULL; /* heap_caps_malloc'd — see show_ot_results_browser_screen() */
 
 static const char *ot_type_name(uint8_t t)
 {
@@ -59834,6 +59835,7 @@ static void show_ot_results_screen(const char *session_dir, void (*parent_fn)(vo
 static void ot_results_browser_stop(void)
 {
     s_otrb_list = NULL;
+    if (s_otrb_sessions) { heap_caps_free(s_otrb_sessions); s_otrb_sessions = NULL; }
 }
 
 static void s_otrb_session_tap_cb(lv_event_t *e)
@@ -59860,17 +59862,36 @@ static void show_ot_results_browser_screen(void)
 
     ensure_sd_mounted();
 
-    /* sessions[] itself must outlive this function (dir_path is used as the
-     * tap-callback's user_data pointer — read directly from here, no need for
-     * a second copy) — static, refreshed each visit. OT_SESSION_LIST_MAX is
-     * kept small (see its doc comment in ot_survey.h) specifically because
-     * this array is reserved at link time on every board, including CYD2USB
-     * (no PSRAM fallback). */
-    static ot_session_summary_t sessions[OT_SESSION_LIST_MAX];
+    /* s_otrb_sessions must outlive this function (dir_path is used as the
+     * tap-callback's user_data pointer) — allocated on the heap, PSRAM-
+     * preferred with a DRAM fallback, same two-tier pattern as
+     * ot_survey_results_load()'s entries[] and ot_survey.c's own export
+     * queue. Freed in ot_results_browser_stop(), not here — deliberately NOT
+     * a static array: that reserves memory permanently on every board
+     * regardless of whether it's needed, which is exactly the bug a first
+     * version of this screen had (see OT_SESSION_LIST_MAX's doc comment in
+     * ot_survey.h) — CYD2USB's tight DRAM shouldn't cap what NM-CYD-C5/
+     * WS-C5-28's 8 MB PSRAM can comfortably hold. */
+    if (s_otrb_sessions) { heap_caps_free(s_otrb_sessions); s_otrb_sessions = NULL; }
+    size_t sessions_bytes = (size_t)OT_SESSION_LIST_MAX * sizeof(ot_session_summary_t);
+    s_otrb_sessions = (ot_session_summary_t *)heap_caps_malloc(sessions_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!s_otrb_sessions) {
+        s_otrb_sessions = (ot_session_summary_t *)heap_caps_malloc(sessions_bytes, MALLOC_CAP_8BIT);
+    }
+    if (!s_otrb_sessions) {
+        lv_obj_t *l = lv_label_create(s_otrb_list);
+        lv_label_set_text(l, "Not enough free memory to list past surveys right now.");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, lv_pct(100));
+        return;
+    }
+
     int total = 0;
     int n = 0;
     if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
-        n = ot_survey_list_sessions(sessions, &total);
+        n = ot_survey_list_sessions(s_otrb_sessions, &total);
         xSemaphoreGive(sd_spi_mutex);
     }
 
@@ -59894,18 +59915,18 @@ static void show_ot_results_browser_screen(void)
         lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
         lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_event_cb(card, s_otrb_session_tap_cb, LV_EVENT_CLICKED, sessions[i].dir_path);
+        lv_obj_add_event_cb(card, s_otrb_session_tap_cb, LV_EVENT_CLICKED, s_otrb_sessions[i].dir_path);
 
-        time_t start_t = (time_t)sessions[i].start_time_s;
+        time_t start_t = (time_t)s_otrb_sessions[i].start_time_s;
         struct tm tm_buf;
         char date_buf[24] = "unknown date";
-        if (sessions[i].start_time_s > 0) {
+        if (s_otrb_sessions[i].start_time_s > 0) {
             localtime_r(&start_t, &tm_buf);
             strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", &tm_buf);
         }
 
         char r1[64];
-        snprintf(r1, sizeof(r1), "%s", sessions[i].site[0] ? sessions[i].site : "(no site set)");
+        snprintf(r1, sizeof(r1), "%s", s_otrb_sessions[i].site[0] ? s_otrb_sessions[i].site : "(no site set)");
         lv_obj_t *l1 = lv_label_create(card);
         lv_label_set_text(l1, r1);
         lv_obj_set_style_text_font(l1, &lv_font_montserrat_12, 0);
@@ -59914,7 +59935,7 @@ static void show_ot_results_browser_screen(void)
         lv_obj_set_width(l1, lv_pct(100));
 
         char r2[48];
-        snprintf(r2, sizeof(r2), "%s - %lu obs", date_buf, (unsigned long)sessions[i].obs_count);
+        snprintf(r2, sizeof(r2), "%s - %lu obs", date_buf, (unsigned long)s_otrb_sessions[i].obs_count);
         lv_obj_t *l2 = lv_label_create(card);
         lv_label_set_text(l2, r2);
         lv_obj_set_style_text_font(l2, &lv_font_montserrat_12, 0);

@@ -286,14 +286,22 @@ void ot_survey_results_free(ot_survey_results_t *out);
 /* ── Session listing (for the Past Surveys browser) ──────────────────────── */
 
 /* newest-first; older sessions beyond this are still on SD and can be reached
- * by clearing/rotating old sessions, just not listed in one screen. Kept small
- * deliberately: the browser UI is a static array sized OT_SESSION_LIST_MAX *
- * sizeof(ot_session_summary_t), reserved at link time on every board
- * (including CYD2USB, which has no PSRAM to fall back to) — CYD2USB's DRAM
- * budget overflowed at the original value of 40 (field build failure,
- * 2026-09-22). 12 sessions is already more than this codebase's other list
- * caps (e.g. BT Lookout's 16-entry watchlist on NM-CYD-C5, 16 on CYD2USB). */
-#define OT_SESSION_LIST_MAX  12
+ * by clearing/rotating old sessions, just not listed in one screen.
+ *
+ * The browser UI (main.c show_ot_results_browser_screen) heap_caps_malloc's
+ * its ot_session_summary_t[OT_SESSION_LIST_MAX] buffer at runtime — PSRAM-
+ * preferred, DRAM-fallback, same two-tier pattern as ot_survey_results_load()'s
+ * entries[] and ot_survey.c's own export queue — rather than a static/
+ * link-time-reserved array. A first attempt at this used `static`, which
+ * reserves the array permanently on EVERY board regardless of whether that
+ * board can afford it; on CYD2USB (no PSRAM) that overflowed the link-time
+ * DRAM budget by 6488 bytes, and the fix at the time was to shrink this
+ * constant to 12 for all three boards — which is exactly the bug the heap
+ * allocation now avoids: CYD2USB's tighter budget no longer constrains what
+ * NM-CYD-C5/WS-C5-28 (8 MB PSRAM each) can hold. 60 is a generous cap sized
+ * for real usage (BT Lookout's on-device watchlist tops out at 64 entries on
+ * NM-CYD-C5 for comparison) rather than for CYD2USB's link-time headroom. */
+#define OT_SESSION_LIST_MAX  60
 
 typedef struct {
     char     dir_path[56];  /* "/sdcard/lab/otsurvey/" (22) + 32 hex uuid + NUL = 55 */
