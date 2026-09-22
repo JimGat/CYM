@@ -285,13 +285,18 @@ void ot_survey_results_free(ot_survey_results_t *out);
 
 /* ── Session listing (for the Past Surveys browser) ──────────────────────── */
 
-#define OT_SESSION_LIST_MAX  40   /* newest-first; older sessions beyond this
-                                    * are still on SD and can be reached by
-                                    * clearing/rotating old sessions, just not
-                                    * listed in one screen */
+/* newest-first; older sessions beyond this are still on SD and can be reached
+ * by clearing/rotating old sessions, just not listed in one screen. Kept small
+ * deliberately: the browser UI is a static array sized OT_SESSION_LIST_MAX *
+ * sizeof(ot_session_summary_t), reserved at link time on every board
+ * (including CYD2USB, which has no PSRAM to fall back to) — CYD2USB's DRAM
+ * budget overflowed at the original value of 40 (field build failure,
+ * 2026-09-22). 12 sessions is already more than this codebase's other list
+ * caps (e.g. BT Lookout's 16-entry watchlist on NM-CYD-C5, 16 on CYD2USB). */
+#define OT_SESSION_LIST_MAX  12
 
 typedef struct {
-    char     dir_path[80];
+    char     dir_path[56];  /* "/sdcard/lab/otsurvey/" (22) + 32 hex uuid + NUL = 55 */
     char     site[OT_SURVEY_SITE_LEN];
     uint32_t start_time_s;
     uint32_t obs_count;              /* from metadata.json — may be stale if the

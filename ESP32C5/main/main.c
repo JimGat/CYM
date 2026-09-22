@@ -2905,6 +2905,8 @@ static void show_iot_ot_menu_screen(void);
 static void show_ot_survey_screen(void);
 static const char *s_ots_allowlist_label(const uint8_t mac[6]);
 static void s_ots_load_allowlist(void);
+static void show_ot_results_screen(const char *session_dir, void (*parent_fn)(void));
+static void show_ot_results_browser_screen(void);
 static void show_ir_capture_screen(void);
 static void show_ir_replay_screen(void);
 static void show_ir_signal_list_screen(void);
@@ -59022,13 +59024,22 @@ static void s_ots_timer_cb(lv_timer_t *t)
             if (s_ots_scan_lbl) lv_label_set_text(s_ots_scan_lbl, "Stopping...");
             return;
         }
-        /* s_ots_stop_task finished off the main task — swap panels back now. */
+        /* s_ots_stop_task finished off the main task. This branch only ever runs
+         * for an explicit Stop-button tap made while the user stayed on this
+         * screen — top-bar Back/Home mid-survey goes through
+         * ot_survey_screen_stop() instead, which deletes s_ots_tmr synchronously
+         * (before the background task finishes), so this branch never fires for
+         * that path. That's the intended scope for "auto-show after Stop": only
+         * an explicit Stop, not an implicit stop-via-navigating-away. */
         s_ots_stopping  = false;
         s_ots_stop_done = false;
-        if (s_ots_stop_btn) lv_obj_clear_state(s_ots_stop_btn, LV_STATE_DISABLED);
-        if (s_ots_run_cont) lv_obj_add_flag(s_ots_run_cont, LV_OBJ_FLAG_HIDDEN);
-        if (s_ots_cfg_cont) lv_obj_clear_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
         if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
+        {
+            char dir_path[80];
+            strncpy(dir_path, s_ots_session.dir_path, sizeof(dir_path) - 1);
+            dir_path[sizeof(dir_path) - 1] = '\0';
+            show_ot_results_screen(dir_path, show_ot_survey_screen);
+        }
         return;
     }
 
@@ -59205,6 +59216,15 @@ static void s_ots_stop_cb(lv_event_t *e)
     xTaskCreate(s_ots_stop_task, "ots_stop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
 }
 
+/* Past Surveys button — only reachable from the idle config panel (a survey
+ * can't be running while this button is visible), so no stop/teardown dance
+ * needed here the way s_ots_stop_cb has. */
+static void s_ots_browse_cb(lv_event_t *e)
+{
+    (void)e;
+    show_ot_results_browser_screen();
+}
+
 /* On-screen keyboard for the Site field — same pattern as gps_edit_ta_focus_cb. */
 static void s_ots_site_ta_focus_cb(lv_event_t *e)
 {
@@ -59368,6 +59388,17 @@ static void show_ot_survey_screen(void)
     lv_obj_set_style_text_color(stop_lbl, lv_color_white(), 0);
     lv_obj_center(stop_lbl);
 
+    /* Past Surveys — browse any previous session's results from SD. */
+    lv_obj_t *browse_btn = lv_btn_create(s_ots_cfg_cont);
+    lv_obj_set_size(browse_btn, lv_pct(80), 34);
+    lv_obj_set_style_bg_color(browse_btn, lv_color_hex(0x37474F), 0);
+    lv_obj_add_event_cb(browse_btn, s_ots_browse_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *browse_lbl = lv_label_create(browse_btn);
+    lv_label_set_text(browse_lbl, LV_SYMBOL_LIST "  Past Surveys");
+    lv_obj_set_style_text_font(browse_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(browse_lbl, lv_color_white(), 0);
+    lv_obj_center(browse_lbl);
+
     /* If a survey is already running when we enter this screen, show running panel */
     if (g_ot_survey_active && g_active_survey) {
         lv_obj_add_flag(s_ots_cfg_cont, LV_OBJ_FLAG_HIDDEN);
@@ -59375,6 +59406,528 @@ static void show_ot_survey_screen(void)
         if (!s_ots_tmr)
             s_ots_tmr = lv_timer_create(s_ots_timer_cb, 1000, NULL);
         s_ots_timer_cb(NULL);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// OT Air Survey — Results (post-survey summary, category drill-down, and a
+// browsable list of past sessions read back from SD).
+//
+// Data model: ot_survey_results_t (ot_survey.h) is loaded once per visit to
+// the summary screen (ot_survey_results_load(), a full obs.jsonl scan for
+// exact per-type counts + a bounded MAC-deduplicated device list) and kept
+// alive in s_otr_results across the summary <-> drill-down round trip so the
+// drill screen never needs to re-read SD. It is freed only when leaving the
+// summary screen itself (Home, or Back to whatever parent_fn was passed to
+// show_ot_results_screen()) -- see ot_results_summary_stop().
+// ══════════════════════════════════════════════════════════════════════════
+
+#define OTR_MAX_ENTRIES  200   /* drill-down device cap; obs_by_type[] counts from
+                                 * ot_survey_results_load() are always an exact
+                                 * full-file scan regardless of this cap. */
+
+static ot_survey_results_t s_otr_results;            /* .bss-zeroed; valid iff s_otr_loaded */
+static bool                s_otr_loaded    = false;
+static void               (*s_otr_parent_fn)(void) = NULL; /* top-bar Back target from the summary screen */
+static lv_obj_t            *s_otr_list = NULL;        /* summary screen's scrollable list */
+
+static uint8_t    s_otrd_type = 0;    /* which obs_type the drill-down screen is filtered to */
+static lv_obj_t  *s_otrd_list = NULL;
+
+static lv_obj_t  *s_otrb_list = NULL; /* past-surveys browser's scrollable list */
+
+static const char *ot_type_name(uint8_t t)
+{
+    switch ((obs_type_t)t) {
+    case OBS_TYPE_WIFI_AP:       return "WiFi AP";
+    case OBS_TYPE_WIFI_CLIENT:   return "WiFi Client";
+    case OBS_TYPE_BLE_ADV:       return "BLE";
+    case OBS_TYPE_BLE_EXT:       return "BLE (Ext Adv)";
+    case OBS_TYPE_IEEE802154:    return "802.15.4";
+    case OBS_TYPE_WIRELESSHART:  return "WirelessHART";
+    case OBS_TYPE_THREAD_MATTER: return "Thread/Matter";
+    case OBS_TYPE_ZIGBEE:        return "Zigbee";
+    case OBS_TYPE_ESPNOW_OT:     return "ESP-NOW";
+    case OBS_TYPE_DRONE_ID:      return "Drone (Remote ID)";
+    default:                     return "Unknown";
+    }
+}
+
+static lv_color_t ot_type_color(uint8_t t)
+{
+    switch ((obs_type_t)t) {
+    case OBS_TYPE_WIFI_AP:
+    case OBS_TYPE_WIFI_CLIENT:   return lv_color_hex(0x2196F3);  /* blue */
+    case OBS_TYPE_BLE_ADV:
+    case OBS_TYPE_BLE_EXT:       return lv_color_hex(0x26C6DA);  /* cyan */
+    case OBS_TYPE_IEEE802154:    return lv_color_hex(0x9E9E9E);  /* grey — generic/unclassified */
+    case OBS_TYPE_WIRELESSHART:  return lv_color_hex(0xFF7043);  /* deep orange */
+    case OBS_TYPE_THREAD_MATTER: return lv_color_hex(0x66BB6A);  /* green */
+    case OBS_TYPE_ZIGBEE:        return lv_color_hex(0xFFCA28);  /* amber */
+    case OBS_TYPE_ESPNOW_OT:     return lv_color_hex(0xAB47BC);  /* purple */
+    case OBS_TYPE_DRONE_ID:      return lv_color_hex(0xEF5350);  /* red — flag drones for attention */
+    default:                     return lv_color_hex(0x607D8B);
+    }
+}
+
+/* True if this evidence set carries either anomaly tag (OBS_EV_RATE_ANOMALY=5,
+ * OBS_EV_RSSI_ANOMALY=6) — used to flag "Notable" entries on the summary screen. */
+static bool ot_entry_is_notable(const ot_result_entry_t *e)
+{
+    for (uint8_t i = 0; i < e->evidence_count && i < OBS_MAX_EVIDENCE; i++) {
+        if (e->evidence[i] == OBS_EV_RATE_ANOMALY || e->evidence[i] == OBS_EV_RSSI_ANOMALY)
+            return true;
+    }
+    return false;
+}
+
+static void ot_fmt_duration(uint32_t start_s, uint32_t stop_s, char *out, size_t out_sz)
+{
+    uint32_t secs = (stop_s > start_s) ? (stop_s - start_s) : 0;
+    snprintf(out, out_sz, "%luh %02lum", (unsigned long)(secs / 3600), (unsigned long)((secs / 60) % 60));
+}
+
+/* ── Drill-down: devices of one obs_type from the already-loaded results ── */
+
+static void ot_results_drill_stop(void)
+{
+    s_otrd_list = NULL;   /* s_otr_results is owned by the summary screen — not freed here */
+}
+
+static void show_ot_results_summary_from_loaded(void);  /* fwd — drill's Back target */
+
+static void show_ot_results_drill_screen(uint8_t type_filter)
+{
+    s_otrd_type = type_filter;
+
+    char title[24];
+    snprintf(title, sizeof(title), "%s Devices", ot_type_name(type_filter));
+    create_function_page_base(title);
+    g_screen_stop_fn = ot_results_drill_stop;
+    g_screen_back_fn = show_ot_results_summary_from_loaded;
+
+    s_otrd_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_otrd_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_otrd_list, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_otrd_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_otrd_list, 0, 0);
+    lv_obj_set_flex_flow(s_otrd_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(s_otrd_list, 3, 0);
+    lv_obj_set_style_pad_gap(s_otrd_list, 3, 0);
+    lv_obj_set_scrollbar_mode(s_otrd_list, LV_SCROLLBAR_MODE_AUTO);
+
+    static const char *ev_names[] = { "", "OUI", "SVC", "MFR", "SSID", "RATE!", "RSSI!", "REC",
+                                       "COORD", "HOP", "WH-T", "WH-N" };
+
+    if (!s_otr_loaded) {
+        lv_obj_t *l = lv_label_create(s_otrd_list);
+        lv_label_set_text(l, "No data loaded.");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        return;
+    }
+
+    int shown = 0;
+    for (uint16_t i = 0; i < s_otr_results.entries_count; i++) {
+        const ot_result_entry_t *e = &s_otr_results.entries[i];
+        if (e->obs_type != type_filter) continue;
+        shown++;
+
+        lv_color_t border_col;
+        if      (e->confidence >= 80) border_col = lv_color_hex(0x4CAF50);
+        else if (e->confidence >= 50) border_col = lv_color_hex(0xFFA726);
+        else if (e->confidence >  0)  border_col = lv_color_hex(0x546E7A);
+        else                          border_col = lv_color_hex(0x37474F);
+
+        lv_obj_t *card = lv_obj_create(s_otrd_list);
+        lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_all(card, 4, 0);
+        lv_obj_set_style_pad_gap(card, 1, 0);
+        lv_obj_set_style_radius(card, 4, 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_border_color(card, border_col, 0);
+        lv_obj_set_style_bg_color(card, ui_card_color(), 0);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+
+        char r1[64];
+        if (e->label[0]) {
+            snprintf(r1, sizeof(r1), "%-20s%4ddBm", e->label, e->rssi_cur);
+        } else {
+            snprintf(r1, sizeof(r1), "%02X:%02X:%02X:%02X:%02X:%02X %4ddBm",
+                      e->mac[0], e->mac[1], e->mac[2], e->mac[3], e->mac[4], e->mac[5], e->rssi_cur);
+        }
+        lv_obj_t *l1 = lv_label_create(card);
+        lv_label_set_text(l1, r1);
+        lv_obj_set_style_text_font(l1, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l1, ui_text_color(), 0);
+        lv_label_set_long_mode(l1, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(l1, lv_pct(100));
+
+        char r2[80];
+        int off = 0;
+        for (uint8_t ei = 0; ei < e->evidence_count && ei < OBS_MAX_EVIDENCE; ei++) {
+            uint8_t ev = e->evidence[ei];
+            if (ev > 0 && ev < (uint8_t)(sizeof(ev_names) / sizeof(ev_names[0])))
+                off += snprintf(r2 + off, (int)sizeof(r2) - off, "%s ", ev_names[ev]);
+        }
+        if (e->confidence > 0)
+            snprintf(r2 + off, (int)sizeof(r2) - off, "c:%u  peak:%ddBm  %ux",
+                     e->confidence, e->rssi_peak, e->hit_count);
+        else
+            snprintf(r2 + off, (int)sizeof(r2) - off, "peak:%ddBm  %ux", e->rssi_peak, e->hit_count);
+        lv_obj_t *l2 = lv_label_create(card);
+        lv_label_set_text(l2, r2);
+        lv_obj_set_style_text_font(l2, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l2, e->confidence > 0 ? lv_color_hex(0x80CBC4) : ui_muted_color(), 0);
+        lv_label_set_long_mode(l2, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(l2, lv_pct(100));
+    }
+
+    if (shown == 0) {
+        lv_obj_t *l = lv_label_create(s_otrd_list);
+        lv_label_set_text(l, "No devices of this type in the retained list.");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    } else if (s_otr_results.entries_truncated) {
+        lv_obj_t *l = lv_label_create(s_otrd_list);
+        lv_label_set_text(l, "List capped — some unique devices omitted (counts above are exact).");
+        lv_obj_set_style_text_color(l, COLOR_MATERIAL_AMBER, 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, lv_pct(100));
+    }
+}
+
+static void s_otr_category_tap_cb(lv_event_t *e)
+{
+    uint8_t type = (uint8_t)(intptr_t)lv_event_get_user_data(e);
+    show_ot_results_drill_screen(type);
+}
+
+/* ── Summary screen ───────────────────────────────────────────────────────── */
+
+static void ot_results_summary_stop(void)
+{
+    s_otr_list = NULL;
+    if (s_otr_loaded) {
+        ot_survey_results_free(&s_otr_results);
+        s_otr_loaded = false;
+    }
+}
+
+static void show_ot_results_summary_from_loaded(void)
+{
+    create_function_page_base("Survey Results");
+    g_screen_stop_fn = ot_results_summary_stop;
+    g_screen_back_fn = s_otr_parent_fn ? s_otr_parent_fn : show_ot_survey_screen;
+
+    s_otr_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_otr_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_otr_list, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_otr_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_otr_list, 0, 0);
+    lv_obj_set_flex_flow(s_otr_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(s_otr_list, 3, 0);
+    lv_obj_set_style_pad_gap(s_otr_list, 3, 0);
+    lv_obj_set_scrollbar_mode(s_otr_list, LV_SCROLLBAR_MODE_AUTO);
+
+    if (!s_otr_loaded) {
+        lv_obj_t *l = lv_label_create(s_otr_list);
+        lv_label_set_text(l, "Could not load this session (metadata.json missing?).");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, lv_pct(100));
+        return;
+    }
+
+    /* ── Header: site/building/zone, time, obs_count ── */
+    lv_obj_t *hdr = lv_obj_create(s_otr_list);
+    lv_obj_set_size(hdr, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(hdr, 6, 0);
+    lv_obj_set_style_pad_row(hdr, 2, 0);
+    lv_obj_set_style_radius(hdr, 6, 0);
+    lv_obj_set_style_border_width(hdr, 1, 0);
+    lv_obj_set_style_border_color(hdr, ui_border_color(), 0);
+    lv_obj_set_style_bg_color(hdr, ui_card_color(), 0);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_COLUMN);
+
+    char loc[80];
+    if (s_otr_results.site[0] || s_otr_results.building[0] || s_otr_results.zone[0]) {
+        snprintf(loc, sizeof(loc), "%s%s%s%s%s",
+                 s_otr_results.site,
+                 s_otr_results.building[0] ? " / " : "", s_otr_results.building,
+                 s_otr_results.zone[0] ? " / " : "", s_otr_results.zone);
+    } else {
+        snprintf(loc, sizeof(loc), "(no site/building/zone set)");
+    }
+    lv_obj_t *loc_lbl = lv_label_create(hdr);
+    lv_label_set_text(loc_lbl, loc);
+    lv_obj_set_style_text_font(loc_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(loc_lbl, lv_color_white(), 0);
+    lv_label_set_long_mode(loc_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(loc_lbl, lv_pct(100));
+
+    char durbuf[16];
+    ot_fmt_duration(s_otr_results.start_time_s, s_otr_results.stop_time_s, durbuf, sizeof(durbuf));
+    char meta_line[64];
+    snprintf(meta_line, sizeof(meta_line), "%s profile - %s - %lu obs",
+             s_otr_results.profile_name, durbuf, (unsigned long)s_otr_results.obs_count);
+    lv_obj_t *meta_lbl = lv_label_create(hdr);
+    lv_label_set_text(meta_lbl, meta_line);
+    lv_obj_set_style_text_font(meta_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(meta_lbl, ui_muted_color(), 0);
+
+    if (s_otr_results.geo_start_valid) {
+        char geo_line[48];
+        snprintf(geo_line, sizeof(geo_line), LV_SYMBOL_GPS " %.5f, %.5f",
+                 (double)s_otr_results.geo_start_lat, (double)s_otr_results.geo_start_lon);
+        lv_obj_t *geo_lbl = lv_label_create(hdr);
+        lv_label_set_text(geo_lbl, geo_line);
+        lv_obj_set_style_text_font(geo_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(geo_lbl, ui_muted_color(), 0);
+    }
+
+    /* ── Category rows — only types actually seen, sorted by count descending ── */
+    lv_obj_t *cat_hdr = lv_label_create(s_otr_list);
+    lv_label_set_text(cat_hdr, "By type (tap to view devices)");
+    lv_obj_set_style_text_font(cat_hdr, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(cat_hdr, ui_muted_color(), 0);
+
+    uint8_t order[10];
+    for (uint8_t i = 0; i < 10; i++) order[i] = i;
+    for (uint8_t i = 0; i < 10; i++)
+        for (uint8_t j = i + 1; j < 10; j++)
+            if (s_otr_results.obs_by_type[order[j]] > s_otr_results.obs_by_type[order[i]]) {
+                uint8_t tmp = order[i]; order[i] = order[j]; order[j] = tmp;
+            }
+
+    bool any_type = false;
+    for (uint8_t oi = 0; oi < 10; oi++) {
+        uint8_t type = order[oi];
+        uint32_t count = s_otr_results.obs_by_type[type];
+        if (count == 0) continue;
+        any_type = true;
+
+        lv_obj_t *row = lv_obj_create(s_otr_list);
+        lv_obj_set_size(row, lv_pct(100), 34);
+        lv_obj_set_style_pad_all(row, 6, 0);
+        lv_obj_set_style_radius(row, 6, 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_set_style_border_color(row, ot_type_color(type), 0);
+        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
+        lv_obj_set_style_bg_color(row, lv_color_hex(0x1a2e1a), LV_STATE_PRESSED);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, s_otr_category_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)type);
+
+        lv_obj_t *dot = lv_obj_create(row);
+        lv_obj_set_size(dot, 10, 10);
+        lv_obj_set_style_radius(dot, 5, 0);
+        lv_obj_set_style_bg_color(dot, ot_type_color(type), 0);
+        lv_obj_set_style_border_width(dot, 0, 0);
+        lv_obj_align(dot, LV_ALIGN_LEFT_MID, 0, 0);
+
+        char row_txt[40];
+        snprintf(row_txt, sizeof(row_txt), "%s", ot_type_name(type));
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, row_txt);
+        lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(name_lbl, ui_text_color(), 0);
+        lv_obj_align(name_lbl, LV_ALIGN_LEFT_MID, 16, 0);
+
+        char cnt_txt[16];
+        snprintf(cnt_txt, sizeof(cnt_txt), "%lu", (unsigned long)count);
+        lv_obj_t *cnt_lbl = lv_label_create(row);
+        lv_label_set_text(cnt_lbl, cnt_txt);
+        lv_obj_set_style_text_font(cnt_lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(cnt_lbl, ot_type_color(type), 0);
+        lv_obj_align(cnt_lbl, LV_ALIGN_RIGHT_MID, 0, 0);
+    }
+    if (!any_type) {
+        lv_obj_t *l = lv_label_create(s_otr_list);
+        lv_label_set_text(l, "No observations recorded this session.");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    }
+
+    /* ── Notable: strongest signal + anomaly-flagged entries ── */
+    const ot_result_entry_t *strongest = NULL;
+    int notable_count = 0;
+    for (uint16_t i = 0; i < s_otr_results.entries_count; i++) {
+        const ot_result_entry_t *e = &s_otr_results.entries[i];
+        if (!strongest || e->rssi_peak > strongest->rssi_peak) strongest = e;
+        if (ot_entry_is_notable(e)) notable_count++;
+    }
+    if (strongest || notable_count > 0) {
+        lv_obj_t *not_hdr = lv_label_create(s_otr_list);
+        lv_label_set_text(not_hdr, "Notable");
+        lv_obj_set_style_text_font(not_hdr, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(not_hdr, ui_muted_color(), 0);
+
+        if (strongest) {
+            lv_obj_t *card = lv_obj_create(s_otr_list);
+            lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_all(card, 5, 0);
+            lv_obj_set_style_radius(card, 6, 0);
+            lv_obj_set_style_border_width(card, 1, 0);
+            lv_obj_set_style_border_color(card, lv_color_hex(0x4CAF50), 0);
+            lv_obj_set_style_bg_color(card, ui_card_color(), 0);
+            lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+            char s_txt[72];
+            snprintf(s_txt, sizeof(s_txt), LV_SYMBOL_WIFI " Strongest: %s  %ddBm (%s)",
+                     strongest->label[0] ? strongest->label : "unlabeled",
+                     strongest->rssi_peak, ot_type_name(strongest->obs_type));
+            lv_obj_t *l = lv_label_create(card);
+            lv_label_set_text(l, s_txt);
+            lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(l, ui_text_color(), 0);
+            lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(l, lv_pct(100));
+        }
+        if (notable_count > 0) {
+            lv_obj_t *card = lv_obj_create(s_otr_list);
+            lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+            lv_obj_set_style_pad_all(card, 5, 0);
+            lv_obj_set_style_radius(card, 6, 0);
+            lv_obj_set_style_border_width(card, 1, 0);
+            lv_obj_set_style_border_color(card, COLOR_MATERIAL_AMBER, 0);
+            lv_obj_set_style_bg_color(card, ui_card_color(), 0);
+            lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+            char n_txt[56];
+            snprintf(n_txt, sizeof(n_txt), LV_SYMBOL_WARNING " %d device(s) with anomaly evidence", notable_count);
+            lv_obj_t *l = lv_label_create(card);
+            lv_label_set_text(l, n_txt);
+            lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(l, ui_text_color(), 0);
+        }
+    }
+
+    if (s_otr_results.entries_truncated) {
+        lv_obj_t *l = lv_label_create(s_otr_list);
+        lv_label_set_text(l, "Device list capped for this session — category counts above are exact.");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, lv_pct(100));
+    }
+}
+
+static void show_ot_results_screen(const char *session_dir, void (*parent_fn)(void))
+{
+    s_otr_parent_fn = parent_fn;
+
+    if (s_otr_loaded) { ot_survey_results_free(&s_otr_results); s_otr_loaded = false; }
+
+    ensure_sd_mounted();
+    if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        esp_err_t rc = ot_survey_results_load(session_dir, &s_otr_results, OTR_MAX_ENTRIES);
+        xSemaphoreGive(sd_spi_mutex);
+        s_otr_loaded = (rc == ESP_OK);
+    }
+
+    show_ot_results_summary_from_loaded();
+}
+
+/* ── Past Surveys browser ─────────────────────────────────────────────────── */
+
+static void ot_results_browser_stop(void)
+{
+    s_otrb_list = NULL;
+}
+
+static void s_otrb_session_tap_cb(lv_event_t *e)
+{
+    char *dir_path = (char *)lv_event_get_user_data(e);
+    show_ot_results_screen(dir_path, show_ot_results_browser_screen);
+}
+
+static void show_ot_results_browser_screen(void)
+{
+    create_function_page_base("Past Surveys");
+    g_screen_stop_fn = ot_results_browser_stop;
+    g_screen_back_fn = show_ot_survey_screen;
+
+    s_otrb_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_otrb_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_otrb_list, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_otrb_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_otrb_list, 0, 0);
+    lv_obj_set_flex_flow(s_otrb_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(s_otrb_list, 3, 0);
+    lv_obj_set_style_pad_gap(s_otrb_list, 3, 0);
+    lv_obj_set_scrollbar_mode(s_otrb_list, LV_SCROLLBAR_MODE_AUTO);
+
+    ensure_sd_mounted();
+
+    /* sessions[] itself must outlive this function (dir_path is used as the
+     * tap-callback's user_data pointer — read directly from here, no need for
+     * a second copy) — static, refreshed each visit. OT_SESSION_LIST_MAX is
+     * kept small (see its doc comment in ot_survey.h) specifically because
+     * this array is reserved at link time on every board, including CYD2USB
+     * (no PSRAM fallback). */
+    static ot_session_summary_t sessions[OT_SESSION_LIST_MAX];
+    int total = 0;
+    int n = 0;
+    if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        n = ot_survey_list_sessions(sessions, &total);
+        xSemaphoreGive(sd_spi_mutex);
+    }
+
+    if (n == 0) {
+        lv_obj_t *l = lv_label_create(s_otrb_list);
+        lv_label_set_text(l, "No past surveys found on SD.");
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        return;
+    }
+
+    for (int i = 0; i < n; i++) {
+        lv_obj_t *card = lv_obj_create(s_otrb_list);
+        lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
+        lv_obj_set_style_pad_all(card, 5, 0);
+        lv_obj_set_style_radius(card, 6, 0);
+        lv_obj_set_style_border_width(card, 1, 0);
+        lv_obj_set_style_border_color(card, ui_border_color(), 0);
+        lv_obj_set_style_bg_color(card, ui_card_color(), 0);
+        lv_obj_set_style_bg_color(card, lv_color_hex(0x1a2e1a), LV_STATE_PRESSED);
+        lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+        lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(card, s_otrb_session_tap_cb, LV_EVENT_CLICKED, sessions[i].dir_path);
+
+        time_t start_t = (time_t)sessions[i].start_time_s;
+        struct tm tm_buf;
+        char date_buf[24] = "unknown date";
+        if (sessions[i].start_time_s > 0) {
+            localtime_r(&start_t, &tm_buf);
+            strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", &tm_buf);
+        }
+
+        char r1[64];
+        snprintf(r1, sizeof(r1), "%s", sessions[i].site[0] ? sessions[i].site : "(no site set)");
+        lv_obj_t *l1 = lv_label_create(card);
+        lv_label_set_text(l1, r1);
+        lv_obj_set_style_text_font(l1, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l1, ui_text_color(), 0);
+        lv_label_set_long_mode(l1, LV_LABEL_LONG_CLIP);
+        lv_obj_set_width(l1, lv_pct(100));
+
+        char r2[48];
+        snprintf(r2, sizeof(r2), "%s - %lu obs", date_buf, (unsigned long)sessions[i].obs_count);
+        lv_obj_t *l2 = lv_label_create(card);
+        lv_label_set_text(l2, r2);
+        lv_obj_set_style_text_font(l2, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(l2, ui_muted_color(), 0);
+    }
+
+    if (total > n) {
+        lv_obj_t *l = lv_label_create(s_otrb_list);
+        char more_txt[48];
+        snprintf(more_txt, sizeof(more_txt), "+ %d older session(s) not shown", total - n);
+        lv_label_set_text(l, more_txt);
+        lv_obj_set_style_text_color(l, ui_muted_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
     }
 }
 
