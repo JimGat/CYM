@@ -316,6 +316,18 @@ void obs_redact(obs_record_t *rec, obs_privacy_flags_t policy);
  */
 #define OBS_STORE_DEFAULT_CAPACITY  8192u
 
+/* CYD2USB has no PSRAM — 8192 * 128 B (1 MB) will never fit its ~50-90 KB of
+ * free internal DRAM, so obs_store_init() falls back to this much smaller
+ * capacity on that board (still a ring buffer — old entries roll off once
+ * full, not a hard cap on total observations across a session). Without
+ * this, obs_store_init() simply failed outright and left g_obs_store.records
+ * NULL for the rest of the boot session, silently no-op'ing every WiFi/BLE/
+ * ESP-NOW/802.15.4 observation-recording path — including all of OT Survey,
+ * which is why it was chronically obs=0 on Classic CYD regardless of any
+ * radio-timing fix (field report 2026-09-22: "obs_store_init failed —
+ * observation store disabled" logged at boot, ~1.2s in). */
+#define OBS_STORE_CYD2USB_CAPACITY   256u
+
 typedef struct {
     obs_record_t *records;
     uint32_t      capacity;

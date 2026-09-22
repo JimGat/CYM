@@ -102,6 +102,13 @@ bool obs_store_init(obs_store_t *store, uint32_t capacity)
     memset(store, 0, sizeof(*store));
     uint32_t cap = (capacity == 0) ? OBS_STORE_DEFAULT_CAPACITY : capacity;
 
+#if defined(ESP_PLATFORM) && !defined(CONFIG_SPIRAM)
+    /* No PSRAM (CYD2USB) — the default/PSRAM-board capacity would never fit;
+     * see OBS_STORE_CYD2USB_CAPACITY's doc comment. Clamp regardless of what
+     * the caller asked for, since the hardware constraint is unconditional. */
+    if (cap > OBS_STORE_CYD2USB_CAPACITY) cap = OBS_STORE_CYD2USB_CAPACITY;
+#endif
+
     store->records = (obs_record_t *)OBS_MALLOC((size_t)cap * sizeof(obs_record_t));
     if (!store->records) return false;
 
