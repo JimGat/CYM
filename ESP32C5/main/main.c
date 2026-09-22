@@ -7993,10 +7993,18 @@ void app_main(void)
                 // Start the actual monitoring
                 deauth_monitor_start_monitoring();
             }
-            // If scan finished, build results UI (but not during blackout/snifferdog/sae_overflow/handshake/wardrive/karma attack/deauth_monitor/portal or when handshaker is waiting for scan, or when the WCS client scan owns it)
+            // If scan finished, build results UI (but not during blackout/snifferdog/sae_overflow/handshake/wardrive/karma attack/deauth_monitor/portal or when handshaker is waiting for scan, or when the WCS client scan or OT Survey owns it)
             else if (scan_done_ui_flag) {
-                if (g_wcs_scan_active || blackout_ui_active || snifferdog_ui_active || sae_overflow_ui_active || handshake_ui_active || wardrive_ui_active || karma_ui_active || deauth_monitor_ui_active || portal_ui_active || handshake_waiting_for_scan || g_handshaker_global_mode || wana_active) {
-                    // WCS client scan or an active attack/visualizer owns this — clear flag, leave screen alone
+                if (g_wcs_scan_active || blackout_ui_active || snifferdog_ui_active || sae_overflow_ui_active || handshake_ui_active || wardrive_ui_active || karma_ui_active || deauth_monitor_ui_active || portal_ui_active || handshake_waiting_for_scan || g_handshaker_global_mode || wana_active || g_ot_survey_active) {
+                    // WCS client scan, an active attack/visualizer, or OT Survey's own internal WiFi
+                    // dwell scan owns this — clear flag, leave screen alone. Without g_ot_survey_active
+                    // here, this handler would tear down whatever screen is showing (including OT
+                    // Survey's own running panel) and force-rebuild the WiFi Scan & Attack results list
+                    // the moment the survey's first WiFi dwell scan completed - but only if
+                    // ensure_wifi_scan_ui_cb() had ever been registered this boot (i.e. WiFi Scan &
+                    // Attack or Deauth Monitor had been opened at least once), making the bug
+                    // intermittent and easy to miss in isolated testing. Field-reported 2026-09-22:
+                    // "The iot survey seems to only do one scan. then shows the wifi list."
                     scan_done_ui_flag = false;
                 } else {
                 scan_done_ui_flag = false;
