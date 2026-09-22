@@ -9,7 +9,7 @@ set(EXTRA_COMPONENT_DIRS "../ESP32C5/components")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 
 # ── Single source of truth for firmware version ──────────────────────────────
-set(PROJECT_VER "v2.14.02")
+set(PROJECT_VER "v2.15.10")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -55,6 +55,39 @@ else()
 endif()
 file(MAKE_DIRECTORY "${EXPORT_DIR}")
 
+# ===== POST-BUILD: copy binaries + generate merged full image =====
+# Registered BEFORE the memory-budget doc block below. Multiple POST_BUILD
+# add_custom_command() calls on the same target run in registration order, and
+# update_memory_map.py stats "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin" (the export-dir
+# copy, not the fresh CMAKE_BINARY_DIR one) -- so this copy MUST run first, or the
+# doc reads whatever binary was sitting in the export dir from the PREVIOUS build.
+# Found 2026-09-22: this block and the memory-budget block below were in the
+# opposite order (memory-budget first), so every CYD2USB memory-budget doc since
+# this file was written recorded the prior build's binary size, one version stale.
+# The actual .bin/.full.bin release artifacts were never affected -- only this doc.
+add_custom_command(
+    TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
+            "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
+            "${EXPORT_DIR}/bootloader.bin"
+    COMMAND ${CMAKE_COMMAND} -E copy
+            "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
+            "${EXPORT_DIR}/partition-table.bin"
+    # Merge bootloader + partition table + firmware into one flat image.
+    # ESP32 bootloader is at 0x1000 (not 0x2000 as on ESP32-C5).
+    # Flash at 0x0000 with any flasher that accepts a full binary.
+    COMMAND python -m esptool --chip esp32 merge-bin
+            -o "${EXPORT_DIR}/${OUTPUT_BIN_NAME}-full.bin"
+            --flash-mode dio --flash-freq ${FLASH_FREQ} --flash-size ${FLASH_SIZE}
+            ${BOOTLOADER_OFFSET} "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
+            0x8000              "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
+            0x10000             "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
+    COMMENT "Copying firmware and generating merged full flash image in ${EXPORT_DIR}"
+)
+
 # ===== POST-BUILD: per-board memory-budget doc =====
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_FOUND)
@@ -71,26 +104,3 @@ if(Python3_FOUND)
         VERBATIM
     )
 endif()
-
-add_custom_command(
-    TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy
-            "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
-            "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin"
-    COMMAND ${CMAKE_COMMAND} -E copy
-            "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
-            "${EXPORT_DIR}/bootloader.bin"
-    COMMAND ${CMAKE_COMMAND} -E copy
-            "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
-            "${EXPORT_DIR}/partition-table.bin"
-    # Merge bootloader + partition table + firmware into one flat image.
-    # ESP32 bootloader is at 0x1000 (not 0x2000 as on ESP32-C5).
-    # Flash at 0x0000 with any flasher that accepts a full binary.
-    COMMAND python -m esptool --chip esp32 merge_bin
-            -o "${EXPORT_DIR}/${OUTPUT_BIN_NAME}-full.bin"
-            --flash_mode dio --flash_freq ${FLASH_FREQ} --flash_size ${FLASH_SIZE}
-            ${BOOTLOADER_OFFSET} "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
-            0x8000              "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
-            0x10000             "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
-    COMMENT "Copying firmware and generating merged full flash image in ${EXPORT_DIR}"
-)

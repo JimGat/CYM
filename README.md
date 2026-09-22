@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.14.00</b>
+  <b>v2.15.00</b>
 </p>
 
 <p align="center">
@@ -84,7 +84,7 @@ CYM builds and flashes for three boards from one shared firmware source tree.
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original single-core ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, GPS wardriving. No 802.15.4 (the chip has no 802.15.4 radio). NM-RF-HAT reachable via an SD Card Shim adapter. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original single-core ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4 (the chip has no 802.15.4 radio), no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported — new | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard hardware NM-CYD-C5 doesn't have: 6-axis IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Many new features planned to take advantage of that extra hardware. |
 
 All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/) (board selector at the top) and build from the same `main.c`.
@@ -133,6 +133,7 @@ All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/)
     - [Wardrive File Format](#wardrive-file-format)
     - [Wardriving Workflow — Field Use](#wardriving-workflow--field-use)
   - [Settings](#4-settings)
+    - [Screen Orientation](#screen-orientation)
     - [TX Power Mode](#tx-power-mode)
     - [GATT Connect Timeout](#gatt-connect-timeout)
     - [Data Transfer](#data-transfer)
@@ -184,7 +185,8 @@ All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/)
 | **BLE** | **Tracker Scanner**: AirTag, Samsung SmartTag, and Tile detection — four-category summary (AirTags / AirTag? Prox / SmartTags / Tiles); Found Tags list with type badge, Track, GATT Walk, and Ring buttons; **Ring confirmed working on AirTag** (Apple FMN non-owner `{0x01}` trigger); SmartTag and Tile require owner auth (greyed note). BLE Locator, GATT Walker fingerprinting, BT Observer multi-walk (with **advanced advertising fingerprinting** — AD-type decode, Company ID lookup, URIs, flags), Bluetooth Lookout, BLE Spam (8 modes incl. Sour Apple), Device Spoof (general + directed), BLE Disconnect (directed), BLE PCAP (Kismet PCAPNG; advertising-layer reconstruction from NimBLE reports; BLE 5.0 extended advertising support), **BlueDuck** (BLE HID DuckyScript keyboard injector), **HoneyPair** (BLE persona honeypot), **WhisperPair** (CVE-2025-36911 Google Fast Pair KBP bypass — auto-scan, sequential run-all FP targets, AES-128-ECB exploit); BT Scan & Select supports **Save List** (GPS-tagged JSON snapshot of every device found); **Matter [M] detection** passive tagging of Thread/BLE Matter devices by GATT service `0xFFF6`; **GATT Interactive** (live read/write/subscribe to individual characteristics after walk); **GATT HID Decoder** (parses HID Report Map, decodes live keyboard/mouse input); **GATT Profile Snapshots** (Saved Clones) browser; **BLE Notify Logger** (BLE MITM) |
 | **Deauth Client** | Passive discovery of clients associated with any nearby AP — without connecting or running any attack. Lists client MACs, associated BSSID, RSSI, and last-seen time; useful for pre-attack recon and monitoring |
 | **Zigbee Scout** | IEEE 802.15.4 passive wardrive using the ESP32-C5's built-in PHY; logs PAN IDs, channel, RSSI, device addresses, and NWK/APS frame metadata to WiGLE-compatible CSV + PCAP; RSSI locator locks onto a specific PAN; logs to `/sdcard/lab/zigbee/` |
-| **ESP-NOW Scout** | Passive ESP-NOW device discovery and packet analysis. Hops channels 1–13 (200 ms/ch) sniffing vendor-specific 802.11 Action frames (OUI `18:FE:34`, type `0x04`). Tracks up to 32 unique senders with src/dst MAC, channel, RSSI, packet count, first/last seen timestamp, and broadcast vs. unicast (encrypted) status. **Tap any discovered device** to lock the radio to its channel and open a session sub-screen. Session modes: *This Dev Pkt Log* (filtered to selected src MAC) and *All Ch Pkt Log* (every ESP-NOW frame on that channel). Packet log shows last 20 frames in a terminal-style dark view — hex dump, timestamp, RSSI, and ASCII interpretation for broadcast (plaintext) frames. Encrypted unicast frames show an AES-128-ECB probe result if an LMK is loaded from `profiles.json`. Export full 200-frame ring buffer to timestamped `.txt` on SD. Known-device labels and LMK keys loaded from `/sdcard/lab/espnow/profiles.json`. Discovery device table exported to timestamped JSON. Logs to `/sdcard/lab/espnow/`. |
+| **ESP-NOW Scout** | Passive ESP-NOW device discovery and packet analysis. Hops channels 1–13 sniffing vendor-specific 802.11 Action/Action-No-Ack frames (Category `0x7F`, Espressif OUI `18:FE:34`). Two hop modes: **Adaptive** ("police scanner," default) — 200 ms minimum dwell per channel, extends up to 1 s past that while new devices keep appearing there, then hops; **Fixed** — uniform 200 ms/channel round-robin. Tracks up to 32 unique senders (PSRAM boards) / 8 (CYD2USB) with src/dst MAC, channel, RSSI, packet count, first/last seen timestamp, and broadcast vs. unicast (encrypted) status; the device list persists across Back-and-resume into a session sub-screen (only a fresh menu entry clears it). **Tap any discovered device** to lock the radio to its channel and open a session sub-screen. Session modes: *This Dev Pkt Log* (filtered to selected src MAC) and *All Ch Pkt Log* (every ESP-NOW frame on that channel). Packet log shows last 20 frames in a terminal-style dark view — hex dump, timestamp, RSSI, and ASCII interpretation for broadcast (plaintext) frames. Encrypted unicast frames show an AES-128-ECB probe result if an LMK is loaded from `profiles.json`. Export full 200-frame ring buffer to timestamped `.txt` on SD. Known-device labels and LMK keys loaded from `/sdcard/lab/espnow/profiles.json`. Discovery device table exported to timestamped JSON. Logs to `/sdcard/lab/espnow/`. |
+| **WiFi Observer** (screen title: *Network Observer*) | Passive promiscuous-mode discovery of APs **and their connected clients** — a step beyond WiFi Scanner's beacon-only view. Channel-hops 2.4 + 5 GHz (500 ms/ch), parses management frames for the AP list and data frames for per-AP client MAC + RSSI, and collects probe requests (client MAC + requested SSID). **Karma button** jumps straight into an Evil Twin session pre-seeded with a captured probe's SSID. Tap a client to jump into a targeted deauth against that specific station/AP pair. |
 | **BlueDuck** | BLE HID keyboard injector — pairs as any of 9 device personas; executes DuckyScript payloads from SD card (preloaded into PSRAM at boot, immune to SD DMA OOM during BLE); HUMAN_MODE variable-speed typing; Android (Win+H/B/N), Windows (Win+R/L, Ctrl+Shift+Esc), and iOS (Cmd+H/Space) keyboard shortcut support; session JSONL log to SD card; 13-script library included |
 | **HoneyPair** | Continuous BLE persona honeypot — cycles 9 consumer device personas every 5 min, logs all pairing attempts to JSONL; GATT/HID enumeration on any pairing device; persona MACs randomised and deduplicated |
 | **Deauth Monitor** | Passive detection of nearby deauth attacks |
@@ -742,9 +744,14 @@ The spectrum bar chart (top) shows current peak RSSI per channel as a heat-color
 
 #### ESP-NOW Scout
 
-**Passive ESP-NOW device discovery and packet capture** using the WiFi promiscuous radio. ESP-NOW is Espressif's low-latency peer-to-peer 802.11 protocol used in smart home devices, RC controllers, sensor meshes, and custom embedded projects. CYM identifies ESP-NOW frames by their exact 5-field fingerprint — `FC=0xD0` (Action), `Category=0x7F` (Vendor Specific), `OUI=18:FE:34` (Espressif), `Type=0x04` — with no false positives from other 802.11 traffic.
+**Passive ESP-NOW device discovery and packet capture** using the WiFi promiscuous radio. ESP-NOW is Espressif's low-latency peer-to-peer 802.11 protocol used in smart home devices, RC controllers, sensor meshes, and custom embedded projects. CYM identifies ESP-NOW frames by `FC=0xD0` (Action, unicast) or `FC=0xE0` (Action-No-Ack, broadcast — the frame type most ESP-NOW broadcast traffic actually uses), `Category=0x7F` (Vendor Specific), `OUI=18:FE:34` (Espressif).
 
-**Discovery phase** — hops channels 1–13 at 200 ms/channel. Each unique sender appears as a card showing:
+**Discovery phase** — channel-hops 1–13, in one of two modes (toggle on the Scout screen):
+
+- **Adaptive** ("police scanner," default) — 200 ms minimum dwell per channel, extends up to 1 s past that as long as new devices keep appearing there, then hops on. Concentrates listening time on channels that are still producing new finds instead of spreading it evenly.
+- **Fixed** — the original uniform 200 ms/channel round-robin, no awareness of what's being heard.
+
+The device list persists across tapping into a device's session sub-screen and using Back to return — only a fresh entry from the WiFi/IoT menu clears it. Each unique sender appears as a card showing:
 
 - Source MAC, destination MAC, channel, RSSI, packet count
 - First / last seen timestamps
@@ -1878,9 +1885,10 @@ Settings
 │   ├── BT Scan         (BLE initial scan duration — 10–30 s slider, default 10 s)
 │   └── GATT Timeout    (BLE connect timeout — 3–30 s slider)
 ├── Download Mode       (reboot into bootloader)
-├── Screen              (screen timeout + brightness — combined popup)
+├── Screen              (screen timeout + brightness + orientation — combined popup)
 │   ├── Timeout         (inactivity timer before dimming)
-│   └── Brightness      (software brightness overlay 10–100%)
+│   ├── Brightness      (software brightness overlay 10–100%)
+│   └── Orientation     (0/90/180/270° — NM-CYD-C5 + WS-C5-28, reboots to apply)
 ├── SD Card             (provision / file tree / free space)
 ├── GPS Info            (live fix status)
 ├── Hardware Options    ← hardware addon configuration
@@ -1897,7 +1905,7 @@ All settings are persisted via **NVS** (Non-Volatile Storage) across reboots. Th
 | Setting | Description |
 |---------|-------------|
 | **Timing** | Combined timing popup — WiFi scan dwell time sliders, BT scan duration slider (10–30 s), and GATT connect timeout slider |
-| **Screen** | Combined screen popup — inactivity timeout dropdown and brightness overlay slider |
+| **Screen** | Combined screen popup — inactivity timeout dropdown, brightness overlay slider, and (NM-CYD-C5 + WS-C5-28) screen **Orientation** — 0°/90°/180°/270°, NVS-persisted, applied via LVGL software rotation on reboot. See [Screen Orientation](#screen-orientation) below. |
 | **SD Card** | Validate/provision (creates `/sdcard/lab/` structure, shows completion status); browse file tree; check free space |
 | **GPS Info** | Live GPS fix status — latitude, longitude, altitude, satellite count, UTC time, and UART reference. When no live fix, last-known coordinates are shown in amber with `*` suffix and `Accuracy: 150 m (stale)`. **Set Position** button opens manual coordinate editor (see below). Refreshes every second. |
 | **Hardware Options** | Sub-menu for hardware addon configuration — **Power Mode** (Normal / Max TX power) and **NM-RF-HAT** enable/disable toggle. NVS-persisted. |
@@ -1927,6 +1935,23 @@ Accessible via **Settings → GPS Info**. Refreshes every second.
 | Accuracy | `150 m (stale)` in amber |
 
 The `*`-suffix values are what the device is actually using as its GPS fallback for wardrive logging, GATT Walker geotags, and GPS waypoints.
+
+#### Screen Orientation
+
+**NM-CYD-C5 and WS-C5-28 only — not available on Classic CYD.** Accessible via **Settings → Screen → Orientation**: pick `0 Portrait` (default), `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. The device reboots into the new orientation — every screen is sized from the live display resolution, so a reboot guarantees correct layout everywhere, including screens you haven't opened yet this session. The setting is saved to NVS and persists across reboots and updates. Touch calibration (NM-CYD-C5's resistive XPT2046 only — WS-C5-28's capacitive CST3530 needs none) always runs in native portrait and restores your chosen orientation afterward.
+
+> WS-C5-28 support (added in v2.15.01) is confirmed working on physical hardware — touch and layout both rotate correctly. One landscape layout bug found during that testing, the GPS Info card clipping its bottom row on both boards, was fixed in v2.15.02.
+
+> **Classic CYD does not support this feature**, and there's no near-term plan to add it. Its ILI9341 panel already needs a board-specific `swap_xy` + mirror transform just to display correctly in native portrait, and its XPT2046 touch runs over software-bit-banged SPI on a separate dedicated bus rather than the shared hardware-SPI setup NM-CYD-C5/WS-C5-28 use — layering LVGL rotation on top of that combination hasn't been attempted or verified.
+
+Dozens of screens got dedicated landscape layouts — Universal Remote, LED Remote, Bluetooth Lookout, Evil Portal, Timing Settings, Chameleon Ultra, GPS Info, and the Main Menu among them. Portrait behavior is unchanged throughout; landscape was added as additional layout branches, not a replacement.
+
+<p align="center">
+  <img src="docs/screenshots/Main_Menu_Landscape_and_Portrait.jpg" width="45%" alt="Main Menu — landscape and portrait"/>
+  <img src="docs/screenshots/Screen_Settings_Landscape_and_Portrait.jpg" width="45%" alt="Screen Settings — landscape and portrait"/>
+</p>
+
+See the wiki's [Screen Orientation](https://github.com/JimGat/CYM/wiki/Screen-Orientation) page for the full before/after gallery across every redesigned screen.
 
 **Set Position button (amber):**
 
@@ -3143,7 +3168,7 @@ This project wouldn't be where it is without the brilliant minds and generous ti
 
 **Heartfelt thanks to:**
 
-- **@birolt29** — An extraordinary contributor who has gone far above and beyond at every stage of this project. @birolt29 performed deep ESP32-C5 DMA and render pipeline analysis on real hardware, submitted multiple major patch sets, and caught critical bugs before they ever reached users. Contributions include: the v2.10.15 hardware optimization patch (upload stability, mbedTLS PSRAM routing, BLE Spam memory hardening); the v2.11.x render performance series (LCD SPI 40→80 MHz, internal DMA draw buffers, -O2 optimization, LVGL memcpy, 15 ms refresh period, PSRAM 80 MHz — bringing full-frame render from 148 ms to ~77 ms); the SD remount mutex fix that eliminated a hard reset race; moving 17.4 KB of IR/RF433 name tables to PSRAM BSS; the GATT Walker double-init reset fix; diagnosing and fixing the wardrive GPS crash (GitHub issue #12 — stack-allocated `lv_msgbox` button map dangling after function return); and for v2.12.0, an entire wardrive overhaul: fixing a silent SD mutex self-deadlock that froze the device mid-session; root-causing and fixing BLE-only wardrive which had been collecting zero devices for months (`esp_wifi_deinit()` needed before NimBLE); +52% DMA headroom by moving five large arrays to PSRAM BSS (internal BSS 129 KB → 113 KB, wardrive DMA floor 20,807 → 31,615 bytes); GPS boot-time baud auto-detect and optional 115200 / 5 Hz with multi-vendor commands (CASIC, MTK, u-blox); adaptive speed-based capture profiles with D-UCB bandit and DFS tier-weighting; GPS status icon in the top bar; FirstSeen fix (was hardcoded 2025-09-26); CSV fsync power-cut safety; journey-grouped CSV rotation; BLE active scan with SCAN_RSP name backfill; BLE-mode dashboard; AltitudeMeters and AccuracyMeters filled from real GPS; and serial-validated testing of every change on real hardware. The firmware is faster, more stable, and more reliable because of @birolt29. 🙏
+- **@birolt29** — Co-developer of CYM, not merely a contributor. @birolt29 has driven some of the largest feature and architectural work in the project's history, performed deep ESP32-C5 DMA and render pipeline analysis on real hardware, submitted multiple major patch sets, and caught critical bugs before they ever reached users. For v2.15.00: the **[Screen Orientation](https://github.com/JimGat/CYM/wiki/Screen-Orientation)** feature (landscape/portrait/flipped rotation, built over 75+ build/test cycles with dozens of screens individually redesigned for landscape — Universal Remote, LED Remote, Bluetooth Lookout, Evil Portal, Timing Settings, Chameleon Ultra, GPS Info, and the Main Menu among them); a wardrive-style redesign of the WiFi Scan & Attack list with deauth-feasibility color coding; dual-band (2.4 + 5 GHz) coverage for the Handshaker with GPS-free regulatory domain detection and a PMKID (hashcat 22000) capture path; and crash fixes for MITM active-capture, PN532 Clone/Write/Emulate, and two Chameleon Ultra BLE reconnect bugs. Earlier contributions include: the v2.10.15 hardware optimization patch (upload stability, mbedTLS PSRAM routing, BLE Spam memory hardening); the v2.11.x render performance series (LCD SPI 40→80 MHz, internal DMA draw buffers, -O2 optimization, LVGL memcpy, 15 ms refresh period, PSRAM 80 MHz — bringing full-frame render from 148 ms to ~77 ms); the SD remount mutex fix that eliminated a hard reset race; moving 17.4 KB of IR/RF433 name tables to PSRAM BSS; the GATT Walker double-init reset fix; diagnosing and fixing the wardrive GPS crash (GitHub issue #12 — stack-allocated `lv_msgbox` button map dangling after function return); and for v2.12.0, an entire wardrive overhaul: fixing a silent SD mutex self-deadlock that froze the device mid-session; root-causing and fixing BLE-only wardrive which had been collecting zero devices for months (`esp_wifi_deinit()` needed before NimBLE); +52% DMA headroom by moving five large arrays to PSRAM BSS (internal BSS 129 KB → 113 KB, wardrive DMA floor 20,807 → 31,615 bytes); GPS boot-time baud auto-detect and optional 115200 / 5 Hz with multi-vendor commands (CASIC, MTK, u-blox); adaptive speed-based capture profiles with D-UCB bandit and DFS tier-weighting; GPS status icon in the top bar; FirstSeen fix (was hardcoded 2025-09-26); CSV fsync power-cut safety; journey-grouped CSV rotation; BLE active scan with SCAN_RSP name backfill; BLE-mode dashboard; AltitudeMeters and AccuracyMeters filled from real GPS; and serial-validated testing of every change on real hardware. The firmware is faster, more stable, more capable, and more reliable because of @birolt29. 🙏
 
 - **Anubis** — For creating the first community video showcase of CYM in the wild. Taking the time to film, edit, and publish a video of this project means the world — it helps new users discover what CYM can do and gives the project a presence beyond GitHub. Thank you! 🎬
 
@@ -3155,6 +3180,8 @@ This project wouldn't be where it is without the brilliant minds and generous ti
 - **HeavyButter** — For testing and just being Paranoid Butter
 - **eCowboy** — For Hardware testing and design suggestons
 - **OrdoOuroborus** — For testing, review, and contributions for feature ideas
+- **@Zjakkemakke** — For testing and feedback
+- **@PKT-GHOST** — For testing and feedback
 
 Your help made this toolkit more robust, more reliable, and better for everyone. 💙
 

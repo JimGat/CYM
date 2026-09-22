@@ -126,6 +126,12 @@ static volatile bool s_ev_error        = false;
 static volatile bool s_ev_passkey      = false; /* numeric comparison pending */
 static volatile bool s_ev_enc_ok       = false; /* pairing completed successfully */
 static volatile bool s_changed         = false; /* general "please repaint" flag */
+/* On security_initiate rc=EALREADY the link is already encrypted (bond reuse) OR a
+ * pairing is in progress; a bond-reuse reconnect fires NO further ENC_CHANGE, so we
+ * poll sec_state.encrypted in cham_poll rather than waiting for an event that never
+ * comes (which hung discovery on reconnect). */
+static volatile bool s_await_enc       = false;
+static int           s_await_enc_ticks = 0;
 
 /* Numeric comparison passkey (6-digit, set alongside s_ev_passkey) */
 static uint32_t s_passkey_num = 0;
@@ -446,8 +452,19 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
                      sec_rc == BLE_HS_ENOTCONN? "not connected?"                  :
                      sec_rc == BLE_HS_ENOTSUP ? "not supported"                   :
                                                 "unexpected error");
-            if (sec_rc != 0) {
-                /* Link usable without security — skip straight to discovery */
+            if (sec_rc == BLE_HS_EALREADY) {
+                /* Link is already encrypted (valid bond reused) OR a fresh pairing
+                 * is in progress.  We cannot reliably read sec_state.encrypted
+                 * synchronously at CONNECT time, and a bond-reuse reconnect fires
+                 * NO further ENC_CHANGE — so waiting on that event hangs discovery
+                 * forever (observed), while proceeding blindly writes the CCCD on a
+                 * not-yet-authenticated link (ATT 0x05).  Poll the encryption state
+                 * in cham_poll instead: proceed as soon as it reads encrypted, or
+                 * when ENC_CHANGE(status=0) fires for the fresh-pairing case. */
+                s_await_enc = true;
+                s_await_enc_ticks = 60;   /* ~3 s at the 50 ms poll interval */
+            } else if (sec_rc != 0) {
+                /* Security not supported/applicable — NUS is open, proceed */
                 s_ev_enc_ok = true;
             }
         } else {
@@ -474,6 +491,7 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
         s_pend_cb      = NULL;
         s_pend_write_ok = false;
         s_batt_retry_pending = false;
+        s_await_enc     = false;
         memset(&s_rxs, 0, sizeof(s_rxs));
         s_ev_disconnected = true;
         break;
@@ -530,6 +548,7 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
                  enc_st, enc_st, (int)s_state);
         if (enc_st == 0) {
             /* Encryption established — start GATT discovery */
+            s_await_enc = false;
             s_ev_enc_ok = true;
         } else if (enc_st >= 0x500 && enc_st <= 0x5FF) {
             /* Peer rejected pairing (SM_PEER error 0x500..0x5FF, e.g. 0x505 =
@@ -546,11 +565,19 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
              * side ("Device Settings -> Clear bounded devices") for a fresh pair.
              * We do NOT auto-retry here: while the peer still holds its old bond
              * it would re-encrypt with the same stale key and loop. */
-            ESP_LOGE(TAG, "ENC_CHANGE: hard failure status=0x%03x — deleting our peer bond", enc_st);
-            struct ble_gap_conn_desc desc;
-            if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
-                ble_gap_conn_find(s_conn_handle, &desc) == 0) {
-                ble_store_util_delete_peer(&desc.peer_id_addr);
+            /* status==7 (BLE_HS_ENOTCONN) means the link dropped mid-procedure
+             * (peer terminated / CCCD teardown) — that is NOT a bond mismatch, so
+             * deleting the bond here would nuke a good bond and force a desync.
+             * Only delete on a genuine auth/pairing failure. */
+            if (enc_st != BLE_HS_ENOTCONN) {
+                ESP_LOGE(TAG, "ENC_CHANGE: hard failure status=0x%03x — deleting our peer bond", enc_st);
+                struct ble_gap_conn_desc desc;
+                if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE &&
+                    ble_gap_conn_find(s_conn_handle, &desc) == 0) {
+                    ble_store_util_delete_peer(&desc.peer_id_addr);
+                }
+            } else {
+                ESP_LOGW(TAG, "ENC_CHANGE: link dropped mid-procedure (status=0x%03x) — keeping bond", enc_st);
             }
             s_ev_error = true;
             snprintf(s_status_msg, sizeof(s_status_msg),
@@ -811,6 +838,7 @@ bool cham_connect(int idx)
     s_ev_connected = false;
     s_ev_cccd_ok   = false;
     s_ev_error     = false;
+    s_await_enc    = false;
     memset(&s_rxs, 0, sizeof(s_rxs));
 
     /* ── Security config for Chameleon pairing (surgical — set only here) ──
@@ -998,6 +1026,24 @@ bool cham_poll(void)
         snprintf(s_status_msg, sizeof(s_status_msg),
                  "Confirm: %06" PRIu32, s_passkey_num);
         changed = true;
+    }
+
+    /* Poll for encryption after security_initiate returned EALREADY (bond reuse
+     * gives no ENC_CHANGE).  Proceed to discovery once the link reads encrypted,
+     * or after a timeout as a best effort (discovery/CCCD will fail cleanly and
+     * the bond is preserved, so a retry recovers). */
+    if (s_await_enc) {
+        struct ble_gap_conn_desc d;
+        if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+            s_await_enc = false;   /* disconnected before encryption settled */
+        } else if (ble_gap_conn_find(s_conn_handle, &d) == 0 && d.sec_state.encrypted) {
+            s_await_enc = false;
+            s_ev_enc_ok = true;    /* encrypted (bond reused) → discover this tick */
+        } else if (--s_await_enc_ticks <= 0) {
+            s_await_enc = false;
+            s_ev_enc_ok = true;    /* timeout — proceed best-effort */
+            ESP_LOGW(TAG, "enc wait timed out — proceeding to discovery anyway");
+        }
     }
 
     if (s_ev_enc_ok) {

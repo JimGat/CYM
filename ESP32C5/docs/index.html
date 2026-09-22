@@ -355,6 +355,7 @@
               <li><strong>Stuck?</strong> Unplug, click Connect, then plug in again while holding BOOT.</li>
               <li><strong>After flash:</strong> press RESET if the board does not auto-reboot. Insert a FAT32 MicroSD card (&le; 32 GB) before booting.</li>
               <li><strong>Power:</strong> use a clean 5 V USB supply rated &ge; 500 mA. Undervoltage is the most common cause of reset loops during WiFi scanning.</li>
+              <li><strong>SD card resources:</strong> after provisioning the card (Settings &rarr; SD Card), grab the OUI vendor table and MIFARE key dictionary from <a href="https://github.com/JimGat/CYM-SD-Assets" target="_blank" rel="noopener">CYM-SD-Assets</a> and copy them into place for BLE vendor lookup and extended card cracking.</li>
             </ul>
           </div>
 
@@ -389,6 +390,7 @@
 
     <footer>
       <a id="repoLink" href="https://github.com/JimGat/CYM">JimGat/cym</a> &mdash;
+      <a href="https://github.com/JimGat/CYM-SD-Assets" target="_blank" rel="noopener">SD Card Assets</a> &mdash;
       <a href="https://discord.gg/Vuq2SmCbk5" target="_blank" rel="noopener">LAB5 Discord</a> &mdash;
       <span id="pageVersion" class="mono">Web flasher v2.11.0</span>
     </footer>
@@ -510,7 +512,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.12.0"; // dynamic chip/offsets pills per board; WS-C5-28 + CYD-2432S028 promoted to stable
+      const PAGE_VERSION    = "2.12.1"; // link CYM-SD-Assets (footer + getting-started list)
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -21,9 +21,11 @@
 #include "esp_heap_caps.h"
 #include <sys/stat.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <time.h>
+#include <dirent.h>
 
 static const char *TAG = "ot_survey";
 
@@ -432,6 +434,288 @@ esp_err_t ot_survey_flush(ot_survey_session_t *sess)
 
     s_export_pending_count = 0; /* drained — queue is reused, not reallocated, between flushes */
     return ESP_OK;
+}
+
+/* ── Minimal JSON field extractors ───────────────────────────────────────────
+ * obs_record_to_json()/write_metadata() emit a fixed, known key set with no
+ * nesting beyond the geo_start/geo_end objects (handled by search-from-offset
+ * below) — a full JSON parser would be pure overhead here. These scan for
+ * "key": and read the value in whichever form that key is always emitted as.
+ * Not a general-purpose parser: assumes well-formed input from our own
+ * writer, not arbitrary/adversarial JSON. */
+
+static const char *json_find_key(const char *json, const char *key)
+{
+    char search[40];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return NULL;
+    p += strlen(search);
+    while (*p && (*p == ' ' || *p == '\t' || *p == ':')) p++;
+    return p;
+}
+
+static bool json_get_str(const char *json, const char *key, char *out, size_t out_sz)
+{
+    const char *p = json_find_key(json, key);
+    if (!p || *p != '"') { if (out_sz) out[0] = '\0'; return false; }
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i < out_sz - 1) {
+        if (*p == '\\' && *(p + 1)) p++;   /* skip escape char, copy the escaped char itself */
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return true;
+}
+
+static bool json_get_u32(const char *json, const char *key, uint32_t *out)
+{
+    const char *p = json_find_key(json, key);
+    if (!p) return false;
+    *out = (uint32_t)strtoul(p, NULL, 10);
+    return true;
+}
+
+static bool json_get_i32(const char *json, const char *key, int32_t *out)
+{
+    const char *p = json_find_key(json, key);
+    if (!p) return false;
+    *out = (int32_t)strtol(p, NULL, 10);
+    return true;
+}
+
+static bool json_get_float(const char *json, const char *key, float *out)
+{
+    const char *p = json_find_key(json, key);
+    if (!p) return false;
+    *out = strtof(p, NULL);
+    return true;
+}
+
+static bool json_get_bool(const char *json, const char *key, bool *out)
+{
+    const char *p = json_find_key(json, key);
+    if (!p) return false;
+    *out = (strncmp(p, "true", 4) == 0);
+    return true;
+}
+
+static bool json_get_mac(const char *json, const char *key, uint8_t mac[6])
+{
+    const char *p = json_find_key(json, key);
+    if (!p || *p != '"') return false;
+    p++;
+    unsigned m[6];
+    if (sscanf(p, "%2x:%2x:%2x:%2x:%2x:%2x", &m[0], &m[1], &m[2], &m[3], &m[4], &m[5]) != 6)
+        return false;
+    for (int i = 0; i < 6; i++) mac[i] = (uint8_t)m[i];
+    return true;
+}
+
+/* "ev":[1,7,10] -> evidence[], evidence_count (0-OBS_MAX_EVIDENCE) */
+static uint8_t json_get_evidence(const char *json, uint8_t out[OBS_MAX_EVIDENCE])
+{
+    const char *p = json_find_key(json, "ev");
+    if (!p || *p != '[') return 0;
+    p++;
+    uint8_t n = 0;
+    while (*p && *p != ']' && n < OBS_MAX_EVIDENCE) {
+        char *end;
+        long v = strtol(p, &end, 10);
+        if (end == p) break;   /* not a number — malformed, stop */
+        out[n++] = (uint8_t)v;
+        p = end;
+        while (*p == ',' || *p == ' ') p++;
+    }
+    return n;
+}
+
+/* ── Results loading ─────────────────────────────────────────────────────── */
+
+esp_err_t ot_survey_results_load(const char *session_dir, ot_survey_results_t *out,
+                                  uint16_t max_entries)
+{
+    if (!session_dir || !out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+
+    /* dir_path + uuid: the caller-supplied path is OT_SURVEY_ROOT/<uuid>; pull
+     * the uuid back out of the path rather than requiring a second argument. */
+    strncpy(out->dir_path, session_dir, sizeof(out->dir_path) - 1);
+    const char *slash = strrchr(session_dir, '/');
+    strncpy(out->uuid, slash ? slash + 1 : session_dir, sizeof(out->uuid) - 1);
+
+    /* ── metadata.json ── */
+    char meta_path[96];
+    snprintf(meta_path, sizeof(meta_path), "%s/metadata.json", session_dir);
+    FILE *mf = fopen(meta_path, "r");
+    if (!mf) return ESP_ERR_NOT_FOUND;
+
+    fseek(mf, 0, SEEK_END);
+    long meta_sz = ftell(mf);
+    fseek(mf, 0, SEEK_SET);
+    if (meta_sz <= 0 || meta_sz > 4096) { fclose(mf); return ESP_ERR_INVALID_SIZE; }
+    char *meta_buf = heap_caps_malloc((size_t)meta_sz + 1, MALLOC_CAP_8BIT);
+    if (!meta_buf) { fclose(mf); return ESP_ERR_NO_MEM; }
+    fread(meta_buf, 1, (size_t)meta_sz, mf);
+    fclose(mf);
+    meta_buf[meta_sz] = '\0';
+
+    json_get_str(meta_buf, "site",       out->site,       sizeof(out->site));
+    json_get_str(meta_buf, "building",   out->building,   sizeof(out->building));
+    json_get_str(meta_buf, "zone",       out->zone,        sizeof(out->zone));
+    json_get_str(meta_buf, "operator",   out->operator_id, sizeof(out->operator_id));
+    json_get_str(meta_buf, "profile",    out->profile_name, sizeof(out->profile_name));
+    json_get_u32(meta_buf, "start_time", &out->start_time_s);
+    json_get_u32(meta_buf, "stop_time",  &out->stop_time_s);
+
+    /* geo_start/geo_end are nested objects with their own "lat"/"lon" keys —
+     * json_find_key() finds the FIRST "lat"/"lon" in the whole buffer, which
+     * is geo_start's, and the SECOND occurrence (geo_end's) needs searching
+     * from after geo_start's object closes. Simple and sufficient for this
+     * fixed two-object layout. */
+    const char *geo_start_p = strstr(meta_buf, "\"geo_start\"");
+    const char *geo_end_p   = strstr(meta_buf, "\"geo_end\"");
+    if (geo_start_p) {
+        json_get_bool(geo_start_p, "valid", &out->geo_start_valid);
+        json_get_float(geo_start_p, "lat", &out->geo_start_lat);
+        json_get_float(geo_start_p, "lon", &out->geo_start_lon);
+    }
+    if (geo_end_p) {
+        json_get_bool(geo_end_p, "valid", &out->geo_end_valid);
+        json_get_float(geo_end_p, "lat", &out->geo_end_lat);
+        json_get_float(geo_end_p, "lon", &out->geo_end_lon);
+    }
+    heap_caps_free(meta_buf);
+
+    /* ── obs.jsonl — exact per-type counts (full scan) + capped device list ── */
+    if (max_entries > 0) {
+        out->entries = (ot_result_entry_t *)heap_caps_malloc(
+            (size_t)max_entries * sizeof(ot_result_entry_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!out->entries) {
+            out->entries = (ot_result_entry_t *)heap_caps_malloc(
+                (size_t)max_entries * sizeof(ot_result_entry_t), MALLOC_CAP_8BIT);
+        }
+        out->entries_cap = out->entries ? max_entries : 0;
+    }
+
+    char obs_path[96];
+    snprintf(obs_path, sizeof(obs_path), "%s/obs.jsonl", session_dir);
+    FILE *of = fopen(obs_path, "r");
+    if (!of) return ESP_OK;   /* metadata alone is still a valid (empty) result */
+
+    char line[400];
+    while (fgets(line, sizeof(line), of)) {
+        uint32_t type_u = 0;
+        if (!json_get_u32(line, "type", &type_u) || type_u >= 10) continue;
+        out->obs_by_type[type_u]++;
+        out->obs_count++;
+
+        if (!out->entries) continue;   /* counts-only pass (alloc failed or max_entries==0) */
+
+        uint8_t mac[6];
+        if (!json_get_mac(line, "mac", mac)) continue;
+
+        /* find-or-add by MAC — same idiom as obs_store_add()/espnow_find_or_add() */
+        ot_result_entry_t *e = NULL;
+        for (uint16_t i = 0; i < out->entries_count; i++) {
+            if (memcmp(out->entries[i].mac, mac, 6) == 0) { e = &out->entries[i]; break; }
+        }
+        if (!e) {
+            if (out->entries_count >= out->entries_cap) {
+                out->entries_truncated = true;
+                continue;
+            }
+            e = &out->entries[out->entries_count++];
+            memset(e, 0, sizeof(*e));
+            memcpy(e->mac, mac, 6);
+            e->obs_type = (uint8_t)type_u;
+            int32_t radio_i = 0;
+            if (json_get_i32(line, "radio", &radio_i)) e->src_radio = (uint8_t)radio_i;
+            uint32_t first_u = 0;
+            if (json_get_u32(line, "first", &first_u)) e->first_seen_s = first_u;
+            json_get_str(line, "label", e->label, sizeof(e->label));
+        }
+
+        int32_t rssi_i = 0, rssi_peak_i = 0, conf_i = 0;
+        if (json_get_i32(line, "rssi", &rssi_i))       e->rssi_cur    = (int8_t)rssi_i;
+        if (json_get_i32(line, "rssi_peak", &rssi_peak_i)) e->rssi_peak = (int8_t)rssi_peak_i;
+        if (json_get_i32(line, "conf", &conf_i))       e->confidence  = (uint8_t)conf_i;
+        e->evidence_count = json_get_evidence(line, e->evidence);
+        uint32_t last_u = 0;
+        if (json_get_u32(line, "last", &last_u)) e->last_seen_s = last_u;
+        if (e->hit_count < UINT16_MAX) e->hit_count++;
+    }
+    fclose(of);
+    return ESP_OK;
+}
+
+void ot_survey_results_free(ot_survey_results_t *out)
+{
+    if (!out) return;
+    if (out->entries) { heap_caps_free(out->entries); out->entries = NULL; }
+    out->entries_count = 0;
+    out->entries_cap   = 0;
+}
+
+/* ── Session listing ──────────────────────────────────────────────────────── */
+
+int ot_survey_list_sessions(ot_session_summary_t out[OT_SESSION_LIST_MAX], int *total_found)
+{
+    int found = 0;
+    int listed = 0;
+
+    DIR *d = opendir(OT_SURVEY_ROOT);
+    if (!d) { if (total_found) *total_found = 0; return 0; }
+
+    struct dirent *ent;
+    /* Newest-first: sessions are UUIDv4, not sortable by name/time, so this
+     * does a single pass reading every metadata.json's start_time and
+     * insertion-sorts into out[] — OT_SESSION_LIST_MAX is small (40) so an
+     * O(n * OT_SESSION_LIST_MAX) insertion sort is cheap next to the SD I/O
+     * cost of opening each metadata.json in the first place. */
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        if (ent->d_type != DT_DIR
+#ifdef DT_UNKNOWN
+            && ent->d_type != DT_UNKNOWN
+#endif
+        ) continue;
+
+        char meta_path[128];
+        snprintf(meta_path, sizeof(meta_path), "%s/%s/metadata.json", OT_SURVEY_ROOT, ent->d_name);
+        FILE *mf = fopen(meta_path, "r");
+        if (!mf) continue;   /* not a session dir (or mid-write) — skip */
+
+        char buf[512];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, mf);
+        fclose(mf);
+        buf[n] = '\0';
+
+        ot_session_summary_t cand = {0};
+        snprintf(cand.dir_path, sizeof(cand.dir_path), "%s/%s", OT_SURVEY_ROOT, ent->d_name);
+        json_get_str(buf, "site", cand.site, sizeof(cand.site));
+        json_get_u32(buf, "start_time", &cand.start_time_s);
+        json_get_u32(buf, "obs_count",  &cand.obs_count);
+
+        found++;
+
+        /* Insertion-sort into out[] newest-first, keeping only the top
+         * OT_SESSION_LIST_MAX by start_time_s. */
+        int pos = listed < OT_SESSION_LIST_MAX ? listed : OT_SESSION_LIST_MAX - 1;
+        if (listed >= OT_SESSION_LIST_MAX && cand.start_time_s <= out[pos].start_time_s)
+            continue;   /* older than everything already kept — drop */
+        while (pos > 0 && out[pos - 1].start_time_s < cand.start_time_s) {
+            out[pos] = out[pos - 1];
+            pos--;
+        }
+        out[pos] = cand;
+        if (listed < OT_SESSION_LIST_MAX) listed++;
+    }
+    closedir(d);
+
+    if (total_found) *total_found = found;
+    return listed;
 }
 
 /* ── 802.15.4 PCAPNG writer ───────────────────────────────────────────────── */
