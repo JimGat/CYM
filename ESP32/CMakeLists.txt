@@ -55,23 +55,16 @@ else()
 endif()
 file(MAKE_DIRECTORY "${EXPORT_DIR}")
 
-# ===== POST-BUILD: per-board memory-budget doc =====
-find_package(Python3 QUIET COMPONENTS Interpreter)
-if(Python3_FOUND)
-    add_custom_command(
-        TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD
-        COMMAND ${Python3_EXECUTABLE}
-                "${CMAKE_SOURCE_DIR}/../ESP32C5/tools/update_memory_map.py"
-                "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.map"
-                "${CMAKE_SOURCE_DIR}/docs"
-                "${PROJECT_VER}"
-                "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin"
-                "memory-budget-${OUTPUT_BIN_NAME}.md"
-        COMMENT "Updating docs/memory-budget-${OUTPUT_BIN_NAME}.md from linker map"
-        VERBATIM
-    )
-endif()
-
+# ===== POST-BUILD: copy binaries + generate merged full image =====
+# Registered BEFORE the memory-budget doc block below. Multiple POST_BUILD
+# add_custom_command() calls on the same target run in registration order, and
+# update_memory_map.py stats "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin" (the export-dir
+# copy, not the fresh CMAKE_BINARY_DIR one) -- so this copy MUST run first, or the
+# doc reads whatever binary was sitting in the export dir from the PREVIOUS build.
+# Found 2026-09-22: this block and the memory-budget block below were in the
+# opposite order (memory-budget first), so every CYD2USB memory-budget doc since
+# this file was written recorded the prior build's binary size, one version stale.
+# The actual .bin/.full.bin release artifacts were never affected -- only this doc.
 add_custom_command(
     TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy
@@ -94,3 +87,20 @@ add_custom_command(
             0x10000             "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin"
     COMMENT "Copying firmware and generating merged full flash image in ${EXPORT_DIR}"
 )
+
+# ===== POST-BUILD: per-board memory-budget doc =====
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_FOUND)
+    add_custom_command(
+        TARGET "gen_${CMAKE_PROJECT_NAME}_binary" POST_BUILD
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_SOURCE_DIR}/../ESP32C5/tools/update_memory_map.py"
+                "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.map"
+                "${CMAKE_SOURCE_DIR}/docs"
+                "${PROJECT_VER}"
+                "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin"
+                "memory-budget-${OUTPUT_BIN_NAME}.md"
+        COMMENT "Updating docs/memory-budget-${OUTPUT_BIN_NAME}.md from linker map"
+        VERBATIM
+    )
+endif()
