@@ -6796,6 +6796,7 @@ void app_main(void)
             .switch_to_154   = NULL,  /* CYD2USB: no 802.15.4 */
 #endif
             .switch_to_idle  = _ot_switch_to_idle,
+            .wifi_scan_busy  = wifi_scanner_is_scanning,
         };
         ot_radio_init(&ot_hooks);
     }
@@ -59642,11 +59643,19 @@ static void s_otr_category_tap_cb(lv_event_t *e)
 
 static void ot_results_summary_stop(void)
 {
+    /* Do NOT free s_otr_results / clear s_otr_loaded here. reset_function_page_children()'s
+     * doc comment is explicit: g_screen_stop_fn fires on ANY exit, including FORWARD
+     * navigation into a child screen - not just Back/Home. Tapping a category calls
+     * show_ot_results_drill_screen(), which calls create_function_page_base(), which runs
+     * THIS stop hook before the drill screen builds. Freeing here meant the drill screen
+     * always found s_otr_loaded==false and showed "No data loaded." (and Back from there hit
+     * the same fate on the summary screen, both looking "blank" to the user - field report
+     * 2026-09-22: "click 32 Ble devices it is blank. then back go blank"). The drill screen's
+     * own stop hook already documents (correctly) that it doesn't own this data. The real
+     * owner of the free is show_ot_results_screen() (main.c ~59854), which already frees any
+     * previously-loaded result before loading a new one - that's the only point at which
+     * stale data actually needs to go away. */
     s_otr_list = NULL;
-    if (s_otr_loaded) {
-        ot_survey_results_free(&s_otr_results);
-        s_otr_loaded = false;
-    }
 }
 
 static void show_ot_results_summary_from_loaded(void)

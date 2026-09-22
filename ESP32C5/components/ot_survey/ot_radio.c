@@ -43,6 +43,10 @@ static const char *TAG = "ot_radio";
 #define OT_SCHED_MIN_DWELL_MS    500u  /* minimum per-slot dwell when weight > 0 */
 #define OT_SCHED_YIELD_MS         20u  /* intra-dwell yield granularity */
 #define OT_SCHED_STOP_WAIT_MS   3000u  /* max wait for task exit on stop */
+#define OT_SCHED_WIFI_MAX_EXTRA_MS 4000u  /* bounded extension past the weighted WiFi/ESPNOW
+                                             dwell, letting a still-in-flight passive scan
+                                             finish naturally instead of being hard-aborted
+                                             mid-sweep — see wifi_scan_busy in ot_radio.h */
 
 /* Task priority — MUST stay below ESP_TASK_MAIN_PRIO (1), the priority the
  * main LVGL/WDT loop's task runs at (see esp_task.h: ESP_TASK_MAIN_PRIO =
@@ -166,6 +170,27 @@ static void scheduler_task(void *arg)
             }
 
             if (!dwell_ms(dwell)) break; /* stop requested during dwell */
+
+            /* WiFi and ESPNOW slots share the WiFi radio's passive scan
+             * (switch_to_slot() routes both to switch_to_wifi()). A full
+             * 2.4+5GHz passive sweep takes ~5.5s+ — longer than most profiles'
+             * weighted WiFi share (as little as 1s for WirelessHART/
+             * Thread-Matter) — so without this, the scan was hard-aborted
+             * mid-sweep on nearly every cycle, yielding empty or partial
+             * results regardless of what was actually in range. Extend up to
+             * OT_SCHED_WIFI_MAX_EXTRA_MS while the scan is still running,
+             * polling at the same granularity as dwell_ms() so a stop request
+             * is honored promptly. */
+            if ((slot == OT_SLOT_WIFI || slot == OT_SLOT_ESPNOW) &&
+                s_hooks.wifi_scan_busy) {
+                uint32_t extra = 0;
+                while (extra < OT_SCHED_WIFI_MAX_EXTRA_MS &&
+                       s_state == OT_SCHED_RUNNING &&
+                       s_hooks.wifi_scan_busy()) {
+                    vTaskDelay(pdMS_TO_TICKS(OT_SCHED_YIELD_MS));
+                    extra += OT_SCHED_YIELD_MS;
+                }
+            }
         }
     }
 
