@@ -46,8 +46,15 @@ static pcapng_writer_t *s_pcapng = NULL;
  * fit its ~50-90KB free internal DRAM either; the fallback's own comment
  * claimed "MALLOC_CAP_8BIT alone still succeeds on CYD2USB" but field
  * evidence disproved that (2026-09-22: "export queue allocation failed").
- * Same board-memory-budget rationale as OBS_STORE_CYD2USB_CAPACITY. */
-#define OT_EXPORT_QUEUE_CAP_DRAM  128u
+ * Same board-memory-budget rationale as OBS_STORE_CYD2USB_CAPACITY -
+ * shrunk from an initial 128 (16KB) to 32 (4KB) alongside that same fix's
+ * capacity cut, after 128+obs_store's original 256-entry size together
+ * left too little margin for the OT Survey scheduler's WiFi->BLE handoff
+ * and crashed the board (field report 2026-09-23, see obs_store.h). This
+ * queue is a soft-fail burst buffer, not the survey's primary count (that's
+ * sess->obs_count/obs_by_type, always tracked regardless) - failing small
+ * is far preferable to failing by taking the whole board down. */
+#define OT_EXPORT_QUEUE_CAP_DRAM  32u
 static obs_record_t *s_export_pending       = NULL;
 static uint32_t      s_export_pending_count = 0;
 static uint32_t      s_export_pending_cap   = 0;  /* actual allocated capacity — may be
