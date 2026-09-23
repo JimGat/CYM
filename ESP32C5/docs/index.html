@@ -512,7 +512,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.12.2"; // fix stub-upload fallback hardcoded to esp32c5.json; add chip/board compatibility gate before flashing
+      const PAGE_VERSION    = "2.12.3"; // widen manual stub-upload OHAI handshake timeout 1000ms -> 4000ms for slower UART bridges (CH340)
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -722,7 +722,15 @@
             await upload(textBytes, sData.text_start);
             if (dataBytes.length > 0) await upload(dataBytes, sData.data_start);
             await state.esploader.memFinish(sData.entry);
-            const p = await state.esploader.readPacket(1000);
+            // 1000ms was an untuned guess and too tight for chips reached through a
+            // slower UART bridge (e.g. CH340 on classic ESP32 boards) - the stub can
+            // genuinely still be starting up and about to respond when the read gives
+            // up, surfacing as "Timed out waiting for packet header" even though the
+            // upload itself succeeded (field-reported 2026-09-22 on CYD-2432S028).
+            // 4000ms only affects how long we're willing to wait; a fast responder
+            // (ESP32-C5 over native USB-Serial/JTAG) still returns immediately and is
+            // unaffected either way.
+            const p = await state.esploader.readPacket(4000);
             const greeting = String.fromCharCode(...p);
             if (greeting !== "OHAI") throw new Error(`Stub start failed: "${greeting}"`);
             state.esploader.IS_STUB = true;
