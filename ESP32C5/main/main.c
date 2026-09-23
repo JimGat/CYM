@@ -709,6 +709,10 @@ static inline lv_color_t ui_accent_color(void) {
 #define WPASEC_URL           "https://wpa-sec.stanev.org/"
 #define WPASEC_KEY_PATH      "/sdcard/lab/wpa-sec.txt"
 #define WPASEC_KEY_MAX_LEN   65
+// Upload journal for the Manage Handshakes screen (mirrors the Wardrive upload_log.csv).
+// One "filename,WPA-SEC,OK|DUP" line per successfully-submitted .pcap so the screen can show
+// "Sent" and re-uploads skip files already on wpa-sec instead of re-sending every one.
+#define WPASEC_LOG_PATH      "/sdcard/lab/handshakes/wpasec_upload_log.csv"
 
 // Wardrive upload constants
 #define WIGLE_HOST           "api.wigle.net"
@@ -1935,6 +1939,36 @@ PSRAM_ATTR static char wd_manage_paths[WD_MANAGE_MAX_FILES][320];
 #define WD_MANAGE_MAX_FILES 16
 static char wd_manage_paths[WD_MANAGE_MAX_FILES][128];
 #endif
+
+// Manage Handshakes (WPA-SEC) screen — wpm_paths + the explicit-selection index list are read
+// by wpasec_upload_task (defined below, before the screen), so they are declared here, above it.
+// Mirrors wd_manage_paths / wdup_explicit_* exactly.
+#if CONFIG_BOARD_HAS_PSRAM
+#define HS_MANAGE_MAX_FILES 128
+PSRAM_ATTR static char wpm_paths[HS_MANAGE_MAX_FILES][160];
+#else
+// No-PSRAM (CYD-2432S028): internal DRAM is nearly full after wd_manage's arrays, so a second
+// large path array overflows dram0_0_seg. The handshake and wardrive file managers are never on
+// screen at once, so reuse the Wardrive Manage path storage (16 x 128) instead of allocating our
+// own. The small companion arrays below stay their own (a few hundred bytes, within headroom).
+#define HS_MANAGE_MAX_FILES WD_MANAGE_MAX_FILES
+#define wpm_paths wd_manage_paths
+#endif
+PSRAM_ATTR static int wpasec_explicit_indices[HS_MANAGE_MAX_FILES];  // PSRAM: read by upload task, no DMA
+static int   wpasec_explicit_count = 0;              // >0 => wpasec_upload_task uploads only these
+static void (*wpasec_upload_back_fn)(void) = NULL;   // WPA-SEC upload page Back -> Manage Handshakes
+
+// True if 'name' (a basename) is among the first 'count' explicit-selection entries.
+static bool wpasec_name_selected(const char *name, int count) {
+    for (int i = 0; i < count; i++) {
+        int idx = wpasec_explicit_indices[i];
+        if (idx < 0 || idx >= HS_MANAGE_MAX_FILES) continue;
+        const char *p = strrchr(wpm_paths[idx], '/');
+        p = p ? p + 1 : wpm_paths[idx];
+        if (strcmp(p, name) == 0) return true;
+    }
+    return false;
+}
 
 // SD Card settings screen state
 // Queue item for provision textarea updates: provision task queues these,
@@ -3330,6 +3364,7 @@ static bool wpasec_read_key_from_sd(void);
 static int wpasec_tls_write_all(esp_tls_t *tls, const char *buf, int len);
 static int wpasec_upload_file(const char *filepath, const char *filename);
 static void wpasec_upload_task(void *pvParameters);
+static bool wdm_log_accepted(const char *log_buf, const char *filename, const char *service);
 static void wpasec_upload_timer_cb(lv_timer_t *timer);
 
 // BLE PCAP capture
@@ -11925,6 +11960,11 @@ static bool hs_save_handshake_to_sd(int ap_idx) {
 static bool hs_save_pmkid_22000(const hs_ap_target_t *ap, const uint8_t *ap_mac,
                                 const uint8_t *sta_mac, const uint8_t *pmkid) {
     if (!sd_spi_mutex) return false;
+    // Privacy (white.txt): never persist a PMKID for a whitelisted network. Mirrors the
+    // pcap/hccapx chokepoint gate in hs_save_handshake_to_sd. The passive sniffer already
+    // filters whitelisted APs at the beacon stage, but the active Handshaker adds its
+    // user-selected targets without that filter, so guard the PMKID writer itself too.
+    if (is_bssid_whitelisted(ap->bssid) || is_ssid_whitelisted(ap->ssid)) return false;
     if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) return false;
     bool ok = false;
     struct stat st = {0};
@@ -19821,6 +19861,12 @@ static void wpasec_upload_task(void *pvParameters)
 
     wpasec_ui_msg_t ui_msg;
 
+    // Explicit-selection snapshot (Manage Handshakes "Upload" of specific .pcap files). Read
+    // once, then clear the global so any later "upload all" (e.g. the attack flow) is never
+    // accidentally scoped to a stale selection. wpm_explicit==0 => upload every .pcap (default).
+    int wpm_explicit = wpasec_explicit_count;
+    wpasec_explicit_count = 0;
+
     // Launched from Settings > Data Transfer: connect the saved WiFi Client first
     // (the attack flow already has an active STA link, so it skips this). Mirrors the
     // Wardrive upload: force the 2.4 GHz band before associating (5 GHz VHT80 RX buffers
@@ -19889,6 +19935,7 @@ static void wpasec_upload_task(void *pvParameters)
             if (entry->d_type == DT_DIR) continue;
             size_t nlen = strlen(entry->d_name);
             if (nlen > 5 && strcasecmp(entry->d_name + nlen - 5, ".pcap") == 0) {
+                if (wpm_explicit > 0 && !wpasec_name_selected(entry->d_name, wpm_explicit)) continue;
                 total_files++;
             }
         }
@@ -19922,6 +19969,25 @@ static void wpasec_upload_task(void *pvParameters)
     int uploaded = 0;
     int duplicates = 0;
     int failed = 0;
+    int skipped = 0;
+
+    // Load the WPA-SEC journal so already-uploaded files are SKIPPED (not re-sent) — this is what
+    // makes "Upload All" / re-selecting a Sent file not re-upload every run. Same wpasec_upload_log.csv
+    // the Manage Handshakes screen reads for its "Sent" badge, checked with the same wdm_log_accepted.
+    char *wpasec_ulog = NULL;
+    if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        FILE *ulf = fopen(WPASEC_LOG_PATH, "rb");
+        if (ulf) {
+            fseek(ulf, 0, SEEK_END); long uls = ftell(ulf); fseek(ulf, 0, SEEK_SET);
+            if (uls > 0 && uls <= 512 * 1024) {
+                wpasec_ulog = heap_caps_malloc(uls + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!wpasec_ulog && uls <= 32 * 1024) wpasec_ulog = malloc(uls + 1);  // no-PSRAM fallback
+                if (wpasec_ulog) { size_t nr = fread(wpasec_ulog, 1, uls, ulf); wpasec_ulog[nr] = '\0'; }
+            }
+            fclose(ulf);
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
 
     // Iterate through directory entries
     while (wpasec_upload_active) {
@@ -19943,6 +20009,7 @@ static void wpasec_upload_task(void *pvParameters)
         // Filter: skip dirs and non-.pcap files
         size_t nlen = strlen(d_name);
         if (nlen <= 5 || strcasecmp(d_name + nlen - 5, ".pcap") != 0) continue;
+        if (wpm_explicit > 0 && !wpasec_name_selected(d_name, wpm_explicit)) continue;
 
         // Privacy (white.txt): skip any leftover pcap whose name matches a whitelisted SSID.
         // Filename format is "<ssid>_<bssid_suffix>_<ts>.pcap", so a whitelisted SSID followed
@@ -19967,6 +20034,18 @@ static void wpasec_upload_task(void *pvParameters)
         }
 
         current++;
+
+        // Already on wpa-sec (journal)? Skip instead of re-uploading (shown in the status list).
+        if (wpasec_ulog && wdm_log_accepted(wpasec_ulog, d_name, "WPA-SEC")) {
+            char sk[128]; strncpy(sk, d_name, sizeof(sk) - 1); sk[sizeof(sk) - 1] = '\0';
+            snprintf(ui_msg.text, sizeof(ui_msg.text),
+                     "[%d/%d] %.108s -> already uploaded (skip)", current, total_files, sk);
+            ui_msg.color = lv_color_make(255, 193, 7); // amber
+            if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+            skipped++;
+            continue;
+        }
+
         char filepath[280];
         snprintf(filepath, sizeof(filepath), "/sdcard/lab/handshakes/%s", d_name);
 
@@ -20006,6 +20085,16 @@ static void wpasec_upload_task(void *pvParameters)
         }
         if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
 
+        // Journal success/duplicate so Manage Handshakes shows "Sent" and future uploads skip
+        // this file (mirrors the Wardrive upload_log.csv). Best-effort; never blocks the upload.
+        if (result == 0 || result == 1) {
+            if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+                FILE *lf = fopen(WPASEC_LOG_PATH, "a");
+                if (lf) { fprintf(lf, "%s,WPA-SEC,%s\n", d_name, result == 1 ? "DUP" : "OK"); fclose(lf); }
+                xSemaphoreGive(sd_spi_mutex);
+            }
+        }
+
         // Small delay between uploads
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -20016,8 +20105,11 @@ static void wpasec_upload_task(void *pvParameters)
         xSemaphoreGive(sd_spi_mutex);
     }
 
+    if (wpasec_ulog) { free(wpasec_ulog); wpasec_ulog = NULL; }
+
     // Summary
-    snprintf(ui_msg.text, sizeof(ui_msg.text), "Done: %d uploaded, %d dup, %d failed", uploaded, duplicates, failed);
+    snprintf(ui_msg.text, sizeof(ui_msg.text), "Done: %d uploaded, %d dup, %d failed, %d skipped",
+             uploaded, duplicates, failed, skipped);
     ui_msg.color = (failed > 0) ? lv_color_make(244, 67, 54) : lv_color_make(76, 175, 80);
     if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
 
@@ -20089,8 +20181,9 @@ static void show_wpa_sec_upload_page(void)
     // Top ‹ Back → "Select Attack" tiles (parent "Connect to WiFi" isn't in
     // NAV_SHOW_TABLE, so without this override ‹ Back would resolve to Home).
     // From Data Transfer, Back returns to the Data Transfer menu instead.
-    g_screen_back_fn = wpasec_from_data_transfer ? show_data_transfer_screen
-                                                 : show_attack_tiles_screen;
+    g_screen_back_fn = wpasec_upload_back_fn ? wpasec_upload_back_fn
+                     : (wpasec_from_data_transfer ? show_data_transfer_screen
+                                                  : show_attack_tiles_screen);
     // Stop upload + drop STA connection on ANY exit (top ‹ Back / Home).
     g_screen_stop_fn = wpasec_stop;
 
@@ -20147,7 +20240,9 @@ static void show_wpa_sec_upload_page(void)
 
     // Info line: key + count
     char info_buf[80];
-    snprintf(info_buf, sizeof(info_buf), "Key: %.4s****  |  %d handshake(s)", wpasec_api_key, hs_count);
+    // In Manage-Handshakes explicit mode the info line reflects the selected count, not all files.
+    int disp_count = (wpasec_upload_back_fn && wpasec_explicit_count > 0) ? wpasec_explicit_count : hs_count;
+    snprintf(info_buf, sizeof(info_buf), "Key: %.4s****  |  %d handshake(s)", wpasec_api_key, disp_count);
     lv_obj_t *info = lv_label_create(function_page);
     lv_label_set_text(info, info_buf);
     lv_obj_set_style_text_color(info, lv_color_make(176, 176, 176), 0);
@@ -20207,6 +20302,10 @@ static void show_wpa_sec_upload_page(void)
         wpasec_upload_active = false;
         wpasec_upload_done = true;
     }
+
+    // Consume the Manage-Handshakes Back override: g_screen_back_fn captured it above, so clear
+    // it now to avoid a later attack-flow upload page wrongly routing Back to Manage Handshakes.
+    wpasec_upload_back_fn = NULL;
 }
 
 // ─── Deauth Client — passive client discovery + targeted deauth ──────────────
@@ -24059,6 +24158,478 @@ static void show_wardrive_manage_screen(void)
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ===========================================================================
+// Manage Handshakes (WPA-SEC) — file manager for /sdcard/lab/handshakes.
+// Parallel to the Wardrive "Manage Data" screen (wd_manage_* / wdm_*). Lists
+// .pcap / .hccapx / .22000 with size, date and status; select + Delete (ALL
+// types — the SD-cleanup path) + Upload (WPA-SEC, .pcap only; .hccapx/.22000
+// are local hashcat formats and stay on-device, pulled off via the file
+// server). Whitelisted networks are never written to any of these files
+// (hs_save_* privacy gates), so nothing listed here can leak on upload.
+// List-screen pattern -> reflows in portrait AND landscape with no branch.
+// ===========================================================================
+#define HS_TYPE_PCAP   0
+#define HS_TYPE_HCCAPX 1
+#define HS_TYPE_22000  2
+
+// Companion arrays live in PSRAM (like wpm_paths): UI bookkeeping only, no DMA — keeps the scarce
+// internal DMA pool free (PSRAM_ATTR is a no-op on no-PSRAM boards, where these stay small internal).
+PSRAM_ATTR static lv_obj_t *wpm_rows[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static bool      wpm_selected[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static lv_obj_t *wpm_chk[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static long      wpm_sizes[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static time_t    wpm_times[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static uint8_t   wpm_types[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static bool      wpm_sent[HS_MANAGE_MAX_FILES];     // .pcap already uploaded to WPA-SEC (per log)
+static int       wpm_count = 0;
+static long      wpm_total_bytes = 0;
+static lv_obj_t *wpm_sel_count_lbl  = NULL;
+static lv_obj_t *wpm_del_btn_bottom = NULL;
+static lv_obj_t *wpm_up_btn_bottom  = NULL;
+static lv_obj_t *wpm_confirm_overlay = NULL;
+static void    (*wpm_back_fn)(void)  = NULL;
+
+static void show_wpasec_manage_screen(void);
+
+static void wpm_fmt_size(long sz, char *buf, size_t buflen) {
+    if (sz < 1024)            snprintf(buf, buflen, "%ld B", sz);
+    else if (sz < 1024*1024)  snprintf(buf, buflen, "%.1f KB", sz / 1024.0f);
+    else                      snprintf(buf, buflen, "%.1f MB", sz / (1024.0f*1024.0f));
+}
+
+// Counter label doubles as the folder-usage readout when nothing is selected ("N files - X MB"),
+// so the user can see the handshakes folder filling up at a glance. Buttons enable on selection;
+// Upload only when at least one selected row is an uploadable .pcap.
+static void wpm_update_actions(void) {
+    int n = 0, up_n = 0;
+    for (int i = 0; i < wpm_count; i++) {
+        if (!wpm_selected[i]) continue;
+        n++;
+        if (wpm_types[i] == HS_TYPE_PCAP) up_n++;
+    }
+    if (wpm_sel_count_lbl && lv_obj_is_valid(wpm_sel_count_lbl)) {
+        char buf[48];
+        if (n == 0) {
+            char tot[16]; wpm_fmt_size(wpm_total_bytes, tot, sizeof(tot));
+            snprintf(buf, sizeof(buf), "%d files  %s", wpm_count, tot);
+        } else {
+            snprintf(buf, sizeof(buf), "%d of %d selected", n, wpm_count);
+        }
+        lv_label_set_text(wpm_sel_count_lbl, buf);
+    }
+    if (wpm_del_btn_bottom && lv_obj_is_valid(wpm_del_btn_bottom)) {
+        lv_obj_set_style_opa(wpm_del_btn_bottom, n > 0 ? LV_OPA_COVER : LV_OPA_40, 0);
+        if (n > 0) lv_obj_clear_state(wpm_del_btn_bottom, LV_STATE_DISABLED);
+        else       lv_obj_add_state(wpm_del_btn_bottom,   LV_STATE_DISABLED);
+    }
+    if (wpm_up_btn_bottom && lv_obj_is_valid(wpm_up_btn_bottom)) {
+        lv_obj_set_style_opa(wpm_up_btn_bottom, up_n > 0 ? LV_OPA_COVER : LV_OPA_40, 0);
+        if (up_n > 0) lv_obj_clear_state(wpm_up_btn_bottom, LV_STATE_DISABLED);
+        else          lv_obj_add_state(wpm_up_btn_bottom,   LV_STATE_DISABLED);
+    }
+}
+
+static void wpm_set_row_sel(int i, bool sel) {
+    wpm_selected[i] = sel;
+    if (wpm_rows[i] && lv_obj_is_valid(wpm_rows[i]))
+        lv_obj_set_style_bg_color(wpm_rows[i], sel ? lv_color_make(25, 65, 130) : ui_card_color(), 0);
+    if (wpm_chk[i] && lv_obj_is_valid(wpm_chk[i]))
+        lv_label_set_text(wpm_chk[i], sel ? LV_SYMBOL_OK : " ");
+}
+
+static void wpm_row_tap_cb(lv_event_t *e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= wpm_count) return;
+    wpm_set_row_sel(idx, !wpm_selected[idx]);
+    wpm_update_actions();
+}
+
+static void wpm_sel_all_cb(lv_event_t *e) {
+    (void)e;
+    for (int i = 0; i < wpm_count; i++) if (wpm_paths[i][0]) wpm_set_row_sel(i, true);
+    wpm_update_actions();
+}
+
+static void wpm_sel_none_cb(lv_event_t *e) {
+    (void)e;
+    for (int i = 0; i < wpm_count; i++) wpm_set_row_sel(i, false);
+    wpm_update_actions();
+}
+
+// "Sent": select only .pcap already uploaded to WPA-SEC (per log) — the safe set to Delete after
+// an upload, so un-uploaded captures (and local .hccapx/.22000) are never cleared by accident.
+static void wpm_sel_sent_cb(lv_event_t *e) {
+    (void)e;
+    for (int i = 0; i < wpm_count; i++) wpm_set_row_sel(i, (wpm_paths[i][0] != '\0') && wpm_sent[i]);
+    wpm_update_actions();
+}
+
+static void wpm_confirm_cancel_cb(lv_event_t *e) {
+    (void)e;
+    if (wpm_confirm_overlay && lv_obj_is_valid(wpm_confirm_overlay)) {
+        lv_obj_del(wpm_confirm_overlay);
+        wpm_confirm_overlay = NULL;
+    }
+}
+
+static void wpm_confirm_ok_cb(lv_event_t *e) {
+    (void)e;
+    if (wpm_confirm_overlay && lv_obj_is_valid(wpm_confirm_overlay)) {
+        lv_obj_del(wpm_confirm_overlay);
+        wpm_confirm_overlay = NULL;
+    }
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        for (int i = 0; i < wpm_count; i++) {
+            if (!wpm_selected[i] || wpm_paths[i][0] == '\0') continue;
+            remove(wpm_paths[i]);           // delete is type-agnostic: .pcap/.hccapx/.22000 all go
+            wpm_paths[i][0] = '\0';
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
+    for (int i = 0; i < wpm_count; i++) {
+        if (!wpm_selected[i]) continue;
+        if (wpm_rows[i] && lv_obj_is_valid(wpm_rows[i])) { lv_obj_del(wpm_rows[i]); wpm_rows[i] = NULL; }
+        wpm_selected[i]  = false;
+        wpm_chk[i]       = NULL;
+        wpm_total_bytes -= wpm_sizes[i];
+        wpm_sizes[i]     = 0;
+    }
+    if (wpm_total_bytes < 0) wpm_total_bytes = 0;
+    wpm_update_actions();
+}
+
+static void wpm_delete_selected_cb(lv_event_t *e) {
+    (void)e;
+    int n = 0;
+    for (int i = 0; i < wpm_count; i++) if (wpm_selected[i]) n++;
+    if (n == 0) return;
+
+    // Modal confirm overlay on lv_layer_top() (mirror of wdm_delete_selected_cb).
+    wpm_confirm_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(wpm_confirm_overlay, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    lv_obj_set_pos(wpm_confirm_overlay, 0, 0);
+    lv_obj_set_style_bg_color(wpm_confirm_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(wpm_confirm_overlay, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(wpm_confirm_overlay, 0, 0);
+    lv_obj_clear_flag(wpm_confirm_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *card = lv_obj_create(wpm_confirm_overlay);
+    lv_obj_set_size(card, 210, 116);      // 116 < 240 -> fits centered in both orientations
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, lv_color_make(38, 38, 38), 0);
+    lv_obj_set_style_border_color(card, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 10, 0);
+    lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+             LV_SYMBOL_WARNING " Delete %d file(s)?\nThis cannot be undone.", n);
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, buf);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xFFCC44), 0);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(msg, 190);
+    lv_obj_align(msg, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *cancel_btn = lv_btn_create(card);
+    lv_obj_set_size(cancel_btn, 84, 30);
+    lv_obj_align(cancel_btn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_make(70, 70, 70), 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_make(100, 100, 100), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(cancel_btn, 6, 0);
+    lv_obj_t *cl = lv_label_create(cancel_btn);
+    lv_label_set_text(cl, LV_SYMBOL_CLOSE "  Cancel");
+    lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
+    lv_obj_center(cl);
+    lv_obj_add_event_cb(cancel_btn, wpm_confirm_cancel_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *del_btn = lv_btn_create(card);
+    lv_obj_set_size(del_btn, 84, 30);
+    lv_obj_align(del_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(del_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(del_btn, lv_color_make(180, 30, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(del_btn, 6, 0);
+    lv_obj_t *dl = lv_label_create(del_btn);
+    lv_label_set_text(dl, LV_SYMBOL_TRASH "  Delete");
+    lv_obj_set_style_text_font(dl, &lv_font_montserrat_12, 0);
+    lv_obj_center(dl);
+    lv_obj_add_event_cb(del_btn, wpm_confirm_ok_cb, LV_EVENT_CLICKED, NULL);
+}
+
+static void wpm_upload_selected_cb(lv_event_t *e) {
+    (void)e;
+    // Only .pcap is a WPA-SEC target; .hccapx/.22000 selections are ignored for upload.
+    wpasec_explicit_count = 0;
+    for (int i = 0; i < wpm_count; i++) {
+        if (wpm_selected[i] && wpm_paths[i][0] && wpm_types[i] == HS_TYPE_PCAP)
+            wpasec_explicit_indices[wpasec_explicit_count++] = i;
+    }
+    if (wpasec_explicit_count == 0) {
+        if (wpm_sel_count_lbl && lv_obj_is_valid(wpm_sel_count_lbl))
+            lv_label_set_text(wpm_sel_count_lbl, "Select .pcap to upload");
+        return;
+    }
+    // Route exactly like the Data Transfer "WPA-SEC Upload" entry: connect WiFi first if needed,
+    // then the upload page (which uploads only the explicit selection). Back returns here.
+    wpasec_from_data_transfer = true;
+    wpasec_upload_back_fn = show_wpasec_manage_screen;
+    esp_netif_t *sn = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip;
+    bool has_ip = sn && esp_netif_get_ip_info(sn, &ip) == ESP_OK && ip.ip.addr != 0;
+    if (has_ip) {
+        show_wpa_sec_upload_page();
+    } else {
+        s_wpasec_pending_after_wifi = true;
+        show_wifi_client_server_screen();
+    }
+}
+
+static void show_wpasec_manage_screen(void) {
+    create_function_page_base("Manage Handshakes");
+    g_screen_back_fn = wpm_back_fn ? wpm_back_fn : show_data_transfer_screen;
+
+    wpm_count = 0;
+    wpm_total_bytes = 0;
+    memset(wpm_rows,     0, sizeof(wpm_rows));
+    memset(wpm_selected, 0, sizeof(wpm_selected));
+    memset(wpm_chk,      0, sizeof(wpm_chk));
+    memset(wpm_sizes,    0, sizeof(wpm_sizes));
+    memset(wpm_times,    0, sizeof(wpm_times));
+    memset(wpm_types,    0, sizeof(wpm_types));
+    memset(wpm_sent,     0, sizeof(wpm_sent));
+    wpm_sel_count_lbl  = NULL;
+    wpm_del_btn_bottom = NULL;
+    wpm_up_btn_bottom  = NULL;
+    wpm_confirm_overlay = NULL;
+
+    // Load the WPA-SEC upload journal into PSRAM (up to 512 KB, matches the wdup loader).
+    char *log_buf = NULL;
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        FILE *lf = fopen(WPASEC_LOG_PATH, "r");
+        if (lf) {
+            fseek(lf, 0, SEEK_END); long lsz = ftell(lf); rewind(lf);
+            if (lsz > 0 && lsz <= 512 * 1024) {
+                log_buf = heap_caps_malloc(lsz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (log_buf) { size_t nr = fread(log_buf, 1, lsz, lf); log_buf[nr] = '\0'; }
+            }
+            fclose(lf);
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
+
+    // Enumerate .pcap / .hccapx / .22000 with size + mtime.
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        DIR *dir = opendir("/sdcard/lab/handshakes");
+        if (dir) {
+            struct dirent *ent;
+            while ((ent = readdir(dir)) != NULL && wpm_count < HS_MANAGE_MAX_FILES) {
+                if (ent->d_type == DT_DIR) continue;
+                const char *nm = ent->d_name;
+                size_t l = strlen(nm);
+                int type = -1;
+                if (l > 5 && strcasecmp(nm + l - 5, ".pcap") == 0)        type = HS_TYPE_PCAP;
+                else if (l > 7 && strcasecmp(nm + l - 7, ".hccapx") == 0) type = HS_TYPE_HCCAPX;
+                else if (l > 6 && strcasecmp(nm + l - 6, ".22000") == 0)  type = HS_TYPE_22000;
+                else continue;
+                snprintf(wpm_paths[wpm_count], sizeof(wpm_paths[0]),
+                         "/sdcard/lab/handshakes/%s", nm);
+                wpm_types[wpm_count] = (uint8_t)type;
+                struct stat st;
+                if (stat(wpm_paths[wpm_count], &st) == 0) {
+                    wpm_sizes[wpm_count] = (long)st.st_size;
+                    wpm_times[wpm_count] = st.st_mtime;
+                    wpm_total_bytes += (long)st.st_size;
+                }
+                if (type == HS_TYPE_PCAP)
+                    wpm_sent[wpm_count] = wdm_log_accepted(log_buf, nm, "WPA-SEC");
+                wpm_count++;
+            }
+            closedir(dir);
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
+
+    // Scrollable file list — leaves 72px at bottom for action controls (orientation-agnostic).
+    lv_obj_t *list = lv_obj_create(function_page);
+    lv_obj_set_size(list, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL) - 30 - 72);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_set_style_bg_color(list, ui_bg_color(), 0);
+    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 3, 0);
+    lv_obj_set_style_pad_row(list, 3, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    if (wpm_count == 0) {
+        lv_obj_t *empty = lv_label_create(list);
+        lv_label_set_text(empty, "No handshake files found.\nCapture handshakes first.");
+        lv_obj_set_style_text_color(empty, lv_color_make(140, 140, 140), 0);
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(empty, LV_ALIGN_CENTER, 0, 0);
+    }
+
+    lv_color_t col_green = lv_color_make(76, 175, 80);
+    lv_color_t col_gray  = lv_color_make(160, 160, 160);
+    lv_color_t col_blue  = lv_color_make(90, 150, 210);
+
+    for (int i = 0; i < wpm_count; i++) {
+        const char *fname = strrchr(wpm_paths[i], '/');
+        fname = fname ? fname + 1 : wpm_paths[i];
+
+        lv_color_t acc_color; const char *status_txt; lv_color_t status_color;
+        if (wpm_types[i] != HS_TYPE_PCAP) {          // .hccapx / .22000 -> local hashcat formats
+            acc_color = col_blue;  status_txt = "Local";               status_color = col_blue;
+        } else if (wpm_sent[i]) {
+            acc_color = col_green; status_txt = LV_SYMBOL_OK " Sent";   status_color = col_green;
+        } else {
+            acc_color = col_gray;  status_txt = LV_SYMBOL_UPLOAD " New"; status_color = col_gray;
+        }
+
+        char size_buf[16]; wpm_fmt_size(wpm_sizes[i], size_buf, sizeof(size_buf));
+        char date_buf[20] = "--";
+        if (wpm_times[i] > 0) {
+            struct tm tm_info; localtime_r(&wpm_times[i], &tm_info);
+            strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", &tm_info);
+        }
+        char meta_buf[48]; snprintf(meta_buf, sizeof(meta_buf), "%s  %s", size_buf, date_buf);
+
+        lv_obj_t *row = lv_obj_create(list);
+        lv_obj_set_size(row, lv_disp_get_hor_res(NULL) - 6, 56);
+        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_radius(row, 5, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        wpm_rows[i] = row;
+
+        lv_obj_t *accent = lv_obj_create(row);
+        lv_obj_set_size(accent, 4, 46);
+        lv_obj_align(accent, LV_ALIGN_LEFT_MID, 4, 0);
+        lv_obj_set_style_bg_color(accent, acc_color, 0);
+        lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(accent, 0, 0);
+        lv_obj_set_style_radius(accent, 2, 0);
+
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, fname);
+        lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(name_lbl, ui_text_color(), 0);
+        lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_size(name_lbl, 148, 32);
+        lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 14, 4);
+
+        lv_obj_t *meta_lbl = lv_label_create(row);
+        lv_label_set_text(meta_lbl, meta_buf);
+        lv_obj_set_style_text_font(meta_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(meta_lbl, lv_color_make(120, 120, 120), 0);
+        lv_label_set_long_mode(meta_lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(meta_lbl, 148);
+        lv_obj_align(meta_lbl, LV_ALIGN_TOP_LEFT, 14, 38);
+
+        lv_obj_t *status_lbl = lv_label_create(row);
+        lv_label_set_text(status_lbl, status_txt);
+        lv_obj_set_style_text_font(status_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(status_lbl, status_color, 0);
+        lv_obj_align(status_lbl, LV_ALIGN_RIGHT_MID, -22, -8);
+
+        lv_obj_t *chk = lv_label_create(row);
+        lv_label_set_text(chk, " ");
+        lv_obj_set_style_text_font(chk, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(chk, lv_color_make(100, 180, 255), 0);
+        lv_obj_align(chk, LV_ALIGN_RIGHT_MID, -4, 8);
+        wpm_chk[i] = chk;
+
+        lv_obj_add_event_cb(row, wpm_row_tap_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    }
+
+    if (log_buf) heap_caps_free(log_buf);
+
+    // ── Action area (bottom 72px) ──────────────────────────────────────
+    // Row 1: usage/selection counter (left) + Sent / All / None (right)
+    wpm_sel_count_lbl = lv_label_create(function_page);
+    lv_obj_set_style_text_font(wpm_sel_count_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(wpm_sel_count_lbl, lv_color_make(160, 160, 160), 0);
+    lv_obj_set_width(wpm_sel_count_lbl, 100);
+    lv_label_set_long_mode(wpm_sel_count_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_align(wpm_sel_count_lbl, LV_ALIGN_BOTTOM_LEFT, 6, -48);
+
+    lv_obj_t *sent_btn = lv_btn_create(function_page);
+    lv_obj_set_size(sent_btn, 44, 22);
+    lv_obj_align(sent_btn, LV_ALIGN_BOTTOM_RIGHT, -90, -48);
+    lv_obj_set_style_bg_color(sent_btn, lv_color_make(40, 70, 100), 0);
+    lv_obj_set_style_bg_color(sent_btn, lv_color_make(55, 95, 135), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(sent_btn, 4, 0);
+    lv_obj_t *sent_lbl = lv_label_create(sent_btn);
+    lv_label_set_text(sent_lbl, "Sent");
+    lv_obj_set_style_text_font(sent_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(sent_lbl);
+    lv_obj_add_event_cb(sent_btn, wpm_sel_sent_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *all_btn = lv_btn_create(function_page);
+    lv_obj_set_size(all_btn, 40, 22);
+    lv_obj_align(all_btn, LV_ALIGN_BOTTOM_RIGHT, -46, -48);
+    lv_obj_set_style_bg_color(all_btn, lv_color_make(50, 80, 50), 0);
+    lv_obj_set_style_bg_color(all_btn, lv_color_make(70, 110, 70), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(all_btn, 4, 0);
+    lv_obj_t *all_lbl = lv_label_create(all_btn);
+    lv_label_set_text(all_lbl, "All");
+    lv_obj_set_style_text_font(all_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(all_lbl);
+    lv_obj_add_event_cb(all_btn, wpm_sel_all_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *none_btn = lv_btn_create(function_page);
+    lv_obj_set_size(none_btn, 40, 22);
+    lv_obj_align(none_btn, LV_ALIGN_BOTTOM_RIGHT, -2, -48);
+    lv_obj_set_style_bg_color(none_btn, lv_color_make(60, 60, 60), 0);
+    lv_obj_set_style_bg_color(none_btn, lv_color_make(90, 90, 90), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(none_btn, 4, 0);
+    lv_obj_t *none_lbl = lv_label_create(none_btn);
+    lv_label_set_text(none_lbl, "None");
+    lv_obj_set_style_text_font(none_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(none_lbl);
+    lv_obj_add_event_cb(none_btn, wpm_sel_none_cb, LV_EVENT_CLICKED, NULL);
+
+    // Row 2: Delete (all selected types) / Upload (.pcap only)
+    wpm_del_btn_bottom = lv_btn_create(function_page);
+    lv_obj_set_size(wpm_del_btn_bottom, 76, 30);
+    lv_obj_align(wpm_del_btn_bottom, LV_ALIGN_BOTTOM_MID, -42, -10);
+    lv_obj_set_style_bg_color(wpm_del_btn_bottom, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(wpm_del_btn_bottom, lv_color_make(180, 30, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(wpm_del_btn_bottom, 8, 0);
+    lv_obj_add_state(wpm_del_btn_bottom, LV_STATE_DISABLED);
+    lv_obj_set_style_opa(wpm_del_btn_bottom, LV_OPA_40, 0);
+    lv_obj_t *del_lbl = lv_label_create(wpm_del_btn_bottom);
+    lv_label_set_text(del_lbl, LV_SYMBOL_TRASH " Delete");
+    lv_obj_set_style_text_font(del_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(del_lbl);
+    lv_obj_add_event_cb(wpm_del_btn_bottom, wpm_delete_selected_cb, LV_EVENT_CLICKED, NULL);
+
+    wpm_up_btn_bottom = lv_btn_create(function_page);
+    lv_obj_set_size(wpm_up_btn_bottom, 76, 30);
+    lv_obj_align(wpm_up_btn_bottom, LV_ALIGN_BOTTOM_MID, 42, -10);
+    lv_obj_set_style_bg_color(wpm_up_btn_bottom, lv_color_hex(0xE91E63), 0);
+    lv_obj_set_style_bg_color(wpm_up_btn_bottom, lv_color_hex(0xAD1457), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(wpm_up_btn_bottom, 8, 0);
+    lv_obj_add_state(wpm_up_btn_bottom, LV_STATE_DISABLED);
+    lv_obj_set_style_opa(wpm_up_btn_bottom, LV_OPA_40, 0);
+    lv_obj_t *up_lbl = lv_label_create(wpm_up_btn_bottom);
+    lv_label_set_text(up_lbl, LV_SYMBOL_UPLOAD " Upload");
+    lv_obj_set_style_text_font(up_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(up_lbl);
+    lv_obj_add_event_cb(wpm_up_btn_bottom, wpm_upload_selected_cb, LV_EVENT_CLICKED, NULL);
+
+    wpm_update_actions();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 static void wdup_target_dd_cb(lv_event_t *e)
 {
     lv_obj_t *dd = lv_event_get_target(e);
@@ -24791,20 +25362,12 @@ static void data_transfer_tile_cb(lv_event_t *e)
         show_wardrive_manage_screen();
     }
     else if (strcmp(key, "WPA-SEC Upload") == 0) {
-        // Route exactly like Wardrive Upload: if there is no routable IP yet, go through the
-        // shared "WiFi for Upload" screen (scan/enter/connect), then open the WPA-SEC upload
-        // page; if already connected, open it directly. wpasec_from_data_transfer makes the
-        // page's Back button return here and the task self-connect if needed.
-        wpasec_from_data_transfer = true;
-        esp_netif_t *sn = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        esp_netif_ip_info_t ip;
-        bool has_ip = sn && esp_netif_get_ip_info(sn, &ip) == ESP_OK && ip.ip.addr != 0;
-        if (has_ip) {
-            show_wpa_sec_upload_page();
-        } else {
-            s_wpasec_pending_after_wifi = true;
-            show_wifi_client_server_screen();
-        }
+        // Open the Manage Handshakes file manager (parallel to "Wardrive Upload" -> Manage Data).
+        // Selecting files and pressing Upload there does the WiFi-connect routing per selection.
+        wpm_back_fn = show_data_transfer_screen;
+        wpasec_upload_back_fn = NULL;
+        wpasec_explicit_count = 0;
+        show_wpasec_manage_screen();
     }
 }
 
