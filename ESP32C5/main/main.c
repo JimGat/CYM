@@ -1722,8 +1722,9 @@ typedef struct {
 PSRAM_ATTR static wdp_ducb_channel_t wdp_ducb_channels[WDP_TOTAL_CHANNELS];
 static int wdp_ducb_channel_count = 0;
 static double wdp_ducb_discounted_total = 0.0;
-PSRAM_ATTR static wdp_network_t wdp_seen_networks[WDP_DEDUP_BUFFER_SIZE];  // Persistent 100-entry dedup buffer (no cycling)
-static volatile int wdp_seen_count = 0;  // Current count in dedup buffer (0-100)
+PSRAM_ATTR static wdp_network_t wdp_seen_networks[WDP_DEDUP_BUFFER_SIZE];  // Fixed-capacity dedup buffer; FIFO-cycles once full (see wdp_write_idx)
+static volatile int wdp_seen_count = 0;  // Current count in dedup buffer (0-cap, pinned at cap once full)
+static int wdp_write_idx = 0;  // Next slot to overwrite (FIFO) once wdp_seen_count reaches the cap
 static volatile int wdp_total_networks = 0;  // Cumulative counter (increments on new CSV write, never resets during wardrive)
 static volatile int wdp_dwell_new_networks = 0;
 static float wdp_last_gps_lat = 0.0f;  // Track GPS location for 150-foot buffer clear trigger
@@ -12228,6 +12229,7 @@ static void wdp_clear_dedup_buffer(void) {
     // redundant anyway: nothing ever reads past wdp_seen_count, and every field of an
     // entry is assigned on insert, so stale bytes are never visible.
     wdp_seen_count = 0;
+    wdp_write_idx = 0;
     const gps_data_t *g = gps_best();
     wdp_last_gps_lat = g->valid ? g->latitude : 0.0f;
     wdp_last_gps_lon = g->valid ? g->longitude : 0.0f;
@@ -12692,25 +12694,48 @@ static void wdp_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         return;  // Already in dedup buffer, skip
     }
 
-    // New network found — add to persistent dedup buffer (max 100 entries)
-    if (wdp_seen_count >= WDP_DEDUP_BUFFER_SIZE) {
-        return;  // Buffer full, skip further discoveries this dwell
+    // New network found. Buffer has a fixed capacity (WDP_DEDUP_BUFFER_SIZE); once full,
+    // FIFO-evict the oldest tracked slot instead of dropping the new discovery outright.
+    // This used to just `return` here once wdp_seen_count hit the cap - fine for Car/
+    // Highway mode, where wdp_clear_dedup_buffer() resets everything every ~46m of travel
+    // anyway, but in Stationary mode (parked near a dense apartment/office building) the
+    // GPS never moves far enough to trigger that clear, so the buffer filled once and then
+    // silently stopped admitting (and therefore writing) any further network for the rest
+    // of the session. Field report, Discord #nm-cyd-c5, 2026-09-23 (el_kaweh/AWOK):
+    // "Whenever the device is stationary and reaches 100 scanned wifis, it stops writing to
+    // sd." Janek [LAB5] correctly diagnosed it as a fixed-size structure rather than a
+    // malloc sizing issue - the actual defect was the *no-cycling* policy, not the capacity
+    // number itself (any fixed cap is exceedable in a dense-enough environment).
+    //
+    // FIFO eviction here is safe under the existing concurrent-access design: the wardrive
+    // task's CSV-write loop (below) already snapshots each entry before formatting it and
+    // checks the snapshot's BSSID still matches the live slot before marking it written
+    // (see "same_slot" there) - specifically because the promiscuous RX callback (this
+    // function, WiFi task context) was already understood to be able to recycle a slot out
+    // from under an in-progress read. Overwriting the oldest slot when full is the same
+    // class of recycle that logic already tolerates: worst case, an entry mid-write gets
+    // rewritten as a duplicate CSV row on a later dwell instead of corrupted - never a torn
+    // read, since every field of the new entry is assigned before written_to_file is reset.
+    int idx;
+    if (wdp_seen_count < WDP_DEDUP_BUFFER_SIZE) {
+        idx = wdp_seen_count++;
+    } else {
+        idx = wdp_write_idx;
+        wdp_write_idx = (wdp_write_idx + 1) % WDP_DEDUP_BUFFER_SIZE;
     }
-
-    int idx = wdp_seen_count;
     memcpy(wdp_seen_networks[idx].bssid, ap_bssid, 6);
     strncpy(wdp_seen_networks[idx].ssid, ssid, 32);
     wdp_seen_networks[idx].ssid[32] = '\0';
     wdp_seen_networks[idx].channel = beacon_channel;
     wdp_seen_networks[idx].rssi = (int8_t)pkt->rx_ctrl.rssi;
     wdp_seen_networks[idx].authmode = authmode;
-    wdp_seen_networks[idx].written_to_file = false;
     wdp_seen_networks[idx].latitude  = g->valid ? g->latitude  : 0.0f;
     wdp_seen_networks[idx].longitude = g->valid ? g->longitude : 0.0f;
     wdp_seen_networks[idx].altitude  = g->valid ? g->altitude  : 0.0f;
     wdp_seen_networks[idx].accuracy  = g->valid ? gps_best_accuracy() : 0.0f;
-
-    wdp_seen_count++;  // Increment dedup buffer count
+    wdp_seen_networks[idx].written_to_file = false;  // assigned LAST: only flips this slot
+                                                      // "readable" once every other field
+                                                      // already holds the new network's data
     wdp_total_networks++;  // Cumulative counter (never resets during wardrive)
 }
 
