@@ -3182,6 +3182,8 @@ This project wouldn't be where it is without the brilliant minds and generous ti
 - **OrdoOuroborus** — For testing, review, and contributions for feature ideas
 - **@Zjakkemakke** — For testing and feedback
 - **@PKT-GHOST** — For testing and feedback
+- **el_kaweh (AWOK)** — For reporting that stationary wardriving on NM-CYD-C5 stopped writing to SD after 100 scanned networks, with exactly the detail needed to track it down
+- **Janek (LAB5)** — For correctly diagnosing that report as a fixed-size structure rather than a malloc sizing issue on first read, which pointed straight at the fix
 
 Your help made this toolkit more robust, more reliable, and better for everyone. 💙
 
