@@ -4215,7 +4215,25 @@ static void init_display(void)
     };
 
 #if defined(CONFIG_BOARD_CYD2USB)
-    ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(lcd_io_handle, &panel_config, &panel_handle));
+    // Runtime panel auto-detection (adapted from Rus12325, PR #15). The classic
+    // CYD-2432S028 ships with TWO different panel controllers depending on board
+    // revision/vendor - ILI9341 and ST7789 - so a fixed compile-time choice would
+    // mis-init half the boards in the wild. Read the panel ID (RDDID / 0xD3) and
+    // select the driver + colour inversion at runtime; a single CYD2USB binary then
+    // works on either panel.
+    uint8_t panel_id[4] = {0};
+    esp_err_t panel_id_rc = esp_lcd_panel_io_rx_param(lcd_io_handle, 0xD3, panel_id, sizeof(panel_id));
+    // ILI9341 RDDID returns 0x00 0x93 0x41 (byte0 is a dummy). ST7789's 0xD3 does
+    // not report 0x9341, so anything else is treated as ST7789.
+    bool is_ili9341 = (panel_id_rc == ESP_OK && panel_id[2] == 0x93 && panel_id[3] == 0x41);
+    ESP_LOGI(TAG, "CYD2USB panel ID rc=%d bytes=%02x %02x %02x %02x -> %s",
+             panel_id_rc, panel_id[0], panel_id[1], panel_id[2], panel_id[3],
+             is_ili9341 ? "ILI9341" : "ST7789");
+    if (is_ili9341) {
+        ESP_ERROR_CHECK(esp_lcd_new_panel_ili9341(lcd_io_handle, &panel_config, &panel_handle));
+    } else {
+        ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(lcd_io_handle, &panel_config, &panel_handle));
+    }
 #else
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(lcd_io_handle, &panel_config, &panel_handle));
 #endif
@@ -4227,6 +4245,9 @@ static void init_display(void)
     // The ESP-IDF ILI9341 driver sends a minimal register set; these commands
     // are what TFT_eSPI / Bruce firmware add to get warm, contrasty colors on
     // the CYD-2432S028 panel. Sent after panel_init() so they override defaults.
+    // Only applied when an ILI9341 was detected above; ST7789 CYD panels use their
+    // own driver defaults (these ILI9341 registers would be meaningless to an ST7789).
+    if (is_ili9341) {
     esp_lcd_panel_io_tx_param(lcd_io_handle, 0xCF, (uint8_t[]){0x00, 0xC1, 0x30}, 3);         // Power Control B
     esp_lcd_panel_io_tx_param(lcd_io_handle, 0xED, (uint8_t[]){0x64, 0x03, 0x12, 0x81}, 4);   // Power on Sequence
     esp_lcd_panel_io_tx_param(lcd_io_handle, 0xE8, (uint8_t[]){0x85, 0x00, 0x78}, 3);         // Driver Timing A
@@ -4248,9 +4269,13 @@ static void init_display(void)
     esp_lcd_panel_io_tx_param(lcd_io_handle, 0xE1,
         (uint8_t[]){0x00,0x0E,0x14,0x03,0x11,0x07,0x31,0xC1,0x48,0x08,0x0F,0x0C,0x31,0x36,0x0F}, 15);
     ESP_LOGI(TAG, "ILI9341 extended init applied (CYD2USB)");
+    }
 #endif
 
-#if defined(CONFIG_BOARD_LCD_INVERT_COLOR)
+#if defined(CONFIG_BOARD_CYD2USB)
+    // CYD colour inversion is panel-dependent: ST7789 CYD panels need it, ILI9341 do not.
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, !is_ili9341));
+#elif defined(CONFIG_BOARD_LCD_INVERT_COLOR)
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
 #else
     ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, false));

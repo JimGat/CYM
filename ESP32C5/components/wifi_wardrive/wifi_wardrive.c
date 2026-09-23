@@ -301,6 +301,15 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
     host.slot = BOARD_SD_SPI_HOST;
     host.max_freq_khz = freq_khz;
     host.flags = SDMMC_HOST_FLAG_SPI | SDMMC_HOST_FLAG_DEINIT_ARG;
+#if defined(CONFIG_BOARD_CYD2USB)
+    /* Skip CMD59 / data-CRC on the classic CYD-2432S028 (adapted from Rus12325, PR #15).
+     * Some SD cards seen on these boards reject CMD59 (SET_CRC) during init, which aborts
+     * the mount before it ever gets to the filesystem. CRC16 of data transfers is OPTIONAL
+     * in SPI mode (the hardware still works without it), so SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC
+     * skips the CMD59 step and lets those cards initialise. Gated to CYD2USB only - the
+     * ESP32-C5 boards keep CRC enabled on their proven-good SD path. */
+    host.flags |= SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC;
+#endif
     host.command_timeout_ms = 2000; /* allow slow/fresh cards up to 2 s for CMD0 response */
     ESP_LOGI(TAG, "[SD]   SPI Host: %d, Frequency: %lu kHz, Flags: 0x%x", host.slot, (unsigned long)host.max_freq_khz, host.flags);
 
