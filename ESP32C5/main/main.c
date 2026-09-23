@@ -6579,7 +6579,8 @@ static void create_home_ui(void)
     lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title_label = lv_label_create(title_bar);
-    lv_label_set_text(title_label, "Laboratorium");
+    lv_label_set_recolor(title_label, true);
+    lv_label_set_text(title_label, "#FFEB3B CYM# Laboratorium");
     lv_obj_set_style_text_color(title_label, ui_text_color(), 0);
     lv_obj_center(title_label);
     lv_obj_add_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
@@ -6928,14 +6929,25 @@ void app_main(void)
     gw_init(sd_spi_mutex);
     cham_init();
 
-    // Screenshot worker (queue + background saver task)
+#if defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM
+    // Screenshot worker (queue + background saver task) — PSRAM boards only.
+    // screenshot_btn_event_cb() (the tap-title trigger) is also gated the same
+    // way, but skip standing up the queue/task at all on CYD2USB rather than
+    // just refusing to use them: lv_snapshot_take() needs a full-screen RGB565
+    // buffer (240*320*2 = 153,600 bytes) that will never fit that board's
+    // ~20-50KB free heap regardless, so the 16KB task stack below would sit
+    // there permanently for a task that can never receive a valid message —
+    // pure waste on the board that can least afford it. Freeing it also adds
+    // real margin back for OT Survey's WiFi->BLE handoff (see
+    // OBS_STORE_CYD2USB_CAPACITY's doc comment for that board's budget).
     screenshot_queue = xQueueCreate(1, sizeof(screenshot_msg_t));
     if (screenshot_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create screenshot queue!");
         return;
     }
 
-    // Try PSRAM first; fall back to internal DRAM on no-PSRAM boards (e.g. CYD-2432S028).
+    // Try PSRAM first; fall back to internal DRAM (still safe here — this whole
+    // block only compiles/runs on CONFIG_BOARD_HAS_PSRAM boards).
     // MALLOC_CAP_8BIT is mandatory: MALLOC_CAP_INTERNAL alone can return IRAM (0x40000000+),
     // which xPortcheckValidStackMem rejects — FreeRTOS requires task stacks to be in DRAM.
     screenshot_task_stack = (StackType_t *)heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
@@ -6961,6 +6973,9 @@ void app_main(void)
         ESP_LOGW(TAG, "Failed to allocate screenshot task stack — screenshots disabled");
         // Non-critical — continue without screenshot support
     }
+#else
+    ESP_LOGI(TAG, "Screenshot worker not started (no PSRAM on this board)");
+#endif
 
     // 15 lines per buffer — works for both 16-bit (7200 B) and 32-bit (14400 B) color depth.
     // INTERNAL DMA SRAM (not PSRAM): internal SRAM feeds the SPI FIFO fast enough to sustain the
@@ -9682,6 +9697,21 @@ static void screenshot_save_task(void *arg)
 static void screenshot_btn_event_cb(lv_event_t *e)
 {
     (void)e;
+
+#if !(defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM)
+    /* Gated out on CYD2USB (no PSRAM). lv_snapshot_take() needs a full-screen
+     * RGB565 buffer - 240*320*2 = 153,600 bytes - against a board that only
+     * has ~20-50KB free heap in typical use (see OBS_STORE_CYD2USB_CAPACITY's
+     * doc comment for the same board's memory budget). There's no smaller
+     * capacity to fall back to here the way obs_store/export-queue had -
+     * a screenshot buffer can't shrink without shrinking the screen itself -
+     * so the only safe option is not offering the feature at all. Field
+     * report 2026-09-23: tapping a screen title (the shared trigger for this
+     * callback, wired on every screen via create_function_page_base() and a
+     * few standalone title labels) crashed the board. */
+    ESP_LOGW(TAG, "Screenshot: not available on this board (no PSRAM)");
+    return;
+#endif
 
     if (!wifi_wardrive_is_sd_mounted()) {
         ESP_LOGW(TAG, "Screenshot: SD card not mounted");
