@@ -1,9 +1,17 @@
 # CYM-NM28C5 contributor attribution rules
 
-## Birol Tellioglu — always use @birolt29
+## Birol Tellioglu — always use @birolt29, NEVER his real name or personal email
 
 Any reference to contributor **Birol** or **Birol Tellioglu** in any content written
 or edited in this repository **must use the GitHub handle `@birolt29`** instead.
+This applies to his **personal email address too** — never write it anywhere in this
+repo (commit author/committer field, Co-Authored-By trailer, comments, docs, release
+notes). If a commit needs a machine-readable attribution trailer for him, use his
+GitHub noreply address (`birolt29@users.noreply.github.com`) — never his real email.
+
+This is a standing, emphasized instruction from Jim (2026-09-23): "That maut be a rule
+when giving credit for development or patches" — apply it every time a patch, commit,
+or piece of content credits @birolt29, not just when explicitly reminded.
 
 This applies to ALL repo content:
 - README.md
@@ -13,21 +21,30 @@ This applies to ALL repo content:
 - Changelog / commit messages that credit contributors
 - In-code comments that credit contributors
 - Any other documentation
+- Patch files / diffs he submits — when writing the commit that applies one of his
+  patches, credit him as `@birolt29` in the commit message body, never his real name,
+  and never put his personal email in the commit's author/committer/trailer fields.
 
-**Rule:** If you are about to write "Birol" or "Birol Tellioglu", write `@birolt29` instead.
+**Rule:** If you are about to write "Birol", "Birol Tellioglu", or his personal email
+address, write `@birolt29` (or the GitHub noreply address, for a machine trailer) instead.
 
 ```
 // WRONG
 "Thanks to Birol for the DMA patch"
 "Birol Tellioglu contributed the wardrive GPS fix"
+Co-Authored-By: Birol Tellioglu <his.real@email.example>
 
 // CORRECT
 "Thanks to @birolt29 for the DMA patch"
 "@birolt29 contributed the wardrive GPS fix"
+Co-Authored-By: @birolt29 <birolt29@users.noreply.github.com>
 ```
 
 **Also apply retroactively** when editing any existing file that contains "Birol" or
-"Birol Tellioglu" — replace all occurrences with `@birolt29` in the same edit.
+"Birol Tellioglu" — replace all occurrences with `@birolt29` in the same edit. Note:
+per Jim (2026-09-23), this retroactive cleanup does NOT extend to rewriting historical
+git commits that already picked up the real-name/email line — only new content and new
+commits going forward need to get this right.
 
 ## @birolt29 is a co-developer, not "a contributor" (as of v2.15.00)
 
