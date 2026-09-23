@@ -1085,6 +1085,7 @@ static void screen_set_dimmed(bool dimmed);
 static void screen_idle_timer_cb(lv_timer_t *timer);
 static void go_dark_enable(void);
 static void go_dark_disable(void);
+static void go_dark_mini_btn_cb(lv_event_t *e);
 static void init_boot_button(void);
 
 // Route ESP logging directly to ROM UART to avoid VFS write paths during GUI/ISR contexts
@@ -6680,24 +6681,54 @@ static void create_home_ui(void)
     lv_obj_set_style_border_width(title_bar, 0, 0);
     lv_obj_set_style_radius(title_bar, 0, 0);
     lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_SCROLLABLE);
+    // No inner padding — matches create_function_page_base's page_title_bar so the right-side
+    // GPS + Go Dark cluster sits flush against the true right edge (default container padding
+    // was insetting them, making the home bar's icons "shift left" vs every other screen).
+    lv_obj_set_style_pad_all(title_bar, 0, 0);
 
     lv_obj_t *title_label = lv_label_create(title_bar);
     lv_label_set_recolor(title_label, true);
     lv_label_set_text(title_label, "#FFEB3B CYM# Laboratorium");
     lv_obj_set_style_text_color(title_label, ui_text_color(), 0);
-    lv_obj_center(title_label);
+    // Centered on the bar, but in portrait's 240px the long title's last letter still tucks
+    // just under the GPS icon, so nudge it a little left of the right cluster in portrait only.
+    // Landscape's 320px has ample room -> keep it dead-center (0).
+    bool tb_landscape = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
+    lv_obj_align(title_label, LV_ALIGN_CENTER, tb_landscape ? 0 : -8, 0);
     lv_obj_add_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(title_label, screenshot_btn_event_cb, LV_EVENT_CLICKED, NULL);
+
+    // Go Dark button on the home/menu top bar (far-right) — same power-off action and
+    // styling as the function-page top-bar button in create_function_page_base(), so Go Dark
+    // is reachable from the main menu without a dedicated tile. The bar is lv_pct(100) wide
+    // and this is a RIGHT_MID-anchored element, so it reflows in both orientations with no
+    // landscape branch. 30x30 matches the function-page top-bar button exactly.
+    lv_obj_t *home_dark_btn = lv_btn_create(title_bar);
+    lv_obj_set_size(home_dark_btn, 30, 30);
+    lv_obj_align(home_dark_btn, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(home_dark_btn, lv_color_hex(0x8A8FA8), 0);  // match Go Dark tile color
+    lv_obj_set_style_bg_color(home_dark_btn, lv_color_lighten(lv_color_hex(0x8A8FA8), 30), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(home_dark_btn, 5, 0);
+    lv_obj_set_style_shadow_width(home_dark_btn, 0, 0);
+    lv_obj_add_event_cb(home_dark_btn, go_dark_mini_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *home_dark_lbl = lv_label_create(home_dark_btn);
+    lv_label_set_text(home_dark_lbl, LV_SYMBOL_POWER);
+    lv_obj_set_style_text_font(home_dark_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(home_dark_lbl, ui_text_color(), 0);
+    lv_obj_center(home_dark_lbl);
 
     battery_label = lv_label_create(title_bar);
     lv_label_set_text(battery_label, last_voltage_str);
     lv_obj_set_style_text_color(battery_label, ui_muted_color(), 0);
     lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
-    lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -8, 0);
+    // Battery voltage sits left of the GPS icon (only shown when a board reports voltage).
+    lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -58, 0);
     if (last_voltage_str[0] == '\0') lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
 
-    // GPS status icon in the (otherwise empty) far-right status slot.
-    gps_status_icon_create(title_bar, -12);
+    // GPS status icon 4px left of the Go Dark button — same tight gap as the left-side
+    // Home<->Back cluster (home_btn 30@0, back_btn @34). Go Dark is 30px wide @ x=0, so the
+    // GPS 22px container's right edge at 34 leaves a 4px gap. Matches the function-page bar.
+    gps_status_icon_create(title_bar, -34);
 
     show_main_tiles();
 }
@@ -8209,7 +8240,11 @@ void app_main(void)
                         wifi_sas_should_finalize = false;
                         if (scan_status_label && lv_obj_is_valid(scan_status_label)) {
                             char wifi_sas_sbuf[48];
-                            snprintf(wifi_sas_sbuf, sizeof(wifi_sas_sbuf), "Scanning... pass %d (%u found)",
+                            // "(xx found)" on its own second line — the single-line form at
+                            // montserrat_20 overflows the 240px portrait width (fit fine in
+                            // landscape's 320px, clipped both edges in portrait). Two centered
+                            // lines fit in both orientations.
+                            snprintf(wifi_sas_sbuf, sizeof(wifi_sas_sbuf), "Scanning... pass %d\n(%u found)",
                                      wifi_sas_scan_pass + 1, (unsigned)wifi_sas_accum_count);
                             lv_label_set_text(scan_status_label, wifi_sas_sbuf);
                         }
@@ -16689,8 +16724,9 @@ static void create_function_page_base(const char *name)
     lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -32, 0);
     if (last_voltage_str[0] == '\0') lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
 
-    // GPS status icon, just left of the Go Dark button (battery slot is empty here).
-    gps_status_icon_create(page_title_bar, -42);
+    // GPS status icon 4px left of the Go Dark button (battery slot is empty here) — same tight
+    // gap as the left-side Home<->Back cluster. Go Dark 30px @ x=0, GPS 22px right edge at 34.
+    gps_status_icon_create(page_title_bar, -34);
 }
 
 // ============================================================================
@@ -17372,7 +17408,7 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_BLUETOOTH_B, "Bluetooth",    UI_ACCENT_CYAN,         main_tile_event_cb, "Bluetooth");
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
-    create_tile(tiles_container, LV_SYMBOL_POWER,       "Go Dark",      lv_color_hex(0x8A8FA8), main_tile_event_cb, "Go Dark");
+    // Go Dark moved from a home tile to the top-bar power button (title_bar, far-right).
     create_tile(tiles_container, MY_SYMBOL_SITEMAP,     "IOT/OT",       lv_color_hex(0x00695C), main_tile_event_cb, "IOT/OT");
     // NFC/RFID Hub — always visible; works with RF-HAT PN532 (DIP 3) or standalone breakout on CN1
     create_tile(tiles_container, MY_SYMBOL_MICROCHIP, "NFC/\nRFID",  lv_color_hex(0x00695C), main_tile_event_cb, "NFC Hub");
@@ -17702,6 +17738,8 @@ static void show_wifi_scan_attack_screen(void)
     lv_label_set_text(scan_status_label, "Scanning...");
     lv_obj_set_style_text_color(scan_status_label, ui_text_color(), 0);
     lv_obj_set_style_text_font(scan_status_label, &lv_font_montserrat_20, 0);
+    // Center-align so the multi-line "Scanning... pass N / (xx found)" status stays centered.
+    lv_obj_set_style_text_align(scan_status_label, LV_TEXT_ALIGN_CENTER, 0);
 
     // Clear previous selections when user manually starts scan
     wifi_scanner_clear_selections();
@@ -38835,6 +38873,8 @@ void attack_event_cb(lv_event_t *e)
         lv_label_set_text(scan_status_label, "Scanning...");
         lv_obj_set_style_text_color(scan_status_label, ui_text_color(), 0);
         lv_obj_set_style_text_font(scan_status_label, &lv_font_montserrat_20, 0);
+        // Center-align so the multi-line "Scanning... pass N / (xx found)" status stays centered.
+        lv_obj_set_style_text_align(scan_status_label, LV_TEXT_ALIGN_CENTER, 0);
 
         // Clear previous selections when user manually starts scan
         wifi_scanner_clear_selections();
