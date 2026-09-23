@@ -71,6 +71,15 @@ esp_err_t wifi_scanner_start_scan(void) {
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
         .scan_time.active.min = g_scan_time_min,
         .scan_time.active.max = g_scan_time_max,
+        // DFS 5GHz channels (52-144, most of the 5GHz band) can't be actively probed - the
+        // driver forces them to passive listen-only regardless of scan_type ACTIVE here, per
+        // regulatory radar-avoidance rules (same constraint cym_rf_tx.h documents for TX).
+        // Leaving scan_time.passive unset (implicit 0 from this designated initializer) put
+        // those channels' dwell time in the hands of whatever "0 means" a closed-source driver
+        // blob decides, instead of IDF's own documented default (WIFI_PASSIVE_SCAN_DEFAULT_TIME,
+        // esp_wifi_types_generic.h) - asserting it explicitly removes that ambiguity. Field
+        // report 2026-09-23: "WiFi Scan and Attack barely picked up my 5G AP's".
+        .scan_time.passive = WIFI_PASSIVE_SCAN_DEFAULT_TIME,
     };
     
     g_scan_in_progress = true;

@@ -1183,6 +1183,31 @@ static lv_obj_t  *wifi_sas_nav_bar  = NULL;
 static lv_obj_t  *wifi_sas_nav_prev = NULL;
 static lv_obj_t  *wifi_sas_nav_lbl  = NULL;
 static lv_obj_t  *wifi_sas_nav_next = NULL;
+// Adaptive "keep scanning while still finding new APs" state (WiFi Scan & Attack) - the
+// police-scanner strategy applied to esp_wifi_scan_start(), which CYM can't get per-channel
+// dwell control over the way ESP-NOW Scout/OT Survey do (that timing lives inside the
+// closed-source driver blob) - so this repeats whole scan passes instead, merging each
+// pass's results into an accumulator by BSSID, until WIFI_SAS_STABLE_THRESHOLD consecutive
+// passes find nothing new (or a pass/time ceiling hits). Field request 2026-09-23: "WiFi
+// Scan and Attack barely picked up my 5G AP's" / "make the wifi scan and attack scan length
+// adaptive like the old police scanner strategy."
+#define WIFI_SAS_STABLE_THRESHOLD  2
+#define WIFI_SAS_MAX_PASSES        8
+#define WIFI_SAS_TIME_CEILING_MS   45000u
+static bool     wifi_sas_auto_scanning  = false;  // true while an auto-repeat session owns the next scan_done
+static int      wifi_sas_scan_pass      = 0;
+static int      wifi_sas_stable_passes  = 0;
+static uint32_t wifi_sas_scan_start_ms  = 0;
+// Heap-allocated (PSRAM-preferring, DRAM fallback), NOT a static array: MAX_SCAN_RESULTS *
+// sizeof(wifi_ap_record_t) as a permanent link-time BSS reservation overflowed CYD2USB's
+// dram0_0_seg by 408 bytes (that board has no PSRAM, so PSRAM_ATTR compiles to nothing and
+// the array would land in scarce internal DRAM). Allocated once, lazily, on first use;
+// never freed (same "allocate once, reuse for the app's lifetime" pattern as
+// sniffer_sorted_indices). If allocation fails even at the DRAM fallback size, auto-scanning
+// simply doesn't engage (wifi_sas_auto_scanning stays false) - degrades to the old
+// single-pass-then-stop behavior rather than crashing.
+static wifi_ap_record_t *wifi_sas_accum       = NULL;
+static uint16_t          wifi_sas_accum_count = 0;
 static lv_obj_t *deauth_list = NULL;
 static lv_obj_t *deauth_prompt_label = NULL;
 static lv_obj_t *deauth_fps_label = NULL;
@@ -2905,6 +2930,8 @@ static volatile bool  disco_led_needs_update = false;
 static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data);
 static void show_main_tiles(void);
 static void show_wifi_scan_attack_screen(void);
+static bool wifi_sas_merge_pass(void);
+static void wifi_sas_screen_stop(void);
 static void show_attack_tiles_screen(void);
 static void show_global_attacks_screen(void);
 static void show_sniff_karma_screen(void);
@@ -8164,6 +8191,42 @@ void app_main(void)
                     }
                 }
 
+                // Adaptive multi-pass scan (WiFi Scan & Attack): merge this pass into the
+                // accumulator, then decide whether to keep going or finalize. See
+                // wifi_sas_merge_pass()'s doc comment for why this repeats whole scans
+                // instead of adjusting per-channel dwell (not available via this API).
+                bool wifi_sas_should_finalize = true;
+                if (wifi_sas_auto_scanning) {
+                    wifi_sas_scan_pass++;
+                    bool wifi_sas_found_new = wifi_sas_merge_pass();
+                    wifi_sas_stable_passes = wifi_sas_found_new ? 0 : (wifi_sas_stable_passes + 1);
+                    uint32_t wifi_sas_elapsed_ms = (uint32_t)(esp_timer_get_time() / 1000) - wifi_sas_scan_start_ms;
+                    bool wifi_sas_keep_going = (wifi_sas_stable_passes < WIFI_SAS_STABLE_THRESHOLD) &&
+                                               (wifi_sas_scan_pass < WIFI_SAS_MAX_PASSES) &&
+                                               (wifi_sas_elapsed_ms < WIFI_SAS_TIME_CEILING_MS);
+                    if (wifi_sas_keep_going) {
+                        wifi_sas_should_finalize = false;
+                        if (scan_status_label && lv_obj_is_valid(scan_status_label)) {
+                            char wifi_sas_sbuf[48];
+                            snprintf(wifi_sas_sbuf, sizeof(wifi_sas_sbuf), "Scanning... pass %d (%u found)",
+                                     wifi_sas_scan_pass + 1, (unsigned)wifi_sas_accum_count);
+                            lv_label_set_text(scan_status_label, wifi_sas_sbuf);
+                        }
+                        wifi_scanner_start_scan();
+                    } else {
+                        wifi_sas_auto_scanning = false;
+                        // Publish the merged, multi-pass superset as THE scan result so every
+                        // downstream consumer (attack target selection, handshake targets, deauth
+                        // monitor auth lookup, ...) sees APs found across all passes, not just the
+                        // last one.
+                        uint16_t wifi_sas_n = wifi_sas_accum_count;
+                        if (wifi_sas_n > MAX_SCAN_RESULTS) wifi_sas_n = MAX_SCAN_RESULTS;
+                        memcpy(g_shared_scan_results, wifi_sas_accum, wifi_sas_n * sizeof(wifi_ap_record_t));
+                        g_shared_scan_count = wifi_sas_n;
+                    }
+                }
+
+                if (wifi_sas_should_finalize) {
                 wifi_sas_page = 0;
 
                 if (function_page) { lv_obj_del(function_page); function_page = NULL; }
@@ -8290,7 +8353,8 @@ void app_main(void)
                 lv_obj_set_style_text_font(next_lbl, &lv_font_montserrat_14, 0);
                 lv_obj_center(next_lbl);
                 lv_obj_add_event_cb(next_btn, wifi_scan_next_btn_cb, LV_EVENT_CLICKED, NULL);
-                
+
+                }  // End of "if (wifi_sas_should_finalize)"
                 }  // End of else block for !blackout_ui_active
             }
             // Update FPS label if on Deauther page
@@ -10511,7 +10575,9 @@ static void sniffer_refresh_ap_list(void) {
         lv_obj_set_style_bg_color(ap_row, ui_bg_color(), LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(ap_row, lv_color_make(40, 40, 60), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(ap_row, LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(ap_row, ui_text_color(), 0);
+        // Band-color the AP name, matching the existing convention (Wardrive's wd_table_draw_event_cb,
+        // WiFi Scan & Attack): amber = 2.4 GHz, green = 5 GHz. Field request 2026-09-23.
+        lv_obj_set_style_text_color(ap_row, (ap->channel <= 14) ? UI_ACCENT_AMBER : COLOR_MATERIAL_GREEN, 0);
         lv_obj_set_style_text_font(ap_row, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_decor(ap_row, LV_TEXT_DECOR_UNDERLINE, 0);
         lv_obj_set_style_min_height(ap_row, 36, 0);  // Larger touch target
@@ -17541,6 +17607,41 @@ static void wifi_scan_next_btn_cb(lv_event_t *e)
     show_attack_tiles_screen();
 }
 
+// Merge this pass's g_shared_scan_results into wifi_sas_accum by BSSID (update in place on a
+// repeat sighting - keeps RSSI/auth/etc current - append on a genuinely new one). Returns true
+// if at least one new BSSID was added this pass: the adaptive loop's "still finding new stuff"
+// signal.
+static bool wifi_sas_merge_pass(void)
+{
+    if (!wifi_sas_accum) return false;  // allocation failed - see wifi_sas_accum's doc comment
+    bool found_new = false;
+    for (uint16_t wi = 0; wi < g_shared_scan_count && wi < MAX_SCAN_RESULTS; wi++) {
+        const wifi_ap_record_t *ap = &g_shared_scan_results[wi];
+        bool exists = false;
+        for (uint16_t ai = 0; ai < wifi_sas_accum_count; ai++) {
+            if (memcmp(wifi_sas_accum[ai].bssid, ap->bssid, 6) == 0) {
+                wifi_sas_accum[ai] = *ap;
+                exists = true;
+                break;
+            }
+        }
+        if (!exists && wifi_sas_accum_count < MAX_SCAN_RESULTS) {
+            wifi_sas_accum[wifi_sas_accum_count++] = *ap;
+            found_new = true;
+        }
+    }
+    return found_new;
+}
+
+// Screen stop hook: an auto-repeat session in flight when the user leaves must not keep
+// re-triggering scans in the background. The in-flight scan still completes (nothing aborts
+// it), but the next scan_done for it finalizes instead of repeating, since wifi_sas_auto_scanning
+// is now false - mirrors the ownership-flag lesson from the OT Survey scan_done_ui_flag fix.
+static void wifi_sas_screen_stop(void)
+{
+    wifi_sas_auto_scanning = false;
+}
+
 // WiFi Scan & Attack screen - scan and show network list with checkboxes
 static void show_wifi_scan_attack_screen(void)
 {
@@ -17555,6 +17656,7 @@ static void show_wifi_scan_attack_screen(void)
     ensure_wifi_scan_ui_cb();
 
     create_function_page_base("WiFi Scan & Attack");
+    g_screen_stop_fn = wifi_sas_screen_stop;
 
     // Create centered scanning container with icon and text
     lv_obj_t *scan_container = lv_obj_create(function_page);
@@ -17584,6 +17686,26 @@ static void show_wifi_scan_attack_screen(void)
     // scan-done handler treats this screen as still owned by an active attack
     // and skips building the results list, leaving the spinner spinning forever.
     handshake_waiting_for_scan = false;
+
+    // Adaptive multi-pass scan - fresh session (see wifi_sas_accum's doc comment for why this
+    // is a lazy heap allocation, not a static array). Allocated once, reused for the app's
+    // lifetime from here on.
+    if (!wifi_sas_accum) {
+        wifi_sas_accum = (wifi_ap_record_t *)heap_caps_malloc(
+            (size_t)MAX_SCAN_RESULTS * sizeof(wifi_ap_record_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!wifi_sas_accum) {
+            wifi_sas_accum = (wifi_ap_record_t *)heap_caps_malloc(
+                (size_t)MAX_SCAN_RESULTS * sizeof(wifi_ap_record_t), MALLOC_CAP_8BIT);
+        }
+        if (!wifi_sas_accum) {
+            ESP_LOGW(TAG, "wifi_sas_accum allocation failed - adaptive multi-pass scan disabled this session");
+        }
+    }
+    wifi_sas_auto_scanning  = (wifi_sas_accum != NULL);
+    wifi_sas_scan_pass      = 0;
+    wifi_sas_stable_passes  = 0;
+    wifi_sas_accum_count    = 0;
+    wifi_sas_scan_start_ms  = (uint32_t)(esp_timer_get_time() / 1000);
 
     // Start scan
     wifi_scanner_start_scan();
