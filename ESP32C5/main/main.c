@@ -133,6 +133,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "wifi_attacks.h"
 #include "wifi_wardrive.h"
 #include "attack_handshake.h"
+#include "cym_rf_tx.h"   // cym_mgmt_tx(): DFS-safe management-frame TX gate
 #include "frame_analyzer_types.h"
 #include "frame_analyzer_parser.h"
 #include "pcap_serializer.h"
@@ -1424,6 +1425,7 @@ static char hs_current_target_ssid[33] = "";
 static char hs_current_client_mac[20] = "";
 static volatile bool hs_listening_after_deauth = false;
 static volatile int hs_total_handshakes_captured = 0;
+static volatile int hs_skipped_existing = 0;   // selected targets skipped this run because a .pcap already exists on SD (drives the "Already on SD" end state, not a failure)
 
 // ============================================================================
 // Wardrive Promisc: Kismet-style tiered channel lists + D-UCB
@@ -2067,6 +2069,7 @@ typedef struct {
     int8_t rssi;
     uint8_t channel;
     uint32_t timestamp;
+    uint8_t authmode;   // target's wifi_auth_mode_t from last scan, or 0xFF if unknown (P3 PMF labeling)
 } deauth_monitor_attack_t;
 
 static TaskHandle_t deauth_monitor_task_handle = NULL;
@@ -4784,6 +4787,17 @@ static const char *wd_auth_disp(wifi_auth_mode_t m)
     }
 }
 
+// PMF / 802.11w inference from auth mode: WPA3-family networks negotiate management-
+// frame protection, so a plain deauth/disassoc against them is integrity-rejected
+// (harmless). Mirrors the OBS_FLAG_PMF_INFERRED classification at the scan-store sites.
+static inline bool authmode_is_pmf(wifi_auth_mode_t m)
+{
+    return (m == WIFI_AUTH_WPA3_PSK ||
+            m == WIFI_AUTH_WPA2_WPA3_PSK ||
+            m == WIFI_AUTH_WPA3_ENTERPRISE ||
+            m == WIFI_AUTH_WPA3_ENT_192);
+}
+
 // Render the leftmost "band badge" column as a colored rounded chip so the band
 // is readable at a glance without cluttering the SSID: 5 GHz = red, 2.4 GHz =
 // amber, BLE = blue (matching the existing scan palette). Registered on wd_ui_table.
@@ -4852,18 +4866,37 @@ static bool wait_for_gps_fix(int timeout_seconds) {
 }
 
 // Snifferdog channel hopping
+// P4: set the WiFi channel and confirm the radio actually parked there. esp_wifi_set_channel()
+// can return ESP_OK yet leave the radio on the previous channel when the reg-domain silently
+// rejects the target (IDF #4706 class) — only a get_channel() readback catches it. One retry,
+// then give up (the caller's next hop moves on). Ports the Handshaker D-UCB self-heal to the
+// plain channel-hoppers (Snifferdog, Band Scope) that used to trust the requested channel.
+// P6 (HT40 hygiene): every channel set in this firmware is HT20 (WIFI_SECOND_CHAN_NONE). On
+// 5 GHz the `second` arg is auto-computed by the driver and any manual value is IGNORED (it is
+// only honoured on 2.4 GHz), so a future HT40 path MUST branch by band rather than pass one
+// computed `second` for both — do not "fix" a 5 GHz set by adding a manual second here.
+static bool wifi_set_channel_verified(uint8_t ch)
+{
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    uint8_t ac; wifi_second_chan_t sc;
+    if (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch) return true;
+    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    return (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch);
+}
+
 static void sniffer_dog_channel_hop(void) {
     if (!sniffer_dog_active) {
         return;
     }
-    
+
     sniffer_dog_current_channel = dual_band_channels[sniffer_dog_channel_index];
     sniffer_dog_channel_index++;
     if (sniffer_dog_channel_index >= dual_band_channels_count) {
         sniffer_dog_channel_index = 0;
     }
-    
-    esp_wifi_set_channel(sniffer_dog_current_channel, WIFI_SECOND_CHAN_NONE);
+
+    wifi_set_channel_verified((uint8_t)sniffer_dog_current_channel);
     sniffer_dog_last_channel_hop = esp_timer_get_time() / 1000;
 }
 
@@ -4872,7 +4905,13 @@ static void sniffer_dog_task(void *pvParameters) {
     (void)pvParameters;
     
     ESP_LOGI(TAG, "SnifferDog channel hop task started");
-    
+
+    // Dual-band TX readiness (band AUTO + 5 GHz mask) ONCE at task start, NOT in
+    // the promiscuous RX callback (WiFi-task context, no blocking). Without it the
+    // hop onto a 5 GHz channel is silently rejected and both the sniff and the
+    // auto-deauth-kick stay stuck on 2.4 GHz. See cym_rf_tx.h.
+    cym_mgmt_tx_prepare_dualband();
+
     while (sniffer_dog_active) {
         vTaskDelay(pdMS_TO_TICKS(50));
         
@@ -4999,7 +5038,7 @@ static void sniffer_dog_promiscuous_callback(void *buf, wifi_promiscuous_pkt_typ
         //ESP_LOGI(TAG, "[SNIFFERDOG] DEAUTH RAW: %s", hexbuf);
     }
 
-    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
+    cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
     portENTER_CRITICAL(&snifferdog_stats_spin);
     snifferdog_kick_count++;
     snprintf(snifferdog_last_pair, sizeof(snifferdog_last_pair),
@@ -8757,24 +8796,38 @@ void app_main(void)
                                   ? (attack_count + i) % DEAUTH_MONITOR_MAX_ATTACKS 
                                   : i;
                         
-                        char line[80];
-                        snprintf(line, sizeof(line), "%s | CH: %d | RSSI: %d",
+                        // P3: annotate each detected deauth with the target's auth mode and
+                        // whether it can actually work. WPA3/MFP targets integrity-reject
+                        // deauths (harmless) -> gray "MFP-immune"; open/WPA/WPA2 are real
+                        // disruption -> red; target not in last scan -> amber "?".
+                        uint8_t am_raw = deauth_monitor_attacks[idx].authmode;
+                        bool am_unknown = (am_raw == 0xFF);
+                        wifi_auth_mode_t am = (wifi_auth_mode_t)am_raw;
+                        bool tgt_pmf = !am_unknown && authmode_is_pmf(am);
+
+                        char line[112];
+                        snprintf(line, sizeof(line), "%s | %s%s | CH: %d | RSSI: %d",
                                  deauth_monitor_attacks[idx].ssid,
+                                 am_unknown ? "?" : wd_auth_disp(am),
+                                 tgt_pmf ? " MFP-immune" : "",
                                  deauth_monitor_attacks[idx].channel,
                                  deauth_monitor_attacks[idx].rssi);
-                        
+
                         lv_obj_t *row = lv_list_add_btn(deauth_monitor_list, NULL, "");
                         lv_obj_set_width(row, lv_pct(100));
                         lv_obj_set_style_pad_all(row, 6, 0);
                         lv_obj_set_height(row, LV_SIZE_CONTENT);
                         lv_obj_set_style_bg_color(row, ui_card_color(), LV_STATE_DEFAULT);
                         lv_obj_set_style_radius(row, 8, 0);
-                        
+
                         lv_obj_t *lbl = lv_label_create(row);
                         lv_label_set_text(lbl, line);
                         lv_label_set_long_mode(lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
                         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-                        lv_obj_set_style_text_color(lbl, COLOR_MATERIAL_RED, 0);
+                        lv_obj_set_style_text_color(lbl,
+                                 tgt_pmf     ? lv_color_make(150, 150, 150) :
+                                 am_unknown  ? lv_color_make(230, 180, 60)  :
+                                               COLOR_MATERIAL_RED, 0);
                         lv_obj_set_width(lbl, lv_pct(95));
                     }
                     portEXIT_CRITICAL(&deauth_monitor_spin);
@@ -10646,9 +10699,16 @@ static void targeted_deauth_timer_cb(lv_timer_t *timer) {
         return;
     }
     
-    // Switch to target channel
-    esp_wifi_set_channel(targeted_deauth_channel, WIFI_SECOND_CHAN_NONE);
-    
+    // Switch to target channel (verified). If the radio refuses it (DFS 5 GHz on
+    // C5), skip this tick's TX so the frame is never sprayed onto the 2.4 GHz
+    // channel the radio was left on. See cym_rf_tx.h.
+    if (!cym_set_channel_verified((uint8_t)targeted_deauth_channel)) {
+        uint8_t got = 0; wifi_second_chan_t gsc;
+        esp_wifi_get_channel(&got, &gsc);
+        ESP_LOGW(TAG, "[T-DEAUTH] ch %d rejected -> radio on ch %d, skip TX (DFS not TX-capable on C5)", targeted_deauth_channel, got);
+        return;
+    }
+
     // Build and send deauth frame
     uint8_t deauth_frame[sizeof(deauth_frame_default)];
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
@@ -10679,7 +10739,7 @@ static void targeted_deauth_timer_cb(lv_timer_t *timer) {
         ESP_LOGI(TAG, "[T-DEAUTH] RAW: %s", hexbuf);
     }
 
-    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
+    cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
     targeted_deauth_count++;
     
     // Update status label
@@ -10815,6 +10875,11 @@ static void show_targeted_deauth_screen(void) {
     
     lv_obj_add_event_cb(stop_btn, targeted_deauth_stop_cb, LV_EVENT_CLICKED, NULL);
     
+    // Dual-band TX readiness (band AUTO + 5 GHz mask) ONCE here, NOT in the 100ms
+    // timer callback (its vTaskDelay would stall the LVGL task). Lets the callback
+    // set_channel() onto a 5 GHz target instead of silently staying on 2.4 GHz.
+    cym_mgmt_tx_prepare_dualband();
+
     // Start the deauth timer
     targeted_deauth_active = true;
     targeted_deauth_count = 0;
@@ -11690,7 +11755,7 @@ static void hs_send_raw_frame(const uint8_t *frame, size_t len) {
     // STA-only raw injection (see handshake task mode setup). Log the TX result once per
     // channel change so serial proves the deauth actually radiates on both 2.4 and 5 GHz
     // arms — a silent 5 GHz drop would otherwise masquerade as "no handshake found".
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    esp_err_t err = cym_mgmt_tx(WIFI_IF_STA, frame, len, false);
     static int last_logged_ch = -1;
     uint8_t ch = 0; wifi_second_chan_t sc;
     esp_wifi_get_channel(&ch, &sc);
@@ -12633,6 +12698,7 @@ static void handshake_attack_task_selected(void) {
 
     hs_ap_count = 0;
     hs_client_count = 0;
+    hs_skipped_existing = 0;
     if (hs_ap_targets) memset(hs_ap_targets, 0, HS_MAX_APS * sizeof(hs_ap_target_t));
     if (hs_clients) memset(hs_clients, 0, HS_MAX_CLIENTS * sizeof(hs_client_entry_t));
 
@@ -12640,6 +12706,7 @@ static void handshake_attack_task_selected(void) {
         wifi_ap_record_t *ap = &handshake_targets[i];
         if (ap->ssid[0] != '\0' && check_handshake_file_exists((const char *)ap->ssid)) {
             handshake_captured[i] = true;
+            hs_skipped_existing++;   // already have this one on SD -> "Already on SD" end state, not a failure
             ESP_LOGI(TAG, "[HS] Skipping '%s' - PCAP already exists", ap->ssid);
             continue;
         }
@@ -13087,19 +13154,31 @@ static void hs_ui_timer_cb(lv_timer_t *timer) {
 
     // When attack finished naturally, show clear completion status
     if (!handshake_attack_active) {
+        // Three end states: captured something; everything was ALREADY on SD (skip-existing,
+        // a success not a failure); or genuinely nothing. The old single "Stopped" +
+        // "Press Stop & Exit" was wrong on both counts - the Stop/Exit buttons were removed
+        // in v2.10.23 (top-bar Back/Home now run the stop hook), and an all-skipped run means
+        // "you already have this handshake", not a stop.
+        bool all_skipped = (hs_total_handshakes_captured == 0 && hs_skipped_existing > 0);
         if (hs_ui_target_label) {
             if (hs_total_handshakes_captured > 0) {
                 char done_buf[48];
                 snprintf(done_buf, sizeof(done_buf), LV_SYMBOL_OK " CAPTURED: %d", hs_total_handshakes_captured);
                 lv_label_set_text(hs_ui_target_label, done_buf);
                 lv_obj_set_style_text_color(hs_ui_target_label, COLOR_MATERIAL_GREEN, 0);
+            } else if (all_skipped) {
+                lv_label_set_text(hs_ui_target_label, LV_SYMBOL_OK " Already on SD");
+                lv_obj_set_style_text_color(hs_ui_target_label, lv_color_make(0, 188, 212), 0);
             } else {
                 lv_label_set_text(hs_ui_target_label, LV_SYMBOL_CLOSE " Stopped");
                 lv_obj_set_style_text_color(hs_ui_target_label, COLOR_MATERIAL_ORANGE, 0);
             }
         }
         if (hs_ui_status_label) {
-            lv_label_set_text(hs_ui_status_label, "Press Stop & Exit");
+            const char *hint = (hs_total_handshakes_captured > 0) ? "Saved to SD - press Back to exit"
+                             : all_skipped                        ? "Handshake already saved - press Back"
+                             :                                      "Press Back to exit";
+            lv_label_set_text(hs_ui_status_label, hint);
             lv_obj_set_style_text_color(hs_ui_status_label, lv_color_make(180,180,180), 0);
         }
         // Keep showing the last channel and M1-M4 state (data preserved)
@@ -19758,12 +19837,20 @@ static void wpasec_upload_task(void *pvParameters)
         snprintf(ui_msg.text, sizeof(ui_msg.text), "Connecting to %s...", g_saved_wifi_ssid);
         ui_msg.color = lv_color_make(0, 188, 212);
         if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+#if CONFIG_BOARD_HAS_5GHZ
         esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
+#endif
         if (!wdup_ensure_wifi()) {
             snprintf(ui_msg.text, sizeof(ui_msg.text),
                      "WiFi connect failed. Check WiFi Client SSID/password.");
             ui_msg.color = lv_color_make(244, 67, 54);
             if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+#if CONFIG_BOARD_HAS_5GHZ
+            // Restore dual-band (we forced 2.4 GHz-only above for the TLS upload). Without
+            // this, the radio stays stuck on 2.4 GHz and every later 5 GHz feature silently
+            // fails to hop. Gated on the same condition that set 2G_ONLY.
+            if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
             wpasec_upload_done = true; wpasec_upload_active = false;
             wpasec_upload_task_handle = NULL; vTaskDelete(NULL); return;
         }
@@ -19783,6 +19870,9 @@ static void wpasec_upload_task(void *pvParameters)
         snprintf(ui_msg.text, sizeof(ui_msg.text), "Failed to open handshakes directory");
         ui_msg.color = lv_color_make(244, 67, 54); // red
         if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+#if CONFIG_BOARD_HAS_5GHZ
+        if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);  // restore dual-band
+#endif
         wpasec_upload_done = true;
         wpasec_upload_active = false;
         wpasec_upload_task_handle = NULL;
@@ -19814,6 +19904,9 @@ static void wpasec_upload_task(void *pvParameters)
             closedir(dir);
             xSemaphoreGive(sd_spi_mutex);
         }
+#if CONFIG_BOARD_HAS_5GHZ
+        if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);  // restore dual-band
+#endif
         wpasec_upload_done = true;
         wpasec_upload_active = false;
         wpasec_upload_task_handle = NULL;
@@ -19928,6 +20021,12 @@ static void wpasec_upload_task(void *pvParameters)
     ui_msg.color = (failed > 0) ? lv_color_make(244, 67, 54) : lv_color_make(76, 175, 80);
     if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
 
+#if CONFIG_BOARD_HAS_5GHZ
+    // Restore dual-band after the upload completes (mirrors wdup_task task_done). We forced
+    // 2.4 GHz-only for the TLS bursts; leaving it stuck would silently kill 5 GHz hopping in
+    // every later feature (Network Observer, Band Scope, Snifferdog, Blackout, ...).
+    if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
     wpasec_upload_done = true;
     wpasec_upload_active = false;
     wpasec_upload_task_handle = NULL;
@@ -20321,18 +20420,34 @@ static void show_deauth_client_scan_screen(void) {
 static void show_attack_tiles_screen(void)
 {
     create_function_page_base("Select Attack");
-    
-    // Create small tiles container (4+5 layout) with compact spacing
-    lv_obj_t *attack_tiles = lv_obj_create(function_page);
-    lv_obj_set_size(attack_tiles, lv_pct(100), 218);
-    lv_obj_align(attack_tiles, LV_ALIGN_TOP_MID, 0, 32);
+
+    // Landscape-safe layout: ONE vertical scroll container holds the attack-tile grid AND
+    // the Selected Networks list below it, so neither orientation clips the list. (Old code
+    // pinned network_list height to ver_res-283 -> only 37px in portrait and NEGATIVE, i.e.
+    // invisible, in landscape. cym-landscape-support failure pattern #1.)
+    lv_obj_t *content = lv_obj_create(function_page);
+    lv_obj_set_size(content, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(content, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 4, 0);
+    lv_obj_set_style_pad_row(content, 6, 0);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(content, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+
+    // Attack-tile grid (wraps 2-wide portrait / 4-wide landscape); height grows to fit.
+    lv_obj_t *attack_tiles = lv_obj_create(content);
+    lv_obj_set_width(attack_tiles, lv_pct(100));
+    lv_obj_set_height(attack_tiles, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(attack_tiles, ui_bg_color(), 0);
     lv_obj_set_style_border_width(attack_tiles, 0, 0);
     lv_obj_set_style_pad_all(attack_tiles, 5, 0);
     lv_obj_set_style_pad_gap(attack_tiles, 5, 0);
     lv_obj_set_flex_flow(attack_tiles, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(attack_tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-    lv_obj_add_flag(attack_tiles, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(attack_tiles, LV_OBJ_FLAG_SCROLLABLE);
     
     // Row 1: Deauth, Evil Twin, SAE, Handshake, Deauth Client
     create_small_tile(attack_tiles, LV_SYMBOL_CHARGE, "Deauth", COLOR_MATERIAL_RED, attack_tile_event_cb, "Deauth");
@@ -20348,31 +20463,30 @@ static void show_attack_tiles_screen(void)
     create_small_tile(attack_tiles, LV_SYMBOL_EYE_OPEN, "Observer", COLOR_MATERIAL_PURPLE, attack_tile_event_cb, "Sniffer");
     
     // Horizontal separator line above Selected Networks
-    lv_obj_t *separator = lv_obj_create(function_page);
+    lv_obj_t *separator = lv_obj_create(content);
     lv_obj_set_size(separator, lv_pct(90), 2);
-    lv_obj_align(separator, LV_ALIGN_TOP_MID, 0, 254);
     lv_obj_set_style_bg_color(separator, ui_accent_color(), 0);
     lv_obj_set_style_bg_opa(separator, LV_OPA_50, 0);
     lv_obj_set_style_border_width(separator, 0, 0);
     lv_obj_set_style_radius(separator, 1, 0);
-    
+
     // Selected networks header
-    lv_obj_t *header_label = lv_label_create(function_page);
+    lv_obj_t *header_label = lv_label_create(content);
     lv_label_set_text(header_label, "Selected Networks:");
     lv_obj_set_style_text_font(header_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(header_label, ui_text_color(), 0);
-    lv_obj_align(header_label, LV_ALIGN_TOP_LEFT, 10, 259);
-    
-    // Selected networks list
-    lv_obj_t *network_list = lv_obj_create(function_page);
-    lv_obj_set_size(network_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 283);  // Bottom ~37px (tiles grew for 10th tile)
-    lv_obj_align(network_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    // Selected networks list — content-height inside the scroll container, so it stays fully
+    // visible in BOTH orientations (the outer container scrolls if the whole thing runs long).
+    lv_obj_t *network_list = lv_obj_create(content);
+    lv_obj_set_width(network_list, lv_pct(100));
+    lv_obj_set_height(network_list, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(network_list, ui_bg_color(), 0);
     lv_obj_set_style_border_width(network_list, 0, 0);
     lv_obj_set_style_pad_all(network_list, 6, 0);
     lv_obj_set_flex_flow(network_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_gap(network_list, 4, 0);
-    lv_obj_add_flag(network_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(network_list, LV_OBJ_FLAG_SCROLLABLE);
     
     // Get selected networks and display them
     int selected_indices[SCAN_RESULTS_MAX_DISPLAY];
@@ -20392,21 +20506,32 @@ static void show_attack_tiles_screen(void)
             if (idx < 0 || idx >= (int)total_count) continue;
             
             const wifi_ap_record_t *ap = &records[idx];
-            char line[64];
+            char line[96];
             const char *band = (ap->primary <= 14) ? "2.4" : "5";
-            
+            // P3: surface the target's auth so the user sees, before firing, which selected
+            // networks the deauth-family attacks (Deauth/SAE/Deauth Client) can actually hit.
+            // WPA3/MFP negotiate management-frame protection -> deauth is integrity-rejected.
+            bool ap_pmf = authmode_is_pmf(ap->authmode);
+            const char *auths = wd_auth_disp(ap->authmode);
+
             if (ap->ssid[0] != 0) {
-                snprintf(line, sizeof(line), "%s (%s)", (const char *)ap->ssid, band);
+                snprintf(line, sizeof(line), "%s (%s) | %s%s", (const char *)ap->ssid, band,
+                         auths, ap_pmf ? " - deauth immune" : "");
             } else {
-                snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X (%s)",
+                snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X (%s) | %s%s",
                          ap->bssid[0], ap->bssid[1], ap->bssid[2],
-                         ap->bssid[3], ap->bssid[4], ap->bssid[5], band);
+                         ap->bssid[3], ap->bssid[4], ap->bssid[5], band,
+                         auths, ap_pmf ? " - deauth immune" : "");
             }
-            
+
             lv_obj_t *net_label = lv_label_create(network_list);
+            lv_obj_set_width(net_label, lv_pct(100));
+            lv_label_set_long_mode(net_label, LV_LABEL_LONG_WRAP);
             lv_label_set_text(net_label, line);
-            lv_obj_set_style_text_color(net_label, ui_text_color(), 0);
-            lv_obj_set_style_text_font(net_label, &lv_font_montserrat_14, 0);
+            // Gray out MFP targets so the deauth-immune ones read as "won't work".
+            lv_obj_set_style_text_color(net_label, ap_pmf ? lv_color_make(150, 150, 150) : ui_text_color(), 0);
+            // Match the tile-name font size (montserrat_12) so each network fits one line.
+            lv_obj_set_style_text_font(net_label, &lv_font_montserrat_12, 0);
         }
     }
 }
@@ -40960,6 +41085,23 @@ static const char* deauth_monitor_find_ssid_by_bssid(const uint8_t *bssid)
     return NULL;
 }
 
+// P3: return the target's advertised auth mode from the last scan table (parallel to
+// deauth_monitor_find_ssid_by_bssid), or -1 if the BSSID wasn't seen in the scan — lets
+// the monitor flag WPA3/MFP targets as deauth-immune instead of listing them as victims.
+static int deauth_monitor_find_authmode_by_bssid(const uint8_t *bssid)
+{
+    const wifi_ap_record_t *records = wifi_scanner_get_results_ptr();
+    const uint16_t *count_ptr = wifi_scanner_get_count_ptr();
+    uint16_t count = count_ptr ? *count_ptr : 0;
+
+    for (uint16_t i = 0; i < count; i++) {
+        if (memcmp(records[i].bssid, bssid, 6) == 0) {
+            return (int)records[i].authmode;
+        }
+    }
+    return -1;
+}
+
 // Channel hopping for deauth monitor
 static void deauth_monitor_channel_hop(void)
 {
@@ -41009,9 +41151,10 @@ static void deauth_monitor_promiscuous_callback(void *buf, wifi_promiscuous_pkt_
     const uint8_t *bssid = &frame[16];
     int8_t rssi = pkt->rx_ctrl.rssi;
     
-    // Lookup SSID
+    // Lookup SSID + auth mode (P3: -1 if the target isn't in the last scan table)
     const char *ssid = deauth_monitor_find_ssid_by_bssid(bssid);
-    
+    int am = deauth_monitor_find_authmode_by_bssid(bssid);
+
     // Add to attacks array (thread-safe)
     portENTER_CRITICAL(&deauth_monitor_spin);
     
@@ -41028,6 +41171,7 @@ static void deauth_monitor_promiscuous_callback(void *buf, wifi_promiscuous_pkt_
     deauth_monitor_attacks[idx].rssi = rssi;
     deauth_monitor_attacks[idx].channel = deauth_monitor_current_channel;
     deauth_monitor_attacks[idx].timestamp = esp_timer_get_time() / 1000;
+    deauth_monitor_attacks[idx].authmode = (am < 0) ? 0xFF : (uint8_t)am;
     
     if (deauth_monitor_attack_count < DEAUTH_MONITOR_MAX_ATTACKS) {
         deauth_monitor_attack_count++;
@@ -42337,8 +42481,8 @@ static void drone_spoof_timer_cb(lv_timer_t *t)
         uint8_t frame[160];
         size_t flen = drone_spoof_build_wifi_frame(frame, sizeof(frame), msg);
         if (flen > 0) {
-            esp_err_t e = esp_wifi_80211_tx(WIFI_IF_STA, frame, flen, false);
-            if (e != ESP_OK) esp_wifi_80211_tx(WIFI_IF_AP, frame, flen, false);
+            esp_err_t e = cym_mgmt_tx(WIFI_IF_STA, frame, flen, false);
+            if (e != ESP_OK) cym_mgmt_tx(WIFI_IF_AP, frame, flen, false);
         }
     }
 
@@ -43564,7 +43708,7 @@ static void wscope_task(void *p) {
             wscope_ch_peak[i] = -110;
             wscope_ch_cnt[i]  = 0;
             portEXIT_CRITICAL(&wscope_mux);
-            esp_wifi_set_channel(chl[i], WIFI_SECOND_CHAN_NONE);
+            wifi_set_channel_verified((uint8_t)chl[i]);   // P4: retry silent reg-domain rejects
             vTaskDelay(pdMS_TO_TICKS(60));
         }
         wscope_sweep_done = true;

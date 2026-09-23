@@ -79,7 +79,16 @@ esp_err_t wifi_scanner_start_scan(void) {
     
     ESP_LOGI(TAG, "Starting WiFi scan...");
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
-    
+    if (ret == ESP_ERR_TIMEOUT) {
+        // P5: esp_wifi_scan_start() can return ESP_ERR_TIMEOUT transiently, notably a dual-band
+        // scan while the BT controller is active (IDF #16059). Retry once before giving up so a
+        // one-off coex hiccup doesn't leave the user staring at an empty AP list. Harmless if
+        // the running IDF already fixed #16059 (the retry simply never triggers).
+        ESP_LOGW(TAG, "scan_start ESP_ERR_TIMEOUT - retrying once");
+        vTaskDelay(pdMS_TO_TICKS(60));
+        ret = esp_wifi_scan_start(&scan_cfg, false);
+    }
+
     if (ret != ESP_OK) {
         g_scan_in_progress = false;
         ESP_LOGE(TAG, "Failed to start scan: %s", esp_err_to_name(ret));
@@ -112,6 +121,13 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
 
     ESP_LOGI(TAG, "Starting passive WiFi scan (%lu ms/channel)...", (unsigned long)per_channel_ms);
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
+    if (ret == ESP_ERR_TIMEOUT) {
+        // P5: retry once on a transient coex ESP_ERR_TIMEOUT (IDF #16059). See the active-scan
+        // path above for the rationale; harmless if the running IDF already fixed it.
+        ESP_LOGW(TAG, "passive scan_start ESP_ERR_TIMEOUT - retrying once");
+        vTaskDelay(pdMS_TO_TICKS(60));
+        ret = esp_wifi_scan_start(&scan_cfg, false);
+    }
 
     if (ret != ESP_OK) {
         g_scan_in_progress = false;

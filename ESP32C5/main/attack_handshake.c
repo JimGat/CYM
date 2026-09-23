@@ -8,6 +8,7 @@
  */
 
 #include "attack_handshake.h"
+#include "cym_rf_tx.h"   // cym_mgmt_tx(): DFS-safe management-frame TX gate
 
 #include <string.h>
 #define LOG_LOCAL_LEVEL ESP_LOG_VERBOSE
@@ -127,7 +128,7 @@ static void send_deauth_frame() {
             //ESP_LOGI(TAG, "[HANDSHAKE] DEAUTH RAW: %s", hexbuf);
         }
 
-        esp_err_t ret = esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
+        esp_err_t ret = cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
         if (ret != ESP_OK) {
             ESP_LOGE(TAG, "Failed to send deauth frame #%d: %s", i+1, esp_err_to_name(ret));
         }

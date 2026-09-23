@@ -159,7 +159,18 @@ esp_err_t wifi_cli_init(void) {
     
     // Initialize scanner component
     wifi_scanner_init();
-    
+
+#if CONFIG_BOARD_HAS_5GHZ
+    // Default to dual-band (2.4 + 5 GHz) on every WiFi bring-up. band mode is persisted
+    // in flash by the driver, so a stale WIFI_BAND_MODE_2G_ONLY left in NVS by an earlier
+    // upload path (which forces 2.4 GHz for TLS) would otherwise survive across reboots and
+    // silently hide all 5 GHz APs from scans (WiFi Scan & Attack, etc.) until something set
+    // AUTO again. Asserting AUTO here makes a clean boot deterministically dual-band and
+    // overrides any persisted 2.4-only state. Features that need 2.4-only (wpa-sec / wardrive
+    // upload) set 2G_ONLY themselves and restore AUTO when done.
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+
     ESP_LOGI(TAG, "WiFi CLI system initialized");
     return ESP_OK;
 }
