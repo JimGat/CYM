@@ -3174,6 +3174,8 @@ This project wouldn't be where it is without the brilliant minds and generous ti
 
 - **Kal (Valleytech Custom Solutions)** — For a thorough and fair video walkthrough of CYM v2.12.0 on the Valleytech Custom Solutions channel. The review covered the web flasher, Chameleon Ultra integration, Zigbee Scout, Go Dark mode, WiFi/BLE feature depth, and the broader Lab5/NerdMiner ecosystem. The feedback from the video and comments directly drove first-run UX improvements in v2.12.2. Thank you! 🎬
 
+- **Rus12325 (Ruslan)** — For an independent full port of CYM to the classic ESP32-2432S028R (CYD) in PR #15, and for pinpointing two board-specific robustness fixes adopted into the multi-board firmware in v2.15.22: runtime LCD **panel auto-detection** (reading the RDDID / 0xD3 panel ID so a single CYD binary drives either the ILI9341 *or* ST7789 controller that ships on these boards), and SD-card **CMD59 (SET_CRC) tolerance** so cards that reject CRC enablement still mount. Also for the marginal-CLK / SPI-mode analysis of CYD SD init that's helping track down a remaining 20 MHz mount issue. Thank you! 🙏
+
 - **ᛕ ᛊ ߇ ᛙ ᚢ (Kevin)** — For deep technical testing and helping diagnose the toughest issues
 - **sithwrld999** — For thorough testing and finding edge cases we missed
 - **bkbroiler** — For hands-on testing, constructive feedback, and the original concept behind the Chameleon Ultra BLE integration — the idea of using CYM as a wireless RFID controller came from them
