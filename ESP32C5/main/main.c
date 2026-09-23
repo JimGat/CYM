@@ -133,6 +133,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "wifi_attacks.h"
 #include "wifi_wardrive.h"
 #include "attack_handshake.h"
+#include "cym_rf_tx.h"   // cym_mgmt_tx(): DFS-safe management-frame TX gate
 #include "frame_analyzer_types.h"
 #include "frame_analyzer_parser.h"
 #include "pcap_serializer.h"
@@ -708,6 +709,10 @@ static inline lv_color_t ui_accent_color(void) {
 #define WPASEC_URL           "https://wpa-sec.stanev.org/"
 #define WPASEC_KEY_PATH      "/sdcard/lab/wpa-sec.txt"
 #define WPASEC_KEY_MAX_LEN   65
+// Upload journal for the Manage Handshakes screen (mirrors the Wardrive upload_log.csv).
+// One "filename,WPA-SEC,OK|DUP" line per successfully-submitted .pcap so the screen can show
+// "Sent" and re-uploads skip files already on wpa-sec instead of re-sending every one.
+#define WPASEC_LOG_PATH      "/sdcard/lab/handshakes/wpasec_upload_log.csv"
 
 // Wardrive upload constants
 #define WIGLE_HOST           "api.wigle.net"
@@ -1178,6 +1183,31 @@ static lv_obj_t  *wifi_sas_nav_bar  = NULL;
 static lv_obj_t  *wifi_sas_nav_prev = NULL;
 static lv_obj_t  *wifi_sas_nav_lbl  = NULL;
 static lv_obj_t  *wifi_sas_nav_next = NULL;
+// Adaptive "keep scanning while still finding new APs" state (WiFi Scan & Attack) - the
+// police-scanner strategy applied to esp_wifi_scan_start(), which CYM can't get per-channel
+// dwell control over the way ESP-NOW Scout/OT Survey do (that timing lives inside the
+// closed-source driver blob) - so this repeats whole scan passes instead, merging each
+// pass's results into an accumulator by BSSID, until WIFI_SAS_STABLE_THRESHOLD consecutive
+// passes find nothing new (or a pass/time ceiling hits). Field request 2026-09-23: "WiFi
+// Scan and Attack barely picked up my 5G AP's" / "make the wifi scan and attack scan length
+// adaptive like the old police scanner strategy."
+#define WIFI_SAS_STABLE_THRESHOLD  2
+#define WIFI_SAS_MAX_PASSES        8
+#define WIFI_SAS_TIME_CEILING_MS   45000u
+static bool     wifi_sas_auto_scanning  = false;  // true while an auto-repeat session owns the next scan_done
+static int      wifi_sas_scan_pass      = 0;
+static int      wifi_sas_stable_passes  = 0;
+static uint32_t wifi_sas_scan_start_ms  = 0;
+// Heap-allocated (PSRAM-preferring, DRAM fallback), NOT a static array: MAX_SCAN_RESULTS *
+// sizeof(wifi_ap_record_t) as a permanent link-time BSS reservation overflowed CYD2USB's
+// dram0_0_seg by 408 bytes (that board has no PSRAM, so PSRAM_ATTR compiles to nothing and
+// the array would land in scarce internal DRAM). Allocated once, lazily, on first use;
+// never freed (same "allocate once, reuse for the app's lifetime" pattern as
+// sniffer_sorted_indices). If allocation fails even at the DRAM fallback size, auto-scanning
+// simply doesn't engage (wifi_sas_auto_scanning stays false) - degrades to the old
+// single-pass-then-stop behavior rather than crashing.
+static wifi_ap_record_t *wifi_sas_accum       = NULL;
+static uint16_t          wifi_sas_accum_count = 0;
 static lv_obj_t *deauth_list = NULL;
 static lv_obj_t *deauth_prompt_label = NULL;
 static lv_obj_t *deauth_fps_label = NULL;
@@ -1424,6 +1454,7 @@ static char hs_current_target_ssid[33] = "";
 static char hs_current_client_mac[20] = "";
 static volatile bool hs_listening_after_deauth = false;
 static volatile int hs_total_handshakes_captured = 0;
+static volatile int hs_skipped_existing = 0;   // selected targets skipped this run because a .pcap already exists on SD (drives the "Already on SD" end state, not a failure)
 
 // ============================================================================
 // Wardrive Promisc: Kismet-style tiered channel lists + D-UCB
@@ -1691,8 +1722,9 @@ typedef struct {
 PSRAM_ATTR static wdp_ducb_channel_t wdp_ducb_channels[WDP_TOTAL_CHANNELS];
 static int wdp_ducb_channel_count = 0;
 static double wdp_ducb_discounted_total = 0.0;
-PSRAM_ATTR static wdp_network_t wdp_seen_networks[WDP_DEDUP_BUFFER_SIZE];  // Persistent 100-entry dedup buffer (no cycling)
-static volatile int wdp_seen_count = 0;  // Current count in dedup buffer (0-100)
+PSRAM_ATTR static wdp_network_t wdp_seen_networks[WDP_DEDUP_BUFFER_SIZE];  // Fixed-capacity dedup buffer; FIFO-cycles once full (see wdp_write_idx)
+static volatile int wdp_seen_count = 0;  // Current count in dedup buffer (0-cap, pinned at cap once full)
+static int wdp_write_idx = 0;  // Next slot to overwrite (FIFO) once wdp_seen_count reaches the cap
 static volatile int wdp_total_networks = 0;  // Cumulative counter (increments on new CSV write, never resets during wardrive)
 static volatile int wdp_dwell_new_networks = 0;
 static float wdp_last_gps_lat = 0.0f;  // Track GPS location for 150-foot buffer clear trigger
@@ -1934,6 +1966,36 @@ PSRAM_ATTR static char wd_manage_paths[WD_MANAGE_MAX_FILES][320];
 static char wd_manage_paths[WD_MANAGE_MAX_FILES][128];
 #endif
 
+// Manage Handshakes (WPA-SEC) screen — wpm_paths + the explicit-selection index list are read
+// by wpasec_upload_task (defined below, before the screen), so they are declared here, above it.
+// Mirrors wd_manage_paths / wdup_explicit_* exactly.
+#if CONFIG_BOARD_HAS_PSRAM
+#define HS_MANAGE_MAX_FILES 128
+PSRAM_ATTR static char wpm_paths[HS_MANAGE_MAX_FILES][160];
+#else
+// No-PSRAM (CYD-2432S028): internal DRAM is nearly full after wd_manage's arrays, so a second
+// large path array overflows dram0_0_seg. The handshake and wardrive file managers are never on
+// screen at once, so reuse the Wardrive Manage path storage (16 x 128) instead of allocating our
+// own. The small companion arrays below stay their own (a few hundred bytes, within headroom).
+#define HS_MANAGE_MAX_FILES WD_MANAGE_MAX_FILES
+#define wpm_paths wd_manage_paths
+#endif
+PSRAM_ATTR static int wpasec_explicit_indices[HS_MANAGE_MAX_FILES];  // PSRAM: read by upload task, no DMA
+static int   wpasec_explicit_count = 0;              // >0 => wpasec_upload_task uploads only these
+static void (*wpasec_upload_back_fn)(void) = NULL;   // WPA-SEC upload page Back -> Manage Handshakes
+
+// True if 'name' (a basename) is among the first 'count' explicit-selection entries.
+static bool wpasec_name_selected(const char *name, int count) {
+    for (int i = 0; i < count; i++) {
+        int idx = wpasec_explicit_indices[i];
+        if (idx < 0 || idx >= HS_MANAGE_MAX_FILES) continue;
+        const char *p = strrchr(wpm_paths[idx], '/');
+        p = p ? p + 1 : wpm_paths[idx];
+        if (strcmp(p, name) == 0) return true;
+    }
+    return false;
+}
+
 // SD Card settings screen state
 // Queue item for provision textarea updates: provision task queues these,
 // main loop drains them while holding lvgl_mutex and updating textarea.
@@ -2067,6 +2129,7 @@ typedef struct {
     int8_t rssi;
     uint8_t channel;
     uint32_t timestamp;
+    uint8_t authmode;   // target's wifi_auth_mode_t from last scan, or 0xFF if unknown (P3 PMF labeling)
 } deauth_monitor_attack_t;
 
 static TaskHandle_t deauth_monitor_task_handle = NULL;
@@ -2868,6 +2931,8 @@ static volatile bool  disco_led_needs_update = false;
 static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data);
 static void show_main_tiles(void);
 static void show_wifi_scan_attack_screen(void);
+static bool wifi_sas_merge_pass(void);
+static void wifi_sas_screen_stop(void);
 static void show_attack_tiles_screen(void);
 static void show_global_attacks_screen(void);
 static void show_sniff_karma_screen(void);
@@ -3327,6 +3392,7 @@ static bool wpasec_read_key_from_sd(void);
 static int wpasec_tls_write_all(esp_tls_t *tls, const char *buf, int len);
 static int wpasec_upload_file(const char *filepath, const char *filename);
 static void wpasec_upload_task(void *pvParameters);
+static bool wdm_log_accepted(const char *log_buf, const char *filename, const char *service);
 static void wpasec_upload_timer_cb(lv_timer_t *timer);
 
 // BLE PCAP capture
@@ -4784,6 +4850,17 @@ static const char *wd_auth_disp(wifi_auth_mode_t m)
     }
 }
 
+// PMF / 802.11w inference from auth mode: WPA3-family networks negotiate management-
+// frame protection, so a plain deauth/disassoc against them is integrity-rejected
+// (harmless). Mirrors the OBS_FLAG_PMF_INFERRED classification at the scan-store sites.
+static inline bool authmode_is_pmf(wifi_auth_mode_t m)
+{
+    return (m == WIFI_AUTH_WPA3_PSK ||
+            m == WIFI_AUTH_WPA2_WPA3_PSK ||
+            m == WIFI_AUTH_WPA3_ENTERPRISE ||
+            m == WIFI_AUTH_WPA3_ENT_192);
+}
+
 // Render the leftmost "band badge" column as a colored rounded chip so the band
 // is readable at a glance without cluttering the SSID: 5 GHz = red, 2.4 GHz =
 // amber, BLE = blue (matching the existing scan palette). Registered on wd_ui_table.
@@ -4852,18 +4929,37 @@ static bool wait_for_gps_fix(int timeout_seconds) {
 }
 
 // Snifferdog channel hopping
+// P4: set the WiFi channel and confirm the radio actually parked there. esp_wifi_set_channel()
+// can return ESP_OK yet leave the radio on the previous channel when the reg-domain silently
+// rejects the target (IDF #4706 class) — only a get_channel() readback catches it. One retry,
+// then give up (the caller's next hop moves on). Ports the Handshaker D-UCB self-heal to the
+// plain channel-hoppers (Snifferdog, Band Scope) that used to trust the requested channel.
+// P6 (HT40 hygiene): every channel set in this firmware is HT20 (WIFI_SECOND_CHAN_NONE). On
+// 5 GHz the `second` arg is auto-computed by the driver and any manual value is IGNORED (it is
+// only honoured on 2.4 GHz), so a future HT40 path MUST branch by band rather than pass one
+// computed `second` for both — do not "fix" a 5 GHz set by adding a manual second here.
+static bool wifi_set_channel_verified(uint8_t ch)
+{
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    uint8_t ac; wifi_second_chan_t sc;
+    if (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch) return true;
+    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    return (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch);
+}
+
 static void sniffer_dog_channel_hop(void) {
     if (!sniffer_dog_active) {
         return;
     }
-    
+
     sniffer_dog_current_channel = dual_band_channels[sniffer_dog_channel_index];
     sniffer_dog_channel_index++;
     if (sniffer_dog_channel_index >= dual_band_channels_count) {
         sniffer_dog_channel_index = 0;
     }
-    
-    esp_wifi_set_channel(sniffer_dog_current_channel, WIFI_SECOND_CHAN_NONE);
+
+    wifi_set_channel_verified((uint8_t)sniffer_dog_current_channel);
     sniffer_dog_last_channel_hop = esp_timer_get_time() / 1000;
 }
 
@@ -4872,7 +4968,13 @@ static void sniffer_dog_task(void *pvParameters) {
     (void)pvParameters;
     
     ESP_LOGI(TAG, "SnifferDog channel hop task started");
-    
+
+    // Dual-band TX readiness (band AUTO + 5 GHz mask) ONCE at task start, NOT in
+    // the promiscuous RX callback (WiFi-task context, no blocking). Without it the
+    // hop onto a 5 GHz channel is silently rejected and both the sniff and the
+    // auto-deauth-kick stay stuck on 2.4 GHz. See cym_rf_tx.h.
+    cym_mgmt_tx_prepare_dualband();
+
     while (sniffer_dog_active) {
         vTaskDelay(pdMS_TO_TICKS(50));
         
@@ -4999,7 +5101,7 @@ static void sniffer_dog_promiscuous_callback(void *buf, wifi_promiscuous_pkt_typ
         //ESP_LOGI(TAG, "[SNIFFERDOG] DEAUTH RAW: %s", hexbuf);
     }
 
-    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
+    cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
     portENTER_CRITICAL(&snifferdog_stats_spin);
     snifferdog_kick_count++;
     snprintf(snifferdog_last_pair, sizeof(snifferdog_last_pair),
@@ -6450,7 +6552,8 @@ static void show_splash_screen(void)
     lv_obj_set_style_text_letter_space(title, 4, 0);
 
     lv_obj_t *subtitle = lv_label_create(col);
-    lv_label_set_text(subtitle, "LABORATORIUM");
+    lv_label_set_recolor(subtitle, true);
+    lv_label_set_text(subtitle, "#FFEB3B CYM# LABORATORIUM");
     lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(subtitle, lv_color_hex(0x93A6BC), 0);
     lv_obj_set_style_text_letter_space(subtitle, 2, 0);
@@ -6579,7 +6682,8 @@ static void create_home_ui(void)
     lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title_label = lv_label_create(title_bar);
-    lv_label_set_text(title_label, "Laboratorium");
+    lv_label_set_recolor(title_label, true);
+    lv_label_set_text(title_label, "#FFEB3B CYM# Laboratorium");
     lv_obj_set_style_text_color(title_label, ui_text_color(), 0);
     lv_obj_center(title_label);
     lv_obj_add_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
@@ -6796,6 +6900,7 @@ void app_main(void)
             .switch_to_154   = NULL,  /* CYD2USB: no 802.15.4 */
 #endif
             .switch_to_idle  = _ot_switch_to_idle,
+            .wifi_scan_busy  = wifi_scanner_is_scanning,
         };
         ot_radio_init(&ot_hooks);
     }
@@ -6927,14 +7032,25 @@ void app_main(void)
     gw_init(sd_spi_mutex);
     cham_init();
 
-    // Screenshot worker (queue + background saver task)
+#if defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM
+    // Screenshot worker (queue + background saver task) — PSRAM boards only.
+    // screenshot_btn_event_cb() (the tap-title trigger) is also gated the same
+    // way, but skip standing up the queue/task at all on CYD2USB rather than
+    // just refusing to use them: lv_snapshot_take() needs a full-screen RGB565
+    // buffer (240*320*2 = 153,600 bytes) that will never fit that board's
+    // ~20-50KB free heap regardless, so the 16KB task stack below would sit
+    // there permanently for a task that can never receive a valid message —
+    // pure waste on the board that can least afford it. Freeing it also adds
+    // real margin back for OT Survey's WiFi->BLE handoff (see
+    // OBS_STORE_CYD2USB_CAPACITY's doc comment for that board's budget).
     screenshot_queue = xQueueCreate(1, sizeof(screenshot_msg_t));
     if (screenshot_queue == NULL) {
         ESP_LOGE(TAG, "Failed to create screenshot queue!");
         return;
     }
 
-    // Try PSRAM first; fall back to internal DRAM on no-PSRAM boards (e.g. CYD-2432S028).
+    // Try PSRAM first; fall back to internal DRAM (still safe here — this whole
+    // block only compiles/runs on CONFIG_BOARD_HAS_PSRAM boards).
     // MALLOC_CAP_8BIT is mandatory: MALLOC_CAP_INTERNAL alone can return IRAM (0x40000000+),
     // which xPortcheckValidStackMem rejects — FreeRTOS requires task stacks to be in DRAM.
     screenshot_task_stack = (StackType_t *)heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
@@ -6960,6 +7076,9 @@ void app_main(void)
         ESP_LOGW(TAG, "Failed to allocate screenshot task stack — screenshots disabled");
         // Non-critical — continue without screenshot support
     }
+#else
+    ESP_LOGI(TAG, "Screenshot worker not started (no PSRAM on this board)");
+#endif
 
     // 15 lines per buffer — works for both 16-bit (7200 B) and 32-bit (14400 B) color depth.
     // INTERNAL DMA SRAM (not PSRAM): internal SRAM feeds the SPI FIFO fast enough to sustain the
@@ -8073,6 +8192,42 @@ void app_main(void)
                     }
                 }
 
+                // Adaptive multi-pass scan (WiFi Scan & Attack): merge this pass into the
+                // accumulator, then decide whether to keep going or finalize. See
+                // wifi_sas_merge_pass()'s doc comment for why this repeats whole scans
+                // instead of adjusting per-channel dwell (not available via this API).
+                bool wifi_sas_should_finalize = true;
+                if (wifi_sas_auto_scanning) {
+                    wifi_sas_scan_pass++;
+                    bool wifi_sas_found_new = wifi_sas_merge_pass();
+                    wifi_sas_stable_passes = wifi_sas_found_new ? 0 : (wifi_sas_stable_passes + 1);
+                    uint32_t wifi_sas_elapsed_ms = (uint32_t)(esp_timer_get_time() / 1000) - wifi_sas_scan_start_ms;
+                    bool wifi_sas_keep_going = (wifi_sas_stable_passes < WIFI_SAS_STABLE_THRESHOLD) &&
+                                               (wifi_sas_scan_pass < WIFI_SAS_MAX_PASSES) &&
+                                               (wifi_sas_elapsed_ms < WIFI_SAS_TIME_CEILING_MS);
+                    if (wifi_sas_keep_going) {
+                        wifi_sas_should_finalize = false;
+                        if (scan_status_label && lv_obj_is_valid(scan_status_label)) {
+                            char wifi_sas_sbuf[48];
+                            snprintf(wifi_sas_sbuf, sizeof(wifi_sas_sbuf), "Scanning... pass %d (%u found)",
+                                     wifi_sas_scan_pass + 1, (unsigned)wifi_sas_accum_count);
+                            lv_label_set_text(scan_status_label, wifi_sas_sbuf);
+                        }
+                        wifi_scanner_start_scan();
+                    } else {
+                        wifi_sas_auto_scanning = false;
+                        // Publish the merged, multi-pass superset as THE scan result so every
+                        // downstream consumer (attack target selection, handshake targets, deauth
+                        // monitor auth lookup, ...) sees APs found across all passes, not just the
+                        // last one.
+                        uint16_t wifi_sas_n = wifi_sas_accum_count;
+                        if (wifi_sas_n > MAX_SCAN_RESULTS) wifi_sas_n = MAX_SCAN_RESULTS;
+                        memcpy(g_shared_scan_results, wifi_sas_accum, wifi_sas_n * sizeof(wifi_ap_record_t));
+                        g_shared_scan_count = wifi_sas_n;
+                    }
+                }
+
+                if (wifi_sas_should_finalize) {
                 wifi_sas_page = 0;
 
                 if (function_page) { lv_obj_del(function_page); function_page = NULL; }
@@ -8199,7 +8354,8 @@ void app_main(void)
                 lv_obj_set_style_text_font(next_lbl, &lv_font_montserrat_14, 0);
                 lv_obj_center(next_lbl);
                 lv_obj_add_event_cb(next_btn, wifi_scan_next_btn_cb, LV_EVENT_CLICKED, NULL);
-                
+
+                }  // End of "if (wifi_sas_should_finalize)"
                 }  // End of else block for !blackout_ui_active
             }
             // Update FPS label if on Deauther page
@@ -8741,24 +8897,38 @@ void app_main(void)
                                   ? (attack_count + i) % DEAUTH_MONITOR_MAX_ATTACKS 
                                   : i;
                         
-                        char line[80];
-                        snprintf(line, sizeof(line), "%s | CH: %d | RSSI: %d",
+                        // P3: annotate each detected deauth with the target's auth mode and
+                        // whether it can actually work. WPA3/MFP targets integrity-reject
+                        // deauths (harmless) -> gray "MFP-immune"; open/WPA/WPA2 are real
+                        // disruption -> red; target not in last scan -> amber "?".
+                        uint8_t am_raw = deauth_monitor_attacks[idx].authmode;
+                        bool am_unknown = (am_raw == 0xFF);
+                        wifi_auth_mode_t am = (wifi_auth_mode_t)am_raw;
+                        bool tgt_pmf = !am_unknown && authmode_is_pmf(am);
+
+                        char line[112];
+                        snprintf(line, sizeof(line), "%s | %s%s | CH: %d | RSSI: %d",
                                  deauth_monitor_attacks[idx].ssid,
+                                 am_unknown ? "?" : wd_auth_disp(am),
+                                 tgt_pmf ? " MFP-immune" : "",
                                  deauth_monitor_attacks[idx].channel,
                                  deauth_monitor_attacks[idx].rssi);
-                        
+
                         lv_obj_t *row = lv_list_add_btn(deauth_monitor_list, NULL, "");
                         lv_obj_set_width(row, lv_pct(100));
                         lv_obj_set_style_pad_all(row, 6, 0);
                         lv_obj_set_height(row, LV_SIZE_CONTENT);
                         lv_obj_set_style_bg_color(row, ui_card_color(), LV_STATE_DEFAULT);
                         lv_obj_set_style_radius(row, 8, 0);
-                        
+
                         lv_obj_t *lbl = lv_label_create(row);
                         lv_label_set_text(lbl, line);
                         lv_label_set_long_mode(lbl, LV_LABEL_LONG_SCROLL_CIRCULAR);
                         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-                        lv_obj_set_style_text_color(lbl, COLOR_MATERIAL_RED, 0);
+                        lv_obj_set_style_text_color(lbl,
+                                 tgt_pmf     ? lv_color_make(150, 150, 150) :
+                                 am_unknown  ? lv_color_make(230, 180, 60)  :
+                                               COLOR_MATERIAL_RED, 0);
                         lv_obj_set_width(lbl, lv_pct(95));
                     }
                     portEXIT_CRITICAL(&deauth_monitor_spin);
@@ -9682,6 +9852,21 @@ static void screenshot_btn_event_cb(lv_event_t *e)
 {
     (void)e;
 
+#if !(defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM)
+    /* Gated out on CYD2USB (no PSRAM). lv_snapshot_take() needs a full-screen
+     * RGB565 buffer - 240*320*2 = 153,600 bytes - against a board that only
+     * has ~20-50KB free heap in typical use (see OBS_STORE_CYD2USB_CAPACITY's
+     * doc comment for the same board's memory budget). There's no smaller
+     * capacity to fall back to here the way obs_store/export-queue had -
+     * a screenshot buffer can't shrink without shrinking the screen itself -
+     * so the only safe option is not offering the feature at all. Field
+     * report 2026-09-23: tapping a screen title (the shared trigger for this
+     * callback, wired on every screen via create_function_page_base() and a
+     * few standalone title labels) crashed the board. */
+    ESP_LOGW(TAG, "Screenshot: not available on this board (no PSRAM)");
+    return;
+#endif
+
     if (!wifi_wardrive_is_sd_mounted()) {
         ESP_LOGW(TAG, "Screenshot: SD card not mounted");
         return;
@@ -10391,7 +10576,9 @@ static void sniffer_refresh_ap_list(void) {
         lv_obj_set_style_bg_color(ap_row, ui_bg_color(), LV_STATE_DEFAULT);
         lv_obj_set_style_bg_color(ap_row, lv_color_make(40, 40, 60), LV_STATE_PRESSED);
         lv_obj_set_style_bg_opa(ap_row, LV_OPA_COVER, 0);
-        lv_obj_set_style_text_color(ap_row, ui_text_color(), 0);
+        // Band-color the AP name, matching the existing convention (Wardrive's wd_table_draw_event_cb,
+        // WiFi Scan & Attack): amber = 2.4 GHz, green = 5 GHz. Field request 2026-09-23.
+        lv_obj_set_style_text_color(ap_row, (ap->channel <= 14) ? UI_ACCENT_AMBER : COLOR_MATERIAL_GREEN, 0);
         lv_obj_set_style_text_font(ap_row, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_decor(ap_row, LV_TEXT_DECOR_UNDERLINE, 0);
         lv_obj_set_style_min_height(ap_row, 36, 0);  // Larger touch target
@@ -10615,9 +10802,16 @@ static void targeted_deauth_timer_cb(lv_timer_t *timer) {
         return;
     }
     
-    // Switch to target channel
-    esp_wifi_set_channel(targeted_deauth_channel, WIFI_SECOND_CHAN_NONE);
-    
+    // Switch to target channel (verified). If the radio refuses it (DFS 5 GHz on
+    // C5), skip this tick's TX so the frame is never sprayed onto the 2.4 GHz
+    // channel the radio was left on. See cym_rf_tx.h.
+    if (!cym_set_channel_verified((uint8_t)targeted_deauth_channel)) {
+        uint8_t got = 0; wifi_second_chan_t gsc;
+        esp_wifi_get_channel(&got, &gsc);
+        ESP_LOGW(TAG, "[T-DEAUTH] ch %d rejected -> radio on ch %d, skip TX (DFS not TX-capable on C5)", targeted_deauth_channel, got);
+        return;
+    }
+
     // Build and send deauth frame
     uint8_t deauth_frame[sizeof(deauth_frame_default)];
     memcpy(deauth_frame, deauth_frame_default, sizeof(deauth_frame_default));
@@ -10648,7 +10842,7 @@ static void targeted_deauth_timer_cb(lv_timer_t *timer) {
         ESP_LOGI(TAG, "[T-DEAUTH] RAW: %s", hexbuf);
     }
 
-    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
+    cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame_default), false);
     targeted_deauth_count++;
     
     // Update status label
@@ -10784,6 +10978,11 @@ static void show_targeted_deauth_screen(void) {
     
     lv_obj_add_event_cb(stop_btn, targeted_deauth_stop_cb, LV_EVENT_CLICKED, NULL);
     
+    // Dual-band TX readiness (band AUTO + 5 GHz mask) ONCE here, NOT in the 100ms
+    // timer callback (its vTaskDelay would stall the LVGL task). Lets the callback
+    // set_channel() onto a 5 GHz target instead of silently staying on 2.4 GHz.
+    cym_mgmt_tx_prepare_dualband();
+
     // Start the deauth timer
     targeted_deauth_active = true;
     targeted_deauth_count = 0;
@@ -11659,7 +11858,7 @@ static void hs_send_raw_frame(const uint8_t *frame, size_t len) {
     // STA-only raw injection (see handshake task mode setup). Log the TX result once per
     // channel change so serial proves the deauth actually radiates on both 2.4 and 5 GHz
     // arms — a silent 5 GHz drop would otherwise masquerade as "no handshake found".
-    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    esp_err_t err = cym_mgmt_tx(WIFI_IF_STA, frame, len, false);
     static int last_logged_ch = -1;
     uint8_t ch = 0; wifi_second_chan_t sc;
     esp_wifi_get_channel(&ch, &sc);
@@ -11829,6 +12028,11 @@ static bool hs_save_handshake_to_sd(int ap_idx) {
 static bool hs_save_pmkid_22000(const hs_ap_target_t *ap, const uint8_t *ap_mac,
                                 const uint8_t *sta_mac, const uint8_t *pmkid) {
     if (!sd_spi_mutex) return false;
+    // Privacy (white.txt): never persist a PMKID for a whitelisted network. Mirrors the
+    // pcap/hccapx chokepoint gate in hs_save_handshake_to_sd. The passive sniffer already
+    // filters whitelisted APs at the beacon stage, but the active Handshaker adds its
+    // user-selected targets without that filter, so guard the PMKID writer itself too.
+    if (is_bssid_whitelisted(ap->bssid) || is_ssid_whitelisted(ap->ssid)) return false;
     if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) != pdTRUE) return false;
     bool ok = false;
     struct stat st = {0};
@@ -12025,6 +12229,7 @@ static void wdp_clear_dedup_buffer(void) {
     // redundant anyway: nothing ever reads past wdp_seen_count, and every field of an
     // entry is assigned on insert, so stale bytes are never visible.
     wdp_seen_count = 0;
+    wdp_write_idx = 0;
     const gps_data_t *g = gps_best();
     wdp_last_gps_lat = g->valid ? g->latitude : 0.0f;
     wdp_last_gps_lon = g->valid ? g->longitude : 0.0f;
@@ -12489,25 +12694,48 @@ static void wdp_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         return;  // Already in dedup buffer, skip
     }
 
-    // New network found — add to persistent dedup buffer (max 100 entries)
-    if (wdp_seen_count >= WDP_DEDUP_BUFFER_SIZE) {
-        return;  // Buffer full, skip further discoveries this dwell
+    // New network found. Buffer has a fixed capacity (WDP_DEDUP_BUFFER_SIZE); once full,
+    // FIFO-evict the oldest tracked slot instead of dropping the new discovery outright.
+    // This used to just `return` here once wdp_seen_count hit the cap - fine for Car/
+    // Highway mode, where wdp_clear_dedup_buffer() resets everything every ~46m of travel
+    // anyway, but in Stationary mode (parked near a dense apartment/office building) the
+    // GPS never moves far enough to trigger that clear, so the buffer filled once and then
+    // silently stopped admitting (and therefore writing) any further network for the rest
+    // of the session. Field report, Discord #nm-cyd-c5, 2026-09-23 (el_kaweh/AWOK):
+    // "Whenever the device is stationary and reaches 100 scanned wifis, it stops writing to
+    // sd." Janek [LAB5] correctly diagnosed it as a fixed-size structure rather than a
+    // malloc sizing issue - the actual defect was the *no-cycling* policy, not the capacity
+    // number itself (any fixed cap is exceedable in a dense-enough environment).
+    //
+    // FIFO eviction here is safe under the existing concurrent-access design: the wardrive
+    // task's CSV-write loop (below) already snapshots each entry before formatting it and
+    // checks the snapshot's BSSID still matches the live slot before marking it written
+    // (see "same_slot" there) - specifically because the promiscuous RX callback (this
+    // function, WiFi task context) was already understood to be able to recycle a slot out
+    // from under an in-progress read. Overwriting the oldest slot when full is the same
+    // class of recycle that logic already tolerates: worst case, an entry mid-write gets
+    // rewritten as a duplicate CSV row on a later dwell instead of corrupted - never a torn
+    // read, since every field of the new entry is assigned before written_to_file is reset.
+    int idx;
+    if (wdp_seen_count < WDP_DEDUP_BUFFER_SIZE) {
+        idx = wdp_seen_count++;
+    } else {
+        idx = wdp_write_idx;
+        wdp_write_idx = (wdp_write_idx + 1) % WDP_DEDUP_BUFFER_SIZE;
     }
-
-    int idx = wdp_seen_count;
     memcpy(wdp_seen_networks[idx].bssid, ap_bssid, 6);
     strncpy(wdp_seen_networks[idx].ssid, ssid, 32);
     wdp_seen_networks[idx].ssid[32] = '\0';
     wdp_seen_networks[idx].channel = beacon_channel;
     wdp_seen_networks[idx].rssi = (int8_t)pkt->rx_ctrl.rssi;
     wdp_seen_networks[idx].authmode = authmode;
-    wdp_seen_networks[idx].written_to_file = false;
     wdp_seen_networks[idx].latitude  = g->valid ? g->latitude  : 0.0f;
     wdp_seen_networks[idx].longitude = g->valid ? g->longitude : 0.0f;
     wdp_seen_networks[idx].altitude  = g->valid ? g->altitude  : 0.0f;
     wdp_seen_networks[idx].accuracy  = g->valid ? gps_best_accuracy() : 0.0f;
-
-    wdp_seen_count++;  // Increment dedup buffer count
+    wdp_seen_networks[idx].written_to_file = false;  // assigned LAST: only flips this slot
+                                                      // "readable" once every other field
+                                                      // already holds the new network's data
     wdp_total_networks++;  // Cumulative counter (never resets during wardrive)
 }
 
@@ -12602,6 +12830,7 @@ static void handshake_attack_task_selected(void) {
 
     hs_ap_count = 0;
     hs_client_count = 0;
+    hs_skipped_existing = 0;
     if (hs_ap_targets) memset(hs_ap_targets, 0, HS_MAX_APS * sizeof(hs_ap_target_t));
     if (hs_clients) memset(hs_clients, 0, HS_MAX_CLIENTS * sizeof(hs_client_entry_t));
 
@@ -12609,6 +12838,7 @@ static void handshake_attack_task_selected(void) {
         wifi_ap_record_t *ap = &handshake_targets[i];
         if (ap->ssid[0] != '\0' && check_handshake_file_exists((const char *)ap->ssid)) {
             handshake_captured[i] = true;
+            hs_skipped_existing++;   // already have this one on SD -> "Already on SD" end state, not a failure
             ESP_LOGI(TAG, "[HS] Skipping '%s' - PCAP already exists", ap->ssid);
             continue;
         }
@@ -13056,19 +13286,31 @@ static void hs_ui_timer_cb(lv_timer_t *timer) {
 
     // When attack finished naturally, show clear completion status
     if (!handshake_attack_active) {
+        // Three end states: captured something; everything was ALREADY on SD (skip-existing,
+        // a success not a failure); or genuinely nothing. The old single "Stopped" +
+        // "Press Stop & Exit" was wrong on both counts - the Stop/Exit buttons were removed
+        // in v2.10.23 (top-bar Back/Home now run the stop hook), and an all-skipped run means
+        // "you already have this handshake", not a stop.
+        bool all_skipped = (hs_total_handshakes_captured == 0 && hs_skipped_existing > 0);
         if (hs_ui_target_label) {
             if (hs_total_handshakes_captured > 0) {
                 char done_buf[48];
                 snprintf(done_buf, sizeof(done_buf), LV_SYMBOL_OK " CAPTURED: %d", hs_total_handshakes_captured);
                 lv_label_set_text(hs_ui_target_label, done_buf);
                 lv_obj_set_style_text_color(hs_ui_target_label, COLOR_MATERIAL_GREEN, 0);
+            } else if (all_skipped) {
+                lv_label_set_text(hs_ui_target_label, LV_SYMBOL_OK " Already on SD");
+                lv_obj_set_style_text_color(hs_ui_target_label, lv_color_make(0, 188, 212), 0);
             } else {
                 lv_label_set_text(hs_ui_target_label, LV_SYMBOL_CLOSE " Stopped");
                 lv_obj_set_style_text_color(hs_ui_target_label, COLOR_MATERIAL_ORANGE, 0);
             }
         }
         if (hs_ui_status_label) {
-            lv_label_set_text(hs_ui_status_label, "Press Stop & Exit");
+            const char *hint = (hs_total_handshakes_captured > 0) ? "Saved to SD - press Back to exit"
+                             : all_skipped                        ? "Handshake already saved - press Back"
+                             :                                      "Press Back to exit";
+            lv_label_set_text(hs_ui_status_label, hint);
             lv_obj_set_style_text_color(hs_ui_status_label, lv_color_make(180,180,180), 0);
         }
         // Keep showing the last channel and M1-M4 state (data preserved)
@@ -17390,6 +17632,41 @@ static void wifi_scan_next_btn_cb(lv_event_t *e)
     show_attack_tiles_screen();
 }
 
+// Merge this pass's g_shared_scan_results into wifi_sas_accum by BSSID (update in place on a
+// repeat sighting - keeps RSSI/auth/etc current - append on a genuinely new one). Returns true
+// if at least one new BSSID was added this pass: the adaptive loop's "still finding new stuff"
+// signal.
+static bool wifi_sas_merge_pass(void)
+{
+    if (!wifi_sas_accum) return false;  // allocation failed - see wifi_sas_accum's doc comment
+    bool found_new = false;
+    for (uint16_t wi = 0; wi < g_shared_scan_count && wi < MAX_SCAN_RESULTS; wi++) {
+        const wifi_ap_record_t *ap = &g_shared_scan_results[wi];
+        bool exists = false;
+        for (uint16_t ai = 0; ai < wifi_sas_accum_count; ai++) {
+            if (memcmp(wifi_sas_accum[ai].bssid, ap->bssid, 6) == 0) {
+                wifi_sas_accum[ai] = *ap;
+                exists = true;
+                break;
+            }
+        }
+        if (!exists && wifi_sas_accum_count < MAX_SCAN_RESULTS) {
+            wifi_sas_accum[wifi_sas_accum_count++] = *ap;
+            found_new = true;
+        }
+    }
+    return found_new;
+}
+
+// Screen stop hook: an auto-repeat session in flight when the user leaves must not keep
+// re-triggering scans in the background. The in-flight scan still completes (nothing aborts
+// it), but the next scan_done for it finalizes instead of repeating, since wifi_sas_auto_scanning
+// is now false - mirrors the ownership-flag lesson from the OT Survey scan_done_ui_flag fix.
+static void wifi_sas_screen_stop(void)
+{
+    wifi_sas_auto_scanning = false;
+}
+
 // WiFi Scan & Attack screen - scan and show network list with checkboxes
 static void show_wifi_scan_attack_screen(void)
 {
@@ -17404,6 +17681,7 @@ static void show_wifi_scan_attack_screen(void)
     ensure_wifi_scan_ui_cb();
 
     create_function_page_base("WiFi Scan & Attack");
+    g_screen_stop_fn = wifi_sas_screen_stop;
 
     // Create centered scanning container with icon and text
     lv_obj_t *scan_container = lv_obj_create(function_page);
@@ -17433,6 +17711,26 @@ static void show_wifi_scan_attack_screen(void)
     // scan-done handler treats this screen as still owned by an active attack
     // and skips building the results list, leaving the spinner spinning forever.
     handshake_waiting_for_scan = false;
+
+    // Adaptive multi-pass scan - fresh session (see wifi_sas_accum's doc comment for why this
+    // is a lazy heap allocation, not a static array). Allocated once, reused for the app's
+    // lifetime from here on.
+    if (!wifi_sas_accum) {
+        wifi_sas_accum = (wifi_ap_record_t *)heap_caps_malloc(
+            (size_t)MAX_SCAN_RESULTS * sizeof(wifi_ap_record_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!wifi_sas_accum) {
+            wifi_sas_accum = (wifi_ap_record_t *)heap_caps_malloc(
+                (size_t)MAX_SCAN_RESULTS * sizeof(wifi_ap_record_t), MALLOC_CAP_8BIT);
+        }
+        if (!wifi_sas_accum) {
+            ESP_LOGW(TAG, "wifi_sas_accum allocation failed - adaptive multi-pass scan disabled this session");
+        }
+    }
+    wifi_sas_auto_scanning  = (wifi_sas_accum != NULL);
+    wifi_sas_scan_pass      = 0;
+    wifi_sas_stable_passes  = 0;
+    wifi_sas_accum_count    = 0;
+    wifi_sas_scan_start_ms  = (uint32_t)(esp_timer_get_time() / 1000);
 
     // Start scan
     wifi_scanner_start_scan();
@@ -19711,6 +20009,12 @@ static void wpasec_upload_task(void *pvParameters)
 
     wpasec_ui_msg_t ui_msg;
 
+    // Explicit-selection snapshot (Manage Handshakes "Upload" of specific .pcap files). Read
+    // once, then clear the global so any later "upload all" (e.g. the attack flow) is never
+    // accidentally scoped to a stale selection. wpm_explicit==0 => upload every .pcap (default).
+    int wpm_explicit = wpasec_explicit_count;
+    wpasec_explicit_count = 0;
+
     // Launched from Settings > Data Transfer: connect the saved WiFi Client first
     // (the attack flow already has an active STA link, so it skips this). Mirrors the
     // Wardrive upload: force the 2.4 GHz band before associating (5 GHz VHT80 RX buffers
@@ -19727,12 +20031,20 @@ static void wpasec_upload_task(void *pvParameters)
         snprintf(ui_msg.text, sizeof(ui_msg.text), "Connecting to %s...", g_saved_wifi_ssid);
         ui_msg.color = lv_color_make(0, 188, 212);
         if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+#if CONFIG_BOARD_HAS_5GHZ
         esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
+#endif
         if (!wdup_ensure_wifi()) {
             snprintf(ui_msg.text, sizeof(ui_msg.text),
                      "WiFi connect failed. Check WiFi Client SSID/password.");
             ui_msg.color = lv_color_make(244, 67, 54);
             if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+#if CONFIG_BOARD_HAS_5GHZ
+            // Restore dual-band (we forced 2.4 GHz-only above for the TLS upload). Without
+            // this, the radio stays stuck on 2.4 GHz and every later 5 GHz feature silently
+            // fails to hop. Gated on the same condition that set 2G_ONLY.
+            if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
             wpasec_upload_done = true; wpasec_upload_active = false;
             wpasec_upload_task_handle = NULL; vTaskDelete(NULL); return;
         }
@@ -19752,6 +20064,9 @@ static void wpasec_upload_task(void *pvParameters)
         snprintf(ui_msg.text, sizeof(ui_msg.text), "Failed to open handshakes directory");
         ui_msg.color = lv_color_make(244, 67, 54); // red
         if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+#if CONFIG_BOARD_HAS_5GHZ
+        if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);  // restore dual-band
+#endif
         wpasec_upload_done = true;
         wpasec_upload_active = false;
         wpasec_upload_task_handle = NULL;
@@ -19768,6 +20083,7 @@ static void wpasec_upload_task(void *pvParameters)
             if (entry->d_type == DT_DIR) continue;
             size_t nlen = strlen(entry->d_name);
             if (nlen > 5 && strcasecmp(entry->d_name + nlen - 5, ".pcap") == 0) {
+                if (wpm_explicit > 0 && !wpasec_name_selected(entry->d_name, wpm_explicit)) continue;
                 total_files++;
             }
         }
@@ -19783,6 +20099,9 @@ static void wpasec_upload_task(void *pvParameters)
             closedir(dir);
             xSemaphoreGive(sd_spi_mutex);
         }
+#if CONFIG_BOARD_HAS_5GHZ
+        if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);  // restore dual-band
+#endif
         wpasec_upload_done = true;
         wpasec_upload_active = false;
         wpasec_upload_task_handle = NULL;
@@ -19798,6 +20117,25 @@ static void wpasec_upload_task(void *pvParameters)
     int uploaded = 0;
     int duplicates = 0;
     int failed = 0;
+    int skipped = 0;
+
+    // Load the WPA-SEC journal so already-uploaded files are SKIPPED (not re-sent) — this is what
+    // makes "Upload All" / re-selecting a Sent file not re-upload every run. Same wpasec_upload_log.csv
+    // the Manage Handshakes screen reads for its "Sent" badge, checked with the same wdm_log_accepted.
+    char *wpasec_ulog = NULL;
+    if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        FILE *ulf = fopen(WPASEC_LOG_PATH, "rb");
+        if (ulf) {
+            fseek(ulf, 0, SEEK_END); long uls = ftell(ulf); fseek(ulf, 0, SEEK_SET);
+            if (uls > 0 && uls <= 512 * 1024) {
+                wpasec_ulog = heap_caps_malloc(uls + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (!wpasec_ulog && uls <= 32 * 1024) wpasec_ulog = malloc(uls + 1);  // no-PSRAM fallback
+                if (wpasec_ulog) { size_t nr = fread(wpasec_ulog, 1, uls, ulf); wpasec_ulog[nr] = '\0'; }
+            }
+            fclose(ulf);
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
 
     // Iterate through directory entries
     while (wpasec_upload_active) {
@@ -19819,6 +20157,7 @@ static void wpasec_upload_task(void *pvParameters)
         // Filter: skip dirs and non-.pcap files
         size_t nlen = strlen(d_name);
         if (nlen <= 5 || strcasecmp(d_name + nlen - 5, ".pcap") != 0) continue;
+        if (wpm_explicit > 0 && !wpasec_name_selected(d_name, wpm_explicit)) continue;
 
         // Privacy (white.txt): skip any leftover pcap whose name matches a whitelisted SSID.
         // Filename format is "<ssid>_<bssid_suffix>_<ts>.pcap", so a whitelisted SSID followed
@@ -19843,6 +20182,18 @@ static void wpasec_upload_task(void *pvParameters)
         }
 
         current++;
+
+        // Already on wpa-sec (journal)? Skip instead of re-uploading (shown in the status list).
+        if (wpasec_ulog && wdm_log_accepted(wpasec_ulog, d_name, "WPA-SEC")) {
+            char sk[128]; strncpy(sk, d_name, sizeof(sk) - 1); sk[sizeof(sk) - 1] = '\0';
+            snprintf(ui_msg.text, sizeof(ui_msg.text),
+                     "[%d/%d] %.108s -> already uploaded (skip)", current, total_files, sk);
+            ui_msg.color = lv_color_make(255, 193, 7); // amber
+            if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
+            skipped++;
+            continue;
+        }
+
         char filepath[280];
         snprintf(filepath, sizeof(filepath), "/sdcard/lab/handshakes/%s", d_name);
 
@@ -19882,6 +20233,16 @@ static void wpasec_upload_task(void *pvParameters)
         }
         if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
 
+        // Journal success/duplicate so Manage Handshakes shows "Sent" and future uploads skip
+        // this file (mirrors the Wardrive upload_log.csv). Best-effort; never blocks the upload.
+        if (result == 0 || result == 1) {
+            if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+                FILE *lf = fopen(WPASEC_LOG_PATH, "a");
+                if (lf) { fprintf(lf, "%s,WPA-SEC,%s\n", d_name, result == 1 ? "DUP" : "OK"); fclose(lf); }
+                xSemaphoreGive(sd_spi_mutex);
+            }
+        }
+
         // Small delay between uploads
         vTaskDelay(pdMS_TO_TICKS(500));
     }
@@ -19892,11 +20253,20 @@ static void wpasec_upload_task(void *pvParameters)
         xSemaphoreGive(sd_spi_mutex);
     }
 
+    if (wpasec_ulog) { free(wpasec_ulog); wpasec_ulog = NULL; }
+
     // Summary
-    snprintf(ui_msg.text, sizeof(ui_msg.text), "Done: %d uploaded, %d dup, %d failed", uploaded, duplicates, failed);
+    snprintf(ui_msg.text, sizeof(ui_msg.text), "Done: %d uploaded, %d dup, %d failed, %d skipped",
+             uploaded, duplicates, failed, skipped);
     ui_msg.color = (failed > 0) ? lv_color_make(244, 67, 54) : lv_color_make(76, 175, 80);
     if (wpasec_ui_queue) xQueueSend(wpasec_ui_queue, &ui_msg, pdMS_TO_TICKS(200));
 
+#if CONFIG_BOARD_HAS_5GHZ
+    // Restore dual-band after the upload completes (mirrors wdup_task task_done). We forced
+    // 2.4 GHz-only for the TLS bursts; leaving it stuck would silently kill 5 GHz hopping in
+    // every later feature (Network Observer, Band Scope, Snifferdog, Blackout, ...).
+    if (wpasec_from_data_transfer) esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
     wpasec_upload_done = true;
     wpasec_upload_active = false;
     wpasec_upload_task_handle = NULL;
@@ -19959,8 +20329,9 @@ static void show_wpa_sec_upload_page(void)
     // Top ‹ Back → "Select Attack" tiles (parent "Connect to WiFi" isn't in
     // NAV_SHOW_TABLE, so without this override ‹ Back would resolve to Home).
     // From Data Transfer, Back returns to the Data Transfer menu instead.
-    g_screen_back_fn = wpasec_from_data_transfer ? show_data_transfer_screen
-                                                 : show_attack_tiles_screen;
+    g_screen_back_fn = wpasec_upload_back_fn ? wpasec_upload_back_fn
+                     : (wpasec_from_data_transfer ? show_data_transfer_screen
+                                                  : show_attack_tiles_screen);
     // Stop upload + drop STA connection on ANY exit (top ‹ Back / Home).
     g_screen_stop_fn = wpasec_stop;
 
@@ -20017,7 +20388,9 @@ static void show_wpa_sec_upload_page(void)
 
     // Info line: key + count
     char info_buf[80];
-    snprintf(info_buf, sizeof(info_buf), "Key: %.4s****  |  %d handshake(s)", wpasec_api_key, hs_count);
+    // In Manage-Handshakes explicit mode the info line reflects the selected count, not all files.
+    int disp_count = (wpasec_upload_back_fn && wpasec_explicit_count > 0) ? wpasec_explicit_count : hs_count;
+    snprintf(info_buf, sizeof(info_buf), "Key: %.4s****  |  %d handshake(s)", wpasec_api_key, disp_count);
     lv_obj_t *info = lv_label_create(function_page);
     lv_label_set_text(info, info_buf);
     lv_obj_set_style_text_color(info, lv_color_make(176, 176, 176), 0);
@@ -20077,6 +20450,10 @@ static void show_wpa_sec_upload_page(void)
         wpasec_upload_active = false;
         wpasec_upload_done = true;
     }
+
+    // Consume the Manage-Handshakes Back override: g_screen_back_fn captured it above, so clear
+    // it now to avoid a later attack-flow upload page wrongly routing Back to Manage Handshakes.
+    wpasec_upload_back_fn = NULL;
 }
 
 // ─── Deauth Client — passive client discovery + targeted deauth ──────────────
@@ -20290,18 +20667,34 @@ static void show_deauth_client_scan_screen(void) {
 static void show_attack_tiles_screen(void)
 {
     create_function_page_base("Select Attack");
-    
-    // Create small tiles container (4+5 layout) with compact spacing
-    lv_obj_t *attack_tiles = lv_obj_create(function_page);
-    lv_obj_set_size(attack_tiles, lv_pct(100), 218);
-    lv_obj_align(attack_tiles, LV_ALIGN_TOP_MID, 0, 32);
+
+    // Landscape-safe layout: ONE vertical scroll container holds the attack-tile grid AND
+    // the Selected Networks list below it, so neither orientation clips the list. (Old code
+    // pinned network_list height to ver_res-283 -> only 37px in portrait and NEGATIVE, i.e.
+    // invisible, in landscape. cym-landscape-support failure pattern #1.)
+    lv_obj_t *content = lv_obj_create(function_page);
+    lv_obj_set_size(content, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(content, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 4, 0);
+    lv_obj_set_style_pad_row(content, 6, 0);
+    lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(content, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(content, LV_SCROLLBAR_MODE_AUTO);
+
+    // Attack-tile grid (wraps 2-wide portrait / 4-wide landscape); height grows to fit.
+    lv_obj_t *attack_tiles = lv_obj_create(content);
+    lv_obj_set_width(attack_tiles, lv_pct(100));
+    lv_obj_set_height(attack_tiles, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(attack_tiles, ui_bg_color(), 0);
     lv_obj_set_style_border_width(attack_tiles, 0, 0);
     lv_obj_set_style_pad_all(attack_tiles, 5, 0);
     lv_obj_set_style_pad_gap(attack_tiles, 5, 0);
     lv_obj_set_flex_flow(attack_tiles, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(attack_tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-    lv_obj_add_flag(attack_tiles, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(attack_tiles, LV_OBJ_FLAG_SCROLLABLE);
     
     // Row 1: Deauth, Evil Twin, SAE, Handshake, Deauth Client
     create_small_tile(attack_tiles, LV_SYMBOL_CHARGE, "Deauth", COLOR_MATERIAL_RED, attack_tile_event_cb, "Deauth");
@@ -20317,31 +20710,30 @@ static void show_attack_tiles_screen(void)
     create_small_tile(attack_tiles, LV_SYMBOL_EYE_OPEN, "Observer", COLOR_MATERIAL_PURPLE, attack_tile_event_cb, "Sniffer");
     
     // Horizontal separator line above Selected Networks
-    lv_obj_t *separator = lv_obj_create(function_page);
+    lv_obj_t *separator = lv_obj_create(content);
     lv_obj_set_size(separator, lv_pct(90), 2);
-    lv_obj_align(separator, LV_ALIGN_TOP_MID, 0, 254);
     lv_obj_set_style_bg_color(separator, ui_accent_color(), 0);
     lv_obj_set_style_bg_opa(separator, LV_OPA_50, 0);
     lv_obj_set_style_border_width(separator, 0, 0);
     lv_obj_set_style_radius(separator, 1, 0);
-    
+
     // Selected networks header
-    lv_obj_t *header_label = lv_label_create(function_page);
+    lv_obj_t *header_label = lv_label_create(content);
     lv_label_set_text(header_label, "Selected Networks:");
     lv_obj_set_style_text_font(header_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(header_label, ui_text_color(), 0);
-    lv_obj_align(header_label, LV_ALIGN_TOP_LEFT, 10, 259);
-    
-    // Selected networks list
-    lv_obj_t *network_list = lv_obj_create(function_page);
-    lv_obj_set_size(network_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 283);  // Bottom ~37px (tiles grew for 10th tile)
-    lv_obj_align(network_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    // Selected networks list — content-height inside the scroll container, so it stays fully
+    // visible in BOTH orientations (the outer container scrolls if the whole thing runs long).
+    lv_obj_t *network_list = lv_obj_create(content);
+    lv_obj_set_width(network_list, lv_pct(100));
+    lv_obj_set_height(network_list, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_color(network_list, ui_bg_color(), 0);
     lv_obj_set_style_border_width(network_list, 0, 0);
     lv_obj_set_style_pad_all(network_list, 6, 0);
     lv_obj_set_flex_flow(network_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_gap(network_list, 4, 0);
-    lv_obj_add_flag(network_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(network_list, LV_OBJ_FLAG_SCROLLABLE);
     
     // Get selected networks and display them
     int selected_indices[SCAN_RESULTS_MAX_DISPLAY];
@@ -20361,21 +20753,32 @@ static void show_attack_tiles_screen(void)
             if (idx < 0 || idx >= (int)total_count) continue;
             
             const wifi_ap_record_t *ap = &records[idx];
-            char line[64];
+            char line[96];
             const char *band = (ap->primary <= 14) ? "2.4" : "5";
-            
+            // P3: surface the target's auth so the user sees, before firing, which selected
+            // networks the deauth-family attacks (Deauth/SAE/Deauth Client) can actually hit.
+            // WPA3/MFP negotiate management-frame protection -> deauth is integrity-rejected.
+            bool ap_pmf = authmode_is_pmf(ap->authmode);
+            const char *auths = wd_auth_disp(ap->authmode);
+
             if (ap->ssid[0] != 0) {
-                snprintf(line, sizeof(line), "%s (%s)", (const char *)ap->ssid, band);
+                snprintf(line, sizeof(line), "%s (%s) | %s%s", (const char *)ap->ssid, band,
+                         auths, ap_pmf ? " - deauth immune" : "");
             } else {
-                snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X (%s)",
+                snprintf(line, sizeof(line), "%02X:%02X:%02X:%02X:%02X:%02X (%s) | %s%s",
                          ap->bssid[0], ap->bssid[1], ap->bssid[2],
-                         ap->bssid[3], ap->bssid[4], ap->bssid[5], band);
+                         ap->bssid[3], ap->bssid[4], ap->bssid[5], band,
+                         auths, ap_pmf ? " - deauth immune" : "");
             }
-            
+
             lv_obj_t *net_label = lv_label_create(network_list);
+            lv_obj_set_width(net_label, lv_pct(100));
+            lv_label_set_long_mode(net_label, LV_LABEL_LONG_WRAP);
             lv_label_set_text(net_label, line);
-            lv_obj_set_style_text_color(net_label, ui_text_color(), 0);
-            lv_obj_set_style_text_font(net_label, &lv_font_montserrat_14, 0);
+            // Gray out MFP targets so the deauth-immune ones read as "won't work".
+            lv_obj_set_style_text_color(net_label, ap_pmf ? lv_color_make(150, 150, 150) : ui_text_color(), 0);
+            // Match the tile-name font size (montserrat_12) so each network fits one line.
+            lv_obj_set_style_text_font(net_label, &lv_font_montserrat_12, 0);
         }
     }
 }
@@ -23903,6 +24306,478 @@ static void show_wardrive_manage_screen(void)
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ===========================================================================
+// Manage Handshakes (WPA-SEC) — file manager for /sdcard/lab/handshakes.
+// Parallel to the Wardrive "Manage Data" screen (wd_manage_* / wdm_*). Lists
+// .pcap / .hccapx / .22000 with size, date and status; select + Delete (ALL
+// types — the SD-cleanup path) + Upload (WPA-SEC, .pcap only; .hccapx/.22000
+// are local hashcat formats and stay on-device, pulled off via the file
+// server). Whitelisted networks are never written to any of these files
+// (hs_save_* privacy gates), so nothing listed here can leak on upload.
+// List-screen pattern -> reflows in portrait AND landscape with no branch.
+// ===========================================================================
+#define HS_TYPE_PCAP   0
+#define HS_TYPE_HCCAPX 1
+#define HS_TYPE_22000  2
+
+// Companion arrays live in PSRAM (like wpm_paths): UI bookkeeping only, no DMA — keeps the scarce
+// internal DMA pool free (PSRAM_ATTR is a no-op on no-PSRAM boards, where these stay small internal).
+PSRAM_ATTR static lv_obj_t *wpm_rows[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static bool      wpm_selected[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static lv_obj_t *wpm_chk[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static long      wpm_sizes[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static time_t    wpm_times[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static uint8_t   wpm_types[HS_MANAGE_MAX_FILES];
+PSRAM_ATTR static bool      wpm_sent[HS_MANAGE_MAX_FILES];     // .pcap already uploaded to WPA-SEC (per log)
+static int       wpm_count = 0;
+static long      wpm_total_bytes = 0;
+static lv_obj_t *wpm_sel_count_lbl  = NULL;
+static lv_obj_t *wpm_del_btn_bottom = NULL;
+static lv_obj_t *wpm_up_btn_bottom  = NULL;
+static lv_obj_t *wpm_confirm_overlay = NULL;
+static void    (*wpm_back_fn)(void)  = NULL;
+
+static void show_wpasec_manage_screen(void);
+
+static void wpm_fmt_size(long sz, char *buf, size_t buflen) {
+    if (sz < 1024)            snprintf(buf, buflen, "%ld B", sz);
+    else if (sz < 1024*1024)  snprintf(buf, buflen, "%.1f KB", sz / 1024.0f);
+    else                      snprintf(buf, buflen, "%.1f MB", sz / (1024.0f*1024.0f));
+}
+
+// Counter label doubles as the folder-usage readout when nothing is selected ("N files - X MB"),
+// so the user can see the handshakes folder filling up at a glance. Buttons enable on selection;
+// Upload only when at least one selected row is an uploadable .pcap.
+static void wpm_update_actions(void) {
+    int n = 0, up_n = 0;
+    for (int i = 0; i < wpm_count; i++) {
+        if (!wpm_selected[i]) continue;
+        n++;
+        if (wpm_types[i] == HS_TYPE_PCAP) up_n++;
+    }
+    if (wpm_sel_count_lbl && lv_obj_is_valid(wpm_sel_count_lbl)) {
+        char buf[48];
+        if (n == 0) {
+            char tot[16]; wpm_fmt_size(wpm_total_bytes, tot, sizeof(tot));
+            snprintf(buf, sizeof(buf), "%d files  %s", wpm_count, tot);
+        } else {
+            snprintf(buf, sizeof(buf), "%d of %d selected", n, wpm_count);
+        }
+        lv_label_set_text(wpm_sel_count_lbl, buf);
+    }
+    if (wpm_del_btn_bottom && lv_obj_is_valid(wpm_del_btn_bottom)) {
+        lv_obj_set_style_opa(wpm_del_btn_bottom, n > 0 ? LV_OPA_COVER : LV_OPA_40, 0);
+        if (n > 0) lv_obj_clear_state(wpm_del_btn_bottom, LV_STATE_DISABLED);
+        else       lv_obj_add_state(wpm_del_btn_bottom,   LV_STATE_DISABLED);
+    }
+    if (wpm_up_btn_bottom && lv_obj_is_valid(wpm_up_btn_bottom)) {
+        lv_obj_set_style_opa(wpm_up_btn_bottom, up_n > 0 ? LV_OPA_COVER : LV_OPA_40, 0);
+        if (up_n > 0) lv_obj_clear_state(wpm_up_btn_bottom, LV_STATE_DISABLED);
+        else          lv_obj_add_state(wpm_up_btn_bottom,   LV_STATE_DISABLED);
+    }
+}
+
+static void wpm_set_row_sel(int i, bool sel) {
+    wpm_selected[i] = sel;
+    if (wpm_rows[i] && lv_obj_is_valid(wpm_rows[i]))
+        lv_obj_set_style_bg_color(wpm_rows[i], sel ? lv_color_make(25, 65, 130) : ui_card_color(), 0);
+    if (wpm_chk[i] && lv_obj_is_valid(wpm_chk[i]))
+        lv_label_set_text(wpm_chk[i], sel ? LV_SYMBOL_OK : " ");
+}
+
+static void wpm_row_tap_cb(lv_event_t *e) {
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= wpm_count) return;
+    wpm_set_row_sel(idx, !wpm_selected[idx]);
+    wpm_update_actions();
+}
+
+static void wpm_sel_all_cb(lv_event_t *e) {
+    (void)e;
+    for (int i = 0; i < wpm_count; i++) if (wpm_paths[i][0]) wpm_set_row_sel(i, true);
+    wpm_update_actions();
+}
+
+static void wpm_sel_none_cb(lv_event_t *e) {
+    (void)e;
+    for (int i = 0; i < wpm_count; i++) wpm_set_row_sel(i, false);
+    wpm_update_actions();
+}
+
+// "Sent": select only .pcap already uploaded to WPA-SEC (per log) — the safe set to Delete after
+// an upload, so un-uploaded captures (and local .hccapx/.22000) are never cleared by accident.
+static void wpm_sel_sent_cb(lv_event_t *e) {
+    (void)e;
+    for (int i = 0; i < wpm_count; i++) wpm_set_row_sel(i, (wpm_paths[i][0] != '\0') && wpm_sent[i]);
+    wpm_update_actions();
+}
+
+static void wpm_confirm_cancel_cb(lv_event_t *e) {
+    (void)e;
+    if (wpm_confirm_overlay && lv_obj_is_valid(wpm_confirm_overlay)) {
+        lv_obj_del(wpm_confirm_overlay);
+        wpm_confirm_overlay = NULL;
+    }
+}
+
+static void wpm_confirm_ok_cb(lv_event_t *e) {
+    (void)e;
+    if (wpm_confirm_overlay && lv_obj_is_valid(wpm_confirm_overlay)) {
+        lv_obj_del(wpm_confirm_overlay);
+        wpm_confirm_overlay = NULL;
+    }
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        for (int i = 0; i < wpm_count; i++) {
+            if (!wpm_selected[i] || wpm_paths[i][0] == '\0') continue;
+            remove(wpm_paths[i]);           // delete is type-agnostic: .pcap/.hccapx/.22000 all go
+            wpm_paths[i][0] = '\0';
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
+    for (int i = 0; i < wpm_count; i++) {
+        if (!wpm_selected[i]) continue;
+        if (wpm_rows[i] && lv_obj_is_valid(wpm_rows[i])) { lv_obj_del(wpm_rows[i]); wpm_rows[i] = NULL; }
+        wpm_selected[i]  = false;
+        wpm_chk[i]       = NULL;
+        wpm_total_bytes -= wpm_sizes[i];
+        wpm_sizes[i]     = 0;
+    }
+    if (wpm_total_bytes < 0) wpm_total_bytes = 0;
+    wpm_update_actions();
+}
+
+static void wpm_delete_selected_cb(lv_event_t *e) {
+    (void)e;
+    int n = 0;
+    for (int i = 0; i < wpm_count; i++) if (wpm_selected[i]) n++;
+    if (n == 0) return;
+
+    // Modal confirm overlay on lv_layer_top() (mirror of wdm_delete_selected_cb).
+    wpm_confirm_overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(wpm_confirm_overlay, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    lv_obj_set_pos(wpm_confirm_overlay, 0, 0);
+    lv_obj_set_style_bg_color(wpm_confirm_overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(wpm_confirm_overlay, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(wpm_confirm_overlay, 0, 0);
+    lv_obj_clear_flag(wpm_confirm_overlay, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *card = lv_obj_create(wpm_confirm_overlay);
+    lv_obj_set_size(card, 210, 116);      // 116 < 240 -> fits centered in both orientations
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, lv_color_make(38, 38, 38), 0);
+    lv_obj_set_style_border_color(card, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 10, 0);
+    lv_obj_set_style_pad_all(card, 10, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+             LV_SYMBOL_WARNING " Delete %d file(s)?\nThis cannot be undone.", n);
+    lv_obj_t *msg = lv_label_create(card);
+    lv_label_set_text(msg, buf);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xFFCC44), 0);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(msg, 190);
+    lv_obj_align(msg, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *cancel_btn = lv_btn_create(card);
+    lv_obj_set_size(cancel_btn, 84, 30);
+    lv_obj_align(cancel_btn, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_make(70, 70, 70), 0);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_make(100, 100, 100), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(cancel_btn, 6, 0);
+    lv_obj_t *cl = lv_label_create(cancel_btn);
+    lv_label_set_text(cl, LV_SYMBOL_CLOSE "  Cancel");
+    lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
+    lv_obj_center(cl);
+    lv_obj_add_event_cb(cancel_btn, wpm_confirm_cancel_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *del_btn = lv_btn_create(card);
+    lv_obj_set_size(del_btn, 84, 30);
+    lv_obj_align(del_btn, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(del_btn, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(del_btn, lv_color_make(180, 30, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(del_btn, 6, 0);
+    lv_obj_t *dl = lv_label_create(del_btn);
+    lv_label_set_text(dl, LV_SYMBOL_TRASH "  Delete");
+    lv_obj_set_style_text_font(dl, &lv_font_montserrat_12, 0);
+    lv_obj_center(dl);
+    lv_obj_add_event_cb(del_btn, wpm_confirm_ok_cb, LV_EVENT_CLICKED, NULL);
+}
+
+static void wpm_upload_selected_cb(lv_event_t *e) {
+    (void)e;
+    // Only .pcap is a WPA-SEC target; .hccapx/.22000 selections are ignored for upload.
+    wpasec_explicit_count = 0;
+    for (int i = 0; i < wpm_count; i++) {
+        if (wpm_selected[i] && wpm_paths[i][0] && wpm_types[i] == HS_TYPE_PCAP)
+            wpasec_explicit_indices[wpasec_explicit_count++] = i;
+    }
+    if (wpasec_explicit_count == 0) {
+        if (wpm_sel_count_lbl && lv_obj_is_valid(wpm_sel_count_lbl))
+            lv_label_set_text(wpm_sel_count_lbl, "Select .pcap to upload");
+        return;
+    }
+    // Route exactly like the Data Transfer "WPA-SEC Upload" entry: connect WiFi first if needed,
+    // then the upload page (which uploads only the explicit selection). Back returns here.
+    wpasec_from_data_transfer = true;
+    wpasec_upload_back_fn = show_wpasec_manage_screen;
+    esp_netif_t *sn = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip;
+    bool has_ip = sn && esp_netif_get_ip_info(sn, &ip) == ESP_OK && ip.ip.addr != 0;
+    if (has_ip) {
+        show_wpa_sec_upload_page();
+    } else {
+        s_wpasec_pending_after_wifi = true;
+        show_wifi_client_server_screen();
+    }
+}
+
+static void show_wpasec_manage_screen(void) {
+    create_function_page_base("Manage Handshakes");
+    g_screen_back_fn = wpm_back_fn ? wpm_back_fn : show_data_transfer_screen;
+
+    wpm_count = 0;
+    wpm_total_bytes = 0;
+    memset(wpm_rows,     0, sizeof(wpm_rows));
+    memset(wpm_selected, 0, sizeof(wpm_selected));
+    memset(wpm_chk,      0, sizeof(wpm_chk));
+    memset(wpm_sizes,    0, sizeof(wpm_sizes));
+    memset(wpm_times,    0, sizeof(wpm_times));
+    memset(wpm_types,    0, sizeof(wpm_types));
+    memset(wpm_sent,     0, sizeof(wpm_sent));
+    wpm_sel_count_lbl  = NULL;
+    wpm_del_btn_bottom = NULL;
+    wpm_up_btn_bottom  = NULL;
+    wpm_confirm_overlay = NULL;
+
+    // Load the WPA-SEC upload journal into PSRAM (up to 512 KB, matches the wdup loader).
+    char *log_buf = NULL;
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        FILE *lf = fopen(WPASEC_LOG_PATH, "r");
+        if (lf) {
+            fseek(lf, 0, SEEK_END); long lsz = ftell(lf); rewind(lf);
+            if (lsz > 0 && lsz <= 512 * 1024) {
+                log_buf = heap_caps_malloc(lsz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                if (log_buf) { size_t nr = fread(log_buf, 1, lsz, lf); log_buf[nr] = '\0'; }
+            }
+            fclose(lf);
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
+
+    // Enumerate .pcap / .hccapx / .22000 with size + mtime.
+    if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(3000)) == pdTRUE) {
+        DIR *dir = opendir("/sdcard/lab/handshakes");
+        if (dir) {
+            struct dirent *ent;
+            while ((ent = readdir(dir)) != NULL && wpm_count < HS_MANAGE_MAX_FILES) {
+                if (ent->d_type == DT_DIR) continue;
+                const char *nm = ent->d_name;
+                size_t l = strlen(nm);
+                int type = -1;
+                if (l > 5 && strcasecmp(nm + l - 5, ".pcap") == 0)        type = HS_TYPE_PCAP;
+                else if (l > 7 && strcasecmp(nm + l - 7, ".hccapx") == 0) type = HS_TYPE_HCCAPX;
+                else if (l > 6 && strcasecmp(nm + l - 6, ".22000") == 0)  type = HS_TYPE_22000;
+                else continue;
+                snprintf(wpm_paths[wpm_count], sizeof(wpm_paths[0]),
+                         "/sdcard/lab/handshakes/%s", nm);
+                wpm_types[wpm_count] = (uint8_t)type;
+                struct stat st;
+                if (stat(wpm_paths[wpm_count], &st) == 0) {
+                    wpm_sizes[wpm_count] = (long)st.st_size;
+                    wpm_times[wpm_count] = st.st_mtime;
+                    wpm_total_bytes += (long)st.st_size;
+                }
+                if (type == HS_TYPE_PCAP)
+                    wpm_sent[wpm_count] = wdm_log_accepted(log_buf, nm, "WPA-SEC");
+                wpm_count++;
+            }
+            closedir(dir);
+        }
+        xSemaphoreGive(sd_spi_mutex);
+    }
+
+    // Scrollable file list — leaves 72px at bottom for action controls (orientation-agnostic).
+    lv_obj_t *list = lv_obj_create(function_page);
+    lv_obj_set_size(list, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL) - 30 - 72);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_set_style_bg_color(list, ui_bg_color(), 0);
+    lv_obj_set_style_bg_opa(list, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 3, 0);
+    lv_obj_set_style_pad_row(list, 3, 0);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    if (wpm_count == 0) {
+        lv_obj_t *empty = lv_label_create(list);
+        lv_label_set_text(empty, "No handshake files found.\nCapture handshakes first.");
+        lv_obj_set_style_text_color(empty, lv_color_make(140, 140, 140), 0);
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(empty, LV_ALIGN_CENTER, 0, 0);
+    }
+
+    lv_color_t col_green = lv_color_make(76, 175, 80);
+    lv_color_t col_gray  = lv_color_make(160, 160, 160);
+    lv_color_t col_blue  = lv_color_make(90, 150, 210);
+
+    for (int i = 0; i < wpm_count; i++) {
+        const char *fname = strrchr(wpm_paths[i], '/');
+        fname = fname ? fname + 1 : wpm_paths[i];
+
+        lv_color_t acc_color; const char *status_txt; lv_color_t status_color;
+        if (wpm_types[i] != HS_TYPE_PCAP) {          // .hccapx / .22000 -> local hashcat formats
+            acc_color = col_blue;  status_txt = "Local";               status_color = col_blue;
+        } else if (wpm_sent[i]) {
+            acc_color = col_green; status_txt = LV_SYMBOL_OK " Sent";   status_color = col_green;
+        } else {
+            acc_color = col_gray;  status_txt = LV_SYMBOL_UPLOAD " New"; status_color = col_gray;
+        }
+
+        char size_buf[16]; wpm_fmt_size(wpm_sizes[i], size_buf, sizeof(size_buf));
+        char date_buf[20] = "--";
+        if (wpm_times[i] > 0) {
+            struct tm tm_info; localtime_r(&wpm_times[i], &tm_info);
+            strftime(date_buf, sizeof(date_buf), "%Y-%m-%d %H:%M", &tm_info);
+        }
+        char meta_buf[48]; snprintf(meta_buf, sizeof(meta_buf), "%s  %s", size_buf, date_buf);
+
+        lv_obj_t *row = lv_obj_create(list);
+        lv_obj_set_size(row, lv_disp_get_hor_res(NULL) - 6, 56);
+        lv_obj_set_style_bg_color(row, ui_card_color(), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_radius(row, 5, 0);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        wpm_rows[i] = row;
+
+        lv_obj_t *accent = lv_obj_create(row);
+        lv_obj_set_size(accent, 4, 46);
+        lv_obj_align(accent, LV_ALIGN_LEFT_MID, 4, 0);
+        lv_obj_set_style_bg_color(accent, acc_color, 0);
+        lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(accent, 0, 0);
+        lv_obj_set_style_radius(accent, 2, 0);
+
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, fname);
+        lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(name_lbl, ui_text_color(), 0);
+        lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_size(name_lbl, 148, 32);
+        lv_obj_align(name_lbl, LV_ALIGN_TOP_LEFT, 14, 4);
+
+        lv_obj_t *meta_lbl = lv_label_create(row);
+        lv_label_set_text(meta_lbl, meta_buf);
+        lv_obj_set_style_text_font(meta_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(meta_lbl, lv_color_make(120, 120, 120), 0);
+        lv_label_set_long_mode(meta_lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(meta_lbl, 148);
+        lv_obj_align(meta_lbl, LV_ALIGN_TOP_LEFT, 14, 38);
+
+        lv_obj_t *status_lbl = lv_label_create(row);
+        lv_label_set_text(status_lbl, status_txt);
+        lv_obj_set_style_text_font(status_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(status_lbl, status_color, 0);
+        lv_obj_align(status_lbl, LV_ALIGN_RIGHT_MID, -22, -8);
+
+        lv_obj_t *chk = lv_label_create(row);
+        lv_label_set_text(chk, " ");
+        lv_obj_set_style_text_font(chk, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(chk, lv_color_make(100, 180, 255), 0);
+        lv_obj_align(chk, LV_ALIGN_RIGHT_MID, -4, 8);
+        wpm_chk[i] = chk;
+
+        lv_obj_add_event_cb(row, wpm_row_tap_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+    }
+
+    if (log_buf) heap_caps_free(log_buf);
+
+    // ── Action area (bottom 72px) ──────────────────────────────────────
+    // Row 1: usage/selection counter (left) + Sent / All / None (right)
+    wpm_sel_count_lbl = lv_label_create(function_page);
+    lv_obj_set_style_text_font(wpm_sel_count_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(wpm_sel_count_lbl, lv_color_make(160, 160, 160), 0);
+    lv_obj_set_width(wpm_sel_count_lbl, 100);
+    lv_label_set_long_mode(wpm_sel_count_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_align(wpm_sel_count_lbl, LV_ALIGN_BOTTOM_LEFT, 6, -48);
+
+    lv_obj_t *sent_btn = lv_btn_create(function_page);
+    lv_obj_set_size(sent_btn, 44, 22);
+    lv_obj_align(sent_btn, LV_ALIGN_BOTTOM_RIGHT, -90, -48);
+    lv_obj_set_style_bg_color(sent_btn, lv_color_make(40, 70, 100), 0);
+    lv_obj_set_style_bg_color(sent_btn, lv_color_make(55, 95, 135), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(sent_btn, 4, 0);
+    lv_obj_t *sent_lbl = lv_label_create(sent_btn);
+    lv_label_set_text(sent_lbl, "Sent");
+    lv_obj_set_style_text_font(sent_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(sent_lbl);
+    lv_obj_add_event_cb(sent_btn, wpm_sel_sent_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *all_btn = lv_btn_create(function_page);
+    lv_obj_set_size(all_btn, 40, 22);
+    lv_obj_align(all_btn, LV_ALIGN_BOTTOM_RIGHT, -46, -48);
+    lv_obj_set_style_bg_color(all_btn, lv_color_make(50, 80, 50), 0);
+    lv_obj_set_style_bg_color(all_btn, lv_color_make(70, 110, 70), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(all_btn, 4, 0);
+    lv_obj_t *all_lbl = lv_label_create(all_btn);
+    lv_label_set_text(all_lbl, "All");
+    lv_obj_set_style_text_font(all_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(all_lbl);
+    lv_obj_add_event_cb(all_btn, wpm_sel_all_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *none_btn = lv_btn_create(function_page);
+    lv_obj_set_size(none_btn, 40, 22);
+    lv_obj_align(none_btn, LV_ALIGN_BOTTOM_RIGHT, -2, -48);
+    lv_obj_set_style_bg_color(none_btn, lv_color_make(60, 60, 60), 0);
+    lv_obj_set_style_bg_color(none_btn, lv_color_make(90, 90, 90), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(none_btn, 4, 0);
+    lv_obj_t *none_lbl = lv_label_create(none_btn);
+    lv_label_set_text(none_lbl, "None");
+    lv_obj_set_style_text_font(none_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(none_lbl);
+    lv_obj_add_event_cb(none_btn, wpm_sel_none_cb, LV_EVENT_CLICKED, NULL);
+
+    // Row 2: Delete (all selected types) / Upload (.pcap only)
+    wpm_del_btn_bottom = lv_btn_create(function_page);
+    lv_obj_set_size(wpm_del_btn_bottom, 76, 30);
+    lv_obj_align(wpm_del_btn_bottom, LV_ALIGN_BOTTOM_MID, -42, -10);
+    lv_obj_set_style_bg_color(wpm_del_btn_bottom, COLOR_MATERIAL_RED, 0);
+    lv_obj_set_style_bg_color(wpm_del_btn_bottom, lv_color_make(180, 30, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(wpm_del_btn_bottom, 8, 0);
+    lv_obj_add_state(wpm_del_btn_bottom, LV_STATE_DISABLED);
+    lv_obj_set_style_opa(wpm_del_btn_bottom, LV_OPA_40, 0);
+    lv_obj_t *del_lbl = lv_label_create(wpm_del_btn_bottom);
+    lv_label_set_text(del_lbl, LV_SYMBOL_TRASH " Delete");
+    lv_obj_set_style_text_font(del_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(del_lbl);
+    lv_obj_add_event_cb(wpm_del_btn_bottom, wpm_delete_selected_cb, LV_EVENT_CLICKED, NULL);
+
+    wpm_up_btn_bottom = lv_btn_create(function_page);
+    lv_obj_set_size(wpm_up_btn_bottom, 76, 30);
+    lv_obj_align(wpm_up_btn_bottom, LV_ALIGN_BOTTOM_MID, 42, -10);
+    lv_obj_set_style_bg_color(wpm_up_btn_bottom, lv_color_hex(0xE91E63), 0);
+    lv_obj_set_style_bg_color(wpm_up_btn_bottom, lv_color_hex(0xAD1457), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(wpm_up_btn_bottom, 8, 0);
+    lv_obj_add_state(wpm_up_btn_bottom, LV_STATE_DISABLED);
+    lv_obj_set_style_opa(wpm_up_btn_bottom, LV_OPA_40, 0);
+    lv_obj_t *up_lbl = lv_label_create(wpm_up_btn_bottom);
+    lv_label_set_text(up_lbl, LV_SYMBOL_UPLOAD " Upload");
+    lv_obj_set_style_text_font(up_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(up_lbl);
+    lv_obj_add_event_cb(wpm_up_btn_bottom, wpm_upload_selected_cb, LV_EVENT_CLICKED, NULL);
+
+    wpm_update_actions();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 static void wdup_target_dd_cb(lv_event_t *e)
 {
     lv_obj_t *dd = lv_event_get_target(e);
@@ -24635,20 +25510,12 @@ static void data_transfer_tile_cb(lv_event_t *e)
         show_wardrive_manage_screen();
     }
     else if (strcmp(key, "WPA-SEC Upload") == 0) {
-        // Route exactly like Wardrive Upload: if there is no routable IP yet, go through the
-        // shared "WiFi for Upload" screen (scan/enter/connect), then open the WPA-SEC upload
-        // page; if already connected, open it directly. wpasec_from_data_transfer makes the
-        // page's Back button return here and the task self-connect if needed.
-        wpasec_from_data_transfer = true;
-        esp_netif_t *sn = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-        esp_netif_ip_info_t ip;
-        bool has_ip = sn && esp_netif_get_ip_info(sn, &ip) == ESP_OK && ip.ip.addr != 0;
-        if (has_ip) {
-            show_wpa_sec_upload_page();
-        } else {
-            s_wpasec_pending_after_wifi = true;
-            show_wifi_client_server_screen();
-        }
+        // Open the Manage Handshakes file manager (parallel to "Wardrive Upload" -> Manage Data).
+        // Selecting files and pressing Upload there does the WiFi-connect routing per selection.
+        wpm_back_fn = show_data_transfer_screen;
+        wpasec_upload_back_fn = NULL;
+        wpasec_explicit_count = 0;
+        show_wpasec_manage_screen();
     }
 }
 
@@ -40929,6 +41796,23 @@ static const char* deauth_monitor_find_ssid_by_bssid(const uint8_t *bssid)
     return NULL;
 }
 
+// P3: return the target's advertised auth mode from the last scan table (parallel to
+// deauth_monitor_find_ssid_by_bssid), or -1 if the BSSID wasn't seen in the scan — lets
+// the monitor flag WPA3/MFP targets as deauth-immune instead of listing them as victims.
+static int deauth_monitor_find_authmode_by_bssid(const uint8_t *bssid)
+{
+    const wifi_ap_record_t *records = wifi_scanner_get_results_ptr();
+    const uint16_t *count_ptr = wifi_scanner_get_count_ptr();
+    uint16_t count = count_ptr ? *count_ptr : 0;
+
+    for (uint16_t i = 0; i < count; i++) {
+        if (memcmp(records[i].bssid, bssid, 6) == 0) {
+            return (int)records[i].authmode;
+        }
+    }
+    return -1;
+}
+
 // Channel hopping for deauth monitor
 static void deauth_monitor_channel_hop(void)
 {
@@ -40978,9 +41862,10 @@ static void deauth_monitor_promiscuous_callback(void *buf, wifi_promiscuous_pkt_
     const uint8_t *bssid = &frame[16];
     int8_t rssi = pkt->rx_ctrl.rssi;
     
-    // Lookup SSID
+    // Lookup SSID + auth mode (P3: -1 if the target isn't in the last scan table)
     const char *ssid = deauth_monitor_find_ssid_by_bssid(bssid);
-    
+    int am = deauth_monitor_find_authmode_by_bssid(bssid);
+
     // Add to attacks array (thread-safe)
     portENTER_CRITICAL(&deauth_monitor_spin);
     
@@ -40997,6 +41882,7 @@ static void deauth_monitor_promiscuous_callback(void *buf, wifi_promiscuous_pkt_
     deauth_monitor_attacks[idx].rssi = rssi;
     deauth_monitor_attacks[idx].channel = deauth_monitor_current_channel;
     deauth_monitor_attacks[idx].timestamp = esp_timer_get_time() / 1000;
+    deauth_monitor_attacks[idx].authmode = (am < 0) ? 0xFF : (uint8_t)am;
     
     if (deauth_monitor_attack_count < DEAUTH_MONITOR_MAX_ATTACKS) {
         deauth_monitor_attack_count++;
@@ -42306,8 +43192,8 @@ static void drone_spoof_timer_cb(lv_timer_t *t)
         uint8_t frame[160];
         size_t flen = drone_spoof_build_wifi_frame(frame, sizeof(frame), msg);
         if (flen > 0) {
-            esp_err_t e = esp_wifi_80211_tx(WIFI_IF_STA, frame, flen, false);
-            if (e != ESP_OK) esp_wifi_80211_tx(WIFI_IF_AP, frame, flen, false);
+            esp_err_t e = cym_mgmt_tx(WIFI_IF_STA, frame, flen, false);
+            if (e != ESP_OK) cym_mgmt_tx(WIFI_IF_AP, frame, flen, false);
         }
     }
 
@@ -43533,7 +44419,7 @@ static void wscope_task(void *p) {
             wscope_ch_peak[i] = -110;
             wscope_ch_cnt[i]  = 0;
             portEXIT_CRITICAL(&wscope_mux);
-            esp_wifi_set_channel(chl[i], WIFI_SECOND_CHAN_NONE);
+            wifi_set_channel_verified((uint8_t)chl[i]);   // P4: retry silent reg-domain rejects
             vTaskDelay(pdMS_TO_TICKS(60));
         }
         wscope_sweep_done = true;
@@ -59100,22 +59986,31 @@ static void s_ots_timer_cb(lv_timer_t *t)
     s_ots_scan_tick++;
 }
 
-static void s_ots_stop_task(void *arg);  /* defined below; used by the stop hook */
+static void s_ots_stop_task(void *arg);         /* defined below; used by the Stop button */
+static void s_ots_orphan_stop_task(void *arg);  /* defined below; used by the screen stop hook */
 
 static void ot_survey_screen_stop(void)
 {
     if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
     /* If a survey is still running when the user leaves via top ‹ Back / Home, stop it
-     * on the SAME background task the STOP button uses (ot_radio_scheduler_stop +
-     * ot_survey_stop take ~1-3s — running that inline in this hook, which fires from the
-     * main/LVGL loop, would freeze the UI / risk the WDT). Otherwise the survey kept
-     * running after the user navigated away. */
+     * on a background task (ot_radio_scheduler_stop + ot_survey_stop take ~1-3s —
+     * running that inline in this hook, which fires from the main/LVGL loop, would
+     * freeze the UI / risk the WDT). Otherwise the survey kept running after the user
+     * navigated away.
+     *
+     * Uses s_ots_orphan_stop_task, NOT s_ots_stop_task — this path must NOT touch
+     * s_ots_stopping/s_ots_stop_done. s_ots_tmr is always deleted (just above) before
+     * this fires, so nothing here is left watching those flags; if they were set
+     * anyway, they'd sit dangling until whatever s_ots_tmr gets created next, which
+     * could belong to a completely different, later survey — silently hijacking it
+     * into auto-showing an unrelated results screen instead of the config/running
+     * panel the user expects. The !s_ots_stopping guard here still matters: it means
+     * a Stop-button-initiated stop (s_ots_stop_task) is already in flight, so don't
+     * also spawn a redundant concurrent teardown. */
     if (g_ot_survey_active && !s_ots_stopping) {
-        s_ots_stopping  = true;
-        s_ots_stop_done = false;
         if (s_ots_allowlist) { free(s_ots_allowlist); s_ots_allowlist = NULL; }
         s_ots_allowlist_count = 0;
-        xTaskCreate(s_ots_stop_task, "ots_stop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
+        xTaskCreate(s_ots_orphan_stop_task, "ots_ostop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
     }
     s_ots_cfg_cont  = NULL;
     s_ots_run_cont  = NULL;
@@ -59127,10 +60022,6 @@ static void ot_survey_screen_stop(void)
     s_ots_scan_lbl  = NULL;
     s_ots_stop_btn  = NULL;
     s_ots_scan_tick = 0;
-    /* NOTE: s_ots_stopping / s_ots_stop_done are deliberately left as-is — a
-     * background s_ots_stop_task may still be in flight independent of this
-     * screen's lifecycle; they're consumed by the next s_ots_timer_cb once
-     * created (screen re-entry or a fresh survey run). */
 }
 
 /* Profile cycle buttons */
@@ -59227,6 +60118,40 @@ static void s_ots_stop_task(void *arg)
         ot_survey_stop(g_active_survey, &end_geo);
     }
     s_ots_stop_done = true;  /* consumed by s_ots_timer_cb, which does the UI swap */
+    vTaskDelete(NULL);
+}
+
+/* Identical radio/session teardown to s_ots_stop_task(), used when the user
+ * leaves the OT Survey screen via top Back/Home mid-survey (ot_survey_screen_stop()
+ * below) instead of tapping the in-screen Stop button. Deliberately does NOT touch
+ * s_ots_stopping/s_ots_stop_done. Those flags exist so the SAME timer instance that
+ * requested a stop can watch for its own completion and auto-show results — they
+ * are meant for the Stop-button path, where s_ots_tmr keeps running throughout.
+ * ot_survey_screen_stop() always deletes s_ots_tmr synchronously before this task
+ * even starts, so nothing is left to legitimately consume them here. Before this
+ * split (fixed 2026-09-22), Home/Back mid-survey DID set them, and they'd sit
+ * "dangling" until whatever s_ots_tmr got created next — including a brand new
+ * timer from a *different*, later survey the user had since started — silently
+ * hijacking it into showing an old/unrelated results screen instead of the fresh
+ * config or running panel the user was expecting. Field report: "I did navigate
+ * home a couple of times to try to get the scan to re run but... it gave me a
+ * screen as if the scan had already ran and there were no results." */
+static void s_ots_orphan_stop_task(void *arg)
+{
+    (void)arg;
+    ot_radio_scheduler_stop();
+    if (g_active_survey) {
+        ot_survey_geo_t end_geo = {0};
+        const gps_data_t *gps = gps_best();
+        if (gps && gps->valid) {
+            end_geo.valid      = true;
+            end_geo.latitude   = gps->latitude;
+            end_geo.longitude  = gps->longitude;
+            end_geo.altitude_m = gps->altitude;
+            end_geo.accuracy_m = gps->accuracy;
+        }
+        ot_survey_stop(g_active_survey, &end_geo);
+    }
     vTaskDelete(NULL);
 }
 
@@ -59642,11 +60567,19 @@ static void s_otr_category_tap_cb(lv_event_t *e)
 
 static void ot_results_summary_stop(void)
 {
+    /* Do NOT free s_otr_results / clear s_otr_loaded here. reset_function_page_children()'s
+     * doc comment is explicit: g_screen_stop_fn fires on ANY exit, including FORWARD
+     * navigation into a child screen - not just Back/Home. Tapping a category calls
+     * show_ot_results_drill_screen(), which calls create_function_page_base(), which runs
+     * THIS stop hook before the drill screen builds. Freeing here meant the drill screen
+     * always found s_otr_loaded==false and showed "No data loaded." (and Back from there hit
+     * the same fate on the summary screen, both looking "blank" to the user - field report
+     * 2026-09-22: "click 32 Ble devices it is blank. then back go blank"). The drill screen's
+     * own stop hook already documents (correctly) that it doesn't own this data. The real
+     * owner of the free is show_ot_results_screen() (main.c ~59854), which already frees any
+     * previously-loaded result before loading a new one - that's the only point at which
+     * stale data actually needs to go away. */
     s_otr_list = NULL;
-    if (s_otr_loaded) {
-        ot_survey_results_free(&s_otr_results);
-        s_otr_loaded = false;
-    }
 }
 
 static void show_ot_results_summary_from_loaded(void)

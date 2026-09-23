@@ -60,12 +60,19 @@ extern volatile bool g_ot_survey_active;
 
 typedef bool (*ot_radio_switch_fn_t)(void);  /* returns true on success */
 typedef void (*ot_radio_idle_fn_t)(void);    /* puts radio in idle state */
+typedef bool (*ot_radio_query_fn_t)(void);   /* status query, no side effects */
 
 typedef struct {
     ot_radio_switch_fn_t switch_to_wifi;    /* ensure_wifi_mode() wrapper */
     ot_radio_switch_fn_t switch_to_ble;     /* ensure_ble_mode() wrapper */
     ot_radio_switch_fn_t switch_to_154;     /* esp_ieee802154_enable() wrapper; NULL = not available */
     ot_radio_idle_fn_t   switch_to_idle;    /* radio_reset_to_idle() wrapper */
+    /* wifi_scanner_is_scanning() wrapper. Checked at the end of the WIFI/ESPNOW
+     * slot's weighted dwell — a full 2.4+5GHz passive scan takes ~5.5s+, longer
+     * than most profiles' weighted WiFi share (as little as 1s), so without this
+     * the scan was hard-aborted mid-sweep on nearly every cycle. NULL is treated
+     * as "never busy" (no extension) for backward compat / test harnesses. */
+    ot_radio_query_fn_t  wifi_scan_busy;
 } ot_radio_hooks_t;
 
 /* ── Scheduler state (read-only from callers) ────────────────────────────── */

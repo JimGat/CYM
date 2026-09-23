@@ -276,6 +276,20 @@ static void wifi_sniffer_packet_handler(void *buff, wifi_promiscuous_pkt_type_t 
     }
 }
 
+// P4: set the channel and confirm the radio actually parked there. esp_wifi_set_channel()
+// can return ESP_OK yet leave the radio on the previous channel when the reg-domain silently
+// rejects the target (IDF #4706 class) — only a get_channel() readback catches it. One retry,
+// then give up. Mirrors the main.c wifi_set_channel_verified() helper (separate TU here).
+static bool sniffer_set_channel_verified(uint8_t ch)
+{
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    uint8_t ac; wifi_second_chan_t sc;
+    if (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch) return true;
+    vTaskDelay(pdMS_TO_TICKS(5));
+    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    return (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch);
+}
+
 // Channel hopping task
 static void sniffer_channel_hop_task(void *pvParameters) {
     ESP_LOGI(TAG, "Channel hop task started");
@@ -296,9 +310,9 @@ static void sniffer_channel_hop_task(void *pvParameters) {
             sniffer_channel_index = (sniffer_channel_index + 1) % channel_list_size;
         }
         
-        esp_wifi_set_channel(sniffer_current_channel, WIFI_SECOND_CHAN_NONE);
+        sniffer_set_channel_verified((uint8_t)sniffer_current_channel);   // P4: retry silent reg-domain rejects
         vTaskDelay(50);
-        
+
         if (sniff_debug) {
             ESP_LOGI(TAG, "Hopped to channel %d", sniffer_current_channel);
         }
@@ -488,8 +502,8 @@ esp_err_t wifi_sniffer_start(void) {
         sniffer_channel_index = 0;
         sniffer_current_channel = sniffer_selected_channels[0];
         sniffer_last_channel_hop = esp_timer_get_time() / 1000;
-        esp_wifi_set_channel(sniffer_current_channel, WIFI_SECOND_CHAN_NONE);
-        
+        sniffer_set_channel_verified((uint8_t)sniffer_current_channel);   // P4: retry silent reg-domain rejects
+
         // Start channel hopping task
         xTaskCreate(sniffer_channel_hop_task, "sniffer_ch_hop", 4096, NULL, 5, &sniffer_channel_task_handle);
         

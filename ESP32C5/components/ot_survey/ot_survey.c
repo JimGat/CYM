@@ -42,8 +42,28 @@ static pcapng_writer_t *s_pcapng = NULL;
 #define OT_EXPORT_QUEUE_CAP  2048u   /* 2048 * 128B = 256KB PSRAM; ~5x the
                                       * largest single-flush-window burst
                                       * observed in the field (399/30s, 2026-09-13) */
+/* DRAM-only fallback capacity (CYD2USB, no PSRAM) — 2048 * 128B = 256KB never
+ * fit its ~50-90KB free internal DRAM either; the fallback's own comment
+ * claimed "MALLOC_CAP_8BIT alone still succeeds on CYD2USB" but field
+ * evidence disproved that (2026-09-22: "export queue allocation failed").
+ * Same board-memory-budget rationale as OBS_STORE_CYD2USB_CAPACITY -
+ * shrunk from an initial 128 (16KB) to 32 (4KB) alongside that same fix's
+ * capacity cut, after 128+obs_store's original 256-entry size together
+ * left too little margin for the OT Survey scheduler's WiFi->BLE handoff
+ * and crashed the board (field report 2026-09-23, see obs_store.h). This
+ * queue is a soft-fail burst buffer, not the survey's primary count (that's
+ * sess->obs_count/obs_by_type, always tracked regardless) - failing small
+ * is far preferable to failing by taking the whole board down. */
+#define OT_EXPORT_QUEUE_CAP_DRAM  32u
 static obs_record_t *s_export_pending       = NULL;
 static uint32_t      s_export_pending_count = 0;
+static uint32_t      s_export_pending_cap   = 0;  /* actual allocated capacity — may be
+                                                    * OT_EXPORT_QUEUE_CAP or the smaller
+                                                    * _DRAM fallback; ot_survey_queue_export()
+                                                    * MUST bounds-check against this, not the
+                                                    * compile-time OT_EXPORT_QUEUE_CAP, or a
+                                                    * DRAM-fallback session overflows the
+                                                    * smaller buffer. */
 static bool          s_export_overflow_logged = false;
 
 /*
@@ -204,14 +224,21 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
     s_export_pending = (obs_record_t *)heap_caps_malloc(
         (size_t)OT_EXPORT_QUEUE_CAP * sizeof(obs_record_t),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_export_pending) {
-        /* Fall back to internal RAM rather than losing the whole export path —
-         * MALLOC_CAP_8BIT alone still succeeds on CYD2USB (no PSRAM at all). */
+    if (s_export_pending) {
+        s_export_pending_cap = OT_EXPORT_QUEUE_CAP;
+    } else {
+        /* Fall back to internal RAM rather than losing the whole export path -
+         * at the much smaller DRAM-fallback capacity (see OT_EXPORT_QUEUE_CAP_DRAM's
+         * doc comment for why the full 2048-entry size never fits CYD2USB). */
         s_export_pending = (obs_record_t *)heap_caps_malloc(
-            (size_t)OT_EXPORT_QUEUE_CAP * sizeof(obs_record_t), MALLOC_CAP_8BIT);
-        if (!s_export_pending)
+            (size_t)OT_EXPORT_QUEUE_CAP_DRAM * sizeof(obs_record_t), MALLOC_CAP_8BIT);
+        if (s_export_pending) {
+            s_export_pending_cap = OT_EXPORT_QUEUE_CAP_DRAM;
+        } else {
+            s_export_pending_cap = 0;
             ESP_LOGW(TAG, "export queue allocation failed — obs.jsonl export disabled "
                           "this session (obs_count/obs_by_type still track normally)");
+        }
     }
     s_export_pending_count   = 0;
     s_export_overflow_logged = false;
@@ -309,6 +336,7 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess, const ot_survey_geo_t *end_g
     ot_survey_flush(sess);
     if (s_export_pending) { heap_caps_free(s_export_pending); s_export_pending = NULL; }
     s_export_pending_count = 0;
+    s_export_pending_cap   = 0;
 
     if (sess->obs_export_dropped > 0)
         ESP_LOGW(TAG, "Survey %s: %lu observations dropped from obs.jsonl export "
@@ -383,12 +411,16 @@ void ot_survey_queue_export(ot_survey_session_t *sess, const obs_record_t *rec)
 
     if (!s_export_pending) return;  /* allocation failed at start() — already logged there */
 
-    if (s_export_pending_count >= OT_EXPORT_QUEUE_CAP) {
+    /* Bounds-check against the ACTUAL allocated capacity, not the compile-time
+     * OT_EXPORT_QUEUE_CAP - a DRAM-fallback session (CYD2USB) allocated the
+     * smaller OT_EXPORT_QUEUE_CAP_DRAM instead, and checking against the larger
+     * constant would let s_export_pending_count walk past the real buffer. */
+    if (s_export_pending_count >= s_export_pending_cap) {
         sess->obs_export_dropped++;
         if (!s_export_overflow_logged) {
             ESP_LOGW(TAG, "export queue full (%u) — dropping records from obs.jsonl until "
                           "the next flush; obs_count/obs_by_type keep counting normally",
-                     OT_EXPORT_QUEUE_CAP);
+                     s_export_pending_cap);
             s_export_overflow_logged = true;
         }
         return;

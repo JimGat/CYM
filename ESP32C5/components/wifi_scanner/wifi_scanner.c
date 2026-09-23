@@ -71,6 +71,15 @@ esp_err_t wifi_scanner_start_scan(void) {
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
         .scan_time.active.min = g_scan_time_min,
         .scan_time.active.max = g_scan_time_max,
+        // DFS 5GHz channels (52-144, most of the 5GHz band) can't be actively probed - the
+        // driver forces them to passive listen-only regardless of scan_type ACTIVE here, per
+        // regulatory radar-avoidance rules (same constraint cym_rf_tx.h documents for TX).
+        // Leaving scan_time.passive unset (implicit 0 from this designated initializer) put
+        // those channels' dwell time in the hands of whatever "0 means" a closed-source driver
+        // blob decides, instead of IDF's own documented default (WIFI_PASSIVE_SCAN_DEFAULT_TIME,
+        // esp_wifi_types_generic.h) - asserting it explicitly removes that ambiguity. Field
+        // report 2026-09-23: "WiFi Scan and Attack barely picked up my 5G AP's".
+        .scan_time.passive = WIFI_PASSIVE_SCAN_DEFAULT_TIME,
     };
     
     g_scan_in_progress = true;
@@ -79,7 +88,16 @@ esp_err_t wifi_scanner_start_scan(void) {
     
     ESP_LOGI(TAG, "Starting WiFi scan...");
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
-    
+    if (ret == ESP_ERR_TIMEOUT) {
+        // P5: esp_wifi_scan_start() can return ESP_ERR_TIMEOUT transiently, notably a dual-band
+        // scan while the BT controller is active (IDF #16059). Retry once before giving up so a
+        // one-off coex hiccup doesn't leave the user staring at an empty AP list. Harmless if
+        // the running IDF already fixed #16059 (the retry simply never triggers).
+        ESP_LOGW(TAG, "scan_start ESP_ERR_TIMEOUT - retrying once");
+        vTaskDelay(pdMS_TO_TICKS(60));
+        ret = esp_wifi_scan_start(&scan_cfg, false);
+    }
+
     if (ret != ESP_OK) {
         g_scan_in_progress = false;
         ESP_LOGE(TAG, "Failed to start scan: %s", esp_err_to_name(ret));
@@ -112,6 +130,13 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
 
     ESP_LOGI(TAG, "Starting passive WiFi scan (%lu ms/channel)...", (unsigned long)per_channel_ms);
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
+    if (ret == ESP_ERR_TIMEOUT) {
+        // P5: retry once on a transient coex ESP_ERR_TIMEOUT (IDF #16059). See the active-scan
+        // path above for the rationale; harmless if the running IDF already fixed it.
+        ESP_LOGW(TAG, "passive scan_start ESP_ERR_TIMEOUT - retrying once");
+        vTaskDelay(pdMS_TO_TICKS(60));
+        ret = esp_wifi_scan_start(&scan_cfg, false);
+    }
 
     if (ret != ESP_OK) {
         g_scan_in_progress = false;

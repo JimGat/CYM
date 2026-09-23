@@ -316,6 +316,29 @@ void obs_redact(obs_record_t *rec, obs_privacy_flags_t policy);
  */
 #define OBS_STORE_DEFAULT_CAPACITY  8192u
 
+/* CYD2USB has no PSRAM — 8192 * 128 B (1 MB) will never fit its ~50-90 KB of
+ * free internal DRAM, so obs_store_init() falls back to this much smaller
+ * capacity on that board (still a ring buffer — old entries roll off once
+ * full, not a hard cap on total observations across a session). Without
+ * this, obs_store_init() simply failed outright and left g_obs_store.records
+ * NULL for the rest of the boot session, silently no-op'ing every WiFi/BLE/
+ * ESP-NOW/802.15.4 observation-recording path — including all of OT Survey,
+ * which is why it was chronically obs=0 on Classic CYD regardless of any
+ * radio-timing fix (field report 2026-09-22: "obs_store_init failed —
+ * observation store disabled" logged at boot, ~1.2s in).
+ *
+ * First fix attempt used 256 entries (32 KB) and made things WORSE: field
+ * baseline free heap at boot-complete with NO obs_store allocation at all
+ * is ~52 KB; 256 entries left only ~19.5 KB, and the OT Survey scheduler's
+ * later WiFi->BLE handoff needs ~18 KB for the BLE controller — leaving
+ * essentially zero margin. Result: "NimBLE failed to sync" -> BLE init
+ * failure -> cascading esp_wifi_init failure -> forced restart, after only
+ * 16 observations recorded (field report 2026-09-23). 64 entries (8 KB)
+ * leaves ~44 KB free at the same point, comfortably clearing the ~18 KB
+ * BLE need with real margin for everything else still competing for this
+ * board's tiny heap (WiFi buffers, LVGL, SD cache, task stacks). */
+#define OBS_STORE_CYD2USB_CAPACITY   64u
+
 typedef struct {
     obs_record_t *records;
     uint32_t      capacity;
