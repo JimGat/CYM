@@ -80,10 +80,6 @@ rules). Start ONE track at a time; do not run all simultaneously.
 - **Flipper expansion-board adapters** — IDEA. Adapters to use Flipper Zero expansion modules via
   CYM/Monster GPIO/UART passthrough.
 
-- **Headless PoE survey device** — IDEA (separate project). ESP32-P4 + PoE main board + a
-  C6/C5 radio sidecar for continuous OT-Air-Survey-style capture. See also S31 note (could
-  reduce the chip count).
-
 - **ESP32-S31 evaluation** — IDEA. New dual-core RISC-V 320MHz SoC with WiFi6(2.4GHz-only) +
   BT5.4(Classic+LE) + 802.15.4 + Gigabit Ethernet MAC. NOT supported by our pinned IDF v6.0.2
   (preview/master-branch only) — evaluate in an isolated IDF install; do NOT move CYM's main IDF
