@@ -6524,7 +6524,8 @@ static void show_splash_screen(void)
     lv_obj_set_style_text_letter_space(title, 4, 0);
 
     lv_obj_t *subtitle = lv_label_create(col);
-    lv_label_set_text(subtitle, "LABORATORIUM");
+    lv_label_set_recolor(subtitle, true);
+    lv_label_set_text(subtitle, "#FFEB3B CYM# LABORATORIUM");
     lv_obj_set_style_text_font(subtitle, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(subtitle, lv_color_hex(0x93A6BC), 0);
     lv_obj_set_style_text_letter_space(subtitle, 2, 0);
