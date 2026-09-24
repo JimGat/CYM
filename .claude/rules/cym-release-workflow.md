@@ -19,7 +19,10 @@ When Jim asks for a change that he will test from GitHub, do the complete test-b
    green **before any push** in the cycle. Per-board commits are fine, but do NOT push until all
    affected release boards are confirmed building — no push may leave `Jimgat_Dev` at a version that
    fails on some release board.
-9. Stage board-specific files only (never `git add -A`), commit, and push to `origin Jimgat_Dev`.
+9. Stage board-specific files only (never `git add -A`) and commit. Push to `origin Jimgat_Dev`
+   promptly, but only once the build gate in step 8 has passed for every affected release board
+   (per-board commits may remain local until then). Docs-only changes that do not affect builds
+   need documentation verification, not firmware builds. Completed, verified work must still be pushed.
 10. Never run `idf.py flash`, `esptool write-flash`, or `git push --force` unless Jim explicitly overrides.
 
 ---
@@ -177,33 +180,48 @@ For CI verification across all boards: `make all-boards` (builds nm-cyd-c5, ws-c
 
 ## Release to main — MANDATORY binary attachment
 
-When merging to main and creating a GitHub release, attach ALL binaries from ALL active boards:
+When merging to main and creating a GitHub release, attach **all four required artifacts for each
+release board**: the app binary, the merged `-full.bin` image, the bootloader, and the
+partition-table (12 assets across the 3 release boards).
+
+**Filename-collision handling.** GitHub keys release assets by basename. The app and `-full`
+binaries already have board-specific basenames (`CYM-NM28C5*.bin`, `CYM-WS-C5-28*.bin`,
+`CYM-CYD-2432S028*.bin`) and upload directly from the repo. But `bootloader.bin` and
+`partition-table.bin` share the same basename across all three boards, so they would collide.
+Resolve this by **copying those six files into a temporary staging directory under
+board-prefixed basenames before upload** — do NOT rename the canonical binaries in the repo, and
+do NOT rely on `gh --name` / display-label tricks (those set a label, not a distinct asset name).
+
+Documented procedure (do NOT execute from this doc — this is the reference):
 
 ```bash
+# 1. Stage the collision-prone artifacts under unique, board-prefixed basenames.
+STAGE="$(mktemp -d)"
+cp ESP32C5/binaries-esp32c5/bootloader.bin        "$STAGE/nm-cyd-c5-bootloader.bin"
+cp ESP32C5/binaries-esp32c5/partition-table.bin   "$STAGE/nm-cyd-c5-partition-table.bin"
+cp ESP32C5/binaries-ws-c5-28/bootloader.bin       "$STAGE/ws-c5-28-bootloader.bin"
+cp ESP32C5/binaries-ws-c5-28/partition-table.bin  "$STAGE/ws-c5-28-partition-table.bin"
+cp ESP32/binaries-cyd-2432s028/bootloader.bin       "$STAGE/cyd-2432s028-bootloader.bin"
+cp ESP32/binaries-cyd-2432s028/partition-table.bin  "$STAGE/cyd-2432s028-partition-table.bin"
+
+# 2. Create the release: app + full images from the repo (already unique) plus the staged,
+#    uniquely-named bootloader/partition-table artifacts.
 gh release create vX.Y.Z \
-  --target main \
-  --title "..." \
-  --notes "..." \
+  --target main --title "..." --notes "..." \
   ESP32C5/binaries-esp32c5/CYM-NM28C5.bin \
   ESP32C5/binaries-esp32c5/CYM-NM28C5-full.bin \
-  ESP32C5/binaries-esp32c5/bootloader.bin \
-  ESP32C5/binaries-esp32c5/partition-table.bin \
   ESP32C5/binaries-ws-c5-28/CYM-WS-C5-28.bin \
   ESP32C5/binaries-ws-c5-28/CYM-WS-C5-28-full.bin \
-  ESP32C5/binaries-ws-c5-28/bootloader.bin \
-  ESP32C5/binaries-ws-c5-28/partition-table.bin \
   ESP32/binaries-cyd-2432s028/CYM-CYD-2432S028.bin \
   ESP32/binaries-cyd-2432s028/CYM-CYD-2432S028-full.bin \
-  ESP32/binaries-cyd-2432s028/bootloader.bin \
-  ESP32/binaries-cyd-2432s028/partition-table.bin
+  "$STAGE/nm-cyd-c5-bootloader.bin"       "$STAGE/nm-cyd-c5-partition-table.bin" \
+  "$STAGE/ws-c5-28-bootloader.bin"        "$STAGE/ws-c5-28-partition-table.bin" \
+  "$STAGE/cyd-2432s028-bootloader.bin"    "$STAGE/cyd-2432s028-partition-table.bin"
 ```
-
-Note: bootloader.bin and partition-table.bin differ between boards (flash size and offsets).
-Use `--name board-filename` flags if GitHub CLI requires disambiguation.
 
 `*-full.bin` is a merged flat image (bootloader + partition table + firmware) generated
 by the CMake post-build hook. Flash at address `0x0000` with any full-binary flasher.
-Never create a release without all binaries from all boards attached.
+Never create a release without all four artifacts for every release board attached.
 
 ---
 

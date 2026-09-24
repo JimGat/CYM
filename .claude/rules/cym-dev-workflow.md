@@ -5,7 +5,7 @@
 Apply the same scoped workflow automatically:
 
 1. **Classify first.** State the task size (Tiny/Small/Medium/Large) and the plan before touching code.
-2. **Use Haiku subagents** for any grep/locate/explore work. Never read large sections of main.c speculatively. State what you expect to find, spawn Haiku to confirm, then read only the exact lines needed.
+2. **Scoped search.** Keep searches scoped and never read large sections of main.c speculatively — state what you expect to find, then read only the exact lines needed. Follow the canonical model-agnostic routing policy (cym-canonical-workflow.md §13): prefer the cheapest available model for bulk grep/locate. This is NOT mandatory delegation — spawn a subagent only when the user asks or a large search genuinely benefits.
 3. **One task per response chain.** If multiple tasks are requested, implement the first and ask which to do next rather than doing all at once.
 4. **Stop at 3 build-fix cycles.** If a fix requires more than 3 iterations, declare it a dedicated-session task and stop.
 5. **No unsolicited cleanup.** A bug fix does not justify surrounding refactors, renames, or style changes.
