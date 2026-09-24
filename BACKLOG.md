@@ -97,9 +97,13 @@ rules). Start ONE track at a time; do not run all simultaneously.
   part), so a full-capability S31 CYM = S31 + C5. Dual-core could fix the single-core jammer
   timing limit. Board on order (2026-09-23).
 
-- **ESP32-S3 board port (Hosyond)** — PLANNED. 2.8" ILI9341+FT6336G and 3.5" ST77922 QSPI boards;
-  GPIO maps documented, `ESP32S3/` skeleton exists from the multi-board framework. Single-chip
-  (WiFi+BLE), closest sibling to current boards — lowest-lift next target.
+- **Port CYM firmware to ESP32-S3 (Hosyond) → promote to release board** — PLANNED. `ESP32S3/` is
+  currently only a **bring-up stub** (its own ~372-line `main.c`, v2.13.80, NOT the ~64k-line CYM
+  app; it does not compile the shared source). Boards: 2.8" ILI9341+FT6336G and 3.5" ST77922 QSPI
+  (GPIO maps documented). The real work is porting the CYM application to ESP32-S3 (single-chip
+  WiFi+BLE). Until that lands, Hosyond is **experimental/bring-up** — not version-synced, not
+  shipped. Promotion to a full release board (version-synced, release assets, manifest, web
+  flasher) is gated on this port. *(reclassified 2026-09-24)*
 
 - **Multi-board framework — remaining phases** — IN PROGRESS. Phase 1 done (Makefile,
   per-SoC `build_<board>/` dirs, ESP32/ + ESP32S3/ skeletons). Later phases per the framework

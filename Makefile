@@ -26,8 +26,10 @@ all: nm-cyd-c5
 
 # ── CI verification: build every active board in sequence ────────────────────
 # Fail fast on the first broken board. Add new boards here as they are ported.
-# Note: each board uses a separate version bump before release; this just
-# verifies the shared code compiles cleanly for all targets.
+# Note: all release boards in a cycle share ONE version (not a separate bump per
+# board); this target just verifies the shared code compiles cleanly for all targets.
+# hosyond-s3-35 is an experimental/bring-up compile canary (its own stub main.c), not
+# a release board yet.
 
 all-boards: nm-cyd-c5 ws-c5-28 cyd-2432s028 hosyond-s3-35
 	@echo ""

@@ -6,7 +6,10 @@ When Jim asks for a change that he will test from GitHub, do the complete test-b
 2. Stay on branch `Jimgat_Dev` unless Jim explicitly asks for `main`/release flow.
 3. Before building a test binary, bump the PATCH version in `ESP32C5/CMakeLists.txt`:
    - `set(PROJECT_VER "vX.Y.Z")`
-   - **Each board build gets its own version bump** — no two binaries may share a version number.
+   - **All release boards built in a cycle share the SAME version** — do NOT bump the version
+     separately per board. (This supersedes any older "each board gets its own version / no two
+     binaries may share a version number" wording.) The version is a release marker meaning all
+     release boards are at the same feature level.
    - Do not bump MAJOR or MINOR without explicit approval.
 4. Build for the target board using the command for that board (see table below).
 5. The CMake post-build hook copies firmware into the board-specific output directory and generates the merged full image. Verify all four tracked binaries changed.
@@ -16,6 +19,18 @@ When Jim asks for a change that he will test from GitHub, do the complete test-b
 9. Never run `idf.py flash`, `esptool write-flash`, or `git push --force` unless Jim explicitly overrides.
 
 ---
+
+## Release boards vs experimental boards
+
+**Release boards (3):** NM-CYD-C5, WS-C5-28 (both `ESP32C5/`), and CYD-2432S028 (`ESP32/`).
+These are version-synced each cycle, must build clean for shared-source changes, and ship in
+release assets + manifests + web flasher.
+
+**Experimental / bring-up:** Hosyond S3 (`ESP32S3/`, targets `hosyond-s3-28/35/40`). Currently a
+bring-up stub (its own ~372-line `main.c`, not the CYM app), pinned behind the release boards. It
+is NOT version-synced and NOT shipped as a release asset. Promoting it to a release board is a
+backlog goal gated on actually porting CYM to ESP32-S3 (see BACKLOG.md). `make all-boards` builds
+`hosyond-s3-35` only as a compile canary.
 
 ## Multi-Board Build Reference (ESP32C5/)
 
@@ -140,10 +155,10 @@ the next cycle that includes it.
 
 ### Re-sync rule (resolving version drift)
 If boards have drifted (one board is ahead), bring all boards up to `max_current + 1` in the
-next build cycle rather than continuing to diverge.  Current state after Phase 3:
-- NM-CYD-C5 / WS-C5-28 → v2.13.59 (`ESP32C5/CMakeLists.txt`)
-- CYD-2432S028 → v2.13.72 (`ESP32/CMakeLists.txt`)
-- **Next sync target: v2.13.73** — all three boards build to v2.13.73.
+next build cycle rather than continuing to diverge. For the current version of each board, read
+the `set(PROJECT_VER ...)` line in that board's `CMakeLists.txt` (`ESP32C5/CMakeLists.txt` for
+NM-CYD-C5 + WS-C5-28; `ESP32/CMakeLists.txt` for CYD-2432S028) — do not rely on a hardcoded number
+here, which goes stale. As of this writing the three release boards are in sync.
 
 ### Workflow when building all boards in one session
 

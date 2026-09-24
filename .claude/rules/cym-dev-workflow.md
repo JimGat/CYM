@@ -10,11 +10,17 @@ Apply the same scoped workflow automatically:
 4. **Stop at 3 build-fix cycles.** If a fix requires more than 3 iterations, declare it a dedicated-session task and stop.
 5. **No unsolicited cleanup.** A bug fix does not justify surrounding refactors, renames, or style changes.
 
-## Model selection guidance
+## Model selection guidance (model-agnostic cost tier)
 
-- **Haiku** → file search, grep, log analysis, "where is X in the code"
-- **Sonnet (current)** → writing code, reasoning about architecture, commit messages
-- Do NOT use Sonnet to do what a Haiku grep agent can do in seconds.
+Keep a cost tier, but do NOT hard-code specific model names (the old "Haiku for research,
+Sonnet for code" split is retired):
+
+- **Cheapest available model** → bulk file search, grep, log analysis, "where is X in the code."
+- **Current session model** (whatever the session/user has selected) → writing code, reasoning
+  about architecture, commit messages.
+- Do not spend the strong/current model on bulk search a cheaper model can do — but do not force
+  a specific tier per task, and only spawn subagents when the user asks or when a large search
+  genuinely benefits.
 
 ## Version bump — MANDATORY before every build
 
@@ -41,4 +47,4 @@ See `cym-release-workflow.md` for the full multi-board build commands and the re
 - Commit and push after every working change. Never accumulate uncommitted work.
 - Do NOT merge to main unless user explicitly says "merge to main" or "next release".
 - If a session has been running > 90 minutes, suggest a clean break: commit what works, note what's next in memory, close.
-- HERMES.md and memory files should be trimmed when stale entries outnumber active ones.
+- `BACKLOG.md` (repo root, canonical backlog) and memory files should be trimmed when stale entries outnumber active ones. (There is no HERMES.md; `BACKLOG.md` replaced that role.)
