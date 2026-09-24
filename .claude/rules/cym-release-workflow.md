@@ -192,6 +192,22 @@ Resolve this by **copying those six files into a temporary staging directory und
 board-prefixed basenames before upload** — do NOT rename the canonical binaries in the repo, and
 do NOT rely on `gh --name` / display-label tricks (those set a label, not a distinct asset name).
 
+**Why board-unique names matter (policy, Jim 2026-09-24):** the bootloader and partition-table are
+**board-specific because the boards differ in flash size and partition scheme** (today: 4 MB
+CYD2USB, 16 MB NM-CYD-C5, 32 MB WS-C5-28 — and this only grows as we add boards with much larger
+memory). Flashing the wrong-size bootloader/partition-table misboots or bricks a board, so these
+artifacts MUST carry board-unique asset names whenever they differ. Account for each new board's
+distinct bootloader/partition-table explicitly as memory sizes diverge. **Exception:** if two boards
+ship a **byte-identical** bootloader + partition-table (same chip, flash size, and partition
+scheme), it is fine for them to share one asset (no board prefix needed) — only differing artifacts
+require unique names.
+
+**Legacy asset names — keep for compatibility.** Past releases also carried generically-named copies
+(e.g. `bootloader.bin`, `partition-table.bin`, `bootloader-esp32c5.bin`). If any downstream consumer
+still relies on those names, **leave them in the release** — do not remove legacy names for the sake
+of tidiness. The board-prefixed set above is the authoritative, unambiguous set; legacy names may
+coexist alongside it.
+
 Documented procedure (do NOT execute from this doc — this is the reference):
 
 ```bash
