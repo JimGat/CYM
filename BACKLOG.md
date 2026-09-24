@@ -40,10 +40,10 @@ Last updated: 2026-09-23.
   channel (CYD → NM-CYD-C5); the app-only `CYM-NM28C5.bin` runs from `app1` (ota_0), no
   conversion needed. *(corrected 2026-09-23 — was wrongly tabled as incompatible)*
 
-- **Launcher support — WS-C5-28 & CYD2USB** — PLANNED. Extend/verify bmorcelli/Launcher
-  compatibility for the other two boards (partition/bootloader offsets differ per board; CYD2USB
-  is 4 MB with a different bootloader offset). Confirm each app-only bin runs from the Launcher's
-  OTA slot and add them to the Launcher Beta channel. *(new 2026-09-23)*
+- **Launcher support — WS-C5-28 & CYD2USB** — PLANNED. Both are **binary-compatible** with
+  bmorcelli/Launcher (app-only bins run from the Launcher's OTA slot, same model as NM-CYD-C5).
+  Only remaining step is getting them **added to the Launcher Beta channel** so they're
+  selectable there — no firmware work needed. *(new 2026-09-23)*
 
 ---
 
