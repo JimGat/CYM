@@ -1179,7 +1179,7 @@ static lv_obj_t *scan_status_label = NULL;
 static lv_obj_t *scan_list = NULL;
 // WiFi scan pagination
 static int        wifi_sas_page      = 0;
-#define WIFI_SAS_PAGE_SIZE 10
+#define WIFI_SAS_PAGE_SIZE 8
 static lv_obj_t  *wifi_sas_nav_bar  = NULL;
 static lv_obj_t  *wifi_sas_nav_prev = NULL;
 static lv_obj_t  *wifi_sas_nav_lbl  = NULL;
@@ -2659,12 +2659,12 @@ static volatile bool airtag_scan_update_flag = false;
 
 // BT Scan & Select UI state
 static lv_obj_t *bt_sas_list = NULL;
-// BT scan windowed list
-static int bt_sas_scroll_top = 0;
-#define BT_SAS_WIN 7
-static lv_obj_t *bt_sas_nav_up  = NULL;
-static lv_obj_t *bt_sas_nav_pos = NULL;
-static lv_obj_t *bt_sas_nav_dn  = NULL;
+// BT scan paged list (Prev/Next pages — mirrors WiFi Scan & Attack)
+static int bt_sas_page = 0;
+static lv_obj_t *bt_sas_nav_bar  = NULL;   // page nav bar container (created in show())
+static lv_obj_t *bt_sas_nav_prev = NULL;   // "‹ Prev" page button
+static lv_obj_t *bt_sas_nav_lbl  = NULL;   // "Pg x/y (N)" label
+static lv_obj_t *bt_sas_nav_next = NULL;   // "Next ›" page button
 static lv_obj_t *bt_sas_status_label = NULL;
 static lv_obj_t *bt_sas_next_btn = NULL;
 static lv_obj_t *bt_sas_save_overlay = NULL;
@@ -3032,8 +3032,8 @@ static void wifi_scan_next_btn_cb(lv_event_t *e);
 static void wifi_scan_rebuild_page(void);
 static void wifi_scan_prev_page_cb(lv_event_t *e);
 static void wifi_scan_next_page_cb(lv_event_t *e);
-static void bt_sas_scroll_up_cb(lv_event_t *e);
-static void bt_sas_scroll_down_cb(lv_event_t *e);
+static void bt_sas_prev_page_cb(lv_event_t *e);
+static void bt_sas_next_page_cb(lv_event_t *e);
 static void lw_scroll_up_cb(lv_event_t *e);
 static void lw_scroll_down_cb(lv_event_t *e);
 static void deauth_stop(void);
@@ -3463,6 +3463,7 @@ static void show_bt_scan_select_screen(void);
 static void bt_sas_open_save_dialog(void);
 static void show_bt_attack_tiles_screen(void);
 static void bt_sas_refresh_list(void);
+static void ble_adv_fp_hint(const bt_device_info_t *d, char *out, size_t outsz);
 static void show_bt_observer_screen(void);
 static void bt_observer_task(void *pvParameters);
 static void show_bto_device_detail(int dev_idx);
@@ -8657,15 +8658,21 @@ void app_main(void)
             if (bt_sas_needs_update && bt_sas_ui_active) {
                 bt_sas_needs_update = false;
                 if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
-                    lv_label_set_text(bt_sas_status_label, ble_scan_status_text);
+                    if (bt_sas_selected_idx >= 0) {
+                        // a device is selected — device_cb owns the "Selected: X" text; leave it
+                    } else if (!ble_scan_finished) {
+                        // scanning: show live status, covering the header
+                        lv_label_set_text(bt_sas_status_label, ble_scan_status_text);
+                        lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
+                    } else if (bt_device_count > 0) {
+                        // scan done, browsing: hide status so the column header shows through
+                        lv_obj_add_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        lv_label_set_text(bt_sas_status_label, "No devices found");
+                        lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
+                    }
                 }
                 bt_sas_refresh_list();
-                // If scan finished show Next prompt if device selected
-                if (ble_scan_finished && bt_sas_selected_idx < 0 &&
-                    bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
-                    lv_label_set_text(bt_sas_status_label,
-                        bt_device_count > 0 ? "Tap a device to select" : "No devices found");
-                }
             }
 
             // BLE→obs_store adapter: runs once after every BLE scan completes
@@ -32680,7 +32687,7 @@ static void bt_sas_rescan_cb(lv_event_t *e)
     memset(bt_devices, 0, sizeof(bt_devices));
     bt_device_count = 0;
     bt_sas_selected_idx = -1;
-    bt_sas_scroll_top = 0;
+    bt_sas_page = 0;
     if (bt_sas_next_btn && lv_obj_is_valid(bt_sas_next_btn))
         lv_obj_add_flag(bt_sas_next_btn, LV_OBJ_FLAG_HIDDEN);
     bt_sas_refresh_list();
@@ -32707,7 +32714,7 @@ static void bt_sas_device_cb(lv_event_t *e)
         if (bt_sas_next_btn && lv_obj_is_valid(bt_sas_next_btn))
             lv_obj_add_flag(bt_sas_next_btn, LV_OBJ_FLAG_HIDDEN);
         if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label))
-            lv_label_set_text(bt_sas_status_label, "Tap a device to select");
+            lv_obj_add_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);  // browsing: header shows
     } else {
         bt_sas_selected_idx = idx;
         memcpy(bt_sas_target_addr, bt_devices[idx].addr, 6);
@@ -32724,6 +32731,7 @@ static void bt_sas_device_cb(lv_event_t *e)
             char sel_text[48];
             snprintf(sel_text, sizeof(sel_text), "Selected: %s", bt_sas_target_name);
             lv_label_set_text(bt_sas_status_label, sel_text);
+            lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);  // show over the header
         }
         if (bt_sas_next_btn && lv_obj_is_valid(bt_sas_next_btn))
             lv_obj_clear_flag(bt_sas_next_btn, LV_OBJ_FLAG_HIDDEN);
@@ -32745,160 +32753,195 @@ static void bt_sas_next_cb(lv_event_t *e)
     show_bt_attack_tiles_screen();
 }
 
-static void bt_sas_scroll_up_cb(lv_event_t *e)
+// Rows that fit one page in the current orientation, so a page NEVER needs to scroll
+// (matches show()'s list height ver_res-126, ~22px per row). Portrait ~8, landscape ~4-5.
+static int bt_sas_page_size(void)
 {
-    (void)e;
-    if (bt_sas_scroll_top > 0) { bt_sas_scroll_top--; bt_sas_refresh_list(); }
+    int rows = (lv_disp_get_ver_res(NULL) - 120 - 4) / 21;
+    return rows < 1 ? 1 : rows;
 }
 
-static void bt_sas_scroll_down_cb(lv_event_t *e)
+static void bt_sas_prev_page_cb(lv_event_t *e)
 {
     (void)e;
-    if (bt_sas_scroll_top + BT_SAS_WIN < bt_device_count) { bt_sas_scroll_top++; bt_sas_refresh_list(); }
+    if (bt_sas_page > 0) { bt_sas_page--; bt_sas_refresh_list(); }
+}
+
+static void bt_sas_next_page_cb(lv_event_t *e)
+{
+    (void)e;
+    int ps = bt_sas_page_size();
+    int pages = (bt_device_count + ps - 1) / ps;
+    if (pages < 1) pages = 1;
+    if (bt_sas_page < pages - 1) { bt_sas_page++; bt_sas_refresh_list(); }
+}
+
+// BT SAS category chip: short 3-letter token + chip color from the device's
+// already-parsed advertisement flags (no new scan logic). Mirrors WiFi's band chip.
+// Classification order matches the canonical BLE->obs_store label order.
+static const char *bt_cat_badge(const bt_device_info_t *d, lv_color_t *col)
+{
+    if (d->is_airtag || d->is_possible_airtag || d->is_smarttag || d->is_tile) {
+        *col = UI_ACCENT_AMBER;           return "TAG";   // trackers
+    }
+    if (d->is_matter)     { *col = COLOR_MATERIAL_GREEN;   return "MAT"; }
+    if (d->is_fast_pair)  { *col = lv_color_hex(0x4488FF); return "FPR"; }  // Google Fast Pair
+    if (d->is_eddystone)  { *col = lv_color_hex(0xAA66FF); return "BCN"; }  // beacon
+    if (d->is_bthome || d->fp_svc_uuid == 0x1809 || d->fp_svc_uuid == 0x181A ||
+        d->fp_svc_uuid == 0x180D || d->fp_svc_uuid == 0x1816 ||
+        d->fp_svc_uuid == 0x1818 || d->fp_svc_uuid == 0x1826) {
+        *col = lv_color_hex(0x00BFA5);    return "SEN";    // sensor / fitness / HR
+    }
+    if (d->fp_svc_uuid == 0x1812) { *col = lv_color_hex(0xFFD000); return "HID"; }
+    *col = UI_ACCENT_CYAN;                return "BLE";
+}
+
+// BT SAS row column geometry: [chip] Name .......... MAC  RSSI. x's measured from
+// screen-left (pad-free rows), so the header and rows line up. mirrors wifi_sas_row_geom.
+static void bt_sas_row_geom(int lw, int *bx, int *bw, int *nx, int *nw,
+                            int *mx, int *mw, int *rx, int *rw)
+{
+    int iw = lw - 8;                 // 8px right margin for the scrollbar
+    *bw = 30; *rw = 30; *mw = 58;
+    *bx = 1;
+    *rx = iw - *rw;
+    *mx = *rx - 4 - *mw;
+    *nx = *bx + *bw + 5;
+    *nw = *mx - *nx - 4;
+    if (*nw < 40) *nw = 40;
 }
 
 static void bt_sas_refresh_list(void)
 {
     if (!bt_sas_list || !lv_obj_is_valid(bt_sas_list)) return;
-    // Delete only non-floating children so persistent nav buttons survive
-    uint32_t nch = lv_obj_get_child_cnt(bt_sas_list);
-    for (uint32_t ci = nch; ci > 0; ci--) {
-        lv_obj_t *ch = lv_obj_get_child(bt_sas_list, ci - 1);
-        if (!lv_obj_has_flag(ch, LV_OBJ_FLAG_FLOATING)) lv_obj_del(ch);
-    }
+    lv_obj_clean(bt_sas_list);   // rows only; the page nav bar lives in function_page
 
-    // Clamp window
-    if (bt_device_count <= BT_SAS_WIN) {
-        bt_sas_scroll_top = 0;
-    } else if (bt_sas_scroll_top + BT_SAS_WIN > bt_device_count) {
-        bt_sas_scroll_top = bt_device_count - BT_SAS_WIN;
-    }
-    if (bt_sas_scroll_top < 0) bt_sas_scroll_top = 0;
+    int total = bt_device_count;
+    int ps    = bt_sas_page_size();
+    int pages = (total + ps - 1) / ps;
+    if (pages < 1) pages = 1;
+    if (bt_sas_page < 0) bt_sas_page = 0;
+    if (bt_sas_page >= pages) bt_sas_page = pages - 1;
 
-    int end = bt_sas_scroll_top + BT_SAS_WIN;
-    if (end > bt_device_count) end = bt_device_count;
+    int start = bt_sas_page * ps;
+    int end   = start + ps;
+    if (end > total) end = total;
 
-    for (int i = bt_sas_scroll_top; i < end; i++) {
+    int bx, bw, nx, nw, mx, mw, rx, rw;
+    bt_sas_row_geom(lv_disp_get_hor_res(NULL), &bx, &bw, &nx, &nw, &mx, &mw, &rx, &rw);
+
+    // Distribute the list's spare vertical space into the row heights so a full page fills the
+    // container with no gap at the bottom (@birolt29 2026-09-24). +1px to the first `extra` rows
+    // absorbs the integer remainder exactly, so ps rows == the interior height.
+    int interior = (lv_disp_get_ver_res(NULL) - 120) - 4;   // list height - border(2) - pad(2)
+    int base_rh  = interior / ps; if (base_rh < 18) base_rh = 18;
+    int extra    = interior - base_rh * ps; if (extra < 0) extra = 0;
+
+    for (int i = start; i < end; i++) {
         bt_device_info_t *dev = &bt_devices[i];
         bool selected = (i == bt_sas_selected_idx);
+        int rh = base_rh + ((i - start) < extra ? 1 : 0);
+        int cy = (rh - 16) / 2; if (cy < 0) cy = 0;
 
-        uint8_t oui[3] = {dev->addr[5], dev->addr[4], dev->addr[3]};
-        const char *vendor = oui_lookup(oui);
+        lv_color_t cat_col;
+        const char *cat = bt_cat_badge(dev, &cat_col);
 
-        char item_text[72];
-        char short_name[14];
-        if (dev->name[0] != '\0') {
-            strncpy(short_name, dev->name, 13);
-            short_name[13] = '\0';
-            snprintf(item_text, sizeof(item_text), "%s  %d dBm  %02X:%02X:%02X",
-                     short_name, dev->rssi,
-                     dev->addr[2], dev->addr[1], dev->addr[0]);
-        } else if (dev->is_airtag) {
-            snprintf(item_text, sizeof(item_text), "[AirTag]  %d dBm  %02X:%02X:%02X",
-                     dev->rssi, dev->addr[2], dev->addr[1], dev->addr[0]);
-        } else if (dev->is_smarttag) {
-            snprintf(item_text, sizeof(item_text), "[SmartTag]  %d dBm  %02X:%02X:%02X",
-                     dev->rssi, dev->addr[2], dev->addr[1], dev->addr[0]);
-        } else if (vendor) {
-            char vend_short[13];
-            strncpy(vend_short, vendor, 12);
-            vend_short[12] = '\0';
-            snprintf(item_text, sizeof(item_text), "[%s]  %d dBm  %02X:%02X:%02X",
-                     vend_short, dev->rssi, dev->addr[2], dev->addr[1], dev->addr[0]);
+        // Name: advertised name, else the fp-hint descriptor, else vendor (both parenthesised
+        // so it reads as inferred, not a real name).
+        char nbuf[40];
+        bool have_name = (dev->name[0] != '\0');
+        if (have_name) {
+            snprintf(nbuf, sizeof(nbuf), "%.32s", dev->name);
         } else {
-            snprintf(item_text, sizeof(item_text), "[Unknown]  %d dBm  %02X:%02X:%02X",
-                     dev->rssi, dev->addr[2], dev->addr[1], dev->addr[0]);
+            char hint[40];
+            ble_adv_fp_hint(dev, hint, sizeof(hint));
+            if (hint[0]) {
+                snprintf(nbuf, sizeof(nbuf), "(%.36s)", hint);
+            } else {
+                uint8_t oui[3] = {dev->addr[5], dev->addr[4], dev->addr[3]};
+                const char *vendor = oui_lookup(oui);
+                if (vendor) snprintf(nbuf, sizeof(nbuf), "(%.30s)", vendor);
+                else        snprintf(nbuf, sizeof(nbuf), "(Unknown)");
+            }
         }
 
-        lv_obj_t *btn = lv_btn_create(bt_sas_list);
-        lv_obj_set_size(btn, lv_pct(100), 30);
-        lv_obj_set_style_bg_color(btn, selected ? UI_ACCENT_CYAN : ui_card_color(), LV_STATE_DEFAULT);
-        lv_obj_set_style_bg_color(btn, lv_color_lighten(UI_ACCENT_CYAN, 30), LV_STATE_PRESSED);
-        lv_obj_set_style_border_width(btn, selected ? 1 : 0, 0);
-        lv_obj_set_style_border_color(btn, UI_ACCENT_CYAN, 0);
-        lv_obj_set_style_radius(btn, 4, 0);
+        lv_obj_t *row = lv_btn_create(bt_sas_list);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, rh);
+        lv_obj_set_style_pad_all(row, 0, 0);   // pad-free: cells align by absolute x
+        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_style_bg_color(row, selected ? lv_color_make(28, 28, 55) : ui_card_color(), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(row, lv_color_make(60, 60, 60), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(row, selected ? UI_ACCENT_CYAN : lv_color_make(45, 45, 55), 0);
+        lv_obj_set_style_border_width(row, selected ? 2 : 1, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(row, bt_sas_device_cb, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)i);
 
-        // Append [M] if Matter commissioning beacon was seen
-        if (dev->is_matter) {
-            size_t cur = strlen(item_text);
-            snprintf(item_text + cur, sizeof(item_text) - cur, " [M]");
-        }
+        // Category chip
+        lv_obj_t *badge = lv_label_create(row);
+        lv_label_set_text(badge, cat);
+        lv_obj_set_style_text_font(badge, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(badge, lv_color_black(), 0);
+        lv_obj_set_style_bg_color(badge, cat_col, 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(badge, 4, 0);
+        lv_obj_set_style_pad_all(badge, 0, 0);
+        lv_obj_set_style_text_align(badge, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(badge, bw, 16);
+        lv_obj_set_pos(badge, bx, cy);
 
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, item_text);
-        lv_color_t lbl_color = selected         ? lv_color_black()
-                             : dev->is_matter   ? lv_color_make(100, 180, 255)
-                             : ui_text_color();
-        lv_obj_set_style_text_color(lbl, lbl_color, 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 4, 0);
-        lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP);
+        // Name (wide identity column)
+        lv_obj_t *name_lbl = lv_label_create(row);
+        lv_label_set_text(name_lbl, nbuf);
+        lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_font(name_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(name_lbl, have_name ? lv_color_white() : lv_color_hex(0x888888), 0);
+        lv_obj_add_flag(name_lbl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(name_lbl, nw, 16);
+        lv_obj_set_pos(name_lbl, nx, cy);
 
-        lv_obj_add_event_cb(btn, bt_sas_device_cb, LV_EVENT_SHORT_CLICKED, (void*)(intptr_t)i);
+        // Short MAC (last 3 bytes)
+        lv_obj_t *mac_lbl = lv_label_create(row);
+        char mbuf[10];
+        snprintf(mbuf, sizeof(mbuf), "%02X:%02X:%02X", dev->addr[2], dev->addr[1], dev->addr[0]);
+        lv_label_set_text(mac_lbl, mbuf);
+        lv_label_set_long_mode(mac_lbl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_font(mac_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(mac_lbl, lv_color_hex(0x999999), 0);
+        lv_obj_set_style_text_align(mac_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_add_flag(mac_lbl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(mac_lbl, mw, 16);
+        lv_obj_set_pos(mac_lbl, mx, cy);
+
+        // RSSI
+        lv_obj_t *rssi_lbl = lv_label_create(row);
+        char rbuf[8];
+        snprintf(rbuf, sizeof(rbuf), "%d", dev->rssi);
+        lv_label_set_text(rssi_lbl, rbuf);
+        lv_label_set_long_mode(rssi_lbl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_font(rssi_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(rssi_lbl, lv_color_hex(0x999999), 0);
+        lv_obj_set_style_text_align(rssi_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_add_flag(rssi_lbl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(rssi_lbl, rw, 16);
+        lv_obj_set_pos(rssi_lbl, rx, cy);
     }
 
-    // Persistent floating nav arrows — created once, updated each refresh
-    bool can_up = bt_sas_scroll_top > 0;
-    bool can_dn = end < bt_device_count;
-    if (bt_device_count > BT_SAS_WIN) {
-        if (bt_sas_nav_up == NULL) {
-            bt_sas_nav_up = lv_btn_create(bt_sas_list);
-            lv_obj_add_flag(bt_sas_nav_up, LV_OBJ_FLAG_FLOATING);
-            lv_obj_set_size(bt_sas_nav_up, 22, 22);
-            lv_obj_align(bt_sas_nav_up, LV_ALIGN_TOP_RIGHT, -1, 1);
-            lv_obj_set_style_bg_color(bt_sas_nav_up, lv_color_make(50, 50, 100), 0);
-            lv_obj_set_style_radius(bt_sas_nav_up, 4, 0);
-            lv_obj_set_style_border_width(bt_sas_nav_up, 0, 0);
-            lv_obj_set_style_pad_all(bt_sas_nav_up, 0, 0);
-            lv_obj_t *up_lbl = lv_label_create(bt_sas_nav_up);
-            lv_label_set_text(up_lbl, LV_SYMBOL_UP);
-            lv_obj_set_style_text_font(up_lbl, &lv_font_montserrat_12, 0);
-            lv_obj_center(up_lbl);
-            lv_obj_add_event_cb(bt_sas_nav_up, bt_sas_scroll_up_cb, LV_EVENT_CLICKED, NULL);
-            lv_obj_add_event_cb(bt_sas_nav_up, bt_sas_scroll_up_cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
-
-            // Page indicator lives OUTSIDE the list, on the header strip right of the
-            // "Tap a device to select" hint (same y=35 baseline), right-aligned. Kept off
-            // the list so no row label — selected, marked or just long — can ever run under
-            // the digits; that overlap is why it moved off the rows.
-            bt_sas_nav_pos = lv_label_create(function_page);
-            lv_obj_set_size(bt_sas_nav_pos, 44, LV_SIZE_CONTENT);
-            lv_obj_set_style_text_font(bt_sas_nav_pos, &lv_font_montserrat_12, 0);
-            lv_obj_set_style_text_color(bt_sas_nav_pos, lv_color_make(255, 230, 0), 0);
-            lv_obj_set_style_text_align(bt_sas_nav_pos, LV_TEXT_ALIGN_RIGHT, 0);
-            lv_obj_align(bt_sas_nav_pos, LV_ALIGN_TOP_RIGHT, -5, 35);
-
-            bt_sas_nav_dn = lv_btn_create(bt_sas_list);
-            lv_obj_add_flag(bt_sas_nav_dn, LV_OBJ_FLAG_FLOATING);
-            lv_obj_set_size(bt_sas_nav_dn, 22, 22);
-            lv_obj_align(bt_sas_nav_dn, LV_ALIGN_BOTTOM_RIGHT, -1, -1);
-            lv_obj_set_style_bg_color(bt_sas_nav_dn, lv_color_make(50, 50, 100), 0);
-            lv_obj_set_style_radius(bt_sas_nav_dn, 4, 0);
-            lv_obj_set_style_border_width(bt_sas_nav_dn, 0, 0);
-            lv_obj_set_style_pad_all(bt_sas_nav_dn, 0, 0);
-            lv_obj_t *dn_lbl = lv_label_create(bt_sas_nav_dn);
-            lv_label_set_text(dn_lbl, LV_SYMBOL_DOWN);
-            lv_obj_set_style_text_font(dn_lbl, &lv_font_montserrat_12, 0);
-            lv_obj_center(dn_lbl);
-            lv_obj_add_event_cb(bt_sas_nav_dn, bt_sas_scroll_down_cb, LV_EVENT_CLICKED, NULL);
-            lv_obj_add_event_cb(bt_sas_nav_dn, bt_sas_scroll_down_cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
-        }
-        // Update state every refresh
-        lv_obj_set_style_bg_opa(bt_sas_nav_up, can_up ? LV_OPA_90 : LV_OPA_30, 0);
-        char pbuf[24];
-        snprintf(pbuf, sizeof(pbuf), "%d/%d", bt_sas_scroll_top + 1, bt_device_count);
-        lv_label_set_text(bt_sas_nav_pos, pbuf);
-        lv_obj_set_style_bg_opa(bt_sas_nav_dn, can_dn ? LV_OPA_90 : LV_OPA_30, 0);
-        lv_obj_clear_flag(bt_sas_nav_up,  LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(bt_sas_nav_pos, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(bt_sas_nav_dn,  LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(bt_sas_nav_up);
-        lv_obj_move_foreground(bt_sas_nav_pos);
-        lv_obj_move_foreground(bt_sas_nav_dn);
-    } else if (bt_sas_nav_up && lv_obj_is_valid(bt_sas_nav_up)) {
-        lv_obj_add_flag(bt_sas_nav_up,  LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(bt_sas_nav_pos, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(bt_sas_nav_dn,  LV_OBJ_FLAG_HIDDEN);
+    // Page nav bar (label + Prev/Next visibility) — the bar itself is built in show()
+    if (bt_sas_nav_lbl && lv_obj_is_valid(bt_sas_nav_lbl)) {
+        char pb[36];
+        if (total == 0) snprintf(pb, sizeof(pb), "0 devices");
+        else            snprintf(pb, sizeof(pb), "Pg %d/%d  (%d)", bt_sas_page + 1, pages, total);
+        lv_label_set_text(bt_sas_nav_lbl, pb);
+    }
+    if (bt_sas_nav_prev && lv_obj_is_valid(bt_sas_nav_prev)) {
+        if (bt_sas_page == 0) lv_obj_add_flag(bt_sas_nav_prev, LV_OBJ_FLAG_HIDDEN);
+        else                  lv_obj_clear_flag(bt_sas_nav_prev, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (bt_sas_nav_next && lv_obj_is_valid(bt_sas_nav_next)) {
+        if (bt_sas_page >= pages - 1 || total == 0) lv_obj_add_flag(bt_sas_nav_next, LV_OBJ_FLAG_HIDDEN);
+        else                                        lv_obj_clear_flag(bt_sas_nav_next, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -33219,34 +33262,76 @@ static void show_bt_scan_select_screen(void)
     g_screen_stop_fn = bt_sas_stop;
     bt_sas_ui_active = true;
     bt_sas_selected_idx = -1;
-    bt_sas_scroll_top = 0;
-    bt_sas_nav_up = bt_sas_nav_pos = bt_sas_nav_dn = NULL;
+    bt_sas_page = 0;
+    bt_sas_nav_bar = bt_sas_nav_prev = bt_sas_nav_lbl = bt_sas_nav_next = NULL;
 
-    // Status label
+    // WD-style column header (aligned to bt_sas_row_geom), in the strip where the status
+    // hint used to sit. The status text is relocated into the bottom button row (below).
+    {
+        int bx, bw, nx, nw, mx, mw, rx, rw;
+        bt_sas_row_geom(lv_disp_get_hor_res(NULL), &bx, &bw, &nx, &nw, &mx, &mw, &rx, &rw);
+        lv_obj_t *hdr = lv_obj_create(function_page);
+        lv_obj_set_size(hdr, lv_pct(100), 18);
+        lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 32);
+        lv_obj_set_style_bg_color(hdr, lv_color_make(20, 20, 30), 0);
+        lv_obj_set_style_bg_opa(hdr, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(hdr, 0, 0);
+        lv_obj_set_style_radius(hdr, 0, 0);
+        lv_obj_set_style_pad_all(hdr, 0, 0);
+        lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+        struct { const char *t; int x, w, align; } hc[] = {
+            { "CAT",  bx, bw, LV_TEXT_ALIGN_CENTER },
+            { "Name", nx, nw, LV_TEXT_ALIGN_LEFT   },
+            { "MAC",  mx, mw, LV_TEXT_ALIGN_RIGHT  },
+            { "RSSI", rx, rw, LV_TEXT_ALIGN_RIGHT  },
+        };
+        for (unsigned h = 0; h < sizeof(hc) / sizeof(hc[0]); h++) {
+            lv_obj_t *hl = lv_label_create(hdr);
+            lv_label_set_text(hl, hc[h].t);
+            lv_obj_set_style_text_font(hl, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(hl, lv_color_hex(0xAAAAAA), 0);
+            lv_obj_set_style_text_align(hl, hc[h].align, 0);
+            lv_obj_add_flag(hl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+            lv_obj_set_size(hl, hc[h].w, 16);
+            lv_obj_set_pos(hl, hc[h].x, 1);
+        }
+    }
+
+    // Status overlay on the SAME top strip (opaque → covers the header when shown). Toggled
+    // visible while scanning / when a device is selected; hidden while browsing so the column
+    // header shows through. Created after the header so it draws on top of it.
     bt_sas_status_label = lv_label_create(function_page);
     lv_label_set_text(bt_sas_status_label, "Initializing BLE...");
-    lv_obj_set_style_text_color(bt_sas_status_label, ui_text_color(), 0);
+    lv_label_set_long_mode(bt_sas_status_label, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(bt_sas_status_label, lv_pct(100), 18);
+    lv_obj_align(bt_sas_status_label, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_style_bg_color(bt_sas_status_label, lv_color_make(20, 20, 30), 0);
+    lv_obj_set_style_bg_opa(bt_sas_status_label, LV_OPA_COVER, 0);
     lv_obj_set_style_text_font(bt_sas_status_label, &lv_font_montserrat_12, 0);
-    lv_obj_align(bt_sas_status_label, LV_ALIGN_TOP_LEFT, 5, 35);
+    lv_obj_set_style_text_color(bt_sas_status_label, ui_text_color(), 0);
+    lv_obj_set_style_text_align(bt_sas_status_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_pad_left(bt_sas_status_label, 5, 0);
+    lv_obj_set_style_pad_top(bt_sas_status_label, 1, 0);
 
-    // Scrollable device list
+    // Paged device list (WD-style rows; Prev/Next page nav below). Height leaves room for
+    // the 28px page nav bar + 38px bottom button row beneath it (y=50 .. ver_res-76).
     bt_sas_list = lv_obj_create(function_page);
-    lv_obj_set_size(bt_sas_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 18 - 50);
-    lv_obj_align(bt_sas_list, LV_ALIGN_TOP_MID, 0, 52);
+    lv_obj_set_size(bt_sas_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 120);
+    lv_obj_align(bt_sas_list, LV_ALIGN_TOP_MID, 0, 50);
     lv_obj_set_style_bg_color(bt_sas_list, ui_bg_color(), 0);
     lv_obj_set_style_border_color(bt_sas_list, UI_ACCENT_CYAN, 0);
     lv_obj_set_style_border_width(bt_sas_list, 1, 0);
     lv_obj_set_flex_flow(bt_sas_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(bt_sas_list, 3, 0);
-    lv_obj_set_style_pad_gap(bt_sas_list, 3, 0);
+    lv_obj_set_style_pad_all(bt_sas_list, 1, 0);
+    lv_obj_set_style_pad_gap(bt_sas_list, 0, 0);
     lv_obj_set_scrollbar_mode(bt_sas_list, LV_SCROLLBAR_MODE_OFF);
-    lv_obj_clear_flag(bt_sas_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(bt_sas_list, LV_OBJ_FLAG_SCROLLABLE);  // each page fits; Prev/Next is the nav
 
     // Bottom button row: [Save List] [Rescan] [Actions →]
     // (Exit removed — top-bar ‹ Back stops the scan via g_screen_stop_fn = bt_sas_stop)
     lv_obj_t *btn_row = lv_obj_create(function_page);
     lv_obj_set_size(btn_row, lv_pct(100), 38);
-    lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_align(btn_row, LV_ALIGN_BOTTOM_MID, 0, -2);
     lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btn_row, 0, 0);
     lv_obj_set_style_pad_hor(btn_row, 4, 0);
@@ -33294,6 +33379,56 @@ static void show_bt_scan_select_screen(void)
     lv_obj_center(next_lbl);
     lv_obj_add_event_cb(bt_sas_next_btn, bt_sas_next_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_add_flag(bt_sas_next_btn, LV_OBJ_FLAG_HIDDEN);  // shown after selection
+
+    // Page nav bar (‹ Prev / "Pg x/y (N)" / Next ›) — sits just above the bottom button row.
+    bt_sas_nav_bar = lv_obj_create(function_page);
+    lv_obj_set_size(bt_sas_nav_bar, lv_pct(100), 28);
+    lv_obj_align(bt_sas_nav_bar, LV_ALIGN_BOTTOM_MID, 0, -42);
+    lv_obj_set_style_bg_color(bt_sas_nav_bar, lv_color_make(28, 28, 36), 0);
+    lv_obj_set_style_bg_opa(bt_sas_nav_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(bt_sas_nav_bar, 0, 0);
+    lv_obj_set_style_radius(bt_sas_nav_bar, 4, 0);
+    lv_obj_set_style_pad_hor(bt_sas_nav_bar, 4, 0);
+    lv_obj_set_style_pad_ver(bt_sas_nav_bar, 2, 0);
+    lv_obj_clear_flag(bt_sas_nav_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    bt_sas_nav_prev = lv_btn_create(bt_sas_nav_bar);
+    lv_obj_set_size(bt_sas_nav_prev, 62, 24);
+    lv_obj_align(bt_sas_nav_prev, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(bt_sas_nav_prev, lv_color_make(55, 55, 100), 0);
+    lv_obj_set_style_bg_color(bt_sas_nav_prev, lv_color_make(80, 80, 140), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(bt_sas_nav_prev, 4, 0);
+    lv_obj_set_style_pad_all(bt_sas_nav_prev, 0, 0);
+    {
+        lv_obj_t *pl = lv_label_create(bt_sas_nav_prev);
+        lv_label_set_text(pl, LV_SYMBOL_LEFT " Prev");
+        lv_obj_set_style_text_font(pl, &lv_font_montserrat_12, 0);
+        lv_obj_center(pl);
+    }
+    lv_obj_add_event_cb(bt_sas_nav_prev, bt_sas_prev_page_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(bt_sas_nav_prev, LV_OBJ_FLAG_HIDDEN);
+
+    bt_sas_nav_lbl = lv_label_create(bt_sas_nav_bar);
+    lv_obj_align(bt_sas_nav_lbl, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_font(bt_sas_nav_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(bt_sas_nav_lbl, lv_color_make(255, 230, 0), 0);
+    lv_label_set_text(bt_sas_nav_lbl, "");
+
+    bt_sas_nav_next = lv_btn_create(bt_sas_nav_bar);
+    lv_obj_set_size(bt_sas_nav_next, 62, 24);
+    lv_obj_align(bt_sas_nav_next, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(bt_sas_nav_next, lv_color_make(55, 55, 100), 0);
+    lv_obj_set_style_bg_color(bt_sas_nav_next, lv_color_make(80, 80, 140), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(bt_sas_nav_next, 4, 0);
+    lv_obj_set_style_pad_all(bt_sas_nav_next, 0, 0);
+    {
+        lv_obj_t *nl = lv_label_create(bt_sas_nav_next);
+        lv_label_set_text(nl, "Next " LV_SYMBOL_RIGHT);
+        lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
+        lv_obj_center(nl);
+    }
+    lv_obj_add_event_cb(bt_sas_nav_next, bt_sas_next_page_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(bt_sas_nav_next, LV_OBJ_FLAG_HIDDEN);
 
     // Switch to BLE and start scan
     if (!ensure_ble_mode()) {
