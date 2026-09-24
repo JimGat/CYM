@@ -35,6 +35,12 @@ Last updated: 2026-09-23.
 - **BT Lookout — OUI Groups screen** — PLANNED. OUI system is done; add an OUI Groups UI and
   more vendor groups.
 
+- **BMorcelli Launcher support** — DONE for NM-CYD-C5. CYM is compatible with
+  [bmorcelli/Launcher](https://github.com/bmorcelli/Launcher) and available in its Beta Release
+  channel (CYD → NM-CYD-C5); the app-only `CYM-NM28C5.bin` runs from `app1` (ota_0), no
+  conversion needed. Possible follow-up: extend/verify for WS-C5-28 and CYD2USB. *(corrected
+  2026-09-23 — was wrongly tabled as incompatible)*
+
 ---
 
 ## Satellite / external-device integration
@@ -124,6 +130,3 @@ rules). Start ONE track at a time; do not run all simultaneously.
 
 - **Monster Whisperer integration** — TABLED (2026-04-19). 6-phase ESP32-S3 BLE gateway plan
   superseded by the carrier-board + JANOS-UART direction.
-
-- **BMorcelli Launcher compatibility** — NOT PURSUED. ESP32-C5 unsupported by the launcher;
-  partition/bootloader mismatch.
