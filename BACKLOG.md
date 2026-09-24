@@ -35,11 +35,15 @@ Last updated: 2026-09-23.
 - **BT Lookout — OUI Groups screen** — PLANNED. OUI system is done; add an OUI Groups UI and
   more vendor groups.
 
-- **BMorcelli Launcher support** — DONE for NM-CYD-C5. CYM is compatible with
+- **BMorcelli Launcher support (NM-CYD-C5)** — DONE. CYM is compatible with
   [bmorcelli/Launcher](https://github.com/bmorcelli/Launcher) and available in its Beta Release
   channel (CYD → NM-CYD-C5); the app-only `CYM-NM28C5.bin` runs from `app1` (ota_0), no
-  conversion needed. Possible follow-up: extend/verify for WS-C5-28 and CYD2USB. *(corrected
-  2026-09-23 — was wrongly tabled as incompatible)*
+  conversion needed. *(corrected 2026-09-23 — was wrongly tabled as incompatible)*
+
+- **Launcher support — WS-C5-28 & CYD2USB** — PLANNED. Extend/verify bmorcelli/Launcher
+  compatibility for the other two boards (partition/bootloader offsets differ per board; CYD2USB
+  is 4 MB with a different bootloader offset). Confirm each app-only bin runs from the Launcher's
+  OTA slot and add them to the Launcher Beta channel. *(new 2026-09-23)*
 
 ---
 
