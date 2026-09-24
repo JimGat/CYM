@@ -15,8 +15,12 @@ When Jim asks for a change that he will test from GitHub, do the complete test-b
 5. The CMake post-build hook copies firmware into the board-specific output directory and generates the merged full image. Verify all four tracked binaries changed.
 6. Before commit, verify the binary contains the expected version string.
 7. Update the board-specific manifest JSON to match the new version.
-8. Stage board-specific files only (never `git add -A`), commit, and push to `origin Jimgat_Dev`.
-9. Never run `idf.py flash`, `esptool write-flash`, or `git push --force` unless Jim explicitly overrides.
+8. **Build gate:** when a change touches shared source, every affected release board must build
+   green **before any push** in the cycle. Per-board commits are fine, but do NOT push until all
+   affected release boards are confirmed building — no push may leave `Jimgat_Dev` at a version that
+   fails on some release board.
+9. Stage board-specific files only (never `git add -A`), commit, and push to `origin Jimgat_Dev`.
+10. Never run `idf.py flash`, `esptool write-flash`, or `git push --force` unless Jim explicitly overrides.
 
 ---
 
@@ -203,12 +207,16 @@ Never create a release without all binaries from all boards attached.
 
 ---
 
-## SD card assets — refresh on every release
+## SD card assets — staleness-gated refresh at release
 
 `ouilist.bin` (OUI vendor table, loaded from `/sdcard/lab/ouilist.bin` at runtime — it is
 **not** baked into the firmware binary) goes stale as new MAC vendor blocks are registered.
-Refresh it as part of every release cycle, not just when someone notices it's old (it went
-~5 months stale between the 2026-04-29 and 2026-09-22 refreshes before anyone caught it):
+
+**Rule (staleness-gated):** at each release-to-main, check the asset's age. If `ouilist.bin`
+(or `mf_keys.dic`) is older than **30 days**, refresh it and push to BOTH destinations below;
+if fresher than 30 days, skip. This prevents long staleness (it once went ~5 months stale between
+the 2026-04-29 and 2026-09-22 refreshes) without forcing a redundant refresh on closely-spaced
+releases. Refresh procedure:
 
 ```bash
 curl -L https://standards-oui.ieee.org/oui/oui.csv -o /tmp/oui-fresh.csv
