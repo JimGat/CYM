@@ -811,6 +811,8 @@ static char     g_saved_wifi_pass[65] = ""; // Home network password
 #define NVS_KEY_BTSC_CTR     "btsc_ctr"
 #define NVS_KEY_CC1101_PPM   "cc1101_ppm"  // int32 milli-PPM (ppm × 1000), ±300000 = ±300 ppm
 #define NVS_KEY_ORIENT       "scr_orient"  // u8 screen orientation 0-3 (see screen_orientation)
+#define NVS_KEY_HOME_4CAT    "home_4cat"   // u8 home layout (0=classic tile grid, 1=4-category router)
+#define NVS_KEY_HOME_ASKED   "home_asked"  // u8 one-time setup chooser completed
 
 // ── CC1101 crystal calibration — declared here so NVS load can access them ────
 // CC1101 uses a 26 MHz crystal whose error multiplies with the PLL.
@@ -2889,9 +2891,28 @@ void show_function_page(const char *name);
 void show_menu(void);
 void back_to_menu_cb(lv_event_t *e);
 
+// ── Home layout (RUNTIME, user-selectable in Settings > Home Layout) ─────────
+// When true, the device shows a new 4-category Home (Attack / Defend /
+// Recon & Scan / Tools & System) placed IN FRONT of the existing tile grid.
+// When false (default), the classic shipping tile grid is shown, byte-for-byte
+// behaviour of the untouched firmware. Every existing tile stays reachable via
+// its normal dispatch key in either layout — nothing is removed or renamed.
+// Persisted in NVS (NVS_KEY_HOME_4CAT); read at boot before the Home is built.
+static bool g_home_layout_4cat = false;
+static bool g_home_layout_asked = false;
+static bool g_settings_first_boot = false;
+
 // Tile-based navigation system
 static lv_obj_t *tiles_container = NULL;
 static lv_obj_t *home_bg_img = NULL;
+static void show_category_home(void);   // 4-category router Home
+static void show_cat_attack(void);
+static void show_cat_defend(void);
+static void show_cat_recon(void);
+static void show_cat_tools(void);
+static void category_tile_event_cb(lv_event_t *e);
+static void show_home_layout_popup(void);   // Settings > Home Layout chooser
+static void home_layout_show_menu_async(void *arg);
 
 // ── Disco mode Easter egg ──────────────────────────────────────────────────
 typedef struct { uint8_t r, g, b; } disco_rgb_t;
@@ -3534,6 +3555,14 @@ static void deauth_monitor_task(void *pvParameters);
 static void deauth_monitor_channel_hop(void);
 static void deauth_monitor_promiscuous_callback(void *buf, wifi_promiscuous_pkt_type_t type);
 static const char* deauth_monitor_find_ssid_by_bssid(const uint8_t *bssid);
+
+// Detect & Defend line — a matching detector for the offensive tools.
+// (Starter set: Pwnagotchi Detector [WiFi] + BLE Spam Detector [BT].)
+static void show_detect_defend_screen(void);
+static void show_pwnagotchi_detector_screen(void);
+static void pwnagotchi_detector_stop(void);
+static void show_blespam_detector_screen(void);
+static void blespam_detector_stop(void);
 
 // AirTag Scanner functions
 static void show_airtag_scan_screen(void);
@@ -4317,6 +4346,14 @@ static void nvs_settings_load(void)
         if (nvs_get_u8(h, NVS_KEY_ORIENT, &orient) == ESP_OK && orient <= 3) {
             screen_orientation = orient;
         }
+        uint8_t h4 = 0;
+        if (nvs_get_u8(h, NVS_KEY_HOME_4CAT, &h4) == ESP_OK) {
+            g_home_layout_4cat = (h4 != 0);
+        }
+        uint8_t home_asked = 0;
+        if (nvs_get_u8(h, NVS_KEY_HOME_ASKED, &home_asked) == ESP_OK) {
+            g_home_layout_asked = (home_asked != 0);
+        }
         uint16_t smin = 100, smax = 300;
         if (nvs_get_u16(h, NVS_KEY_SCAN_MIN, &smin) == ESP_OK) {
             scan_time_min_ms = smin;
@@ -4393,6 +4430,7 @@ static void nvs_settings_load(void)
                  (long)screen_timeout_ms, screen_brightness_pct, scan_time_min_ms, scan_time_max_ms,
                  dark_mode_enabled, g_max_power_mode, (unsigned)g_gatt_timeout_ms);
     } else {
+        g_settings_first_boot = true;
         ESP_LOGW(TAG, "NVS settings not found (first boot), using defaults");
         screen_timeout_ms = 0;
         screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
@@ -4491,6 +4529,26 @@ static void nvs_settings_save_dark_mode(bool enabled)
         nvs_commit(h);
         nvs_close(h);
         ESP_LOGI(TAG, "NVS: saved dark_mode = %d", enabled);
+    }
+}
+
+static void nvs_settings_save_home_layout(bool four_cat)
+{
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS: open failed for home layout: %s", esp_err_to_name(err));
+        return;
+    }
+    err = nvs_set_u8(h, NVS_KEY_HOME_4CAT, four_cat ? 1 : 0);
+    if (err == ESP_OK) err = nvs_set_u8(h, NVS_KEY_HOME_ASKED, 1);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err == ESP_OK) {
+        g_home_layout_asked = true;
+        ESP_LOGI(TAG, "NVS: saved home_layout = %s", four_cat ? "4-Category" : "Classic");
+    } else {
+        ESP_LOGE(TAG, "NVS: save failed for home layout: %s", esp_err_to_name(err));
     }
 }
 
@@ -6756,7 +6814,8 @@ static void create_home_ui(void)
     // GPS 22px container's right edge at 34 leaves a 4px gap. Matches the function-page bar.
     gps_status_icon_create(title_bar, -34);
 
-    show_main_tiles();
+    if (g_home_layout_4cat) show_category_home();
+    else                    show_main_tiles();
 }
 
 /* ── OT Radio scheduler hooks (wrappers for static functions) ────────────── */
@@ -7461,15 +7520,20 @@ void app_main(void)
     splash_loading_label = NULL;
     splash_detecting_label = NULL;
 
-    // Run calibration if needed (XPT2046 only — CST3530 capacitive needs no calibration)
+    // Offer the choice during genuine setup, immediately after resistive calibration.
+    bool show_home_layout_setup = false;
 #if defined(CONFIG_BOARD_TOUCH_XPT2046)
     if (touch_cal_needed) {
         touch_cal_needed = false;
         run_touch_calibration();
+        show_home_layout_setup = !g_home_layout_asked;
     }
+#else
+    show_home_layout_setup = g_settings_first_boot && !g_home_layout_asked;
 #endif
 
     create_home_ui();
+    if (show_home_layout_setup) show_home_layout_popup();
     lv_obj_invalidate(lv_scr_act());
     lv_refr_now(NULL);
 
@@ -16484,6 +16548,16 @@ static const nav_show_entry_t NAV_SHOW_TABLE[] = {
     { "CC1101 Sub-GHz",       show_cc1101_screen           },
     { "nRF24L01 2.4GHz",      show_nrf24_screen            },
     { "RF433 OOK",            show_rf433_menu_screen       },
+    // 4-category router: a leaf reached from a category (e.g. "WiFi") resolves its
+    // parent title here so ‹ Back returns to the category, not Home. These entries
+    // are harmless in classic layout (their titles are never pushed to the nav stack).
+    { "Attack",               show_cat_attack              },
+    { "Defend",               show_cat_defend              },
+    { "Recon & Scan",         show_cat_recon               },
+    { "Tools & System",       show_cat_tools               },
+    // Detectors submenu is a resolvable parent so ‹ Back from Pwn/BLE-Spam Detect
+    // returns to it (not straight Home). Title distinct from the "Defend" category.
+    { "Detect & Defend",      show_detect_defend_screen    },
 };
 
 static void (*nav_show_lookup(const char *name))(void)
@@ -16988,7 +17062,8 @@ void show_menu(void)
     }
 
     // Show main tiles and title bar
-    show_main_tiles();
+    if (g_home_layout_4cat) show_category_home();
+    else                    show_main_tiles();
     lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -17173,6 +17248,8 @@ static void main_tile_event_cb(lv_event_t *e)
         show_wardrive_menu_screen();
     } else if (strcmp(tile_name, "Go Dark") == 0) {
         show_go_dark_confirm();
+    } else if (strcmp(tile_name, "Detect & Defend") == 0) {
+        show_detect_defend_screen();
     // IOT/OT umbrella menu and sub-screens
     } else if (strcmp(tile_name, "IOT/OT") == 0) {
         show_iot_ot_menu_screen();
@@ -17438,6 +17515,9 @@ static void show_main_tiles(void)
 
     create_tile(tiles_container, LV_SYMBOL_WIFI,        "WiFi",          UI_ACCENT_BLUE,         main_tile_event_cb, "WiFi Menu");
     create_tile(tiles_container, MY_SYMBOL_BLUETOOTH_B, "Bluetooth",    UI_ACCENT_CYAN,         main_tile_event_cb, "Bluetooth");
+    // Detect & Defend — the defensive counterpart line: for every attack CYM can run,
+    // a detector for the same attack seen nearby. Placed 3rd in the home grid.
+    create_tile(tiles_container, MY_SYMBOL_SHIELD,      "Detect &\nDefend", lv_color_hex(0x1B5E20), main_tile_event_cb, "Detect & Defend");
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     // Go Dark moved from a home tile to the top-bar power button (title_bar, far-right).
@@ -26361,6 +26441,22 @@ static void show_timing_popup(void)
 // ============================================================================
 
 static lv_obj_t *screen_popup = NULL;
+static lv_obj_t *screen_home_classic_radio = NULL;
+static lv_obj_t *screen_home_4cat_radio = NULL;
+static const bool SCREEN_HOME_LAYOUT_CHOICE[2] = { false, true };
+
+static void screen_home_layout_radio_cb(lv_event_t *e)
+{
+    const bool *choice = (const bool *)lv_event_get_user_data(e);
+    bool four_cat = choice && *choice;
+    if (four_cat) {
+        lv_obj_clear_state(screen_home_classic_radio, LV_STATE_CHECKED);
+        lv_obj_add_state(screen_home_4cat_radio, LV_STATE_CHECKED);
+    } else {
+        lv_obj_add_state(screen_home_classic_radio, LV_STATE_CHECKED);
+        lv_obj_clear_state(screen_home_4cat_radio, LV_STATE_CHECKED);
+    }
+}
 
 static void screen_popup_close_cb(lv_event_t *e)
 {
@@ -26370,6 +26466,8 @@ static void screen_popup_close_cb(lv_event_t *e)
     timeout_dropdown      = NULL;
     brightness_slider     = NULL;
     brightness_value_label = NULL;
+    screen_home_classic_radio = NULL;
+    screen_home_4cat_radio = NULL;
 }
 
 static void screen_popup_save_cb(lv_event_t *e)
@@ -26392,6 +26490,14 @@ static void screen_popup_save_cb(lv_event_t *e)
     nvs_settings_save_brightness(screen_brightness_pct);
     set_backlight_percent(screen_brightness_pct);
 
+    bool new_home_4cat = screen_home_4cat_radio &&
+        lv_obj_has_state(screen_home_4cat_radio, LV_STATE_CHECKED);
+    bool home_layout_changed = (new_home_4cat != g_home_layout_4cat);
+    if (home_layout_changed || !g_home_layout_asked) {
+        g_home_layout_4cat = new_home_4cat;
+        nvs_settings_save_home_layout(new_home_4cat);
+    }
+
 #if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
     uint8_t new_orient = orient_dropdown ? (uint8_t)lv_dropdown_get_selected(orient_dropdown)
                                          : screen_orientation;
@@ -26402,6 +26508,8 @@ static void screen_popup_save_cb(lv_event_t *e)
     timeout_dropdown      = NULL;
     brightness_slider     = NULL;
     brightness_value_label = NULL;
+    screen_home_classic_radio = NULL;
+    screen_home_4cat_radio = NULL;
 #if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
     orient_dropdown       = NULL;
     // Persist + REBOOT on change (same pattern as Recalibrate Touch). Orientation is
@@ -26416,6 +26524,7 @@ static void screen_popup_save_cb(lv_event_t *e)
         esp_restart();
     }
 #endif
+    if (home_layout_changed) lv_async_call(home_layout_show_menu_async, NULL);
 }
 
 static void screen_popup_recal_cb(lv_event_t *e)
@@ -26467,7 +26576,7 @@ static void show_screen_popup(void)
     lv_obj_set_flex_align(dialog, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(dialog, 7, 0);
     lv_obj_set_style_pad_gap(dialog, ls ? 4 : 3, 0);
-    if (!ls) lv_obj_clear_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);  // portrait fits -> no scroll
+    lv_obj_set_scrollbar_mode(dialog, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *title = lv_label_create(dialog);
     lv_label_set_text(title, "Screen Settings");
@@ -26627,6 +26736,36 @@ static void show_screen_popup(void)
     lv_obj_set_style_text_font(recal_lbl, &lv_font_montserrat_12, 0);
     lv_obj_center(recal_lbl);
     lv_obj_add_event_cb(recal_btn, screen_popup_recal_cb, LV_EVENT_CLICKED, NULL);
+
+
+    /* Home Layout radio choices */
+    lv_obj_t *home_row = lv_obj_create(dialog);
+    lv_obj_set_size(home_row, lv_pct(100), 32);
+    lv_obj_set_style_bg_opa(home_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(home_row, 0, 0);
+    lv_obj_set_style_pad_all(home_row, 0, 0);
+    lv_obj_set_style_pad_column(home_row, 8, 0);
+    lv_obj_clear_flag(home_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(home_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(home_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *home_hdr = lv_label_create(home_row);
+    lv_label_set_text(home_hdr, "Home:");
+    lv_obj_set_style_text_color(home_hdr, lv_color_hex(0x3F51B5), 0);
+    lv_obj_set_style_text_font(home_hdr, &lv_font_montserrat_12, 0);
+    screen_home_classic_radio = lv_checkbox_create(home_row);
+    lv_checkbox_set_text(screen_home_classic_radio, "Classic");
+    lv_obj_set_style_text_font(screen_home_classic_radio, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_radius(screen_home_classic_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(screen_home_classic_radio, screen_home_layout_radio_cb,
+                        LV_EVENT_VALUE_CHANGED, (void *)&SCREEN_HOME_LAYOUT_CHOICE[0]);
+    screen_home_4cat_radio = lv_checkbox_create(home_row);
+    lv_checkbox_set_text(screen_home_4cat_radio, "4-Category");
+    lv_obj_set_style_text_font(screen_home_4cat_radio, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_radius(screen_home_4cat_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+    lv_obj_add_event_cb(screen_home_4cat_radio, screen_home_layout_radio_cb,
+                        LV_EVENT_VALUE_CHANGED, (void *)&SCREEN_HOME_LAYOUT_CHOICE[1]);
+    if (g_home_layout_4cat) lv_obj_add_state(screen_home_4cat_radio, LV_STATE_CHECKED);
+    else                    lv_obj_add_state(screen_home_classic_radio, LV_STATE_CHECKED);
 
     // Portrait: grow-spacer above the buttons so they drop to the lower area, centered
     // between the Recalibrate button and the bottom edge (a matching spacer follows).
@@ -27320,6 +27459,8 @@ static void settings_tile_event_cb(lv_event_t *e)
         show_timing_popup();
     } else if (strcmp(tile_name, "Screen") == 0) {
         show_screen_popup();
+    } else if (strcmp(tile_name, "Home Layout") == 0) {
+        show_home_layout_popup();
     } else if (strcmp(tile_name, "Data Transfer") == 0) {
         show_data_transfer_screen();
     } else if (strcmp(tile_name, "RedTeam mode") == 0) {
@@ -27340,6 +27481,117 @@ static void settings_tile_event_cb(lv_event_t *e)
 }
 
 // Settings screen - shows submenu with Compromised Data, Scan Time, RedTeam mode, Download Mode
+// ── Home Layout chooser popup (Settings > Home Layout) ──────────────────────
+// Lets the user switch between the classic tile grid and the 4-category router
+// Home at runtime. The choice is persisted in NVS and applied immediately by
+// jumping Home, so it takes effect with a single tap (no reboot needed — the
+// Home is rebuilt fresh on every visit, reading g_home_layout_4cat at dispatch).
+static lv_obj_t *home_layout_popup = NULL;
+static const bool HOME_LAYOUT_CHOICE[2] = { false, true };  // [0]=Classic, [1]=4-Category
+
+static void home_layout_close_cb(lv_event_t *e)
+{
+    (void)e;
+    if (home_layout_popup) { lv_obj_del(home_layout_popup); home_layout_popup = NULL; }
+}
+
+static void home_layout_show_menu_async(void *arg)
+{
+    (void)arg;
+    if (home_layout_popup) { lv_obj_del(home_layout_popup); home_layout_popup = NULL; }
+    show_menu();
+}
+
+static void home_layout_choose_cb(lv_event_t *e)
+{
+    const bool *p = (const bool *)lv_event_get_user_data(e);
+    bool four_cat = (p && *p);
+    g_home_layout_4cat = four_cat;
+    nvs_settings_save_home_layout(four_cat);
+    lv_async_call(home_layout_show_menu_async, NULL);
+}
+
+static void show_home_layout_popup(void)
+{
+    if (home_layout_popup) return;
+
+    home_layout_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(home_layout_popup, lv_disp_get_hor_res(NULL), lv_disp_get_ver_res(NULL));
+    lv_obj_set_pos(home_layout_popup, 0, 0);
+    lv_obj_set_style_bg_color(home_layout_popup, ui_bg_color(), 0);
+    lv_obj_set_style_bg_opa(home_layout_popup, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(home_layout_popup, 0, 0);
+    lv_obj_set_style_radius(home_layout_popup, 0, 0);
+    lv_obj_clear_flag(home_layout_popup, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(home_layout_popup, LV_OBJ_FLAG_CLICKABLE);
+
+    bool ls = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
+
+    lv_obj_t *dialog = lv_obj_create(home_layout_popup);
+    if (ls) lv_obj_set_size(dialog, lv_disp_get_hor_res(NULL) - 40, LV_SIZE_CONTENT);
+    else    lv_obj_set_size(dialog, 220, LV_SIZE_CONTENT);
+    // Bounded height + scroll as a safety net so the dialog can never overflow the
+    // shorter landscape screen (per cym-landscape-support.md fixed-layout rule).
+    lv_obj_set_style_max_height(dialog, lv_disp_get_ver_res(NULL) - 16, 0);
+    lv_obj_center(dialog);
+    lv_obj_set_style_bg_color(dialog, ui_panel_color(), 0);
+    lv_obj_set_style_border_color(dialog, lv_color_hex(0x3F51B5), 0);
+    lv_obj_set_style_border_width(dialog, 2, 0);
+    lv_obj_set_style_radius(dialog, 12, 0);
+    lv_obj_set_scroll_dir(dialog, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(dialog, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_flex_flow(dialog, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(dialog, 10, 0);
+    lv_obj_set_style_pad_gap(dialog, 8, 0);
+
+    lv_obj_t *title = lv_label_create(dialog);
+    lv_label_set_text(title, "Home Layout");
+    lv_obj_set_style_text_color(title, ui_text_color(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+
+    lv_obj_t *hint = lv_label_create(dialog);
+    lv_label_set_text(hint, g_home_layout_asked
+        ? "Choose how the Home screen is organised."
+        : "Choose your Home style. You can change it later in Screen Settings.");
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+
+    // Two choice buttons; the active one is highlighted + labelled "(current)".
+    for (int i = 0; i < 2; i++) {
+        bool four   = HOME_LAYOUT_CHOICE[i];
+        bool active = (four == g_home_layout_4cat);
+        lv_obj_t *btn = lv_btn_create(dialog);
+        lv_obj_set_size(btn, lv_pct(100), 44);
+        lv_obj_set_style_bg_color(btn, active ? lv_color_hex(0x3F51B5) : lv_color_make(70,70,70), 0);
+        lv_obj_set_style_radius(btn, 8, 0);
+        lv_obj_set_style_border_width(btn, active ? 2 : 0, 0);
+        lv_obj_set_style_border_color(btn, lv_color_white(), 0);
+        lv_obj_add_event_cb(btn, home_layout_choose_cb, LV_EVENT_CLICKED, (void *)&HOME_LAYOUT_CHOICE[i]);
+        lv_obj_t *l = lv_label_create(btn);
+        lv_label_set_text_fmt(l, "%s%s", four ? "4-Category" : "Classic (grid)",
+                              active ? "  (current)" : "");
+        lv_obj_set_style_text_color(l, ui_text_color(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_center(l);
+    }
+
+    if (g_home_layout_asked) {
+        lv_obj_t *cancel = lv_btn_create(dialog);
+        lv_obj_set_size(cancel, lv_pct(100), 34);
+        lv_obj_set_style_bg_color(cancel, lv_color_make(60,60,60), 0);
+        lv_obj_set_style_radius(cancel, 8, 0);
+        lv_obj_add_event_cb(cancel, home_layout_close_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *cl = lv_label_create(cancel);
+        lv_label_set_text(cl, "Cancel");
+        lv_obj_set_style_text_color(cl, ui_text_color(), 0);
+        lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
+        lv_obj_center(cl);
+    }
+}
+
 static void show_settings_screen(void)
 {
     create_function_page_base("Settings");
@@ -27361,6 +27613,7 @@ static void show_settings_screen(void)
     create_tile(tiles, MY_SYMBOL_CLOCK,          "Timing",             COLOR_MATERIAL_PURPLE,   settings_tile_event_cb, "Timing");
     create_tile(tiles, LV_SYMBOL_DOWNLOAD,       "Download\nMode",     COLOR_MATERIAL_RED,      settings_tile_event_cb, "Download Mode");
     create_tile(tiles, MY_SYMBOL_DESKTOP,        "Screen",             COLOR_MATERIAL_TEAL,     settings_tile_event_cb, "Screen");
+    create_tile(tiles, MY_SYMBOL_SITEMAP,        "Home\nLayout",       lv_color_hex(0x3F51B5),  settings_tile_event_cb, "Home Layout");
     create_tile(tiles, LV_SYMBOL_SD_CARD,        "SD\nCard",           COLOR_MATERIAL_GREEN,    settings_tile_event_cb, "SD Card");
     create_tile(tiles, MY_SYMBOL_SATELLITE_DISH, "GPS\nInfo",          lv_color_hex(0x00BCD4),  settings_tile_event_cb, "GPS Info");
     create_tile(tiles, MY_SYMBOL_MICROCHIP,      "Hardware\nOptions",  lv_color_hex(0x607D8B),  settings_tile_event_cb, "Hardware Options");
@@ -42395,6 +42648,1119 @@ static void show_deauth_monitor_screen(void)
     // Start WiFi scan to gather network SSIDs
     ESP_LOGI(TAG, "Starting WiFi scan for deauth monitor...");
     wifi_scanner_start_scan();
+}
+
+// ============================================================================
+// DETECT & DEFEND — defensive counterparts to CYM's offensive tools.
+// Design principle (Detect & Defence line): for every attack CYM can perform,
+// CYM should be able to DETECT the same attack running nearby. This is the
+// starter set — Pwnagotchi Detector (WiFi) + BLE Spam Detector (BT). Both are
+// PASSIVE receive-only: they transmit nothing, they only listen and classify.
+// ============================================================================
+
+// ── Detect & Defend sub-menu ──────────────────────────────────────────────────
+static void dd_menu_tile_cb(lv_event_t *e)
+{
+    const char *name = (const char *)lv_event_get_user_data(e);
+    if (!name) return;
+    if      (strcmp(name, "Pwnagotchi") == 0) show_pwnagotchi_detector_screen();
+    else if (strcmp(name, "BLE Spam")   == 0) show_blespam_detector_screen();
+}
+
+static void show_detect_defend_screen(void)
+{
+    create_function_page_base("Detect & Defend");
+    apply_menu_bg();
+
+    lv_obj_t *tiles = lv_obj_create(function_page);
+    lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 48);
+    lv_obj_align(tiles, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_style_bg_opa(tiles, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tiles, 0, 0);
+    lv_obj_set_style_pad_all(tiles, 4, 0);
+    lv_obj_set_style_pad_gap(tiles, 4, 0);
+    lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(tiles, LV_OBJ_FLAG_SCROLLABLE);
+
+    // Pwnagotchi Detector — WiFi: flag a handshake-harvesting Pwnagotchi nearby.
+    // Tile label MUST fit the fixed 68px tile width per line — "Pwnagotchi" (10ch)
+    // wraps mid-word, so the label is shortened (the ghost icon + this menu give the
+    // context). The dispatch key stays "Pwnagotchi".
+    create_tile(tiles, MY_SYMBOL_GHOST,       "Pwn\nDetect", lv_color_hex(0x1A237E), dd_menu_tile_cb, "Pwnagotchi");
+    // BLE Spam Detector — BT: flag the BLE advert-flood our own BLE Spam runs.
+    create_tile(tiles, MY_SYMBOL_BLUETOOTH_B, "BLE Spam\nDetect",   lv_color_hex(0x4A148C), dd_menu_tile_cb, "BLE Spam");
+}
+
+// ── 4-category Home router (runtime-selectable) ─────────────────────────────
+// A router screen IN FRONT of the classic tile grid. Four big category tiles;
+// tapping one opens that category's existing tiles (regrouped, nothing removed).
+// Every sub-tile uses an EXISTING main_tile_event_cb dispatch key, so no screen
+// is duplicated or re-implemented. Back/Home funnel through show_menu(), which
+// (when selected) rebuilds this router — see NAV_SHOW_TABLE for the ‹ Back map.
+
+// One big category tile filling a 2x2 grid cell (own color; white icon+label).
+static lv_obj_t *cat_big_tile(lv_obj_t *parent, const char *icon, const char *text,
+                              lv_color_t color, const char *key, int w, int h)
+{
+    lv_obj_t *t = lv_btn_create(parent);
+    lv_obj_set_size(t, w, h);
+    lv_obj_set_style_bg_color(t, color, LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(t, lv_color_lighten(color, 30), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(t, 0, 0);
+    lv_obj_set_style_radius(t, 14, 0);
+    lv_obj_set_style_shadow_width(t, 0, 0);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(t, 4, 0);
+    lv_obj_set_style_pad_row(t, 6, 0);
+
+    lv_obj_t *ic = lv_label_create(t);
+    lv_label_set_text(ic, icon);
+    lv_obj_set_style_text_font(ic, &lv_extra_symbols, 0);
+    lv_obj_set_style_text_color(ic, lv_color_white(), 0);
+
+    lv_obj_t *lb = lv_label_create(t);
+    lv_label_set_text(lb, text);
+    lv_obj_set_style_text_font(lb, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(lb, lv_color_white(), 0);
+    lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(lb, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(lb, w - 8);
+
+    lv_obj_add_event_cb(t, category_tile_event_cb, LV_EVENT_CLICKED, (void *)key);
+    return t;
+}
+
+static void show_category_home(void)
+{
+    // Root of the menu path — same teardown as show_main_tiles().
+    nav_stack_reset();
+    if (tiles_container) { lv_obj_del(tiles_container); tiles_container = NULL; }
+    if (home_bg_img)     { lv_obj_del(home_bg_img);     home_bg_img = NULL; }
+    if (function_page)   { lv_obj_del(function_page);   function_page = NULL; }
+    reset_function_page_children();
+
+    tiles_container = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(tiles_container, lv_pct(100), lv_disp_get_ver_res(NULL) - 30);
+    lv_obj_align(tiles_container, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(tiles_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tiles_container, 0, 0);
+    lv_obj_set_style_radius(tiles_container, 0, 0);
+    lv_obj_set_style_pad_all(tiles_container, 8, 0);
+    lv_obj_set_style_pad_gap(tiles_container, 8, 0);
+    lv_obj_set_flex_flow(tiles_container, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles_container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(tiles_container, LV_OBJ_FLAG_SCROLLABLE);
+
+    // 2x2 grid that fills the wallpaper in both orientations. Cell size is derived
+    // from the live resolution (portrait 240x290 -> ~104x133; landscape 320x210 ->
+    // ~148x93) so the four tiles always fit without a per-orientation branch.
+    int hor = lv_disp_get_hor_res(NULL);
+    int ver = lv_disp_get_ver_res(NULL);
+    int cw = (hor - 8 * 2 - 8) / 2;        // 2 cols: minus L/R pad(8) + 1 gap(8)
+    int ch = (ver - 30 - 8 * 2 - 8) / 2;   // 2 rows within the (ver-30) container
+    if (cw < 60) cw = 60;
+    if (ch < 50) ch = 50;
+
+    // Colors mirror the mockup: attack red, defend green, recon blue, tools amber.
+    cat_big_tile(tiles_container, MY_SYMBOL_SKULL_CROSS, "Attack",         lv_color_hex(0xA84C50), "CAT:Attack", cw, ch);
+    cat_big_tile(tiles_container, MY_SYMBOL_SHIELD,      "Detect &\nDefend", lv_color_hex(0x3A805E), "CAT:Defend", cw, ch);
+    cat_big_tile(tiles_container, MY_SYMBOL_BINOCULARS,  "Recon &\nScan",  lv_color_hex(0x41609F), "CAT:Recon", cw, ch);
+    cat_big_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Tools &\nSystem",lv_color_hex(0xA97D38), "CAT:Tools", cw, ch);
+
+    apply_menu_bg();
+    lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Shared sub-grid container for a category screen (scrolls if the tiles run long,
+// so it stays safe in landscape's shorter height — cym-landscape-support pattern).
+static lv_obj_t *cat_sub_tiles(void)
+{
+    lv_obj_t *tiles = lv_obj_create(function_page);
+    lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 48);
+    lv_obj_align(tiles, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_style_bg_opa(tiles, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tiles, 0, 0);
+    lv_obj_set_style_pad_all(tiles, 4, 0);
+    lv_obj_set_style_pad_gap(tiles, 4, 0);
+    lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+    lv_obj_set_scrollbar_mode(tiles, LV_SCROLLBAR_MODE_AUTO);
+    return tiles;
+}
+
+// A few leaf screens hard-set their own ‹ Back target to the OLD parent menu
+// (Drone Detect/Spoof -> Drone Stuff, Passive Log -> WiFi menu). Launched from a
+// category we re-point ‹ Back to the category AFTER the screen builds, so Back
+// stays inside the router. The show_* fn sets g_screen_back_fn while building;
+// we override it right after (nav_back_cb reads it only at Back time). The classic
+// Classic Home remains untouched, so its Back still goes to the original menu.
+static void cat_go_drone_detect(lv_event_t *e) { (void)e; show_drone_detector_screen(); g_screen_back_fn = show_cat_defend; }
+static void cat_go_drone_spoof(lv_event_t *e)  { (void)e; show_drone_spoof_screen();     g_screen_back_fn = show_cat_attack; }
+static void cat_go_passive_log(lv_event_t *e)  { (void)e; show_obs_store_screen();       g_screen_back_fn = show_cat_recon;  }
+
+// NOTE ON GROUPING: the WiFi menu, Drone Stuff and IOT/OT umbrella menus are
+// FLATTENED here — their leaf tools appear directly under the right category, so
+// nothing is duplicated and every screen the classic Home reached stays reachable.
+// Each tile below reuses the EXACT icon / label / color / dispatch key of the
+// real screen it opens (copied from show_wifi_menu_screen / show_drone_stuff_screen
+// / show_iot_ot_menu_screen), so the tiles look identical to the shipping firmware.
+// Bluetooth / Radio / IR / NFC stay as whole menus (their own leaves are reached
+// inside them). Category placement of a few mixed tools (WiFi Scan&Attack, whole
+// Bluetooth/Radio menus) is a judgment call and trivially movable.
+static void show_cat_attack(void)
+{
+    create_function_page_base("Attack");
+    apply_menu_bg();
+    lv_obj_t *tiles = cat_sub_tiles();
+    create_tile(tiles, LV_SYMBOL_WIFI,        "Scan &\nAttack",  UI_ACCENT_BLUE,         main_tile_event_cb, "WiFi Scan & Attack");
+    create_tile(tiles, MY_SYMBOL_SKULL_CROSS, "WiFi\nAttacks",   UI_ACCENT_RED,          main_tile_event_cb, "Global WiFi Attacks");
+    create_tile(tiles, MY_SYMBOL_GHOST,       "Drone\nSpoof",    lv_color_hex(0x4A148C), cat_go_drone_spoof, "ds");
+    create_tile(tiles, MY_SYMBOL_BLUETOOTH_B, "Bluetooth",       UI_ACCENT_CYAN,         main_tile_event_cb, "Bluetooth");
+    if (g_rf_hat_enabled)
+        create_tile(tiles, MY_SYMBOL_TOWER,   "Radio",           lv_color_hex(0x6A1B9A), main_tile_event_cb, "Radio Menu");
+}
+
+static void show_cat_defend(void)
+{
+    create_function_page_base("Defend");
+    apply_menu_bg();
+    lv_obj_t *tiles = cat_sub_tiles();
+    create_tile(tiles, MY_SYMBOL_SHIELD,      "Detectors",       lv_color_hex(0x1B5E20), main_tile_event_cb, "Detect & Defend");
+    create_tile(tiles, MY_SYMBOL_SATELLITE,   "Deauth\nMon.",    UI_ACCENT_AMBER,        main_tile_event_cb, "Deauth Monitor");
+    create_tile(tiles, MY_SYMBOL_JET_FIGHTER, "Drone\nDetect",   lv_color_hex(0x1B5E20), cat_go_drone_detect, "dd");
+}
+
+static void show_cat_recon(void)
+{
+    create_function_page_base("Recon & Scan");
+    apply_menu_bg();
+    lv_obj_t *tiles = cat_sub_tiles();
+    create_tile(tiles, MY_SYMBOL_BINOCULARS,    "WiFi\nObserver",  UI_ACCENT_PURPLE,       main_tile_event_cb, "WiFi Sniff&Karma");
+    create_tile(tiles, MY_SYMBOL_CHART_BAR,     "Channel\nAnalyzer", lv_color_hex(0x1A237E), main_tile_event_cb, "Chanalizer");
+    create_tile(tiles, MY_SYMBOL_WAVE,          "WiFi\nScope",     lv_color_hex(0x006064), main_tile_event_cb, "WiFi Scope");
+    create_tile(tiles, LV_SYMBOL_DOWNLOAD,      "WiFi\nCapture",   lv_color_hex(0x00695C), main_tile_event_cb, "WiFi Capture");
+    create_tile(tiles, MY_SYMBOL_SATELLITE_DISH,"ESPNow\nScout",   lv_color_hex(0x004D40), main_tile_event_cb, "ESP-NOW Scout");
+    create_tile(tiles, MY_SYMBOL_DATABASE,      "Passive\nLog",    lv_color_hex(0x311B92), cat_go_passive_log, "pl");
+    create_tile(tiles, MY_SYMBOL_CAR,           "Wardrive",        COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
+    create_tile(tiles, MY_SYMBOL_SATELLITE_DISH,"OT Air\nSurvey",  lv_color_hex(0x4A148C), main_tile_event_cb, "OT Air Survey");
+#if CONFIG_IEEE802154_ENABLED
+    create_tile(tiles, MY_SYMBOL_SITEMAP,       "Zigbee\nScout",   lv_color_hex(0x00695C), main_tile_event_cb, "Zigbee Scout");
+#endif
+}
+
+static void show_cat_tools(void)
+{
+    create_function_page_base("Tools & System");
+    apply_menu_bg();
+    lv_obj_t *tiles = cat_sub_tiles();
+    create_tile(tiles, MY_SYMBOL_MICROCHIP,   "NFC/\nRFID",   lv_color_hex(0x00695C), main_tile_event_cb, "NFC Hub");
+    if (g_rf_hat_enabled)
+        create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
+    create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
+}
+
+static void category_tile_event_cb(lv_event_t *e)
+{
+    const char *key = (const char *)lv_event_get_user_data(e);
+    if (!key) return;
+    if      (strcmp(key, "CAT:Attack") == 0) show_cat_attack();
+    else if (strcmp(key, "CAT:Defend") == 0) show_cat_defend();
+    else if (strcmp(key, "CAT:Recon")  == 0) show_cat_recon();
+    else if (strcmp(key, "CAT:Tools")  == 0) show_cat_tools();
+}
+
+// ── Pwnagotchi Detector (WiFi promiscuous, passive) ───────────────────────────
+// A Pwnagotchi advertises its presence on the pwngrid with 802.11 beacon frames.
+// The default grid-advertisement source MAC is de:ad:be:ef:de:ad; newer units can
+// change it, so we ALSO match the pwngrid JSON payload ("pwnd..." fields) as a
+// fallback and best-effort extract the unit name. Detection is a best-effort
+// signature match, not proof — that honesty is part of the Detect & Defend line.
+#define PWN_MAX 32
+typedef struct {
+    uint8_t  mac[6];
+    char     name[24];
+    int8_t   rssi;
+    uint8_t  channel;
+    uint32_t hits;
+    uint32_t last_ms;
+} pwn_rec_t;
+// Buffers are heap-allocated on screen open (not static .bss) so the classic
+// ESP32 board (CYD-2432S028, no PSRAM) still links within its tight internal
+// DRAM; SPIRAM is preferred where present (the C5 boards), internal otherwise.
+static void *dd_alloc(size_t sz)
+{
+    void *p = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
+    if (!p) p = heap_caps_malloc(sz, MALLOC_CAP_8BIT);   // no PSRAM (CYD) -> internal
+    if (p) memset(p, 0, sz);
+    return p;
+}
+
+static pwn_rec_t     *s_pwn = NULL;        // [PWN_MAX]
+static pwn_rec_t     *s_pwn_snap = NULL;   // [PWN_MAX] UI-timer scratch
+static volatile int   s_pwn_count = 0;
+static portMUX_TYPE   s_pwn_mux   = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool  s_pwn_active = false;
+static volatile bool  s_pwn_dirty  = false;
+static TaskHandle_t   s_pwn_task  = NULL;
+static StaticTask_t   s_pwn_taskbuf;
+static StackType_t   *s_pwn_stack = NULL;
+static int            s_pwn_ch_idx  = 0;
+static int            s_pwn_channel = 1;
+static int64_t        s_pwn_last_hop = 0;
+static lv_obj_t      *s_pwn_status = NULL;   // top: always-on scanning indicator
+static lv_obj_t      *s_pwn_alert  = NULL;   // bottom bar: detection alert (separate)
+static lv_obj_t      *s_pwn_list   = NULL;
+static lv_timer_t    *s_pwn_ui_timer = NULL;
+static const uint8_t  PWN_SIG_MAC[6] = { 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad };
+
+// Pwnagotchis are 2.4 GHz-only (Pi/ESP WiFi), so the detector hops ONLY the 2.4 GHz
+// channels — never the 25 5 GHz channels in dual_band_channels[]. This cuts a full
+// sweep from ~12 s (39 ch) to ~4 s (13 ch), every dwell landing where a pwnagotchi
+// can actually be: faster first detection AND a far more responsive locate meter.
+static const int PWN_CH_2G[]  = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+static const int PWN_CH_2G_N  = (int)(sizeof(PWN_CH_2G) / sizeof(PWN_CH_2G[0]));
+
+// ── Locate mode (in-place fox-hunt) — tap a detected row to home in on it by
+// RSSI. Same screen: the list is hidden, the channel is locked to the target,
+// and a live signal meter is shown. No radio teardown, so the detector keeps
+// running underneath. BLE Spam has no equivalent (spammers rotate MAC every ~2s).
+static volatile bool     s_pwn_locate    = false;
+static uint8_t           s_pwn_loc_mac[6];
+static char              s_pwn_loc_name[24];
+static int               s_pwn_loc_ch    = 1;
+static volatile int8_t   s_pwn_loc_rssi  = -128;
+static volatile bool     s_pwn_loc_found = false;
+static volatile uint32_t s_pwn_loc_seen  = 0;
+static lv_obj_t *s_pwn_loc_cont  = NULL;
+static lv_obj_t *s_pwn_loc_title = NULL;
+static lv_obj_t *s_pwn_loc_val   = NULL;
+static lv_obj_t *s_pwn_loc_bar   = NULL;
+static lv_obj_t *s_pwn_loc_hint  = NULL;
+
+static void pwn_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    if (!s_pwn_active || !s_pwn || type != WIFI_PKT_MGMT) return;
+    const wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
+    const uint8_t *f = pkt->payload;
+    int len = pkt->rx_ctrl.sig_len;
+    if (len < 38) return;                  // 24 hdr + 12 fixed + 2 first-tag hdr
+    if ((f[0] & 0xFC) != 0x80) return;     // beacon subtype only
+
+    const uint8_t *sa    = &f[10];         // Address 2 (source)
+    const uint8_t *bssid = &f[16];         // Address 3 (BSSID)
+    bool mac_match = (memcmp(sa, PWN_SIG_MAC, 6) == 0) ||
+                     (memcmp(bssid, PWN_SIG_MAC, 6) == 0);
+
+    const uint8_t *body = f + 36;          // tagged parameters
+    int blen = len - 36;
+    bool sig_match = false;
+    if (!mac_match && blen > 4) {          // only scan when MAC didn't already match
+        for (int i = 0; i + 4 <= blen; i++) {
+            if (body[i]=='p' && body[i+1]=='w' && body[i+2]=='n' && body[i+3]=='d') { sig_match = true; break; }
+        }
+    }
+    if (!mac_match && !sig_match) return;
+
+    // Best-effort name extraction from the pwngrid JSON ("name":"<host>").
+    char namebuf[24]; namebuf[0] = '\0';
+    if (blen > 8) {
+        for (int i = 0; i + 8 <= blen; i++) {
+            if (memcmp(body + i, "\"name\":\"", 8) == 0) {
+                int j = i + 8, k = 0;
+                while (j < blen && body[j] != '"' && k < (int)sizeof(namebuf) - 1) {
+                    char c = (char)body[j++];
+                    namebuf[k++] = (c >= 0x20 && c < 0x7F) ? c : '?';
+                }
+                namebuf[k] = '\0';
+                break;
+            }
+        }
+    }
+
+    int8_t rssi = pkt->rx_ctrl.rssi;
+
+    // Locate mode: keep the selected target's live RSSI fresh (channel is locked).
+    if (s_pwn_locate && memcmp(sa, s_pwn_loc_mac, 6) == 0) {
+        // Advertise beacons arrive sparsely (~1/s, spread over channels), so single
+        // readings jump. Light EMA (½ old + ½ new) smooths the FAR<->CLOSE jitter
+        // while still tracking as you move.
+        if (!s_pwn_loc_found) s_pwn_loc_rssi = rssi;
+        else s_pwn_loc_rssi = (int8_t)(((int)s_pwn_loc_rssi + rssi) / 2);
+        s_pwn_loc_ch   = s_pwn_channel;      // live channel where the target was seen
+        s_pwn_loc_found = true;
+        s_pwn_loc_seen  = (uint32_t)(esp_timer_get_time() / 1000);
+    }
+
+    portENTER_CRITICAL(&s_pwn_mux);
+    int idx = -1;
+    for (int i = 0; i < s_pwn_count; i++)
+        if (memcmp(s_pwn[i].mac, sa, 6) == 0) { idx = i; break; }
+    bool is_new = (idx < 0 && s_pwn_count < PWN_MAX);
+    if (is_new) {
+        idx = s_pwn_count++;
+        memset(&s_pwn[idx], 0, sizeof(s_pwn[idx]));
+        memcpy(s_pwn[idx].mac, sa, 6);
+    }
+    if (idx >= 0) {
+        s_pwn[idx].rssi    = rssi;
+        s_pwn[idx].channel = (uint8_t)s_pwn_channel;
+        s_pwn[idx].hits++;
+        s_pwn[idx].last_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        if (namebuf[0] && s_pwn[idx].name[0] == '\0') {
+            strncpy(s_pwn[idx].name, namebuf, sizeof(s_pwn[idx].name) - 1);
+        }
+        s_pwn_dirty = true;
+    }
+    portEXIT_CRITICAL(&s_pwn_mux);
+
+    // Serial line on first sight of a new unit (lets both boards be watched over
+    // USB serial while testing). WiFi-task context — safe for ESP_LOGI, and rare.
+    if (is_new) {
+        ESP_LOGW(TAG, "[DETECT&DEFEND] Pwnagotchi seen: %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm name=%s",
+                 sa[0], sa[1], sa[2], sa[3], sa[4], sa[5],
+                 s_pwn_channel, rssi, namebuf[0] ? namebuf : "?");
+    }
+}
+
+static void pwn_task(void *arg)
+{
+    (void)arg;
+    while (s_pwn_active) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        if (!s_pwn_active) break;
+        // Locate mode KEEPS hopping: a running pwnagotchi channel-hops during recon,
+        // so locking to one channel would miss it most of the time (RSSI stuck at
+        // "--"). Hopping catches it on whichever channel it's currently on; RSSI is
+        // comparable across channels, so the proximity meter stays useful.
+        int64_t now = esp_timer_get_time() / 1000;
+        if (now - s_pwn_last_hop >= 300) {   // ~300ms dwell per channel
+            s_pwn_channel = PWN_CH_2G[s_pwn_ch_idx];
+            s_pwn_ch_idx  = (s_pwn_ch_idx + 1) % PWN_CH_2G_N;
+            esp_wifi_set_channel(s_pwn_channel, WIFI_SECOND_CHAN_NONE);
+            s_pwn_last_hop = now;
+        }
+    }
+    s_pwn_task = NULL;
+    vTaskDelete(NULL);
+}
+
+// Tap a detected row -> enter in-place locate mode for that MAC.
+static void pwn_row_tap_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    portENTER_CRITICAL(&s_pwn_mux);
+    if (idx < 0 || idx >= s_pwn_count) { portEXIT_CRITICAL(&s_pwn_mux); return; }
+    memcpy(s_pwn_loc_mac, s_pwn[idx].mac, 6);
+    s_pwn_loc_ch = s_pwn[idx].channel ? s_pwn[idx].channel : 1;
+    strncpy(s_pwn_loc_name, s_pwn[idx].name, sizeof(s_pwn_loc_name) - 1);
+    s_pwn_loc_name[sizeof(s_pwn_loc_name) - 1] = '\0';
+    portEXIT_CRITICAL(&s_pwn_mux);
+
+    s_pwn_loc_rssi = -128; s_pwn_loc_found = false; s_pwn_loc_seen = 0;
+    s_pwn_locate = true;                      // detector keeps hopping (see pwn_task)
+
+    if (s_pwn_list)   lv_obj_add_flag(s_pwn_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_status) lv_obj_add_flag(s_pwn_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_alert)  lv_obj_add_flag(s_pwn_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_loc_cont) lv_obj_clear_flag(s_pwn_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_loc_title) {
+        char tb[72];
+        snprintf(tb, sizeof(tb), "%s\n%02X:%02X:%02X:%02X:%02X:%02X  ch%d",
+                 s_pwn_loc_name[0] ? s_pwn_loc_name : "Pwnagotchi",
+                 s_pwn_loc_mac[0], s_pwn_loc_mac[1], s_pwn_loc_mac[2],
+                 s_pwn_loc_mac[3], s_pwn_loc_mac[4], s_pwn_loc_mac[5], s_pwn_loc_ch);
+        lv_label_set_text(s_pwn_loc_title, tb);
+    }
+}
+
+// "< List" — leave locate mode, resume the scanning list.
+static void pwn_loc_back_cb(lv_event_t *e)
+{
+    (void)e;
+    s_pwn_locate = false;                    // pwn_task resumes channel hopping
+    if (s_pwn_loc_cont) lv_obj_add_flag(s_pwn_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_status)   lv_obj_clear_flag(s_pwn_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_alert)    lv_obj_clear_flag(s_pwn_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_pwn_list)     lv_obj_clear_flag(s_pwn_list, LV_OBJ_FLAG_HIDDEN);
+    portENTER_CRITICAL(&s_pwn_mux);
+    s_pwn_dirty = true;                       // force list repaint on return
+    portEXIT_CRITICAL(&s_pwn_mux);
+}
+
+static void pwn_ui_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_pwn_active || !s_pwn || !s_pwn_snap) return;
+
+    // Locate mode: drive the fox-hunt signal meter for the selected target.
+    if (s_pwn_locate) {
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        // 6s hold: the target hops, so it's seen ~once per sweep — hold the last
+        // reading between sightings instead of blanking to "--" after 3s.
+        bool fresh = s_pwn_loc_found && (now - s_pwn_loc_seen < 12000);
+        int rssi = s_pwn_loc_rssi;
+        int pct  = !fresh ? 0 : rssi <= -90 ? 0 : rssi >= -30 ? 100 : (rssi + 90) * 100 / 60;
+        // Live "last seen chN" so it's clear the target is being caught (and where).
+        if (s_pwn_loc_title && lv_obj_is_valid(s_pwn_loc_title)) {
+            char tb[80];
+            snprintf(tb, sizeof(tb), "%s\n%02X:%02X:%02X:%02X:%02X:%02X\nlast seen ch%d",
+                     s_pwn_loc_name[0] ? s_pwn_loc_name : "Pwnagotchi",
+                     s_pwn_loc_mac[0], s_pwn_loc_mac[1], s_pwn_loc_mac[2],
+                     s_pwn_loc_mac[3], s_pwn_loc_mac[4], s_pwn_loc_mac[5], s_pwn_loc_ch);
+            lv_label_set_text(s_pwn_loc_title, tb);
+        }
+        if (s_pwn_loc_bar) lv_bar_set_value(s_pwn_loc_bar, pct, LV_ANIM_ON);
+        if (s_pwn_loc_val && lv_obj_is_valid(s_pwn_loc_val)) {
+            char vb[24];
+            if (fresh) snprintf(vb, sizeof(vb), "%d dBm", rssi);
+            else       snprintf(vb, sizeof(vb), "-- dBm");
+            lv_label_set_text(s_pwn_loc_val, vb);
+        }
+        if (s_pwn_loc_hint && lv_obj_is_valid(s_pwn_loc_hint)) {
+            const char *h = !fresh ? "Searching..." :
+                            pct >= 80 ? "VERY CLOSE" : pct >= 55 ? "CLOSE" :
+                            pct >= 30 ? "NEARBY"     : "FAR";
+            lv_label_set_text(s_pwn_loc_hint, h);
+            lv_obj_set_style_text_color(s_pwn_loc_hint,
+                                        pct >= 55 ? COLOR_MATERIAL_RED : ui_text_color(), 0);
+        }
+        return;                              // list stays hidden while locating
+    }
+
+    pwn_rec_t *snap = s_pwn_snap;          // heap scratch (single-threaded LVGL ctx)
+    int n;
+    bool dirty;
+    portENTER_CRITICAL(&s_pwn_mux);
+    n = s_pwn_count;
+    memcpy(snap, s_pwn, (size_t)n * sizeof(pwn_rec_t));
+    dirty = s_pwn_dirty; s_pwn_dirty = false;
+    portEXIT_CRITICAL(&s_pwn_mux);
+
+    // Top status ALWAYS shows scanning (the channel number ticks, so it's visibly
+    // alive). The detection result is a SEPARATE red line at the bottom, so it stays
+    // obvious that the scan keeps running after a hit.
+    if (s_pwn_status && lv_obj_is_valid(s_pwn_status)) {
+        char sb[48];
+        snprintf(sb, sizeof(sb), LV_SYMBOL_WIFI "  Scanning... ch %d", s_pwn_channel);
+        lv_label_set_text(s_pwn_status, sb);
+    }
+    if (s_pwn_alert && lv_obj_is_valid(s_pwn_alert)) {
+        char ab[72];
+        if (n == 0) {
+            snprintf(ab, sizeof(ab), "No Pwnagotchi detected yet");
+            lv_obj_set_style_text_color(s_pwn_alert, lv_color_make(150, 150, 150), 0);
+        } else {
+            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " %d Pwnagotchi - tap to locate", n);
+            lv_obj_set_style_text_color(s_pwn_alert, COLOR_MATERIAL_RED, 0);
+        }
+        lv_label_set_text(s_pwn_alert, ab);
+    }
+
+    if (dirty && s_pwn_list && lv_obj_is_valid(s_pwn_list)) {
+        lv_obj_clean(s_pwn_list);
+        for (int i = 0; i < n; i++) {
+            char rb[96];
+            // 3 short lines (name / MAC / ch·rssi·hits) so each fits one line in
+            // BOTH portrait and landscape — no single token wider than the screen.
+            snprintf(rb, sizeof(rb),
+                     "%s\n%02X:%02X:%02X:%02X:%02X:%02X\nch%d   %ddBm   x%lu",
+                     snap[i].name[0] ? snap[i].name : "Pwnagotchi",
+                     snap[i].mac[0], snap[i].mac[1], snap[i].mac[2],
+                     snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
+                     snap[i].channel, snap[i].rssi, (unsigned long)snap[i].hits);
+            // Clickable row -> locate this MAC (fox-hunt).
+            lv_obj_t *row = lv_obj_create(s_pwn_list);
+            lv_obj_set_width(row, lv_pct(100));
+            lv_obj_set_height(row, LV_SIZE_CONTENT);
+            lv_obj_set_style_bg_color(row, ui_bg_color(), 0);
+            lv_obj_set_style_bg_color(row, lv_color_lighten(ui_bg_color(), 25), LV_STATE_PRESSED);
+            lv_obj_set_style_border_width(row, 0, 0);
+            lv_obj_set_style_pad_all(row, 3, 0);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(row, pwn_row_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+            lv_obj_t *lbl = lv_label_create(row);
+            lv_label_set_text(lbl, rb);
+            lv_obj_set_width(lbl, lv_pct(100));
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+            lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(lbl, ui_text_color(), 0);
+        }
+    }
+}
+
+static void pwnagotchi_detector_stop(void)
+{
+    s_pwn_active = false;
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    // We only ever set 2.4 GHz CHANNELS (never 2G_ONLY band mode), so we don't lock
+    // the band — but re-assert AUTO on exit as insurance so a following 5 GHz feature
+    // is never left parked on a 2.4 GHz channel (the known "stuck on 2.4" class of bug).
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+    if (s_pwn_ui_timer) { lv_timer_del(s_pwn_ui_timer); s_pwn_ui_timer = NULL; }
+    // The hop task owns s_pwn_stack until it clears its handle immediately before
+    // vTaskDelete(). Wait for that ownership handoff instead of freeing on a fixed delay.
+    for (int i = 0; s_pwn_task && i < 50; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (s_pwn_task) {
+        ESP_LOGE(TAG, "Pwnagotchi detector task did not stop; preserving stack");
+    } else if (s_pwn_stack) {
+        heap_caps_free(s_pwn_stack);
+        s_pwn_stack = NULL;
+    }
+    s_pwn_locate = false;
+    s_pwn_status = NULL;
+    s_pwn_alert  = NULL;
+    s_pwn_list   = NULL;
+    s_pwn_loc_cont = NULL; s_pwn_loc_title = NULL; s_pwn_loc_val = NULL;
+    s_pwn_loc_bar  = NULL; s_pwn_loc_hint  = NULL;
+    portENTER_CRITICAL(&s_pwn_mux);
+    s_pwn_count = 0; s_pwn_dirty = false;
+    portEXIT_CRITICAL(&s_pwn_mux);
+    if (s_pwn)      { heap_caps_free(s_pwn);      s_pwn = NULL; }
+    if (s_pwn_snap) { heap_caps_free(s_pwn_snap); s_pwn_snap = NULL; }
+    s_pwn_ch_idx = 0; s_pwn_channel = 1;
+}
+
+static void show_pwnagotchi_detector_screen(void)
+{
+    if (!ensure_wifi_mode()) {
+        ESP_LOGE(TAG, "Pwnagotchi detector: WiFi mode failed");
+        return;
+    }
+    create_function_page_base("Pwnagotchi Detect");
+    g_screen_stop_fn = pwnagotchi_detector_stop;
+    apply_menu_bg();
+
+    portENTER_CRITICAL(&s_pwn_mux);
+    s_pwn_count = 0; s_pwn_dirty = false;
+    portEXIT_CRITICAL(&s_pwn_mux);
+
+    // Top: always-on scanning indicator (single line; the channel number ticks).
+    s_pwn_status = lv_label_create(function_page);
+    lv_label_set_text(s_pwn_status, LV_SYMBOL_WIFI "  Scanning...");
+    lv_obj_set_style_text_align(s_pwn_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_pwn_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_pwn_status, ui_text_color(), 0);
+    lv_obj_set_width(s_pwn_status, lv_pct(96));
+    lv_label_set_long_mode(s_pwn_status, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_pwn_status, LV_ALIGN_TOP_MID, 0, 34);
+
+    // Bottom bar: detection alert, SEPARATE from the scan line (uses the space
+    // under the list; hidden gap is gone). Grey when none, red on detection.
+    s_pwn_alert = lv_label_create(function_page);
+    lv_label_set_text(s_pwn_alert, "No Pwnagotchi detected yet");
+    lv_obj_set_style_text_align(s_pwn_alert, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_pwn_alert, &lv_font_montserrat_12, 0);   // fits narrow portrait
+    lv_obj_set_style_text_color(s_pwn_alert, lv_color_make(150, 150, 150), 0);
+    lv_obj_set_width(s_pwn_alert, lv_pct(96));
+    lv_label_set_long_mode(s_pwn_alert, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_pwn_alert, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+    // List container between the scan line and the alert bar. Height = interior
+    // minus the top status (~26) and the bottom bar (~30). Reflows in both modes.
+    s_pwn_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_pwn_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 60 - 34);
+    lv_obj_align(s_pwn_list, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_set_style_bg_color(s_pwn_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_pwn_list, 0, 0);
+    lv_obj_set_flex_flow(s_pwn_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_pwn_list, 4, 0);
+    lv_obj_set_style_pad_all(s_pwn_list, 4, 0);
+    lv_obj_set_scrollbar_mode(s_pwn_list, LV_SCROLLBAR_MODE_AUTO);
+
+    // Locate overlay (hidden until a row is tapped) — fox-hunt RSSI meter. Centered
+    // flex column, so it fits both portrait and landscape without special-casing.
+    s_pwn_locate = false;
+    s_pwn_loc_cont = lv_obj_create(function_page);
+    lv_obj_set_size(s_pwn_loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_pwn_loc_cont, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_pwn_loc_cont, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_pwn_loc_cont, 0, 0);
+    lv_obj_set_flex_flow(s_pwn_loc_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_pwn_loc_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_pwn_loc_cont, 12, 0);
+    lv_obj_clear_flag(s_pwn_loc_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_pwn_loc_cont, LV_OBJ_FLAG_HIDDEN);
+
+    s_pwn_loc_title = lv_label_create(s_pwn_loc_cont);
+    lv_label_set_text(s_pwn_loc_title, "");
+    lv_obj_set_style_text_align(s_pwn_loc_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_pwn_loc_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_pwn_loc_title, ui_text_color(), 0);
+    lv_obj_set_width(s_pwn_loc_title, lv_pct(92));
+    lv_label_set_long_mode(s_pwn_loc_title, LV_LABEL_LONG_WRAP);
+
+    s_pwn_loc_val = lv_label_create(s_pwn_loc_cont);
+    lv_label_set_text(s_pwn_loc_val, "-- dBm");
+    lv_obj_set_style_text_font(s_pwn_loc_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_pwn_loc_val, COLOR_MATERIAL_RED, 0);
+
+    s_pwn_loc_bar = lv_bar_create(s_pwn_loc_cont);
+    lv_obj_set_size(s_pwn_loc_bar, lv_pct(80), 18);
+    lv_bar_set_range(s_pwn_loc_bar, 0, 100);
+    lv_bar_set_value(s_pwn_loc_bar, 0, LV_ANIM_OFF);
+
+    s_pwn_loc_hint = lv_label_create(s_pwn_loc_cont);
+    lv_label_set_text(s_pwn_loc_hint, "Searching...");
+    lv_obj_set_style_text_font(s_pwn_loc_hint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_pwn_loc_hint, ui_text_color(), 0);
+
+    lv_obj_t *loc_back = lv_btn_create(s_pwn_loc_cont);
+    lv_obj_set_size(loc_back, 130, 42);
+    lv_obj_set_style_bg_color(loc_back, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(loc_back, 8, 0);
+    lv_obj_t *lb = lv_label_create(loc_back);
+    lv_label_set_text(lb, LV_SYMBOL_LEFT "  List");
+    lv_obj_set_style_text_color(lb, ui_text_color(), 0);
+    lv_obj_center(lb);
+    lv_obj_add_event_cb(loc_back, pwn_loc_back_cb, LV_EVENT_CLICKED, NULL);
+
+    // Allocate detection buffers from heap (see dd_alloc — keeps them out of the
+    // classic ESP32's tight static DRAM). Fail gracefully if RAM is exhausted.
+    s_pwn      = (pwn_rec_t *)dd_alloc(sizeof(pwn_rec_t) * PWN_MAX);
+    s_pwn_snap = (pwn_rec_t *)dd_alloc(sizeof(pwn_rec_t) * PWN_MAX);
+    if (!s_pwn || !s_pwn_snap) {
+        lv_label_set_text(s_pwn_status, LV_SYMBOL_WARNING "  Out of memory");
+        if (s_pwn)      { heap_caps_free(s_pwn);      s_pwn = NULL; }
+        if (s_pwn_snap) { heap_caps_free(s_pwn_snap); s_pwn_snap = NULL; }
+        return;
+    }
+
+    // Passive WiFi promiscuous (MGMT frames only) + channel-hop task.
+    s_pwn_active = true;
+    s_pwn_ch_idx = 0; s_pwn_last_hop = 0;
+    wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+    esp_wifi_set_promiscuous_filter(&filt);
+    esp_wifi_set_promiscuous_rx_cb(pwn_promiscuous_cb);
+    esp_wifi_set_promiscuous(true);
+
+    // A fail-closed stop can preserve an owned stack rather than risk a UAF.
+    // Reclaim it on the next entry once the prior task has confirmed exit.
+    if (s_pwn_stack && !s_pwn_task) {
+        heap_caps_free(s_pwn_stack);
+        s_pwn_stack = NULL;
+    }
+    // Prefer PSRAM, but fall back to internal RAM on CYD-2432S028 (no PSRAM).
+    s_pwn_stack = (StackType_t *)dd_alloc(3072 * sizeof(StackType_t));
+    if (s_pwn_stack) {
+        s_pwn_task = xTaskCreateStatic(pwn_task, "pwn_det", 3072, NULL, 5,
+                                       s_pwn_stack, &s_pwn_taskbuf);
+    }
+    if (!s_pwn_stack || !s_pwn_task) {
+        ESP_LOGE(TAG, "Pwnagotchi detector: task creation failed");
+        s_pwn_active = false;
+        esp_wifi_set_promiscuous(false);
+        esp_wifi_set_promiscuous_rx_cb(NULL);
+        if (s_pwn_stack) { heap_caps_free(s_pwn_stack); s_pwn_stack = NULL; }
+        lv_label_set_text(s_pwn_status, LV_SYMBOL_WARNING "  Task memory unavailable");
+        return;
+    }
+    s_pwn_ui_timer = lv_timer_create(pwn_ui_timer_cb, 400, NULL);
+}
+
+// ── BLE Spam Detector (BLE scan, passive-classify) ────────────────────────────
+// The BLE spam tools (Flipper BLE Spam, Ghost, ESP32 spammers) flood the air with
+// pairing-popup adverts from many rotating random addresses. Any single popup
+// signature also appears from real devices, so the flood signal is the RATE of
+// DISTINCT advertisers carrying a popup signature in a short window — that is what
+// we count, and only that crosses the threshold into "spam detected".
+enum { BSF_NONE = 0, BSF_APPLE, BSF_SAMSUNG, BSF_GOOGLE, BSF_MICROSOFT, BSF_N };
+static const char *BSF_NAME[BSF_N] = { "-", "Apple", "Samsung", "Google", "Microsoft" };
+
+// A genuine BLE-spam flood is defined by rapid ADDRESS CHURN: the spammer uses a new
+// random address almost every packet, so dozens of BRAND-NEW popup advertisers appear
+// per second. Real Apple/Samsung/Google devices keep a stable address for ~15 min, so
+// after first sight they never count again. We therefore keep a persistent advertiser
+// table (with each address's FIRST-seen time) and flag a flood only when many NEW popup
+// advertisers appear inside a short window — NOT merely when several popup-capable
+// devices are present (which is why "count distinct popup devices" false-positived on a
+// normal room of phones/watches). Research: Wall-of-Flippers + mobile-hacker BLE-spam
+// writeups — the discriminator is rapid address/UUID rotation, not device presence.
+#define BSPAM_TBL         192      // persistent advertiser table size (heap)
+#define BSPAM_WINDOW_MS   3000     // churn measurement window
+#define BSPAM_WARMUP_MS   6000     // no flood decision right after open (learn stable devices)
+#define BSPAM_CHURN_MIN   14       // NEW popup advertisers within window => flood (~5/s)
+typedef struct { uint8_t mac[6]; uint8_t fam; int8_t rssi; uint32_t first_ms; uint32_t last_ms; } bspam_adv_t;
+static bspam_adv_t      *s_bspam = NULL;        // [BSPAM_TBL] address table, heap
+static bspam_adv_t      *s_bspam_snap = NULL;   // [BSPAM_TBL] UI-timer snapshot, heap
+static volatile int      s_bspam_n = 0;         // table entries in use
+static uint32_t          s_bspam_open_ms = 0;   // screen-open time (warmup gate)
+static portMUX_TYPE      s_bspam_mux   = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool     s_bspam_active = false;
+static volatile uint32_t s_bspam_callbacks = 0;
+static bool              s_bspam_was_flood = false;
+static lv_obj_t         *s_bspam_status = NULL;
+static lv_obj_t         *s_bspam_list   = NULL;
+static lv_timer_t       *s_bspam_ui_timer = NULL;
+
+// Spammer fox-hunt: the attacker rotates its MAC every packet, but every packet is a
+// spam-signature advert from the SAME physical radio — so we home in on the RSSI of
+// ANY spam advert (not a fixed MAC). Spam is high-rate (dozens/s), so the meter is
+// smooth and very responsive.
+static volatile bool     s_bspam_locate    = false;
+static volatile int8_t   s_bspam_loc_rssi  = -128;
+static volatile bool     s_bspam_loc_found = false;
+static volatile uint32_t s_bspam_loc_seen  = 0;
+static lv_obj_t *s_bspam_alert    = NULL;   // bottom bar: verdict + tap-to-locate entry
+static lv_obj_t *s_bspam_loc_cont = NULL;
+static lv_obj_t *s_bspam_loc_val  = NULL;
+static lv_obj_t *s_bspam_loc_bar  = NULL;
+static lv_obj_t *s_bspam_loc_hint = NULL;
+
+static uint8_t bspam_classify(const struct ble_hs_adv_fields *fields)
+{
+    if (fields->mfg_data && fields->mfg_data_len >= 3) {
+        uint16_t cid = fields->mfg_data[0] | (fields->mfg_data[1] << 8);
+        if (cid == 0x004C) {                 // Apple Continuity
+            uint8_t st = fields->mfg_data[2];
+            // Proximity Pairing (0x07 AirPods, 0x01 "Not Your Device") + Nearby
+            // Action (0x0F "Setup"/AppleTV) — the three popup types the spam
+            // tools (Flipper/Bruce/Ghost) cycle. Matches Wall-of-Flippers.
+            if (st == 0x0F || st == 0x07 || st == 0x01)
+                return BSF_APPLE;
+        } else if (cid == 0x0075) {          // Samsung (watch/buds popups)
+            return BSF_SAMSUNG;
+        } else if (cid == 0x0006) {          // Microsoft Swift Pair
+            if (fields->mfg_data_len >= 6 && fields->mfg_data[2] == 0x03)
+                return BSF_MICROSOFT;
+        }
+    }
+    if (wp_is_fast_pair_adv(fields)) return BSF_GOOGLE;   // Google Fast Pair popup
+    return BSF_NONE;
+}
+
+static int bspam_gap_cb(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+    __atomic_add_fetch(&s_bspam_callbacks, 1, __ATOMIC_ACQ_REL);
+    if (!s_bspam_active || !s_bspam) goto done;
+
+    const uint8_t *adv; uint8_t adv_len; const uint8_t *addr; int8_t rssi;
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    if (event->type == BLE_GAP_EVENT_EXT_DISC) {
+        struct ble_gap_ext_disc_desc *d = &event->ext_disc;
+        adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
+    } else
+#endif
+    if (event->type == BLE_GAP_EVENT_DISC) {
+        struct ble_gap_disc_desc *d = &event->disc;
+        adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
+    } else goto done;
+
+    struct ble_hs_adv_fields fields;
+    if (ble_hs_adv_parse_fields(&fields, adv, adv_len) != 0) goto done;
+    uint8_t fam = bspam_classify(&fields);
+    if (fam == BSF_NONE) goto done;
+
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    portENTER_CRITICAL(&s_bspam_mux);
+    int idx = -1;
+    for (int i = 0; i < s_bspam_n; i++)
+        if (memcmp(s_bspam[i].mac, addr, 6) == 0) { idx = i; break; }
+    if (idx < 0) {
+        if (s_bspam_n < BSPAM_TBL) idx = s_bspam_n++;
+        else {
+            int oldest = 0;
+            for (int i = 1; i < s_bspam_n; i++)
+                if (s_bspam[i].last_ms < s_bspam[oldest].last_ms) oldest = i;
+            idx = oldest;
+        }
+        memcpy(s_bspam[idx].mac, addr, 6);
+        s_bspam[idx].first_ms = now;
+    }
+    s_bspam[idx].fam = fam;
+    s_bspam[idx].rssi = rssi;
+    s_bspam[idx].last_ms = now;
+    portEXIT_CRITICAL(&s_bspam_mux);
+    if (s_bspam_locate) {
+        if (!s_bspam_loc_found) s_bspam_loc_rssi = rssi;
+        else s_bspam_loc_rssi = (int8_t)(((int)s_bspam_loc_rssi + rssi) / 2);
+        s_bspam_loc_found = true;
+        s_bspam_loc_seen = now;
+    }
+done:
+    __atomic_sub_fetch(&s_bspam_callbacks, 1, __ATOMIC_ACQ_REL);
+    return 0;
+}
+
+static int bspam_start_scan(void)
+{
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    struct ble_gap_ext_disc_params pcoded = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    return ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 0, 0, 0,
+                            BLE_HCI_SCAN_FILT_NO_WL, 0,
+                            &p1m, &pcoded, bspam_gap_cb, NULL);
+#else
+    struct ble_gap_disc_params sp = {
+        .itvl = 0x60, .window = 0x60,
+        .filter_policy = BLE_HCI_SCAN_FILT_NO_WL,
+        .limited = 0, .passive = 1, .filter_duplicates = 0,
+    };
+    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &sp, bspam_gap_cb, NULL);
+#endif
+}
+
+// Enter spammer fox-hunt.
+static void bspam_locate_enter_cb(lv_event_t *e)
+{
+    (void)e;
+    s_bspam_loc_rssi = -128; s_bspam_loc_found = false; s_bspam_loc_seen = 0;
+    s_bspam_locate = true;
+    if (s_bspam_status) lv_obj_add_flag(s_bspam_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_bspam_list)   lv_obj_add_flag(s_bspam_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_bspam_alert)  lv_obj_add_flag(s_bspam_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_bspam_loc_cont) lv_obj_clear_flag(s_bspam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+// "< Back" — leave fox-hunt, return to the monitor view.
+static void bspam_locate_back_cb(lv_event_t *e)
+{
+    (void)e;
+    s_bspam_locate = false;
+    if (s_bspam_loc_cont) lv_obj_add_flag(s_bspam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_bspam_status) lv_obj_clear_flag(s_bspam_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_bspam_list)   lv_obj_clear_flag(s_bspam_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_bspam_alert)  lv_obj_clear_flag(s_bspam_alert, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void bspam_ui_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_bspam_active || !s_bspam || !s_bspam_snap) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    // Fox-hunt view: home in on the RSSI of any spam advert (MAC rotates, signal does
+    // not). Spam is high-rate, so this meter is smooth — a short 2 s hold is plenty.
+    if (s_bspam_locate) {
+        bool fresh = s_bspam_loc_found && (now - s_bspam_loc_seen < 2000);
+        int rssi = s_bspam_loc_rssi;
+        int pct  = !fresh ? 0 : rssi <= -90 ? 0 : rssi >= -30 ? 100 : (rssi + 90) * 100 / 60;
+        if (s_bspam_loc_bar) lv_bar_set_value(s_bspam_loc_bar, pct, LV_ANIM_ON);
+        if (s_bspam_loc_val && lv_obj_is_valid(s_bspam_loc_val)) {
+            char vb[24];
+            if (fresh) snprintf(vb, sizeof(vb), "%d dBm", rssi);
+            else       snprintf(vb, sizeof(vb), "-- dBm");
+            lv_label_set_text(s_bspam_loc_val, vb);
+        }
+        if (s_bspam_loc_hint && lv_obj_is_valid(s_bspam_loc_hint)) {
+            const char *h = !fresh ? "Searching..." :
+                            pct >= 80 ? "VERY CLOSE" : pct >= 55 ? "CLOSE" :
+                            pct >= 30 ? "NEARBY"     : "FAR";
+            lv_label_set_text(s_bspam_loc_hint, h);
+            lv_obj_set_style_text_color(s_bspam_loc_hint,
+                                        pct >= 55 ? COLOR_MATERIAL_RED : ui_text_color(), 0);
+        }
+        return;
+    }
+
+    bspam_adv_t *snap = s_bspam_snap;
+    int n;
+    portENTER_CRITICAL(&s_bspam_mux);
+    n = s_bspam_n;
+    memcpy(snap, s_bspam, (size_t)n * sizeof(bspam_adv_t));
+    portEXIT_CRITICAL(&s_bspam_mux);
+
+    bool warmup = (now - s_bspam_open_ms) < BSPAM_WARMUP_MS;
+    int  fam_churn[BSF_N]; memset(fam_churn, 0, sizeof(fam_churn));
+    int  churn = 0;                        // advertisers FIRST seen within the window
+    int8_t best_rssi = -128;
+    for (int i = 0; i < n; i++) {
+        if ((now - snap[i].first_ms) > BSPAM_WINDOW_MS) continue;  // established device
+        churn++;
+        if (snap[i].fam < BSF_N) fam_churn[snap[i].fam]++;
+        if (snap[i].rssi > best_rssi) best_rssi = snap[i].rssi;
+    }
+    int dom = BSF_NONE, dommax = 0;
+    for (int fi = 1; fi < BSF_N; fi++)
+        if (fam_churn[fi] > dommax) { dommax = fam_churn[fi]; dom = fi; }
+    bool flood = !warmup && churn >= BSPAM_CHURN_MIN;
+
+    if (flood && !s_bspam_was_flood)
+        ESP_LOGW(TAG, "[DETECT&DEFEND] BLE spam flood: %d new advertisers/3s, %s, best %ddBm",
+                 churn, BSF_NAME[dom], best_rssi);
+    s_bspam_was_flood = flood;
+
+    // Top: always-on monitoring line (the new-advertiser count ticks => visibly alive).
+    if (s_bspam_status && lv_obj_is_valid(s_bspam_status)) {
+        char sb[64];
+        if (warmup) snprintf(sb, sizeof(sb), LV_SYMBOL_BLUETOOTH "  Monitoring...\nlearning nearby devices");
+        else        snprintf(sb, sizeof(sb), LV_SYMBOL_BLUETOOTH "  Monitoring... %d new/3s", churn);
+        lv_label_set_text(s_bspam_status, sb);
+    }
+    // Bottom: verdict, SEPARATE from the monitor line (tap to fox-hunt the spammer).
+    if (s_bspam_alert && lv_obj_is_valid(s_bspam_alert)) {
+        char ab[80];
+        if (flood) {
+            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " BLE SPAM (%s) - tap to locate", BSF_NAME[dom]);
+            lv_obj_set_style_text_color(s_bspam_alert, COLOR_MATERIAL_RED, 0);
+        } else {
+            snprintf(ab, sizeof(ab), "No BLE spam - tap to hunt");
+            lv_obj_set_style_text_color(s_bspam_alert, lv_color_make(150, 150, 150), 0);
+        }
+        lv_label_set_text(s_bspam_alert, ab);
+    }
+
+    if (s_bspam_list && lv_obj_is_valid(s_bspam_list)) {
+        lv_obj_clean(s_bspam_list);
+        for (int fi = 1; fi < BSF_N; fi++) {
+            char rb[64];
+            snprintf(rb, sizeof(rb), "%-10s  %d new / 3s", BSF_NAME[fi], fam_churn[fi]);
+            lv_obj_t *row = lv_label_create(s_bspam_list);
+            lv_label_set_text(row, rb);
+            lv_obj_set_width(row, lv_pct(100));
+            lv_obj_set_style_text_font(row, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(row, (fam_churn[fi] && !warmup) ? COLOR_MATERIAL_RED : ui_text_color(), 0);
+        }
+    }
+}
+
+static void blespam_detector_stop(void)
+{
+    s_bspam_active = false;
+    s_bspam_locate = false;
+    if (s_bspam_ui_timer) { lv_timer_del(s_bspam_ui_timer); s_bspam_ui_timer = NULL; }
+    ble_gap_disc_cancel();
+    if (current_radio_mode == RADIO_MODE_BLE) {
+        bt_nimble_deinit();
+        current_radio_mode = RADIO_MODE_NONE;
+    }
+    for (int i = 0; __atomic_load_n(&s_bspam_callbacks, __ATOMIC_ACQUIRE) && i < 100; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    s_bspam_status = NULL;
+    s_bspam_alert = NULL;
+    s_bspam_list = NULL;
+    s_bspam_loc_cont = NULL; s_bspam_loc_val = NULL; s_bspam_loc_bar = NULL; s_bspam_loc_hint = NULL;
+    portENTER_CRITICAL(&s_bspam_mux);
+    s_bspam_n = 0;
+    portEXIT_CRITICAL(&s_bspam_mux);
+    if (__atomic_load_n(&s_bspam_callbacks, __ATOMIC_ACQUIRE) == 0) {
+        if (s_bspam) { heap_caps_free(s_bspam); s_bspam = NULL; }
+        if (s_bspam_snap) { heap_caps_free(s_bspam_snap); s_bspam_snap = NULL; }
+    } else {
+        ESP_LOGE(TAG, "BLE spam callback did not stop; preserving detector buffers");
+    }
+    s_bspam_was_flood = false;
+}
+
+static void show_blespam_detector_screen(void)
+{
+    create_function_page_base("BLE Spam Detect");
+    g_screen_stop_fn = blespam_detector_stop;
+    apply_menu_bg();
+
+    if (__atomic_load_n(&s_bspam_callbacks, __ATOMIC_ACQUIRE) == 0) {
+        if (s_bspam) { heap_caps_free(s_bspam); s_bspam = NULL; }
+        if (s_bspam_snap) { heap_caps_free(s_bspam_snap); s_bspam_snap = NULL; }
+    }
+    portENTER_CRITICAL(&s_bspam_mux);
+    s_bspam_n = 0;
+    portEXIT_CRITICAL(&s_bspam_mux);
+    s_bspam_locate  = false;
+    s_bspam_was_flood = false;
+    s_bspam_open_ms = (uint32_t)(esp_timer_get_time() / 1000);   // warmup starts now
+
+    // Top: always-on monitoring line.
+    s_bspam_status = lv_label_create(function_page);
+    lv_label_set_text(s_bspam_status, LV_SYMBOL_BLUETOOTH "  Initializing BLE...");
+    lv_obj_set_style_text_align(s_bspam_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_bspam_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_bspam_status, ui_text_color(), 0);
+    lv_obj_set_width(s_bspam_status, lv_pct(96));
+    lv_label_set_long_mode(s_bspam_status, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_bspam_status, LV_ALIGN_TOP_MID, 0, 34);
+
+    // Bottom: verdict, SEPARATE from the monitor line + tap to fox-hunt the spammer.
+    s_bspam_alert = lv_label_create(function_page);
+    lv_label_set_text(s_bspam_alert, "No BLE spam - tap to hunt");
+    lv_obj_set_style_text_align(s_bspam_alert, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_bspam_alert, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_bspam_alert, lv_color_make(150, 150, 150), 0);
+    lv_obj_set_width(s_bspam_alert, lv_pct(96));
+    lv_label_set_long_mode(s_bspam_alert, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_bspam_alert, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_add_flag(s_bspam_alert, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_bspam_alert, bspam_locate_enter_cb, LV_EVENT_CLICKED, NULL);
+
+    // Middle: per-family churn list.
+    s_bspam_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_bspam_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 60 - 34);
+    lv_obj_align(s_bspam_list, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_set_style_bg_color(s_bspam_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_bspam_list, 0, 0);
+    lv_obj_set_flex_flow(s_bspam_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_bspam_list, 6, 0);
+    lv_obj_set_style_pad_all(s_bspam_list, 6, 0);
+    lv_obj_set_scrollbar_mode(s_bspam_list, LV_SCROLLBAR_MODE_AUTO);
+
+    // Locate overlay (hidden until the alert is tapped) — spammer RSSI fox-hunt.
+    s_bspam_loc_cont = lv_obj_create(function_page);
+    lv_obj_set_size(s_bspam_loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_bspam_loc_cont, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_bspam_loc_cont, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_bspam_loc_cont, 0, 0);
+    lv_obj_set_flex_flow(s_bspam_loc_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_bspam_loc_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_bspam_loc_cont, 12, 0);
+    lv_obj_clear_flag(s_bspam_loc_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_bspam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *lt = lv_label_create(s_bspam_loc_cont);
+    lv_label_set_text(lt, "BLE Spammer");
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lt, ui_text_color(), 0);
+
+    s_bspam_loc_val = lv_label_create(s_bspam_loc_cont);
+    lv_label_set_text(s_bspam_loc_val, "-- dBm");
+    lv_obj_set_style_text_font(s_bspam_loc_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_bspam_loc_val, COLOR_MATERIAL_RED, 0);
+
+    s_bspam_loc_bar = lv_bar_create(s_bspam_loc_cont);
+    lv_obj_set_size(s_bspam_loc_bar, lv_pct(80), 18);
+    lv_bar_set_range(s_bspam_loc_bar, 0, 100);
+    lv_bar_set_value(s_bspam_loc_bar, 0, LV_ANIM_OFF);
+
+    s_bspam_loc_hint = lv_label_create(s_bspam_loc_cont);
+    lv_label_set_text(s_bspam_loc_hint, "Searching...");
+    lv_obj_set_style_text_font(s_bspam_loc_hint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_bspam_loc_hint, ui_text_color(), 0);
+
+    lv_obj_t *lb = lv_btn_create(s_bspam_loc_cont);
+    lv_obj_set_size(lb, 130, 42);
+    lv_obj_set_style_bg_color(lb, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(lb, 8, 0);
+    lv_obj_t *lblb = lv_label_create(lb);
+    lv_label_set_text(lblb, LV_SYMBOL_LEFT "  Back");
+    lv_obj_set_style_text_color(lblb, ui_text_color(), 0);
+    lv_obj_center(lblb);
+    lv_obj_add_event_cb(lb, bspam_locate_back_cb, LV_EVENT_CLICKED, NULL);
+
+    // Heap-allocate the address table + snapshot (see dd_alloc).
+    s_bspam      = (bspam_adv_t *)dd_alloc(sizeof(bspam_adv_t) * BSPAM_TBL);
+    s_bspam_snap = (bspam_adv_t *)dd_alloc(sizeof(bspam_adv_t) * BSPAM_TBL);
+    if (!s_bspam || !s_bspam_snap) {
+        lv_label_set_text(s_bspam_status, LV_SYMBOL_WARNING "  Out of memory");
+        if (s_bspam)      { heap_caps_free(s_bspam);      s_bspam = NULL; }
+        if (s_bspam_snap) { heap_caps_free(s_bspam_snap); s_bspam_snap = NULL; }
+        return;
+    }
+
+    if (!ensure_ble_mode()) {
+        lv_label_set_text(s_bspam_status, LV_SYMBOL_WARNING "  BLE init failed");
+        return;
+    }
+    s_bspam_active = true;
+    if (bspam_start_scan() != 0) {
+        s_bspam_active = false;
+        lv_label_set_text(s_bspam_status, LV_SYMBOL_WARNING "  BLE scan start failed");
+        return;
+    }
+    s_bspam_ui_timer = lv_timer_create(bspam_ui_timer_cb, 500, NULL);
 }
 
 // ============================================================================
