@@ -2899,8 +2899,7 @@ void back_to_menu_cb(lv_event_t *e);
 // its normal dispatch key in either layout — nothing is removed or renamed.
 // Persisted in NVS (NVS_KEY_HOME_4CAT); read at boot before the Home is built.
 static bool g_home_layout_4cat = false;
-static bool g_home_layout_asked = false;
-static bool g_settings_first_boot = false;
+static bool g_home_layout_nvs_present = false;
 
 // Tile-based navigation system
 static lv_obj_t *tiles_container = NULL;
@@ -4349,10 +4348,7 @@ static void nvs_settings_load(void)
         uint8_t h4 = 0;
         if (nvs_get_u8(h, NVS_KEY_HOME_4CAT, &h4) == ESP_OK) {
             g_home_layout_4cat = (h4 != 0);
-        }
-        uint8_t home_asked = 0;
-        if (nvs_get_u8(h, NVS_KEY_HOME_ASKED, &home_asked) == ESP_OK) {
-            g_home_layout_asked = (home_asked != 0);
+            g_home_layout_nvs_present = true;
         }
         uint16_t smin = 100, smax = 300;
         if (nvs_get_u16(h, NVS_KEY_SCAN_MIN, &smin) == ESP_OK) {
@@ -4430,7 +4426,6 @@ static void nvs_settings_load(void)
                  (long)screen_timeout_ms, screen_brightness_pct, scan_time_min_ms, scan_time_max_ms,
                  dark_mode_enabled, g_max_power_mode, (unsigned)g_gatt_timeout_ms);
     } else {
-        g_settings_first_boot = true;
         ESP_LOGW(TAG, "NVS settings not found (first boot), using defaults");
         screen_timeout_ms = 0;
         screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
@@ -4545,8 +4540,8 @@ static void nvs_settings_save_home_layout(bool four_cat)
     if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
     if (err == ESP_OK) {
-        g_home_layout_asked = true;
-        ESP_LOGI(TAG, "NVS: saved home_layout = %s", four_cat ? "4-Category" : "Classic");
+        g_home_layout_nvs_present = true;
+        ESP_LOGI(TAG, "NVS: saved home_layout = %s", four_cat ? "Modern" : "Classic");
     } else {
         ESP_LOGE(TAG, "NVS: save failed for home layout: %s", esp_err_to_name(err));
     }
@@ -7520,17 +7515,15 @@ void app_main(void)
     splash_loading_label = NULL;
     splash_detecting_label = NULL;
 
-    // Offer the choice during genuine setup, immediately after resistive calibration.
-    bool show_home_layout_setup = false;
+    // Calibration, when required, stays first. Immediately before the first Home,
+    // require a Classic/Modern choice whenever the layout key itself is absent.
 #if defined(CONFIG_BOARD_TOUCH_XPT2046)
     if (touch_cal_needed) {
         touch_cal_needed = false;
         run_touch_calibration();
-        show_home_layout_setup = !g_home_layout_asked;
     }
-#else
-    show_home_layout_setup = g_settings_first_boot && !g_home_layout_asked;
 #endif
+    bool show_home_layout_setup = !g_home_layout_nvs_present;
 
     create_home_ui();
     if (show_home_layout_setup) show_home_layout_popup();
@@ -26493,7 +26486,7 @@ static void screen_popup_save_cb(lv_event_t *e)
     bool new_home_4cat = screen_home_4cat_radio &&
         lv_obj_has_state(screen_home_4cat_radio, LV_STATE_CHECKED);
     bool home_layout_changed = (new_home_4cat != g_home_layout_4cat);
-    if (home_layout_changed || !g_home_layout_asked) {
+    if (home_layout_changed || !g_home_layout_nvs_present) {
         g_home_layout_4cat = new_home_4cat;
         nvs_settings_save_home_layout(new_home_4cat);
     }
@@ -26759,7 +26752,7 @@ static void show_screen_popup(void)
     lv_obj_add_event_cb(screen_home_classic_radio, screen_home_layout_radio_cb,
                         LV_EVENT_VALUE_CHANGED, (void *)&SCREEN_HOME_LAYOUT_CHOICE[0]);
     screen_home_4cat_radio = lv_checkbox_create(home_row);
-    lv_checkbox_set_text(screen_home_4cat_radio, "4-Category");
+    lv_checkbox_set_text(screen_home_4cat_radio, "Modern");
     lv_obj_set_style_text_font(screen_home_4cat_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_4cat_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_4cat_radio, screen_home_layout_radio_cb,
@@ -27487,7 +27480,7 @@ static void settings_tile_event_cb(lv_event_t *e)
 // jumping Home, so it takes effect with a single tap (no reboot needed — the
 // Home is rebuilt fresh on every visit, reading g_home_layout_4cat at dispatch).
 static lv_obj_t *home_layout_popup = NULL;
-static const bool HOME_LAYOUT_CHOICE[2] = { false, true };  // [0]=Classic, [1]=4-Category
+static const bool HOME_LAYOUT_CHOICE[2] = { false, true };  // [0]=Classic, [1]=Modern
 
 static void home_layout_close_cb(lv_event_t *e)
 {
@@ -27551,7 +27544,7 @@ static void show_home_layout_popup(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
 
     lv_obj_t *hint = lv_label_create(dialog);
-    lv_label_set_text(hint, g_home_layout_asked
+    lv_label_set_text(hint, g_home_layout_nvs_present
         ? "Choose how the Home screen is organised."
         : "Choose your Home style. You can change it later in Screen Settings.");
     lv_obj_set_width(hint, lv_pct(100));
@@ -27571,14 +27564,14 @@ static void show_home_layout_popup(void)
         lv_obj_set_style_border_color(btn, lv_color_white(), 0);
         lv_obj_add_event_cb(btn, home_layout_choose_cb, LV_EVENT_CLICKED, (void *)&HOME_LAYOUT_CHOICE[i]);
         lv_obj_t *l = lv_label_create(btn);
-        lv_label_set_text_fmt(l, "%s%s", four ? "4-Category" : "Classic (grid)",
+        lv_label_set_text_fmt(l, "%s%s", four ? "Modern" : "Classic",
                               active ? "  (current)" : "");
         lv_obj_set_style_text_color(l, ui_text_color(), 0);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
         lv_obj_center(l);
     }
 
-    if (g_home_layout_asked) {
+    if (g_home_layout_nvs_present) {
         lv_obj_t *cancel = lv_btn_create(dialog);
         lv_obj_set_size(cancel, lv_pct(100), 34);
         lv_obj_set_style_bg_color(cancel, lv_color_make(60,60,60), 0);
