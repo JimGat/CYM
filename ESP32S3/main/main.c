@@ -109,6 +109,15 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
     lv_disp_flush_ready(drv);
 }
 
+/* ST77922 QSPI requires x_start and x_end to be divisible by 4. Round LVGL's
+ * dirty area onto 4-pixel boundaries so every flush lands correctly. */
+static void lvgl_rounder_cb(lv_disp_drv_t *drv, lv_area_t *area)
+{
+    (void)drv;
+    area->x1 = (area->x1 >> 2) << 2;
+    area->x2 = ((area->x2 >> 2) << 2) + 3;
+}
+
 /* Draw raw RGB565 bars before LVGL starts. This isolates the ST77922/QSPI
  * transfer path from LVGL rendering and leaves an unambiguous serial trace. */
 static void draw_display_diagnostic_pattern(void)
@@ -192,7 +201,7 @@ static void display_init(lv_disp_t **ret_disp)
     /* DMA_CH_AUTO: let IDF pick a DMA channel */
     ESP_ERROR_CHECK(spi_bus_initialize(BOARD_LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
-    /* Panel IO: QSPI mode, 80 MHz, trans_done callback wired for flush */
+    /* Panel IO: QSPI mode, 40 MHz, trans_done callback wired for flush */
     esp_lcd_panel_io_handle_t io_handle;
     esp_lcd_panel_io_spi_config_t io_config = ST77922_PANEL_IO_QSPI_CONFIG(
         BOARD_LCD_CS, on_color_trans_done, NULL
@@ -218,7 +227,7 @@ static void display_init(lv_disp_t **ret_disp)
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
-    /* LVGL: two buffers in internal SRAM (PSRAM too slow at 80 MHz QSPI) */
+    /* LVGL: two buffers in internal SRAM (PSRAM too slow for QSPI DMA) */
     s_buf1 = heap_caps_malloc(BOARD_LCD_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     s_buf2 = heap_caps_malloc(BOARD_LCD_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     assert(s_buf1 && s_buf2);
@@ -232,6 +241,7 @@ static void display_init(lv_disp_t **ret_disp)
     disp_drv.hor_res    = BOARD_LCD_WIDTH;
     disp_drv.ver_res    = BOARD_LCD_HEIGHT;
     disp_drv.flush_cb   = lvgl_flush_cb;
+    disp_drv.rounder_cb = lvgl_rounder_cb;
     disp_drv.draw_buf   = &s_draw_buf;
     *ret_disp = lv_disp_drv_register(&disp_drv);
 

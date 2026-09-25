@@ -25,9 +25,9 @@
 #define BOARD_LCD_WIDTH      320
 #define BOARD_LCD_HEIGHT     480
 #define BOARD_BACKLIGHT_GPIO 41          // IO41, active-high, LEDC ch 1
-#define BOARD_LCD_PCLK_HZ    (80 * 1000 * 1000)
+#define BOARD_LCD_PCLK_HZ    (40 * 1000 * 1000)
 // DMA buffer: 320 px wide × 50 lines; MUST stay in internal SRAM (not PSRAM)
-// at 80 MHz QSPI to prevent DMA underruns and display tearing.
+// at 40 MHz QSPI to prevent DMA underruns and display tearing.
 #define BOARD_LCD_BUF_LINES  50
 #define BOARD_LCD_BUF_SIZE   (BOARD_LCD_WIDTH * BOARD_LCD_BUF_LINES * 2)
 
