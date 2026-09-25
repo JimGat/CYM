@@ -228,7 +228,7 @@ static void display_init(lv_disp_t **ret_disp)
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     /* Mirror/invert to match portrait orientation */
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     /* LVGL: two buffers in internal SRAM (PSRAM too slow for QSPI DMA) */
