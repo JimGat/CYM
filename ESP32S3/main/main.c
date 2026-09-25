@@ -28,6 +28,7 @@
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_st77922.h"
+#include "hosyond_s3_35_lcd_init.h"
 
 #include "lvgl.h"
 
@@ -210,9 +211,12 @@ static void display_init(lv_disp_t **ret_disp)
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
         (esp_lcd_spi_bus_handle_t)BOARD_LCD_HOST, &io_config, &io_handle));
 
-    /* Panel: ST77922, 320×480, 16-bit colour */
+    /* Panel: ST77922, 320×480, 16-bit colour. The upstream driver default init
+     * is for a different 532×300 panel, so always supply the ES3C35P table. */
     st77922_vendor_config_t vendor_cfg = {
-        .flags = { .use_qspi_interface = 1 },
+        .init_cmds      = hosyond_s3_35_lcd_init,
+        .init_cmds_size = HOSYOND_S3_35_LCD_INIT_SIZE,
+        .flags          = { .use_qspi_interface = 1 },
     };
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = BOARD_LCD_RST,
