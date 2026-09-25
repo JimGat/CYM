@@ -26747,12 +26747,14 @@ static void show_screen_popup(void)
     lv_obj_set_style_text_font(home_hdr, &lv_font_montserrat_12, 0);
     screen_home_classic_radio = lv_checkbox_create(home_row);
     lv_checkbox_set_text(screen_home_classic_radio, "Classic");
+    lv_obj_set_style_text_color(screen_home_classic_radio, ui_text_color(), 0);
     lv_obj_set_style_text_font(screen_home_classic_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_classic_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_classic_radio, screen_home_layout_radio_cb,
                         LV_EVENT_VALUE_CHANGED, (void *)&SCREEN_HOME_LAYOUT_CHOICE[0]);
     screen_home_4cat_radio = lv_checkbox_create(home_row);
     lv_checkbox_set_text(screen_home_4cat_radio, "Modern");
+    lv_obj_set_style_text_color(screen_home_4cat_radio, ui_text_color(), 0);
     lv_obj_set_style_text_font(screen_home_4cat_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_4cat_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_4cat_radio, screen_home_layout_radio_cb,
