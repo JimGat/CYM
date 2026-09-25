@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.16)
 #     build
 # ─────────────────────────────────────────────────────────────────────────────
 
-set(PROJECT_VER "v2.13.81")
+set(PROJECT_VER "v2.13.82")
 
 # S3-specific components first (esp_lcd_st77922), then shared C5 components.
 # Ordering matters: ESP-IDF uses the first occurrence when two directories

@@ -48,6 +48,7 @@ static lv_disp_draw_buf_t  s_draw_buf;
 static lv_color_t         *s_buf1;
 static lv_color_t         *s_buf2;
 static SemaphoreHandle_t   s_flush_done_sem;
+static lv_obj_t             *s_touch_status_label;
 
 /* ── Touch state ─────────────────────────────────────────────────────────────*/
 static esp_lcd_touch_handle_t s_touch;
@@ -108,6 +109,41 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
     lv_disp_flush_ready(drv);
 }
 
+/* Draw raw RGB565 bars before LVGL starts. This isolates the ST77922/QSPI
+ * transfer path from LVGL rendering and leaves an unambiguous serial trace. */
+static void draw_display_diagnostic_pattern(void)
+{
+    static const uint16_t colors[] = {
+        0xF800, 0x07E0, 0x001F, 0xFFFF,
+        0xFFE0, 0xF81F, 0x07FF, 0x0000,
+        0x8410, 0xFC00, 0x041F, 0x87E0,
+    };
+    const int band_height = BOARD_LCD_HEIGHT / (int)(sizeof(colors) / sizeof(colors[0]));
+    const size_t pixels = BOARD_LCD_WIDTH * band_height;
+
+    ESP_LOGI(TAG, "DISPLAY DIAG: drawing 12 raw QSPI color bars");
+    for (size_t band = 0; band < sizeof(colors) / sizeof(colors[0]); ++band) {
+        uint16_t wire_color = __builtin_bswap16(colors[band]);
+        for (size_t i = 0; i < pixels; ++i) {
+            s_buf1[i].full = wire_color;
+        }
+
+        xSemaphoreTake(s_flush_done_sem, 0);
+        int y1 = (int)band * band_height;
+        int y2 = (band + 1 == sizeof(colors) / sizeof(colors[0]))
+                     ? BOARD_LCD_HEIGHT
+                     : y1 + band_height;
+        ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(s_panel, 0, y1,
+                                                   BOARD_LCD_WIDTH, y2, s_buf1));
+        if (xSemaphoreTake(s_flush_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+            ESP_LOGE(TAG, "DISPLAY DIAG: QSPI timeout on band %u", (unsigned)band);
+            return;
+        }
+    }
+    ESP_LOGI(TAG, "DISPLAY DIAG: color bars complete; holding for 3 seconds");
+    vTaskDelay(pdMS_TO_TICKS(3000));
+}
+
 /* ── LVGL touch read callback ────────────────────────────────────────────────*/
 static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
@@ -122,6 +158,18 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
         data->point.x = touch_x[0];
         data->point.y = touch_y[0];
         data->state   = LV_INDEV_STATE_PR;
+
+        static int64_t last_log_us;
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_log_us >= 100000) {
+            last_log_us = now_us;
+            ESP_LOGI(TAG, "TOUCH DIAG: x=%u y=%u",
+                     (unsigned)touch_x[0], (unsigned)touch_y[0]);
+        }
+        if (s_touch_status_label) {
+            lv_label_set_text_fmt(s_touch_status_label, "Touch: x=%u  y=%u",
+                                  (unsigned)touch_x[0], (unsigned)touch_y[0]);
+        }
     } else {
         data->state = LV_INDEV_STATE_REL;
     }
@@ -332,6 +380,12 @@ static void build_splash(void)
     lv_obj_set_style_text_font(touch_lbl, &lv_font_montserrat_12, 0);
     lv_obj_align(touch_lbl, LV_ALIGN_CENTER, 0, 30);
 
+    s_touch_status_label = lv_label_create(scr);
+    lv_label_set_text(s_touch_status_label, "Touch: tap anywhere");
+    lv_obj_set_style_text_color(s_touch_status_label, lv_color_hex(0x00FF88), 0);
+    lv_obj_set_style_text_font(s_touch_status_label, &lv_font_montserrat_16, 0);
+    lv_obj_align(s_touch_status_label, LV_ALIGN_CENTER, 0, 60);
+
     lv_obj_t *ver = lv_label_create(scr);
     lv_label_set_text(ver, FW_VERSION);
     lv_obj_set_style_text_color(ver, lv_color_hex(0x405060), 0);
@@ -360,6 +414,7 @@ void app_main(void)
     /* Display → LVGL init */
     lv_disp_t *disp;
     display_init(&disp);
+    draw_display_diagnostic_pattern();
 
     /* Touch */
     touch_init(disp);
