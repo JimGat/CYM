@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  WiFi 6 &amp; BLE security toolkit with SigInt &amp; Wardriving — now running on three boards
+  WiFi 6 &amp; BLE security toolkit with SigInt &amp; Wardriving — three release boards, with Hosyond ESP32-S3 ports in development
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 
 ## Cheap Yellow Monster — CYM-NM28C5
 
-**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It runs on three boards from a single shared firmware source tree — see [Supported Hardware](#supported-hardware) below.
+**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It currently ships on three release boards from a single shared firmware source tree, with shared-code ports underway for the Hosyond ESP32-S3 2.8-inch, 3.5-inch, and 4.0-inch family — see [Supported Hardware](#supported-hardware) below.
 
 The **NM-CYD-C5 / MonsterC5-style ESP32-C5-WIFI6-KIT** hardware family remains the primary, preferred platform: it's the board CYM was originally built for, it's where new features land first, and — paired with the optional **NM-RF-HAT** expansion board — it has by far the widest RF hardware support (Sub-GHz, nRF24, NFC/RFID, IR, and more).
 
@@ -79,15 +79,18 @@ The NM-CYD-C5 can be purchased at [nmminer.com](https://www.nmminer.com/product/
 
 ## Supported Hardware
 
-CYM builds and flashes for three boards from one shared firmware source tree.
+CYM currently builds and flashes three release boards from one shared firmware source tree. Three Hosyond ESP32-S3 variants are documented development targets and will use the same application source with board-capability gates; they are not released or web-flashable yet.
 
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original single-core ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4 (the chip has no 802.15.4 radio), no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
-| **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported — new | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard hardware NM-CYD-C5 doesn't have: 6-axis IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Many new features planned to take advantage of that extra hardware. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4, no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
+| **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. |
+| **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
+| **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | 🧪 **Experimental bring-up; not full CYM** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI display/touch path. The existing image is a hardware bring-up stub. The checked-in package and current vendor page expose materially different GPIO maps, so exact PCB-revision identification is required before porting. |
+| **[Hosyond/LCDWiki ESP32-S3 4.0-inch](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display)** (`hosyond-s3-40`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ST7796S 320×480 SPI display, FT6336U capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 
-All three flash from the same [web-based flasher](https://jimgat.github.io/CYM/) (board selector at the top) and build from the same `main.c`.
+See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for the controller, bus, pin-map, and documentation differences. The three released boards flash from the [web-based flasher](https://jimgat.github.io/CYM/); Hosyond entries will not be added until their full shared-CYM ports pass independent hardware qualification.
 
 ---
 
@@ -2929,7 +2932,9 @@ If NVS has no valid calibration (i.e., `magic` ≠ `0xCA15`), the firmware appli
 ### Prerequisites
 
 - **ESP-IDF release/v6.0** branch tip (NOT the `v6.0` tag — it's missing critical post-release fixes)
-- **NM-CYD-C5** board (ESP32-C5-WROOM-1-N168R)
+- **NM-CYD-C5** board (ESP32-C5-WROOM-1-N168R) for the documented primary build
+
+> **Hosyond ESP32-S3 status:** the 2.8-inch, 3.5-inch, and 4.0-inch boards are development targets, not released CYM builds. The current 3.5-inch image is a bring-up stub. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md).
 
 ### Build
 

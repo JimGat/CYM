@@ -1,0 +1,157 @@
+#define LCD_W 240
+#define LCD_H 320
+
+void LCD_RESET(void)
+{
+	LCD_RST_SET;
+	delay_ms(50);
+	LCD_RST_CLR;
+	delay_ms(100);	
+	LCD_RST_SET;
+	delay_ms(50);
+}
+
+void LCD_direction(u8 direction)
+{ 
+			lcddev.setxcmd=0x2A;
+			lcddev.setycmd=0x2B;
+			lcddev.wramcmd=0x2C;
+			lcddev.rramcmd=0x2E;
+			lcddev.dir = direction%4;
+	switch(lcddev.dir){		  
+		case 0:						 	 		
+			lcddev.width=LCD_W;
+			lcddev.height=LCD_H;		
+			LCD_WriteReg(0x36,(1<<3)|(0<<6)|(0<<7));//BGR==1,MY==0,MX==0,MV==0
+		break;
+		case 1:
+			lcddev.width=LCD_H;
+			lcddev.height=LCD_W;
+			LCD_WriteReg(0x36,(1<<3)|(0<<7)|(1<<6)|(1<<5));//BGR==1,MY==1,MX==0,MV==1
+		break;
+		case 2:						 	 		
+			lcddev.width=LCD_W;
+			lcddev.height=LCD_H;	
+			LCD_WriteReg(0x36,(1<<3)|(1<<6)|(1<<7));//BGR==1,MY==0,MX==0,MV==0
+		break;
+		case 3:
+			lcddev.width=LCD_H;
+			lcddev.height=LCD_W;
+			LCD_WriteReg(0x36,(1<<3)|(1<<7)|(1<<5));//BGR==1,MY==1,MX==0,MV==1
+		break;	
+		default:break;
+	}	
+}	
+
+void LCD_Init(void)
+{  
+	LCD_RESET(); //LCD 复位
+//*************2.8 ILI9341 IPS初始化**********//	
+	LCD_WR_REG(0xCF);  
+	LCD_WR_DATA(0x00); 
+	LCD_WR_DATA(0xC1); 
+	LCD_WR_DATA(0x30); 
+ 
+	LCD_WR_REG(0xED);  
+	LCD_WR_DATA(0x64); 
+	LCD_WR_DATA(0x03); 
+	LCD_WR_DATA(0X12); 
+	LCD_WR_DATA(0X81); 
+ 
+	LCD_WR_REG(0xE8);  
+	LCD_WR_DATA(0x85); 
+	LCD_WR_DATA(0x00); 
+	LCD_WR_DATA(0x78); 
+
+	LCD_WR_REG(0xCB);  
+	LCD_WR_DATA(0x39); 
+	LCD_WR_DATA(0x2C); 
+	LCD_WR_DATA(0x00); 
+	LCD_WR_DATA(0x34); 
+	LCD_WR_DATA(0x02); 
+	
+	LCD_WR_REG(0xF7);  
+	LCD_WR_DATA(0x20); 
+ 
+	LCD_WR_REG(0xEA);  
+	LCD_WR_DATA(0x00); 
+	LCD_WR_DATA(0x00); 
+
+	LCD_WR_REG(0xC0);       //Power control 
+	LCD_WR_DATA(0x13);     //VRH[5:0] 
+ 
+	LCD_WR_REG(0xC1);       //Power control 
+	LCD_WR_DATA(0x13);     //SAP[2:0];BT[3:0] 
+ 
+	LCD_WR_REG(0xC5);       //VCM control 
+	LCD_WR_DATA(0x22);   //22
+	LCD_WR_DATA(0x35);   //35
+ 
+	LCD_WR_REG(0xC7);       //VCM control2 
+	LCD_WR_DATA(0xBD);  //AF
+
+	LCD_WR_REG(0x21);
+
+	LCD_WR_REG(0x36);       // Memory Access Control 
+	LCD_WR_DATA(0x08); 
+
+	LCD_WR_REG(0xB6);  
+	LCD_WR_DATA(0x0A); 
+	LCD_WR_DATA(0xA2); 
+
+	LCD_WR_REG(0x3A);       
+	LCD_WR_DATA(0x55); 
+
+	LCD_WR_REG(0xF6);  //Interface Control
+	LCD_WR_DATA(0x01); 
+	LCD_WR_DATA(0x30);  //MCU
+
+	LCD_WR_REG(0xB1);       //VCM control 
+	LCD_WR_DATA(0x00); 
+	LCD_WR_DATA(0x1B); 
+ 
+	LCD_WR_REG(0xF2);       // 3Gamma Function Disable 
+	LCD_WR_DATA(0x00); 
+ 
+	LCD_WR_REG(0x26);       //Gamma curve selected 
+	LCD_WR_DATA(0x01); 
+ 
+	LCD_WR_REG(0xE0);       //Set Gamma 
+	LCD_WR_DATA(0x0F); 
+	LCD_WR_DATA(0x35); 
+	LCD_WR_DATA(0x31); 
+	LCD_WR_DATA(0x0B); 
+	LCD_WR_DATA(0x0E); 
+	LCD_WR_DATA(0x06); 
+	LCD_WR_DATA(0x49); 
+	LCD_WR_DATA(0xA7); 
+	LCD_WR_DATA(0x33); 
+	LCD_WR_DATA(0x07); 
+	LCD_WR_DATA(0x0F); 
+	LCD_WR_DATA(0x03); 
+	LCD_WR_DATA(0x0C); 
+	LCD_WR_DATA(0x0A); 
+	LCD_WR_DATA(0x00); 
+ 
+	LCD_WR_REG(0XE1);       //Set Gamma 
+	LCD_WR_DATA(0x00); 
+	LCD_WR_DATA(0x0A); 
+	LCD_WR_DATA(0x0F); 
+	LCD_WR_DATA(0x04); 
+	LCD_WR_DATA(0x11); 
+	LCD_WR_DATA(0x08); 
+	LCD_WR_DATA(0x36); 
+	LCD_WR_DATA(0x58); 
+	LCD_WR_DATA(0x4D); 
+	LCD_WR_DATA(0x07); 
+	LCD_WR_DATA(0x10); 
+	LCD_WR_DATA(0x0C); 
+	LCD_WR_DATA(0x32); 
+	LCD_WR_DATA(0x34); 
+	LCD_WR_DATA(0x0F); 
+
+	LCD_WR_REG(0x11);       //Exit Sleep 
+	delay_ms(120); 
+	LCD_WR_REG(0x29);       //Display on 
+        LCD_direction(USE_HORIZONTAL);//设置LCD显示方向 
+}

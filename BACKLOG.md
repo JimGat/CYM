@@ -97,13 +97,14 @@ rules). Start ONE track at a time; do not run all simultaneously.
   part), so a full-capability S31 CYM = S31 + C5. Dual-core could fix the single-core jammer
   timing limit. Board on order (2026-09-23).
 
-- **Port CYM firmware to ESP32-S3 (Hosyond) → promote to release board** — PLANNED. `ESP32S3/` is
-  currently only a **bring-up stub** (its own ~372-line `main.c`, v2.13.80, NOT the ~64k-line CYM
-  app; it does not compile the shared source). Boards: 2.8" ILI9341+FT6336G and 3.5" ST77922 QSPI
-  (GPIO maps documented). The real work is porting the CYM application to ESP32-S3 (single-chip
-  WiFi+BLE). Until that lands, Hosyond is **experimental/bring-up** — not version-synced, not
-  shipped. Promotion to a full release board (version-synced, release assets, manifest, web
-  flasher) is gated on this port. *(reclassified 2026-09-24)*
+- **Port CYM firmware to ESP32-S3 (Hosyond family) → promote qualified variants to release boards** — PLANNED. `ESP32S3/` is
+  currently only a **bring-up stub** (its own ~372-line `main.c`, v2.13.80, NOT the shared CYM app).
+  Targets: 2.8" ILI9341V+FT6336G, 3.5" ST77922 QSPI/TDDI, and 4.0" ST7796S+FT6336U. Core official
+  2.8/4.0 documentation is tracked under `docs/hardware/`; the current 3.5 vendor page and checked-in
+  package appear to describe different GPIO-map revisions and require board identification/probing.
+  See `docs/hardware/hosyond-s3-family.md`. Until the shared application port and per-model hardware
+  gates pass, Hosyond remains **experimental/bring-up** — not version-synced, shipped, manifested, or
+  web-flashable. *(scope/documentation refreshed 2026-09-24)*
 
 - **Multi-board framework — remaining phases** — IN PROGRESS. Phase 1 done (Makefile,
   per-SoC `build_<board>/` dirs, ESP32/ + ESP32S3/ skeletons). Later phases per the framework
