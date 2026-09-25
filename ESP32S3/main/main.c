@@ -47,7 +47,7 @@ static esp_lcd_panel_handle_t s_panel;
 static lv_disp_draw_buf_t  s_draw_buf;
 static lv_color_t         *s_buf1;
 static lv_color_t         *s_buf2;
-static volatile bool       s_flush_done = true;
+static SemaphoreHandle_t   s_flush_done_sem;
 
 /* ── Touch state ─────────────────────────────────────────────────────────────*/
 static esp_lcd_touch_handle_t s_touch;
@@ -83,20 +83,29 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
                                            esp_lcd_panel_io_event_data_t *edata,
                                            void *user_ctx)
 {
-    BaseType_t need_yield = pdFALSE;
-    lv_disp_t *disp = (lv_disp_t *)user_ctx;
-    lv_disp_flush_ready(disp->driver);
-    s_flush_done = true;
-    return need_yield == pdTRUE;
+    BaseType_t higher_priority_task_woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_flush_done_sem, &higher_priority_task_woken);
+    portYIELD_FROM_ISR(higher_priority_task_woken);
+    return false;
 }
 
 /* ── LVGL flush callback ─────────────────────────────────────────────────────*/
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {
-    esp_lcd_panel_draw_bitmap(s_panel,
-                              area->x1, area->y1,
-                              area->x2 + 1, area->y2 + 1,
-                              color_map);
+    /* Panel transfers complete in the SPI ISR. Drain any callback left by
+     * panel initialization, then wait here so LVGL is only touched from task
+     * context. Calling lv_disp_flush_ready() from the ISR corrupts LVGL state. */
+    xSemaphoreTake(s_flush_done_sem, 0);
+    esp_err_t err = esp_lcd_panel_draw_bitmap(s_panel,
+                                               area->x1, area->y1,
+                                               area->x2 + 1, area->y2 + 1,
+                                               color_map);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "LCD flush submit failed: %s", esp_err_to_name(err));
+    } else if (xSemaphoreTake(s_flush_done_sem, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "LCD flush timed out");
+    }
+    lv_disp_flush_ready(drv);
 }
 
 /* ── LVGL touch read callback ────────────────────────────────────────────────*/
@@ -138,7 +147,7 @@ static void display_init(lv_disp_t **ret_disp)
     /* Panel IO: QSPI mode, 80 MHz, trans_done callback wired for flush */
     esp_lcd_panel_io_handle_t io_handle;
     esp_lcd_panel_io_spi_config_t io_config = ST77922_PANEL_IO_QSPI_CONFIG(
-        BOARD_LCD_CS, on_color_trans_done, NULL   /* user_ctx set after disp created */
+        BOARD_LCD_CS, on_color_trans_done, NULL
     );
     /* Attach LCD to SPI bus */
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(
@@ -177,10 +186,6 @@ static void display_init(lv_disp_t **ret_disp)
     disp_drv.flush_cb   = lvgl_flush_cb;
     disp_drv.draw_buf   = &s_draw_buf;
     *ret_disp = lv_disp_drv_register(&disp_drv);
-
-    /* Wire the flush-done callback now that the display object exists */
-    io_config.on_color_trans_done = on_color_trans_done;
-    io_config.user_ctx = *ret_disp;
 
     /* Backlight on */
     bl_init();
@@ -349,6 +354,8 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, 10 * 1000)); /* 10 ms */
 
     s_lvgl_mutex = xSemaphoreCreateMutex();
+    s_flush_done_sem = xSemaphoreCreateBinary();
+    assert(s_lvgl_mutex && s_flush_done_sem);
 
     /* Display → LVGL init */
     lv_disp_t *disp;
