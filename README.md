@@ -5,11 +5,11 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.15.00</b>
+  <b>v2.15.27</b>
 </p>
 
 <p align="center">
-  WiFi 6 &amp; BLE security toolkit with SigInt &amp; Wardriving — three release boards, with Hosyond ESP32-S3 ports in development
+  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — four supported software targets across ESP32-C5, ESP32, and ESP32-S3
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 
 ## Cheap Yellow Monster — CYM-NM28C5
 
-**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It currently ships on three release boards from a single shared firmware source tree, with shared-code ports underway for the Hosyond ESP32-S3 2.8-inch, 3.5-inch, and 4.0-inch family — see [Supported Hardware](#supported-hardware) below.
+**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It now builds four supported software targets from a single shared firmware source tree, including the Hosyond ESP32-S3 3.5-inch; the 2.8-inch and 4.0-inch variants remain experimental — see [Supported Hardware](#supported-hardware) below.
 
 The **NM-CYD-C5 / MonsterC5-style ESP32-C5-WIFI6-KIT** hardware family remains the primary, preferred platform: it's the board CYM was originally built for, it's where new features land first, and — paired with the optional **NM-RF-HAT** expansion board — it has by far the widest RF hardware support (Sub-GHz, nRF24, NFC/RFID, IR, and more).
 
@@ -79,7 +79,7 @@ The NM-CYD-C5 can be purchased at [nmminer.com](https://www.nmminer.com/product/
 
 ## Supported Hardware
 
-CYM currently builds and flashes three release boards from one shared firmware source tree. Three Hosyond ESP32-S3 variants are documented development targets and will use the same application source with board-capability gates; they are not released or web-flashable yet.
+CYM builds and packages four supported software targets from one shared firmware source tree. The Hosyond ES3C35P 3.5-inch joins the three established boards in v2.15.27; its display and touch are physically qualified, while shared-CYM peripheral acceptance is still pending. The Hosyond 2.8-inch and 4.0-inch variants remain experimental.
 
 | Board | Status | What you get |
 |---|---|---|
@@ -87,10 +87,10 @@ CYM currently builds and flashes three release boards from one shared firmware s
 | **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4, no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
-| **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | 🧪 **Display/touch qualified; experimental bring-up; not full CYM** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI. Physical testing matches the current LCDWiki GPIO map; the older checked-in package describes another revision. CYM uses the factory 63-entry init table, 40 MHz panel QSPI, RGB565/INVON, no mirror, and requires a physical power cycle after panel-firmware changes. SD and other peripherals remain unqualified. |
+| **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Supported software target in v2.15.27; peripheral hardware acceptance pending** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi, BLE, SD, RGB LED, battery ADC, and external UART GPS. Display, orientation, colors, and touch are physically qualified. SD, RGB, battery voltage, GPS, Wi-Fi, BLE, and bounded soak still require validation on the shared-CYM image. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
 | **[Hosyond/LCDWiki ESP32-S3 4.0-inch](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display)** (`hosyond-s3-40`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ST7796S 320×480 SPI display, FT6336U capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 
-See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for the controller, bus, pin-map, and documentation differences. The three released boards flash from the [web-based flasher](https://jimgat.github.io/CYM/); Hosyond entries will not be added until their full shared-CYM ports pass independent hardware qualification.
+See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for controller, bus, pin-map, and acceptance details. All four supported software targets are integrated with the shared web-flasher source. The live [web-based flasher](https://jimgat.github.io/CYM/) will expose ES3C35P after this change is formally released to `main`; until then, use the branch test image and flash its full image at `0x0000`.
 
 ---
 
@@ -2934,7 +2934,7 @@ If NVS has no valid calibration (i.e., `magic` ≠ `0xCA15`), the firmware appli
 - **ESP-IDF release/v6.0** branch tip (NOT the `v6.0` tag — it's missing critical post-release fixes)
 - **NM-CYD-C5** board (ESP32-C5-WROOM-1-N168R) for the documented primary build
 
-> **Hosyond ESP32-S3 status:** the 2.8-inch, 3.5-inch, and 4.0-inch boards are development targets, not released CYM builds. The current 3.5-inch image is a bring-up stub. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md).
+> **Hosyond ESP32-S3 status:** the 3.5-inch ES3C35P is a supported shared-CYM software target in v2.15.27, with display/touch physically qualified and the remaining peripheral checklist awaiting hardware acceptance. The 2.8-inch and 4.0-inch boards remain experimental. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md).
 
 ### Build
 

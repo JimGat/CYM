@@ -29,15 +29,13 @@ When Jim asks for a change that he will test from GitHub, do the complete test-b
 
 ## Release boards vs experimental boards
 
-**Release boards (3):** NM-CYD-C5, WS-C5-28 (both `ESP32C5/`), and CYD-2432S028 (`ESP32/`).
-These are version-synced each cycle, must build clean for shared-source changes, and ship in
-release assets + manifests + web flasher.
+**Release boards (4):** NM-CYD-C5, WS-C5-28 (both `ESP32C5/`), CYD-2432S028 (`ESP32/`), and
+Hosyond ES3C35P 3.5 (`ESP32S3/`). These are version-synced each cycle, must build clean for
+shared-source changes, and ship in release assets + manifests + web flasher.
 
-**Experimental / bring-up:** Hosyond S3 (`ESP32S3/`, targets `hosyond-s3-28/35/40`). Currently a
-bring-up stub (its own ~372-line `main.c`, not the CYM app), pinned behind the release boards. It
-is NOT version-synced and NOT shipped as a release asset. Promoting it to a release board is a
-backlog goal gated on actually porting CYM to ESP32-S3 (see BACKLOG.md). `make all-boards` builds
-`hosyond-s3-35` only as a compile canary.
+**Experimental / bring-up:** Hosyond S3 2.8-inch and 4.0-inch profiles remain outside the release
+gate until their hardware profiles are independently qualified. ES3C35P is not a stub: it compiles
+the canonical CYM application plus its narrow display/touch adapter.
 
 ## Multi-Board Build Reference (ESP32C5/)
 
@@ -154,7 +152,7 @@ ESP32C5/binaries-ws-c5-28/partition-table.bin
 
 **All boards are kept in version sync** — every development cycle uses the **same** version number
 for all boards that are built in that cycle.  This makes the version a meaningful release marker:
-"v2.13.73" means all three boards are at the same feature level.
+"v2.15.27" means all four release boards are at the same feature level.
 
 The exception is a board that is **deliberately skipped** in a cycle (e.g., a C5-only feature
 that doesn't apply to CYD2USB).  When a board is skipped, it stays at its current version until
@@ -164,17 +162,19 @@ the next cycle that includes it.
 If boards have drifted (one board is ahead), bring all boards up to `max_current + 1` in the
 next build cycle rather than continuing to diverge. For the current version of each board, read
 the `set(PROJECT_VER ...)` line in that board's `CMakeLists.txt` (`ESP32C5/CMakeLists.txt` for
-NM-CYD-C5 + WS-C5-28; `ESP32/CMakeLists.txt` for CYD-2432S028) — do not rely on a hardcoded number
-here, which goes stale. As of this writing the three release boards are in sync.
+NM-CYD-C5 + WS-C5-28; `ESP32/CMakeLists.txt` for CYD-2432S028; `ESP32S3/CMakeLists.txt` for
+Hosyond ES3C35P) — do not rely on a hardcoded number here, which goes stale.
 
 ### Workflow when building all boards in one session
 
-1. Set version → v2.13.X in **both** `ESP32C5/CMakeLists.txt` and `ESP32/CMakeLists.txt`
-2. Build NM-CYD-C5 → commit NM-CYD-C5 files at v2.13.X
-3. Build WS-C5-28 → commit WS-C5-28 files at v2.13.X (same CMakeLists)
-4. Build CYD-2432S028 (in `ESP32/`) → commit CYD-2432S028 files at v2.13.X
+1. Set one cycle version in `ESP32C5/CMakeLists.txt`, `ESP32/CMakeLists.txt`, and `ESP32S3/CMakeLists.txt`
+2. Build NM-CYD-C5 and verify its own package version
+3. Build WS-C5-28 and verify its own package version
+4. Build CYD-2432S028 and verify its own package version
+5. Build Hosyond ES3C35P and verify its own package version
+6. Push only after the complete four-board gate is green
 
-For CI verification across all boards: `make all-boards` (builds nm-cyd-c5, ws-c5-28, cyd-2432s028 in sequence).
+For CI verification across all release boards: `make all-boards` (builds nm-cyd-c5, ws-c5-28, cyd-2432s028, and hosyond-s3-35 in sequence).
 
 ---
 
@@ -182,13 +182,13 @@ For CI verification across all boards: `make all-boards` (builds nm-cyd-c5, ws-c
 
 When merging to main and creating a GitHub release, attach **all four required artifacts for each
 release board**: the app binary, the merged `-full.bin` image, the bootloader, and the
-partition-table (12 assets across the 3 release boards).
+partition-table (16 assets across the 4 release boards).
 
 **Filename-collision handling.** GitHub keys release assets by basename. The app and `-full`
 binaries already have board-specific basenames (`CYM-NM28C5*.bin`, `CYM-WS-C5-28*.bin`,
-`CYM-CYD-2432S028*.bin`) and upload directly from the repo. But `bootloader.bin` and
-`partition-table.bin` share the same basename across all three boards, so they would collide.
-Resolve this by **copying those six files into a temporary staging directory under
+`CYM-CYD-2432S028*.bin`, `CYM-hosyond-s3-35*.bin`) and upload directly from the repo. But
+`bootloader.bin` and `partition-table.bin` share the same basename across all four boards, so they
+would collide. Resolve this by **copying those eight files into a temporary staging directory under
 board-prefixed basenames before upload** — do NOT rename the canonical binaries in the repo, and
 do NOT rely on `gh --name` / display-label tricks (those set a label, not a distinct asset name).
 

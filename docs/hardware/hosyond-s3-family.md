@@ -1,6 +1,6 @@
 # Hosyond ESP32-S3 Display Family
 
-CYM is preparing shared-firmware support for three ESP32-S3 display boards sold by Hosyond/LCDWiki. These are development targets, not released CYM boards yet. They are not currently present in the stable/dev web-flasher selectors, and the existing `ESP32S3` image is a hardware bring-up stub rather than the full CYM application.
+CYM supports the Hosyond/LCDWiki ES3C35P 3.5-inch as a shared-CYM software target beginning with v2.15.27. It compiles the canonical `ESP32C5/main/` application and is integrated into the shared web flasher. Display and touch are physically qualified; the remaining peripheral acceptance checklist is pending. The 2.8-inch and 4.0-inch variants remain experimental development targets.
 
 ## Family summary
 
@@ -9,7 +9,7 @@ All three boards use an ESP32-S3 N16R8 module: dual-core Xtensa LX7 at up to 240
 | CYM target | Vendor/SKU | Display | Touch | Native resolution | CYM state |
 |---|---|---|---|---|---|
 | `hosyond-s3-28` | ES3C28P (touch); ES3N28P is the no-touch sibling | ILI9341V, 4-line SPI | FT6336G, I2C | 240×320 | Planned; official core documentation imported |
-| `hosyond-s3-35` | ES3C35P | ST77922, 4-data-line QSPI | Integrated ST77922/TDDI I2C path at 0x55 | 320×480 | Display/touch physically qualified; experimental bring-up stub; full CYM port pending |
+| `hosyond-s3-35` | ES3C35P | ST77922, 4-data-line QSPI | Integrated ST77922/TDDI I2C path at 0x55 | 320×480 | Supported shared-CYM software target v2.15.27; display/touch qualified; peripheral acceptance pending |
 | `hosyond-s3-40` | ES3C40P | ST7796S, 4-line SPI | FT6336U, I2C | 320×480 | Planned; official individual documentation imported |
 
 Sources: [LCDWiki 2.8-inch product page](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display), [LCDWiki 3.5-inch product page](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display), and [LCDWiki 4.0-inch product page](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display).
@@ -44,8 +44,8 @@ The 2.8-inch and 4.0-inch boards are close enough to share a common ESP32-S3 per
 - Compile the canonical `ESP32C5/main/` application sources for S3; do not copy/fork `main.c` or feature modules.
 - Put display, touch, SD, backlight, orientation, and optional peripherals behind `board_hal` capabilities/backends.
 - Gate unsupported S3 features: no 5-GHz Wi-Fi and no 802.15.4 radio.
-- Do not expose RF-HAT, GPS, battery, audio, or other peripheral UI until its pins and runtime behavior are verified for that board.
-- A shared-source change must continue building all three current release boards plus every S3 target included in that development phase.
+- ES3C35P exposes SD, RGB, battery ADC, and external UART GPS through its board profile for acceptance testing; audio, vibrator, and RF-HAT remain gated.
+- A shared-source change must continue building NM-CYD-C5, WS-C5-28, CYD-2432S028, and the promoted ES3C35P target.
 - Compilation is not hardware qualification.
 
 ## Imported vendor files
@@ -62,7 +62,7 @@ The repository stores the core specifications, schematics, pin workbook where a 
 
 As of this document update:
 
-- Released/supported CYM boards remain NM-CYD-C5, WS-C5-28, and CYD-2432S028.
-- Hosyond S3 3.5 display/touch are physically qualified, but the board remains experimental bring-up until the shared CYM port and remaining peripheral/release gates pass.
-- Hosyond S3 2.8 and 4.0 are documented port candidates.
-- No Hosyond board has been promoted to release assets or the web flasher.
+- Supported software targets are NM-CYD-C5, WS-C5-28, CYD-2432S028, and Hosyond ES3C35P 3.5-inch.
+- ES3C35P display/touch are physically qualified; SD, RGB, battery, external GPS, Wi-Fi, BLE, and bounded soak remain pending on the shared-CYM image.
+- Hosyond S3 2.8-inch and 4.0-inch remain experimental documented port candidates.
+- Build success is not physical qualification.

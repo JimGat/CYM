@@ -107,8 +107,10 @@ class PromotionContract(unittest.TestCase):
         for project in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
             self.assertIn('set(PROJECT_VER "v2.15.27")', text(project))
         makefile = text("Makefile")
-        for target in ("esp32c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35"):
-            self.assertIn(target, makefile)
+        self.assertIn(
+            "all-boards: nm-cyd-c5 ws-c5-28 cyd-2432s028 hosyond-s3-35",
+            makefile,
+        )
 
     def test_manifest_and_flasher(self):
         manifest_path = ROOT / "ESP32S3/docs/manifest.hosyond-s3-35.json"
@@ -122,9 +124,24 @@ class PromotionContract(unittest.TestCase):
         self.assertIn("hosyond-s3-35", flasher)
         self.assertIn("ESP32-S3", flasher)
         self.assertIn("binaries-hosyond-s3-35", flasher)
+        self.assertIn('fullBin: "CYM-hosyond-s3-35-full.bin"', flasher)
+        self.assertIn('id="dlFull"', flasher)
+        self.assertIn(
+            'const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35"]',
+            flasher,
+        )
+        self.assertIn("parts.map(p => ({", flasher)
         workflow = text(".github/workflows/deploy-flasher.yml")
         self.assertIn("ESP32S3/docs/manifest.hosyond-s3-35.json", workflow)
         self.assertIn("ESP32S3/binaries-hosyond-s3-35", workflow)
+        self.assertIn("python3 -m json.tool", workflow)
+        for full_image in (
+            "CYM-NM28C5-full.bin",
+            "CYM-WS-C5-28-full.bin",
+            "CYM-CYD-2432S028-full.bin",
+            "CYM-hosyond-s3-35-full.bin",
+        ):
+            self.assertIn(full_image, workflow)
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,17 +46,11 @@ change and must be built. If the change is confined to a file or component the b
 `CMakeLists.txt` never references, or lives inside a `#if CONFIG_BOARD_<other>` block, the
 board is untouched and the normal version-sync skip exception applies.
 
-`ESP32C5/main/main.c` is compiled by **both** the ESP32C5 boards (NM-CYD-C5, WS-C5-28) and
-CYD-2432S028 (ESP32). A change there almost always means all three builds are required.
-
-**ESP32S3 / Hosyond is NOT part of this shared-source set (as of 2026-09-24).** `ESP32S3/main/
-CMakeLists.txt` compiles its **own local `main.c`** — a ~372-line bring-up stub, not the ~64k-line
-CYM application — so a change to `ESP32C5/main/main.c` does **not** affect the ESP32S3 build, and
-the "must rebuild every board" rule does **not** yet apply to it. `make all-boards` builds
-`hosyond-s3-35` only as a **compile canary** (catches ESP32-S3 toolchain / shared-header breaks),
-not as a shared-source consumer. Hosyond S3 is an **experimental/bring-up board**, not a release
-board; it graduates to the shared-source rule (and release-board status) only once the CYM
-application is actually ported to ESP32-S3. See BACKLOG.md.
+`ESP32C5/main/main.c` is compiled by **both** ESP32-C5 boards (NM-CYD-C5, WS-C5-28),
+CYD-2432S028 (ESP32), and Hosyond ES3C35P 3.5 (ESP32-S3). A change there normally requires all
+four release builds. `ESP32S3/main/CMakeLists.txt` compiles the canonical `ESP32C5/main/` sources
+directly plus a narrow ES3C35P display/touch adapter; it is a shared-source consumer, not a stub or
+compile canary. Hosyond 2.8-inch and 4.0-inch profiles remain experimental and outside this gate.
 
 ### Workflow
 

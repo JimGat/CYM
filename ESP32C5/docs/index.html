@@ -6,7 +6,7 @@
     <title>Cheap Yellow Monster Web Flasher</title>
     <link rel="icon" type="image/x-icon" href="favicon.ico">
     <link rel="apple-touch-icon" href="favicon-32.png">
-    <meta name="description" content="Browser flasher and serial monitor for Cheap Yellow Monster firmware — NM-CYD-C5 and WS-C5-28 boards.">
+    <meta name="description" content="Browser flasher and serial monitor for Cheap Yellow Monster firmware across ESP32-C5, ESP32, and ESP32-S3 boards.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -266,7 +266,7 @@
           </a>
           <div style="text-align:center;font-size:11px;margin-top:4px;opacity:.75;">Unofficially supported by LAB5 &mdash; <a href="https://discord.gg/Vuq2SmCbk5" target="_blank" rel="noopener" style="color:inherit;">join the Discord</a></div>
         </div>
-        <div class="eyebrow">Cheap Yellow Monster &nbsp;·&nbsp; NM-CYD-C5 · Classic CYD · WS-C5-28</div>
+        <div class="eyebrow">Cheap Yellow Monster &nbsp;·&nbsp; NM-CYD-C5 · Classic CYD · WS-C5-28 · ES3C35P</div>
         <p id="headerDesc">Web Serial flasher powered by esptool-js. Select your board, then flash firmware directly from your browser — no software install required.</p>
         <div class="hero-meta">
           <span class="pill" id="chipPill"><strong>Chip</strong> ESP32-C5</span>
@@ -363,6 +363,7 @@
             <h2>Direct downloads</h2>
             <p>Same binaries used by this flasher.</p>
             <div class="link-grid" id="downloadLinks">
+              <a id="dlFull" href="../binaries-esp32c5/CYM-NM28C5-full.bin"><code id="dlFullName">CYM-NM28C5-full.bin</code><span>Complete image (flash at 0x0000)</span></a>
               <a id="dlApp" href="../binaries-esp32c5/CYM-NM28C5.bin"><code id="dlAppName">CYM-NM28C5.bin</code><span>Main application (0x10000)</span></a>
               <a id="dlBoot" href="../binaries-esp32c5/bootloader.bin"><code>bootloader.bin</code><span>Bootloader (0x2000)</span></a>
               <a id="dlPart" href="../binaries-esp32c5/partition-table.bin"><code>partition-table.bin</code><span>Partition table (0x8000)</span></a>
@@ -428,6 +429,8 @@
         chipPill:      document.getElementById("chipPill"),
         offsetsPill:   document.getElementById("offsetsPill"),
         headerDesc:    document.getElementById("headerDesc"),
+        dlFull:        document.getElementById("dlFull"),
+        dlFullName:    document.getElementById("dlFullName"),
         dlApp:         document.getElementById("dlApp"),
         dlAppName:     document.getElementById("dlAppName"),
         dlBoot:        document.getElementById("dlBoot"),
@@ -452,6 +455,7 @@
           desc:    "Primary / preferred board — NM-CYD-C5 WiFi 6 &amp; BLE security toolkit (ESP32-C5, 16 MB flash, 8 MB PSRAM, NM-RF-HAT support).",
           binDir:  "binaries-esp32c5",
           appBin:  "CYM-NM28C5.bin",
+          fullBin: "CYM-NM28C5-full.bin",
           manifest: "docs/manifest.json",
           bootOffset: "0x2000", // ESP32-C5
           beta:    false, // original board — not beta
@@ -463,6 +467,7 @@
           desc:    "Waveshare ESP32-C5-Touch-LCD-2.8 (ESP32-C5, 32 MB flash, 8 MB PSRAM, capacitive touch, I2C backlight).",
           binDir:  "binaries-ws-c5-28",
           appBin:  "CYM-WS-C5-28.bin",
+          fullBin: "CYM-WS-C5-28-full.bin",
           manifest: "docs/manifest.ws-c5-28.json",
           bootOffset: "0x2000", // ESP32-C5
           beta:    false, // promoted to fully supported in the v2.14.00 release
@@ -474,9 +479,22 @@
           desc:    "Classic CYD ESP32-2432S028 (ESP32 dual-core, 4 MB flash, ILI9341 320x240, XPT2046 touch, NM-RF-HAT via SD Card Shim).",
           binDir:  "binaries-cyd-2432s028",
           appBin:  "CYM-CYD-2432S028.bin",
+          fullBin: "CYM-CYD-2432S028-full.bin",
           manifest: "docs/manifest.cyd-2432s028.json",
           bootOffset: "0x1000", // ESP32 (NOT 0x2000)
           beta:    false, // promoted to fully supported in the v2.14.00 release
+        },
+        "hosyond-s3-35": {
+          label:   "Hosyond ES3C35P 3.5",
+          chip:    "ESP32-S3",
+          soc:     "ESP32S3",
+          desc:    "Hosyond ES3C35P 3.5-inch (ESP32-S3, 320x480 ST77922 QSPI display, capacitive touch, 8 MB OPI PSRAM).",
+          binDir:  "binaries-hosyond-s3-35",
+          appBin:  "CYM-hosyond-s3-35.bin",
+          fullBin: "CYM-hosyond-s3-35-full.bin",
+          manifest: "docs/manifest.hosyond-s3-35.json",
+          bootOffset: "0x0000",
+          beta:    false,
         },
       };
 
@@ -484,7 +502,7 @@
       // added to BOARDS above stays hidden from the selector until either it's
       // added here or a visitor passes ?beta=1 (see betaUnlock below), which shows
       // every board BOARDS defines regardless of this list.
-      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028"];
+      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35"];
 
       // Hidden opt-in: ?beta=1 in the URL starts the flasher on the Dev channel
       // (instead of Stable) and unlocks every board BOARDS defines, not just
@@ -512,7 +530,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.12.3"; // widen manual stub-upload OHAI handshake timeout 1000ms -> 4000ms for slower UART bridges (CH340)
+      const PAGE_VERSION    = "2.13.0"; // add supported Hosyond ES3C35P 3.5-inch ESP32-S3 target
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -563,6 +581,8 @@
         ui.chipPill.innerHTML    = `<strong>Chip</strong> ${bd.chip}`;
         ui.offsetsPill.innerHTML = `<strong>Offsets</strong> ${bd.bootOffset} / 0x8000 / 0x10000`;
         ui.headerDesc.innerHTML  = bd.desc;
+        ui.dlFull.href           = `${binUrl}/${bd.fullBin}`;
+        ui.dlFullName.textContent = bd.fullBin;
         ui.dlApp.href            = `${binUrl}/${bd.appBin}`;
         ui.dlAppName.textContent  = bd.appBin;
         ui.dlBoot.href           = `${binUrl}/bootloader.bin`;
@@ -572,14 +592,17 @@
       };
 
       // ── Manifest ──────────────────────────────────────────────────────────────
-      const normalizeManifest = (raw) => {
+      const normalizeManifest = (raw, binDirUrl) => {
         const parts = Array.isArray(raw?.parts) && raw.parts.length ? raw.parts : (raw?.builds?.[0]?.parts || []);
         return {
           name:       raw?.name || "Cheap Yellow Monster",
           version:    raw?.version || "n/a",
           build:      raw?.build || raw?.version || "n/a",
           chipFamily: raw?.chipFamily || raw?.builds?.[0]?.chipFamily || "ESP32-C5",
-          parts,
+          parts: parts.map(p => ({
+            ...p,
+            path: `${binDirUrl}/${p.path.replace(/^.*[\/]/, "")}`,
+          })),
         };
       };
 
@@ -593,15 +616,9 @@
         if (!res.ok) throw new Error(`Manifest fetch failed [${state.channel}/${state.board}]: ${res.status} ${res.statusText}`);
         const rawData = await res.json();
 
-        // Rewrite relative part paths to absolute raw.githubusercontent.com URLs
-        if (Array.isArray(rawData?.parts)) {
-          rawData.parts = rawData.parts.map(p => ({
-            ...p,
-            path: `${binDirUrl}/${p.path.replace(/^.*[\\/]/, "")}`,
-          }));
-        }
+        // Normalize flat and Web Tools builds manifests and rewrite each part.
+        state.manifest = normalizeManifest(rawData, binDirUrl);
 
-        state.manifest = normalizeManifest(rawData);
         if (!state.manifest.parts.length) throw new Error("Manifest has no flash parts.");
         ui.manifest.style.display = "inline-flex";
         ui.manifest.textContent   = `${state.manifest.parts.length} image(s)`;

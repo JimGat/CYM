@@ -41,4 +41,13 @@ The source-of-truth profile is `ESP32C5/components/board_hal/include/boards/hosy
 
 ## Qualification boundary
 
-Display rendering, orientation, RGB565 colors, and responsive touch are physically qualified for Jim's ES3C35P. The current image is still a bring-up stub, not the shared CYM application. SD currently times out during mount, and SD, audio, battery ADC/scaling, RGB LED, expansion pins, long-run stability, packaging/manifests, and web-flasher integration remain unqualified. Do not promote this board to release status until those gates and the shared-CYM port pass.
+Display rendering, orientation, RGB565 colors, and responsive touch are physically qualified for Jim's ES3C35P. The v2.15.27 image is now the canonical shared CYM application and is packaged and integrated with the web flasher. Compilation does not qualify the remaining hardware: SD read/write, RGB LED, plausible battery voltage, external UART GPS, 2.4-GHz Wi-Fi, BLE, and bounded long-run stability remain pending. Audio, vibrator, RF-HAT, 5 GHz, and IEEE 802.15.4 are intentionally unavailable.
+
+## Shared-CYM physical acceptance
+
+1. Flash `CYM-hosyond-s3-35-full.bin` at offset `0x0000`.
+2. Disconnect USB-C completely.
+3. Wait approximately 10 seconds.
+4. Reconnect power.
+5. Confirm the CYM home screen, correct orientation and colors, responsive touch, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi, BLE, SD read/write, RGB LED, plausible battery voltage, external UART GPS NMEA input, and a bounded no-panic/no-reboot soak.
+6. Confirm 5-GHz Wi-Fi, IEEE 802.15.4, audio, vibrator, and RF-HAT are not offered.

@@ -28,8 +28,8 @@ all: nm-cyd-c5
 # Fail fast on the first broken board. Add new boards here as they are ported.
 # Note: all release boards in a cycle share ONE version (not a separate bump per
 # board); this target just verifies the shared code compiles cleanly for all targets.
-# hosyond-s3-35 is an experimental/bring-up compile canary (its own stub main.c), not
-# a release board yet.
+# hosyond-s3-35 is the fourth release board and compiles canonical CYM sources
+# through a narrow ESP32-S3 board adapter.
 
 all-boards: nm-cyd-c5 ws-c5-28 cyd-2432s028 hosyond-s3-35
 	@echo ""
@@ -98,7 +98,7 @@ help:
 	@echo ""
 	@echo "  ESP32-S3 boards:"
 	@echo "    make hosyond-s3-28     Hosyond ESP32-S3 2.8\" (dual-core, ILI9341 + FT6336)"
-	@echo "    make hosyond-s3-35     Hosyond ESP32-S3 3.5\" (dual-core, ST77922 QSPI/TDDI)"
+	@echo "    make hosyond-s3-35     Hosyond ES3C35P 3.5\" (release, ST77922 QSPI/TDDI)"
 	@echo "    make hosyond-s3-40     Hosyond ESP32-S3 4.0\" (future -- not yet owned)"
 	@echo ""
 	@echo "  CI verification:"

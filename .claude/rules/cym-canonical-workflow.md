@@ -27,11 +27,10 @@ Makefile, commit_format_rule.md — all corrected).
 
 **Source vs packaged version.** The authoritative version is the SOURCE `set(PROJECT_VER ...)` line
 in the board's `CMakeLists.txt`: `ESP32C5/CMakeLists.txt` drives **both** NM-CYD-C5 and WS-C5-28;
-`ESP32/CMakeLists.txt` drives CYD-2432S028. "Same version across boards" therefore means those two
-files carry the same version for the cycle. That source version is compiled into each binary
-(verify with `strings <bin> | grep vX.Y.Z`) and must be mirrored into each board's manifest JSON
-(`"version"` + `"build"`). Hosyond (`ESP32S3/CMakeLists.txt`) carries an **independent** version and
-is NOT synced.
+`ESP32/CMakeLists.txt` drives CYD-2432S028; `ESP32S3/CMakeLists.txt` drives Hosyond ES3C35P.
+"Same version across boards" therefore means those three files carry the same version for the
+cycle. That source version is compiled into each binary (verify with `strings <bin> | grep vX.Y.Z`)
+and must be mirrored into each board's manifest JSON (`"version"` + `"build"`).
 
 **Source PROJECT_VER is the authoritative *intended* build version — it does not prove packaged
 artifacts were rebuilt.** Because `ESP32C5/CMakeLists.txt` is shared by **both** NM-CYD-C5 and
@@ -50,16 +49,16 @@ current versions in docs; read them from source (`CMakeLists.txt`, the intended 
 for *packaged* status, from each board's own manifest + application binary (see §2).
 
 ## 4. Release boards vs experimental  *(USER-CONFIRMED)*
-- **Release boards (3):** NM-CYD-C5, WS-C5-28 (`ESP32C5/`), CYD-2432S028 (`ESP32/`). Version-synced,
-  must build clean for shared-source changes, shipped in release assets + manifests + web flasher.
-- **Experimental / bring-up:** Hosyond S3 (`ESP32S3/`). Currently a ~372-line bring-up stub with
-  its own `main.c` (NOT the CYM app). Not version-synced, not shipped. Promotion to a release board
-  is a backlog goal gated on actually porting CYM to ESP32-S3 (BACKLOG.md).
+- **Release boards (4):** NM-CYD-C5, WS-C5-28 (`ESP32C5/`), CYD-2432S028 (`ESP32/`), and Hosyond
+  ES3C35P 3.5 (`ESP32S3/`). Version-synced, must build clean for shared-source changes, and shipped
+  in release assets + manifests + web flasher.
+- **Experimental / bring-up:** Hosyond S3 2.8-inch and 4.0-inch profiles. They are not version-synced
+  release targets and remain gated on independent hardware qualification.
 
 ## 5. Shared-code build scope
 A change to source compiled by multiple boards (esp. `ESP32C5/main/main.c`, shared components) must
-build clean on every **release** board whose `CMakeLists.txt` compiles it (main.c ⇒ all 3).
-ESP32S3 compiles its own stub `main.c`, so it is a compile canary only, not bound by this rule yet.
+build clean on every **release** board whose `CMakeLists.txt` compiles it (canonical main.c ⇒ all 4).
+ESP32S3 compiles canonical `ESP32C5/main/` sources directly plus a narrow ES3C35P hardware adapter.
 Details: `cym-shared-codebase-multiboard-build.md`.
 
 **Build gate (USER-CONFIRMED):** every affected release board must build **green before any push**
@@ -68,7 +67,7 @@ confirmed building. (No push may leave `Jimgat_Dev` at a version that fails on s
 
 ## 6. Artifacts & packaging
 Per-board binary set in `ESP32C5/binaries-esp32c5/`, `ESP32C5/binaries-ws-c5-28/`,
-`ESP32/binaries-cyd-2432s028/`; per-board manifest JSON. Copy-to-export + `-full.bin` merge is
+`ESP32/binaries-cyd-2432s028/`, `ESP32S3/binaries-hosyond-s3-35/`; per-board manifest JSON. Copy-to-export + `-full.bin` merge is
 **automated** by the CMake POST_BUILD hook; version/manifest edits are manual. Details:
 `cym-release-workflow.md`.
 
@@ -138,10 +137,14 @@ Keep memory small; update rather than duplicate; trim stale. Details: `cym-memor
 
 ### Reconciliation note (2026-09-24)
 Created during a read-only workflow reconciliation. Resolved: version = same across boards per
-cycle (not per-board); model policy = model-agnostic cost tier; Hosyond S3 = experimental/bring-up
-now with release-board as a port-gated goal. Superseded "each board its own version" wording was
+cycle (not per-board); model policy = model-agnostic cost tier; Hosyond S3 began as
+experimental/bring-up with release-board status gated on a canonical CYM port. Superseded "each board its own version" wording was
 corrected in `cym-release-workflow.md`, `Makefile`, `~/.claude/commands/dev.md`, and the
 `commit_format_rule` memory.
+
+Promotion update (2026-09-26): Hosyond ES3C35P 3.5 now compiles the canonical application through
+a narrow board adapter and is the fourth version-synced release board. Hosyond 2.8-inch and 4.0-inch
+remain experimental.
 
 Second pass (JARVIS review of commit 5356935): added the portable entry point (`AGENTS.md`),
 source-vs-packaged version handling (§2), the build gate — all affected release boards green before

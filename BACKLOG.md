@@ -97,15 +97,13 @@ rules). Start ONE track at a time; do not run all simultaneously.
   part), so a full-capability S31 CYM = S31 + C5. Dual-core could fix the single-core jammer
   timing limit. Board on order (2026-09-23).
 
-- **Port CYM firmware to ESP32-S3 (Hosyond family) → promote qualified variants to release boards** — PLANNED. `ESP32S3/` is
-  currently only a **bring-up stub** (its own ~372-line `main.c`, v2.13.80, NOT the shared CYM app).
-  Targets: 2.8" ILI9341V+FT6336G, 3.5" ST77922 QSPI/TDDI, and 4.0" ST7796S+FT6336U. Core official
-  2.8/4.0 documentation is tracked under `docs/hardware/`. The 3.5-inch ES3C35P display/touch
-  path was physically qualified on 2026-09-25: the current LCDWiki pin map is correct for Jim’s board,
-  while the older checked-in package describes another revision. SD and other peripherals remain pending.
-  See `docs/hardware/hosyond-s3-family.md`. Until the shared application port and per-model hardware
-  gates pass, Hosyond remains **experimental/bring-up** — not version-synced, shipped, manifested, or
-  web-flashable. *(scope/documentation refreshed 2026-09-24)*
+- **Physically qualify the promoted ES3C35P shared-CYM target** — IN PROGRESS. The 3.5-inch
+  `hosyond-s3-35` target now compiles the canonical `ESP32C5/main/` application, packages v2.15.27,
+  and is integrated with the shared web flasher. Display, orientation, RGB565 colors, and touch were
+  physically qualified during bring-up. Still validate SD read/write, RGB LED, battery voltage,
+  external UART GPS, 2.4-GHz Wi-Fi, BLE, and a bounded no-panic soak on the shared-CYM image.
+  Audio, vibrator, RF-HAT, 5 GHz, and IEEE 802.15.4 remain unavailable by design. Hosyond 2.8-inch
+  and 4.0-inch ports remain experimental. See `docs/hardware/hosyond-s3-family.md`.
 
 - **Multi-board framework — remaining phases** — IN PROGRESS. Phase 1 done (Makefile,
   per-SoC `build_<board>/` dirs, ESP32/ + ESP32S3/ skeletons). Later phases per the framework

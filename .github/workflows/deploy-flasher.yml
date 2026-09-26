@@ -1,20 +1,18 @@
 name: Deploy Web Flasher
 
-# Deploys the web flasher page to GitHub Pages using the pre-built binaries
-# already committed to the repository (ESP32C5/binaries-esp32c5/).
-# Runs on every push that touches the flasher or the binaries, and on
-# workflow_dispatch so you can trigger it manually from the Actions tab.
-#
-# Requires one-time repo setup:
-#   Settings → Pages → Source → GitHub Actions
-
+# Deploys the shared flasher and all supported release-board artifacts.
 on:
   push:
     branches: [main, master]
     paths:
       - "ESP32C5/docs/index.html"
-      - "ESP32C5/docs/manifest.json"
+      - "ESP32C5/docs/manifest*.json"
       - "ESP32C5/binaries-esp32c5/*.bin"
+      - "ESP32C5/binaries-ws-c5-28/*.bin"
+      - "ESP32/docs/manifest.cyd-2432s028.json"
+      - "ESP32/binaries-cyd-2432s028/*.bin"
+      - "ESP32S3/docs/manifest.hosyond-s3-35.json"
+      - "ESP32S3/binaries-hosyond-s3-35/*.bin"
       - ".github/workflows/deploy-flasher.yml"
   workflow_dispatch:
 
@@ -23,7 +21,6 @@ permissions:
   pages: write
   id-token: write
 
-# Only one deployment at a time; new runs queue, not cancel.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -41,27 +38,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build site
+      - name: Build and verify site
         run: |
-          mkdir -p _site/binaries-esp32c5
-
-          # Fix manifest paths: local source uses "../binaries-esp32c5/" (relative
-          # to ESP32C5/docs/) but GitHub Pages serves everything from one flat root,
-          # so binaries live at "binaries-esp32c5/" with no "../".
-          sed 's|"\.\./binaries-esp32c5/|"binaries-esp32c5/|g' \
-            ESP32C5/docs/manifest.json > _site/manifest.json
-
-          # Same fix for the direct-download hrefs in the page.
-          sed 's|"\.\./binaries-esp32c5/|"binaries-esp32c5/|g' \
-            ESP32C5/docs/index.html > _site/index.html
-
+          mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35
+          cp ESP32C5/docs/index.html _site/index.html
+          sed 's|"\.\./binaries-esp32c5/|"binaries-esp32c5/|g' ESP32C5/docs/manifest.json > _site/manifest.json
+          sed 's|"\.\./binaries-ws-c5-28/|"binaries-ws-c5-28/|g' ESP32C5/docs/manifest.ws-c5-28.json > _site/manifest.ws-c5-28.json
+          sed 's|"\.\./binaries-cyd-2432s028/|"binaries-cyd-2432s028/|g' ESP32/docs/manifest.cyd-2432s028.json > _site/manifest.cyd-2432s028.json
+          sed 's|"\.\./binaries-hosyond-s3-35/|"binaries-hosyond-s3-35/|g' ESP32S3/docs/manifest.hosyond-s3-35.json > _site/manifest.hosyond-s3-35.json
           cp ESP32C5/binaries-esp32c5/*.bin _site/binaries-esp32c5/
-
-          # Copy artwork / static assets from docs/
+          cp ESP32C5/binaries-ws-c5-28/*.bin _site/binaries-ws-c5-28/
+          cp ESP32/binaries-cyd-2432s028/*.bin _site/binaries-cyd-2432s028/
+          cp ESP32S3/binaries-hosyond-s3-35/*.bin _site/binaries-hosyond-s3-35/
           for f in ESP32C5/docs/*.png ESP32C5/docs/*.jpg ESP32C5/docs/*.gif ESP32C5/docs/*.svg ESP32C5/docs/*.ico; do
             [ -f "$f" ] && cp "$f" _site/
           done
-
+          test -s _site/index.html
+          test -s _site/manifest.json
+          test -s _site/manifest.ws-c5-28.json
+          test -s _site/manifest.cyd-2432s028.json
+          test -s _site/manifest.hosyond-s3-35.json
+          for manifest in _site/manifest.json _site/manifest.ws-c5-28.json _site/manifest.cyd-2432s028.json _site/manifest.hosyond-s3-35.json; do
+            python3 -m json.tool "$manifest" >/dev/null
+          done
+          test -s _site/binaries-esp32c5/CYM-NM28C5.bin
+          test -s _site/binaries-esp32c5/CYM-NM28C5-full.bin
+          test -s _site/binaries-ws-c5-28/CYM-WS-C5-28.bin
+          test -s _site/binaries-ws-c5-28/CYM-WS-C5-28-full.bin
+          test -s _site/binaries-cyd-2432s028/CYM-CYD-2432S028.bin
+          test -s _site/binaries-cyd-2432s028/CYM-CYD-2432S028-full.bin
+          test -s _site/binaries-hosyond-s3-35/CYM-hosyond-s3-35.bin
+          test -s _site/binaries-hosyond-s3-35/CYM-hosyond-s3-35-full.bin
           echo "--- site contents ---"
           find _site -type f | sort
 

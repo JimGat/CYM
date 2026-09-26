@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.13.86 |
+| Version | v2.15.27 |
 | Build date | 2026-09-26 |
-| .iram0.text | 68,875 B (67.3 KB) |
-| .dram0.data | 17,837 B (17.4 KB) |
-| .dram0.bss  (internal) | 37,168 B (36.3 KB) |
-| .ext_ram.bss  (PSRAM) | 0 B |
-| App binary size | 589,696 B (575.9 KB) |
+| .iram0.text | 128,587 B (125.6 KB) |
+| .dram0.data | 28,477 B (27.8 KB) |
+| .dram0.bss  (internal) | 110,400 B (107.8 KB) |
+| .ext_ram.bss  (PSRAM) | 207,396 B (202.5 KB) |
+| App binary size | 2,704,752 B (2641.4 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,21 +24,21 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `liblvgl__lvgl.a` | 33,909 B (33.1 KB) |
+| `libmain.a` | 55,059 B (53.8 KB) |
+| `liblvgl__lvgl.a` | 33,917 B (33.1 KB) |
+| `librf_hat.a` | 11,433 B (11.2 KB) |
+| `libnet80211.a` | 7,832 B (7.6 KB) |
+| `liblwip.a` | 4,094 B (4.0 KB) |
+| `libmesh.a` | 3,939 B (3.8 KB) |
+| `libwifi_scanner.a` | 2,413 B (2.4 KB) |
+| `libwifi_attacks.a` | 1,990 B (1.9 KB) |
+| `libwpa_supplicant.a` | 1,931 B (1.9 KB) |
+| `libpp.a` | 1,803 B (1.8 KB) |
+| `libbtdm_app.a` | 793 B |
 | `libfreertos.a` | 764 B |
 | `libesp_libc.a` | 540 B |
 | `libtfpsacrypto.a` | 472 B |
 | `libefuse.a` | 364 B |
-| `libesp_system.a` | 333 B |
-| `libesp_hw_support.a` | 322 B |
-| `liblog.a` | 276 B |
-| `libmain.a` | 202 B |
-| `libesp_psram.a` | 62 B |
-| `libfatfs.a` | 56 B |
-| `libesp_driver_ledc.a` | 48 B |
-| `libesp_mm.a` | 48 B |
-| `libvfs.a` | 44 B |
-| `libnvs_flash.a` | 40 B |
 <!-- BSS_TABLE_END -->
 
 ---
