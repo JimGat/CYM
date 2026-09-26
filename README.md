@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.15.28</b>
+  <b>v2.15.29</b>
 </p>
 
 <p align="center">
