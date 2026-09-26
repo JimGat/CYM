@@ -138,9 +138,24 @@ A board manifest will identify `ESP32-S3`, use the correct ESP32-S3 offsets, and
 
 ## Web Flasher
 
-The ES3C35P becomes a normal, non-beta selector in the shared flasher. Existing ESP32-S3 chip-family normalization and mismatch refusal are retained. The GitHub Pages deployment workflow will watch and stage all four manifests and board binary directories instead of only the primary C5 artifacts.
+The shared flasher at `ESP32C5/docs/index.html` will receive a complete `hosyond-s3-35` board definition, not merely a downloadable binary. The definition will use:
 
-This development request authorizes work on `Jimgat_Dev`, not a merge or release to `main`. The source, development manifest, and binaries will be pushed to `Jimgat_Dev`. The stable Pages flasher receives the new selector and stable artifacts only through a separately authorized release merge.
+- label `Hosyond ES3C35P 3.5`;
+- chip family `ESP32-S3`;
+- source directory `ESP32S3`;
+- binary directory `binaries-hosyond-s3-35`;
+- application binary `CYM-hosyond-s3-35.bin`;
+- manifest `docs/manifest.hosyond-s3-35.json`;
+- bootloader offset `0x0000`; and
+- `beta: false`.
+
+`hosyond-s3-35` will be added to `DEFAULT_BOARD_IDS`, making it a normal visible selector alongside the other supported boards. The page version will be incremented. Existing ESP32-S3 chip-family normalization and mismatch refusal will prevent flashing this image to a non-S3 chip. The direct-download area will expose the application, bootloader, partition table, full merged image, and manifest from the selected Stable or Dev branch.
+
+`ESP32S3/docs/manifest.hosyond-s3-35.json` will declare the three-part ESP32-S3 flash layout: bootloader at `0x0000`, partition table at `0x8000`, and application at `0x10000`. Its version/build must match the other three release manifests.
+
+`.github/workflows/deploy-flasher.yml` will watch the ES3C35P manifest, binary directory, and shared flasher source. Its site-build step will stage all four supported manifests and all four board binary directories, including `_site/manifest.hosyond-s3-35.json` and `_site/binaries-hosyond-s3-35/`. A static verification step will fail if the selector, manifest, required binaries, chip family, or offsets are missing from the generated Pages artifact.
+
+This development request authorizes work on `Jimgat_Dev`, not a merge or release to `main`. The source, development manifest, selector, workflow, and binaries will be pushed to `Jimgat_Dev`. The stable Pages deployment receives the new selector and stable artifacts only through a separately authorized release merge.
 
 ## Failure Handling
 
