@@ -39172,13 +39172,19 @@ static void show_attack_warning(void (*proceed_fn)(void))
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(card);
-    lv_label_set_text(title, LV_SYMBOL_WARNING " ACTIVE ATTACK " LV_SYMBOL_WARNING);
+    lv_label_set_text(title, LV_SYMBOL_WARNING " ACTIVE ATTACKS " LV_SYMBOL_WARNING);
     lv_obj_set_style_text_color(title, lv_color_make(0xFF, 0x40, 0x40), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 0);
 
     lv_obj_t *msg = lv_label_create(card);
-    lv_label_set_text(msg, "These are active attacks!\nOnly use with proper\nauthorization on networks\nor devices you own.");
+    lv_label_set_text(msg,
+        "These tools perform active\n"
+        "attacks. Use them only with\n"
+        "explicit authorization on\n"
+        "networks or devices you own.\n"
+        "Research and follow the laws\n"
+        "that apply in your country.");
     lv_obj_set_style_text_font(msg, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(msg, lv_color_white(), 0);
     lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
@@ -42967,7 +42973,7 @@ static void category_tile_event_cb(lv_event_t *e)
 {
     const char *key = (const char *)lv_event_get_user_data(e);
     if (!key) return;
-    if      (strcmp(key, "CAT:Attack") == 0) show_cat_attack();
+    if      (strcmp(key, "CAT:Attack") == 0) show_attack_warning(show_cat_attack);
     else if (strcmp(key, "CAT:Defend") == 0) show_cat_defend();
     else if (strcmp(key, "CAT:Recon")  == 0) show_cat_recon();
     else if (strcmp(key, "CAT:Tools")  == 0) show_cat_tools();
