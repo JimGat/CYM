@@ -51,6 +51,25 @@ class PromotionContract(unittest.TestCase):
         self.assertIn("CONFIG_ESP_CONSOLE_SECONDARY_NONE=y", defaults)
         self.assertIn("# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set", defaults)
 
+    def test_es3c35p_adapter_contract(self):
+        header = text("ESP32S3/main/hosyond_s3_35_port.h")
+        source = text("ESP32S3/main/hosyond_s3_35_port.c")
+        for symbol in ("hosyond_s3_35_display_init", "hosyond_s3_35_draw",
+                       "hosyond_s3_35_round_area", "hosyond_s3_35_touch_init",
+                       "hosyond_s3_35_touch_read"):
+            self.assertIn(symbol, header)
+            self.assertIn(symbol, source)
+        for invariant in ("40000000", "xSemaphoreGiveFromISR", "xSemaphoreTake",
+                          "BOARD_BACKLIGHT_GPIO", "BOARD_TOUCH_I2C_ADDR",
+                          "BOARD_LCD_DRAW_ROUNDING", "hosyond_s3_35_lcd_init"):
+            self.assertIn(invariant, source)
+        init = text("ESP32S3/main/hosyond_s3_35_lcd_init.h")
+        self.assertEqual(len(re.findall(r"^\s*\{0x", init, re.MULTILINE)), 63)
+        self.assertIn("HOSYOND_S3_35_LCD_INIT_SIZE", init)
+        self.assertIn("0x01, 0x3F", init)
+        self.assertIn("0x01, 0xDF", init)
+        self.assertIn("{0x36, (uint8_t []){0x00}", init)
+
     def test_release_version_and_four_board_gate(self):
         for project in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
             self.assertIn('set(PROJECT_VER "v2.15.27")', text(project))
