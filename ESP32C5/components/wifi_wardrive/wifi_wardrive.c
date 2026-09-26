@@ -391,7 +391,7 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
 }
 
 esp_err_t wifi_wardrive_init_sd(void) {
-    return wifi_wardrive_init_sd_ex(20000, false);
+    return wifi_wardrive_init_sd_ex(BOARD_SD_SPI_FREQ_HZ / 1000, false);
 }
 
 bool wifi_wardrive_is_sd_mounted(void) {

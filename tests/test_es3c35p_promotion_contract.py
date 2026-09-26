@@ -51,6 +51,19 @@ class PromotionContract(unittest.TestCase):
         self.assertIn("CONFIG_ESP_CONSOLE_SECONDARY_NONE=y", defaults)
         self.assertIn("# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set", defaults)
 
+    def test_console_transport_follows_sdkconfig(self):
+        cli = text("ESP32C5/components/wifi_cli/wifi_cli.c")
+        self.assertIn("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG", cli)
+        self.assertIn("esp_console_new_repl_usb_serial_jtag", cli)
+        self.assertIn("esp_console_new_repl_uart", cli)
+
+    def test_s3_flush_isolated_and_adc_calibration_portable(self):
+        main = text("ESP32C5/main/main.c")
+        flush = main[main.rindex("void lvgl_flush_cb"):main.index("void lvgl_touch_read_cb", main.rindex("void lvgl_flush_cb"))]
+        self.assertRegex(flush, r"(?s)#else\s+esp_lcd_panel_handle_t panel.*#endif\s+lv_disp_flush_ready\(drv\);")
+        self.assertIn("ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED", main)
+        self.assertIn("ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED", main)
+
     def test_es3c35p_adapter_contract(self):
         header = text("ESP32S3/main/hosyond_s3_35_port.h")
         source = text("ESP32S3/main/hosyond_s3_35_port.c")
@@ -69,6 +82,26 @@ class PromotionContract(unittest.TestCase):
         self.assertIn("0x01, 0x3F", init)
         self.assertIn("0x01, 0xDF", init)
         self.assertIn("{0x36, (uint8_t []){0x00}", init)
+
+    def test_shared_peripherals_use_board_profile_contracts(self):
+        common = text("ESP32C5/components/wifi_cli/include/wifi_common.h")
+        self.assertIn("#define GPS_TX_PIN   BOARD_GPS_TX", common)
+        self.assertIn("#define GPS_RX_PIN   BOARD_GPS_RX", common)
+        wardrive = text("ESP32C5/components/wifi_wardrive/wifi_wardrive.c")
+        self.assertIn("BOARD_SD_SPI_FREQ_HZ / 1000", wardrive)
+        cli = text("ESP32C5/components/wifi_cli/wifi_cli.c")
+        self.assertIn("if (!BOARD_HAS_RGB_LED) return ESP_OK;", cli)
+        main = text("ESP32C5/main/main.c")
+        self.assertIn("#if BOARD_HAS_GPS", main)
+        self.assertIn("adc_oneshot_io_to_channel(BOARD_BATTERY_ADC_GPIO", main)
+        self.assertIn("BOARD_BATTERY_DIVIDER_NUM", main)
+        self.assertIn("BOARD_BATTERY_DIVIDER_DEN", main)
+        self.assertIn("spi_bus_initialize(BOARD_SD_SPI_HOST", main)
+        self.assertNotIn("false && init_battery_adc()", main)
+
+    def test_s3_preserves_canonical_wifi_override_link_policy(self):
+        cmake = text("ESP32S3/CMakeLists.txt")
+        self.assertIn('idf_build_set_property(LINK_OPTIONS "-Wl,-zmuldefs" APPEND)', cmake)
 
     def test_release_version_and_four_board_gate(self):
         for project in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):

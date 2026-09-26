@@ -44,8 +44,8 @@ extern "C" {
 
 // GPS UART pins — board-variant. Guard: BOARD_GPS_TX_GPIO == -1 means no GPS.
 #define GPS_UART_NUM BOARD_GPS_UART_NUM
-#define GPS_TX_PIN   BOARD_GPS_TX_GPIO
-#define GPS_RX_PIN   BOARD_GPS_RX_GPIO
+#define GPS_TX_PIN   BOARD_GPS_TX
+#define GPS_RX_PIN   BOARD_GPS_RX
 #define GPS_BUF_SIZE 1024
 
 // SD Card SPI pins — board-variant via board_hal.h BOARD_SD_* defines.

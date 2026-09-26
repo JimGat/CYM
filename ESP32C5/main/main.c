@@ -96,6 +96,9 @@ LV_IMG_DECLARE(deedee_img);
 #include "driver/i2c_master.h"
 #endif
 #include "board_hal.h"
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#include "hosyond_s3_35_port.h"
+#endif
 
 // PSRAM_ATTR: place static symbol in external RAM when PSRAM is present.
 // On boards without PSRAM (e.g. CYD2USB / ESP32-WROOM-32), compiles to nothing
@@ -550,6 +553,23 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 #define LCD_V_RES       BOARD_LCD_HEIGHT     // 320
 #define LCD_HOST        BOARD_SPI_HOST       // SPI3_HOST (VSPI)
 
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
+// Hosyond ES3C35P: ST77922 QSPI display is initialized by the S3 port adapter.
+#define LCD_MOSI        BOARD_LCD_D0
+#define LCD_MISO        BOARD_LCD_D1
+#define LCD_CLK         BOARD_LCD_SCK
+#define LCD_CS          BOARD_LCD_CS
+#define LCD_DC          BOARD_LCD_DC
+#define LCD_RST         BOARD_LCD_RST
+#define TOUCH_CS        BOARD_TOUCH_CS
+#define LCD_BL_IO       BOARD_BACKLIGHT_GPIO
+#define LCD_BL_ACTIVE_LEVEL 1
+#define BOOT_BTN_GPIO   BOARD_BOOT_BTN_GPIO
+#define GO_DARK_DBL_CLICK_MS 800
+#define LCD_H_RES       BOARD_LCD_WIDTH
+#define LCD_V_RES       BOARD_LCD_HEIGHT
+#define LCD_HOST        BOARD_LCD_HOST
+
 #elif defined(CONFIG_BOARD_WS_C5_28)
 // WS-C5-28 (Waveshare ESP32-C5-Touch-LCD-2.8)
 // ST7789 + SD share SPI2_HOST. CST3530 touch is I2C on GPIO0/GPIO1.
@@ -615,14 +635,10 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 static int g_vibtest_strength_pct = 100;
 
 
-// Battery ADC configuration - Waveshare ESP32-C5-WIFI6-KIT (DISABLED - using regular C5 chip)
-// Schematic: R10=200k, R16=100k voltage divider on BAT_ADC line
-// Note: GPIO6 = ADC1_CH5 on ESP32-C5 (not CH6!)
-#define BATTERY_ADC_CHANNEL    ADC_CHANNEL_5  // GPIO6 = ADC1_CH5 (BAT_ADC on Waveshare)
-#define BATTERY_ADC_UNIT       ADC_UNIT_1
-#define BATTERY_ADC_ATTEN      ADC_ATTEN_DB_12  // Full scale ~3.3V
-#define BATTERY_VOLTAGE_DIVIDER_RATIO  3.2f    // Calibrated: VBAT 4.14V / GPIO6 1.29V = 3.21
-#define BATTERY_ADC_SAMPLES            32      // Number of samples to average
+// Battery ADC configuration. GPIO-to-unit/channel mapping and voltage-divider
+// scaling are supplied by the active board profile; unsupported boards never init it.
+#define BATTERY_ADC_ATTEN              ADC_ATTEN_DB_12
+#define BATTERY_ADC_SAMPLES            32
 #define BATTERY_UPDATE_INTERVAL_MS     30000   // 30 seconds
 
 // Battery voltage thresholds
@@ -729,6 +745,9 @@ typedef int (*vprintf_like_t)(const char *, va_list);
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+static hosyond_s3_35_display_t s_hosyond_display;
+#endif
 static SemaphoreHandle_t lvgl_mutex = NULL;
 SemaphoreHandle_t sd_spi_mutex = NULL;  // Mutex for SD/SPI access (shared with display) - used by attack_handshake.c
 static SemaphoreHandle_t flush_done_sem = NULL;  // Binary semaphore: ISR signals DMA done, task calls lv_disp_flush_ready
@@ -2649,6 +2668,8 @@ static lv_obj_t *battery_label = NULL;  // Keep for UI layout
 static char last_voltage_str[32] = "";  // Empty = no valid reading, hide label
 static adc_oneshot_unit_handle_t battery_adc_handle = NULL;
 static adc_cali_handle_t battery_adc_cali_handle = NULL;
+static adc_unit_t battery_adc_unit = ADC_UNIT_1;
+static adc_channel_t battery_adc_channel = ADC_CHANNEL_0;
 static StaticTask_t battery_task_buffer;
 static StackType_t *battery_task_stack = NULL;
 static TaskHandle_t battery_task_handle = NULL;
@@ -4184,6 +4205,27 @@ static void check_heap_integrity(const char* location) {
 
 static void init_display(void)
 {
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    ESP_ERROR_CHECK(hosyond_s3_35_display_init(&s_hosyond_display));
+    panel_handle = s_hosyond_display.panel;
+#if BOARD_HAS_SD
+    // ES3C35P SD is on dedicated SPI3; the QSPI display owns SPI2.
+    spi_bus_config_t sd_buscfg = {
+        .mosi_io_num = BOARD_SD_MOSI,
+        .miso_io_num = BOARD_SD_MISO,
+        .sclk_io_num = BOARD_SD_SCK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 4096,
+    };
+    esp_err_t sd_bus_err = spi_bus_initialize(BOARD_SD_SPI_HOST, &sd_buscfg, SPI_DMA_CH_AUTO);
+    if (sd_bus_err != ESP_OK && sd_bus_err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "ES3C35P SD SPI bus unavailable: %s", esp_err_to_name(sd_bus_err));
+    }
+#endif
+    ESP_LOGI(TAG, "ES3C35P display initialized through board adapter");
+    return;
+#endif
     // ── Display + touch SPI bus init ────────────────────────────────────────
     spi_bus_config_t buscfg = {
         .mosi_io_num = LCD_MOSI,
@@ -4630,7 +4672,10 @@ static void nvs_settings_save_wifi_creds(const char *ssid, const char *pass)
 
 static void init_backlight(void)
 {
-#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    // The ES3C35P adapter owns its direct active-high GPIO41 backlight.
+    ESP_LOGI(TAG, "Backlight already initialized by ES3C35P board adapter");
+#elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
     // WS-C5-28: backlight is controlled via CH32V003 IO expander EXIO_PWM (I2C 0x24).
     // s_io_expander must be initialized by init_i2c_bus() before this is called.
     if (s_io_expander) {
@@ -5596,7 +5641,11 @@ static void run_touch_calibration(void)
 
 static void init_touch(void)
 {
-#if defined(CONFIG_BOARD_TOUCH_XPT2046)
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    ESP_ERROR_CHECK(hosyond_s3_35_touch_init());
+    touch_cal_loaded = true;
+    ESP_LOGI(TAG, "ES3C35P capacitive touch initialized by board adapter");
+#elif defined(CONFIG_BOARD_TOUCH_XPT2046)
 #if defined(CONFIG_BOARD_CYD2USB)
     // CYD-2432S028: XPT2046 is on a SEPARATE SPI bus from the ILI9341 display.
     // Display uses VSPI (SPI3_HOST, GPIO14/13/12/15). Touch has its own lines:
@@ -7042,7 +7091,8 @@ void app_main(void)
             ESP_LOGW(TAG, "survey_flush_tmr create failed — flush disabled");
     }
 
-	//Initialize GPS UART and start background monitor task
+#if BOARD_HAS_GPS
+	// Initialize the board-profile UART and start the shared GPS monitor task.
 	if (init_gps_uart() == ESP_OK) {
 		ESP_LOGI(TAG, "GPS UART initialized on TX=%d RX=%d", GPS_TX_PIN, GPS_RX_PIN);
 		// Allocate GPS task stack from PSRAM
@@ -7063,8 +7113,9 @@ void app_main(void)
 	} else {
 		ESP_LOGE(TAG, "GPS UART init failed");
 	}
+#endif
 
-    // Initialize LED (WS2812 on GPIO27 - no WiFi dependency)
+    // Initialize the board-profile WS2812 transport when present.
     if (init_led() != ESP_OK) {
         ESP_LOGW(TAG, "LED initialization failed");
     }
@@ -7191,14 +7242,18 @@ void app_main(void)
     ESP_LOGI(TAG, "Screenshot worker not started (no PSRAM on this board)");
 #endif
 
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    // The ST77922 QSPI adapter needs four-pixel-aligned DMA chunks in internal SRAM.
+    const size_t buf_size = BOARD_LCD_BUF_SIZE;
+    buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+#else
     // 15 lines per buffer — works for both 16-bit (7200 B) and 32-bit (14400 B) color depth.
-    // INTERNAL DMA SRAM (not PSRAM): internal SRAM feeds the SPI FIFO fast enough to sustain the
-    // 80MHz pclk without underrun/tearing — PSRAM cannot. Cost: 2x7.2KB = 14.4KB of internal DMA heap.
-    // If a board is short on internal DMA, drop pclk back to 40MHz AND revert these two to
-    // MALLOC_CAP_SPIRAM together (they must change as a pair).
+    // INTERNAL DMA SRAM sustains the existing ST7789/ILI9341 SPI timing.
     const size_t buf_size = LCD_H_RES * 15 * sizeof(lv_color_t);
     buf1 = spi_bus_dma_memory_alloc(LCD_HOST, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     buf2 = spi_bus_dma_memory_alloc(LCD_HOST, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+#endif
     if (buf1 == NULL || buf2 == NULL) {
         ESP_LOGE(TAG, "Failed to allocate draw buffers! free SPIRAM=%zu internal=%zu",
                  heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
@@ -7207,14 +7262,23 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Display buffers allocated: buf1=%p, buf2=%p (size: %zu bytes each)", buf1, buf2, buf_size);
 
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_H_RES * BOARD_LCD_BUF_LINES);
+#else
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_H_RES * 15);
+#endif
     static lv_disp_drv_t disp_drv;
     lv_disp_drv_init(&disp_drv);
     disp_drv.hor_res = LCD_H_RES;
     disp_drv.ver_res = LCD_V_RES;
     disp_drv.flush_cb = lvgl_flush_cb;
     disp_drv.draw_buf = &draw_buf;
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    disp_drv.user_data = &s_hosyond_display;
+    disp_drv.rounder_cb = hosyond_s3_35_round_area;
+#else
     disp_drv.user_data = panel_handle;
+#endif
 #if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
     // Enable LVGL software rotation so the user Orientation setting can rotate the
     // whole UI (and touch) at runtime. rot=0 (portrait) costs nothing; a landscape
@@ -7232,6 +7296,16 @@ void app_main(void)
     blueduck_init(sd_spi_mutex, gps_best);
     wp_init(sd_spi_mutex);
 
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    // The adapter owns the QSPI ISR semaphore and completion callback.
+    memset(buf1, 0, buf_size);
+    for (int y = 0; y < LCD_V_RES; y += BOARD_LCD_BUF_LINES) {
+        int lines = (y + BOARD_LCD_BUF_LINES <= LCD_V_RES)
+                  ? BOARD_LCD_BUF_LINES : (LCD_V_RES - y);
+        ESP_ERROR_CHECK(hosyond_s3_35_draw(&s_hosyond_display,
+                                           0, y, LCD_H_RES, y + lines, buf1));
+    }
+#else
     flush_done_sem = xSemaphoreCreateBinary();
     if (flush_done_sem == NULL) {
         ESP_LOGE(TAG, "Failed to create flush_done_sem!");
@@ -7243,16 +7317,14 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(lcd_io_handle, &cbs, &disp_drv));
 
-    // Clear screen: memset writes exactly buf_size bytes (no overflow regardless of color depth)
-    // Wait for each DMA to complete before starting the next — on_color_trans_done fires for
-    // every draw_bitmap call; without the wait the binary semaphore accumulates a stale count
-    // of 1 that the first real lvgl_flush_cb take consumes prematurely (DMA race / tear fix).
+    // Clear screen while holding each transfer until its DMA completion callback.
     memset(buf1, 0, buf_size);
     for (int y = 0; y < LCD_V_RES; y += 15) {
         int lines = (y + 15 <= LCD_V_RES) ? 15 : (LCD_V_RES - y);
         esp_lcd_panel_draw_bitmap(panel_handle, 0, y, LCD_H_RES, y + lines, buf1);
         xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(100));
     }
+#endif
 
     lv_obj_t *scr = lv_scr_act();
     if (!scr) {
@@ -7535,8 +7607,8 @@ void app_main(void)
     check_heap_integrity("Before main loop");
     print_memory_stats();
     
-    // Battery ADC disabled: GPIO6 = SPI SCK on NM-CYD-C5, ADC would reconfigure it
-    if (false && init_battery_adc() == ESP_OK) {
+#if BOARD_HAS_BATTERY_ADC
+    if (init_battery_adc() == ESP_OK) {
         battery_task_stack = (StackType_t *)heap_caps_malloc(2048 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
         if (battery_task_stack != NULL) {
             battery_task_handle = xTaskCreateStatic(battery_monitor_task, "bat_mon", 2048, NULL,
@@ -7554,6 +7626,7 @@ void app_main(void)
     } else {
         ESP_LOGW(TAG, "Battery ADC init failed - voltage monitor disabled");
     }
+#endif
 
     // Subscribe main task to watchdog
     esp_task_wdt_add(NULL);
@@ -7621,6 +7694,9 @@ void app_main(void)
 #if defined(CONFIG_BOARD_TOUCH_XPT2046)
                 xpt2046_touch_point_t tp = {0};
                 touched = xpt2046_read_touch(&touch_handle, &tp) && tp.touched;
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
+                uint16_t tp_x = 0, tp_y = 0;
+                hosyond_s3_35_touch_read(&tp_x, &tp_y, &touched);
 #elif defined(CONFIG_BOARD_TOUCH_CST3530)
                 uint16_t tp_x[1], tp_y[1]; uint8_t tp_cnt = 0;
                 esp_lcd_touch_read_data(touch_handle);
@@ -9642,7 +9718,6 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
         }
     }
 
-    esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
     int32_t width = area->x2 - area->x1 + 1;
     int32_t height = area->y2 - area->y1 + 1;
     
@@ -9653,6 +9728,18 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
         return;
     }
     
+#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+    esp_err_t s3_draw_err = hosyond_s3_35_draw(
+        (hosyond_s3_35_display_t *)drv->user_data,
+        area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_p);
+    if (s3_draw_err != ESP_OK) {
+        ESP_LOGE(TAG, "ES3C35P flush failed: %s", esp_err_to_name(s3_draw_err));
+    }
+    lv_disp_flush_ready(drv);
+    return;
+#else
+    esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
+
     // CRITICAL: Take SD/SPI mutex before drawing to display
     // Display and SD card share the same SPI bus (SPI2_HOST)
     // IMPORTANT: Do NOT spin-wait for this mutex. If another task holds it (e.g., SD provision),
@@ -9707,6 +9794,7 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
         esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_p);
         xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(1000));
     }
+#endif
     lv_disp_flush_ready(drv);
 }
 
@@ -9733,6 +9821,11 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         touched = true;
         touch_x = point.x;
         touch_y = point.y;
+        last_input_ms = now_ms;
+    }
+
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
+    if (hosyond_s3_35_touch_read(&touch_x, &touch_y, &touched) && touched) {
         last_input_ms = now_ms;
     }
 
@@ -40621,13 +40714,22 @@ void vibrator_burst(int count, uint32_t on_ms, uint32_t gap_ms)
 #if 1  // Battery monitor enabled
 static esp_err_t init_battery_adc(void)
 {
-    // Configure ADC unit
+    esp_err_t ret = adc_oneshot_io_to_channel(BOARD_BATTERY_ADC_GPIO,
+                                               &battery_adc_unit,
+                                               &battery_adc_channel);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Battery GPIO%d is not ADC-capable: %s",
+                 BOARD_BATTERY_ADC_GPIO, esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Configure the ADC unit discovered from the board-profile GPIO.
     adc_oneshot_unit_init_cfg_t init_cfg = {
-        .unit_id = BATTERY_ADC_UNIT,
+        .unit_id = battery_adc_unit,
         .ulp_mode = ADC_ULP_MODE_DISABLE,
     };
     
-    esp_err_t ret = adc_oneshot_new_unit(&init_cfg, &battery_adc_handle);
+    ret = adc_oneshot_new_unit(&init_cfg, &battery_adc_handle);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to create ADC unit: %s", esp_err_to_name(ret));
         return ret;
@@ -40639,7 +40741,7 @@ static esp_err_t init_battery_adc(void)
         .bitwidth = ADC_BITWIDTH_12,
     };
     
-    ret = adc_oneshot_config_channel(battery_adc_handle, BATTERY_ADC_CHANNEL, &chan_cfg);
+    ret = adc_oneshot_config_channel(battery_adc_handle, battery_adc_channel, &chan_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to configure ADC channel: %s", esp_err_to_name(ret));
         adc_oneshot_del_unit(battery_adc_handle);
@@ -40648,21 +40750,23 @@ static esp_err_t init_battery_adc(void)
     }
     
     // Try to create calibration handle for more accurate readings
-#if defined(CONFIG_IDF_TARGET_ESP32C5)
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cali_cfg = {
-        .unit_id  = BATTERY_ADC_UNIT,
-        .chan     = BATTERY_ADC_CHANNEL,
+        .unit_id  = battery_adc_unit,
+        .chan     = battery_adc_channel,
         .atten   = BATTERY_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_12,
     };
     ret = adc_cali_create_scheme_curve_fitting(&cali_cfg, &battery_adc_cali_handle);
-#else
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
     adc_cali_line_fitting_config_t cali_cfg = {
-        .unit_id  = BATTERY_ADC_UNIT,
+        .unit_id  = battery_adc_unit,
         .atten   = BATTERY_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_12,
     };
     ret = adc_cali_create_scheme_line_fitting(&cali_cfg, &battery_adc_cali_handle);
+#else
+    ret = ESP_ERR_NOT_SUPPORTED;
 #endif
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "ADC calibration not available, using raw values");
@@ -40671,7 +40775,8 @@ static esp_err_t init_battery_adc(void)
         ESP_LOGI(TAG, "ADC calibration enabled");
     }
     
-    ESP_LOGI(TAG, "Battery ADC initialized on channel %d", BATTERY_ADC_CHANNEL);
+    ESP_LOGI(TAG, "Battery ADC initialized on GPIO%d (unit %d channel %d)",
+             BOARD_BATTERY_ADC_GPIO, battery_adc_unit, battery_adc_channel);
     return ESP_OK;
 }
 
@@ -40687,7 +40792,7 @@ static float read_battery_voltage(void)
     
     for (int i = 0; i < BATTERY_ADC_SAMPLES; i++) {
         int raw_value = 0;
-        esp_err_t ret = adc_oneshot_read(battery_adc_handle, BATTERY_ADC_CHANNEL, &raw_value);
+        esp_err_t ret = adc_oneshot_read(battery_adc_handle, battery_adc_channel, &raw_value);
         if (ret == ESP_OK) {
             sum += raw_value;
             valid_samples++;
@@ -40712,8 +40817,10 @@ static float read_battery_voltage(void)
         voltage_mv = (avg_raw / 4095.0f) * 3300.0f;
     }
     
-    // Apply voltage divider ratio to get actual battery voltage
-    float battery_voltage = (voltage_mv / 1000.0f) * BATTERY_VOLTAGE_DIVIDER_RATIO;
+    // Apply the active board's voltage-divider ratio.
+    float battery_voltage = (voltage_mv / 1000.0f)
+                          * BOARD_BATTERY_DIVIDER_NUM
+                          / BOARD_BATTERY_DIVIDER_DEN;
     
     return battery_voltage;
 }

@@ -120,8 +120,8 @@ static esp_err_t init_wifi(void) {
 
 esp_err_t init_led(void) {
     if (g_led_strip != NULL) return ESP_OK;  // already initialised (e.g. after BLE→WiFi switch)
-    // Skip on boards with no WS2812 (BOARD_RGB_LED_COUNT == 0 means no LED fitted)
-    if (BOARD_RGB_LED_COUNT == 0) return ESP_OK;
+    // Only boards advertising an addressable RGB LED may claim/configure its GPIO.
+    if (!BOARD_HAS_RGB_LED) return ESP_OK;
     led_strip_config_t strip_cfg = {
         .strip_gpio_num = BOARD_RGB_LED_GPIO,
         .max_leds = BOARD_RGB_LED_COUNT,
@@ -474,8 +474,13 @@ esp_err_t wifi_cli_start_console(void) {
     esp_console_register_help_command();
     wifi_cli_register_commands();
     
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+    esp_console_dev_usb_serial_jtag_config_t hw_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw_config, &repl_config, &repl));
+#else
     esp_console_dev_uart_config_t hw_config = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_console_new_repl_uart(&hw_config, &repl_config, &repl));
+#endif
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     
     return ESP_OK;

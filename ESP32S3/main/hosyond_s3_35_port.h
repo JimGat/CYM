@@ -19,6 +19,6 @@ esp_err_t hosyond_s3_35_draw(hosyond_s3_35_display_t *display,
                              int x_start, int y_start,
                              int x_end, int y_end,
                              const void *pixels);
-void hosyond_s3_35_round_area(lv_area_t *area);
+void hosyond_s3_35_round_area(lv_disp_drv_t *drv, lv_area_t *area);
 esp_err_t hosyond_s3_35_touch_init(void);
 bool hosyond_s3_35_touch_read(uint16_t *x, uint16_t *y, bool *pressed);

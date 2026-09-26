@@ -57,6 +57,12 @@
 #define BOARD_HAS_GPS 0
 #endif
 #endif
+#ifndef BOARD_HAS_SD
+#define BOARD_HAS_SD 1
+#endif
+#ifndef BOARD_SD_SPI_FREQ_HZ
+#define BOARD_SD_SPI_FREQ_HZ 20000000
+#endif
 #ifndef BOARD_HAS_BATTERY_ADC
 #define BOARD_HAS_BATTERY_ADC 0
 #endif

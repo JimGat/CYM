@@ -28,6 +28,10 @@ set(EXTRA_COMPONENT_DIRS
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
+# Preserve the canonical CYM raw-frame override. wifi_attacks intentionally
+# replaces Espressif's weakly-versioned ieee80211_raw_frame_sanity_check symbol.
+idf_build_set_property(LINK_OPTIONS "-Wl,-zmuldefs" APPEND)
+
 # Suppress warnings-as-errors globally (pre-existing warnings in vendor drivers)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error" APPEND)
 
