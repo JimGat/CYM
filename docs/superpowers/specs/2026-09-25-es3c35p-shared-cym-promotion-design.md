@@ -34,7 +34,8 @@ The ES3C35P-specific low-level boundary is limited to:
 - direct GPIO41 backlight control;
 - SPI3 SD configuration;
 - GPIO40 WS2812 transport; and
-- GPIO8 battery ADC conversion.
+- GPIO8 battery ADC conversion; and
+- external GPS through the board's four-pin UART connector.
 
 These adapters expose the behavior expected by shared CYM code. They do not own screens, menus, feature state, storage formats, network behavior, or alternate application task flows.
 
@@ -64,7 +65,8 @@ Enabled on ES3C35P:
 - I2C capacitive touch;
 - SD storage;
 - one WS2812-compatible RGB LED; and
-- battery voltage ADC.
+- battery voltage ADC; and
+- external GPS support through the UART connector.
 
 Disabled because the hardware is absent or intentionally deferred:
 
@@ -72,9 +74,8 @@ Disabled because the hardware is absent or intentionally deferred:
 - IEEE 802.15.4;
 - audio codec/speaker features;
 - vibrator;
-- RF-HAT;
-- GPS; and
-- ES3C35P expansion-interface features.
+- RF-HAT; and
+- ES3C35P expansion-interface features other than the dedicated UART GPS connection.
 
 Unavailable C5-only APIs and menus must be excluded by capability or target guards. The S3 binary must contain no callable 5 GHz or IEEE 802.15.4 execution path.
 
@@ -93,6 +94,19 @@ The shared LED behavior uses a narrow GPIO40 WS2812 adapter. Driver initializati
 The existing hard-disabled, hardcoded battery path will be converted to use board capability/profile values. ES3C35P uses GPIO8 / ESP32-S3 ADC1 channel 7, calibrated one-shot ADC sampling, an averaged reading, and the schematic's 100 kOhm / 100 kOhm divider ratio. The result feeds the existing shared top-bar voltage display.
 
 ADC initialization or calibration failure hides the voltage and logs the error. Firmware must not display an invented or uncalibrated value as trustworthy battery data.
+
+### UART GPS
+
+The board's four-pin P2 UART connector is a supported optional GPS connection with this board-specific map:
+
+- P2 pin 1: 3.3 V;
+- P2 pin 2: GND;
+- P2 pin 3: board TXD0, ESP32-S3 GPIO43, connected to GPS RX; and
+- P2 pin 4: board RXD0, ESP32-S3 GPIO44, connected to GPS TX.
+
+CYM will use `UART_NUM_1` through the ESP32-S3 GPIO matrix with MCU TX on GPIO43 and MCU RX on GPIO44, matching the shared GPS driver's TX/RX convention. The existing board profile's reversed GPIO43/GPIO44 UART definitions must be corrected. Application logging will use native USB Serial/JTAG only so UART0 console traffic does not contend with the GPS connector. ROM download behavior remains available before application startup. With no GPS attached, CYM retains its existing no-module behavior and hides GPS status rather than treating absence as an error.
+
+The same shared-feature/board-pin-map rule applies to WS-C5-28. Its existing board profile and schematic define its UART connector as MCU TX on GPIO11 and MCU RX on GPIO12. WS-C5-28 continues to use the canonical GPS implementation with that board-specific map; it must not receive a separate GPS feature implementation.
 
 ### PSRAM
 
@@ -134,6 +148,7 @@ This development request authorizes work on `Jimgat_Dev`, not a merge or release
 - SD failure is nonfatal and routes through shared SD error handling.
 - RGB initialization failure is nonfatal and disables LED behavior.
 - Battery ADC/calibration failure hides battery output.
+- GPS UART initialization or module-detection failure is nonfatal and preserves the shared no-module behavior.
 - Missing PSRAM or failed large allocations must fail closed at the affected feature, never corrupt memory or force large buffers into DMA-constrained internal RAM.
 - C5-only features are absent at compile time rather than allowed to fail at runtime.
 
@@ -165,6 +180,8 @@ The development image will be delivered with its raw GitHub URL, SHA-256, and fl
 - SD mount/read/write;
 - RGB LED behavior;
 - plausible battery voltage;
+- optional UART GPS detection and NMEA reception using GPIO43/GPIO44 when a module is connected;
+- normal operation with the GPS connector empty;
 - 5 GHz, IEEE 802.15.4, audio, and RF-HAT absent; and
 - no panic or reboot during a bounded soak.
 
@@ -175,6 +192,7 @@ If SD, RGB, or battery fails physical testing, only its adapter/profile is corre
 - Promoting the Hosyond 2.8-inch or 4.0-inch boards.
 - Adding audio support.
 - Adding RF-HAT support.
+- Adding GPS through any connection other than each board's dedicated UART connector.
 - Implementing 5 GHz or IEEE 802.15.4 on ESP32-S3.
 - Refactoring the entire application into a new top-level component.
 - Copying the canonical application into an S3-specific fork.
