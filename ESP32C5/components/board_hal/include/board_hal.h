@@ -35,6 +35,55 @@
 #  include "boards/nm_cyd_c5.h"
 #endif
 
+// ── Capability and pin fallbacks ─────────────────────────────────────────────
+// Board headers define only physically present features. Shared code consumes
+// these normalized names without inventing cross-board GPIO assumptions.
+#ifndef BOARD_GPS_TX_GPIO
+#define BOARD_GPS_TX_GPIO -1
+#endif
+#ifndef BOARD_GPS_RX_GPIO
+#define BOARD_GPS_RX_GPIO -1
+#endif
+#ifndef BOARD_GPS_TX
+#define BOARD_GPS_TX BOARD_GPS_TX_GPIO
+#endif
+#ifndef BOARD_GPS_RX
+#define BOARD_GPS_RX BOARD_GPS_RX_GPIO
+#endif
+#ifndef BOARD_HAS_GPS
+#if BOARD_GPS_TX >= 0 && BOARD_GPS_RX >= 0
+#define BOARD_HAS_GPS 1
+#else
+#define BOARD_HAS_GPS 0
+#endif
+#endif
+#ifndef BOARD_HAS_BATTERY_ADC
+#define BOARD_HAS_BATTERY_ADC 0
+#endif
+#ifndef BOARD_BATTERY_ADC_GPIO
+#define BOARD_BATTERY_ADC_GPIO -1
+#endif
+#ifndef BOARD_BATTERY_DIVIDER_NUM
+#define BOARD_BATTERY_DIVIDER_NUM 1
+#endif
+#ifndef BOARD_BATTERY_DIVIDER_DEN
+#define BOARD_BATTERY_DIVIDER_DEN 1
+#endif
+#ifndef BOARD_RGB_PIN
+#ifdef BOARD_RGB_LED_GPIO
+#define BOARD_RGB_PIN BOARD_RGB_LED_GPIO
+#else
+#define BOARD_RGB_PIN -1
+#endif
+#endif
+#ifndef BOARD_HAS_RGB_LED
+#ifdef CONFIG_BOARD_HAS_RGB_LED
+#define BOARD_HAS_RGB_LED 1
+#else
+#define BOARD_HAS_RGB_LED 0
+#endif
+#endif
+
 // ── Sanity checks — catch impossible combinations at compile time ─────────────
 
 #if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER) && defined(CONFIG_BOARD_TOUCH_XPT2046)

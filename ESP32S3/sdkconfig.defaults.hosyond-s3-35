@@ -36,3 +36,10 @@ CONFIG_BOARD_HOSYOND_S3_35=y
 
 # ── No 802.15.4 on ESP32-S3 ──────────────────────────────────────────────────
 # CONFIG_IEEE802154_ENABLED is not set
+
+# ── Console ownership ─────────────────────────────────────────────────────────
+# Keep GPIO43/GPIO44 available for the external GPS connector. Logs use the
+# ESP32-S3 native USB Serial/JTAG peripheral, which does not consume those pins.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set

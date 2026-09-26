@@ -72,11 +72,13 @@
 #define BOARD_SD_PULLUP_D1    7          // IO7 (SDIO D1) — pull high, not driven
 #define BOARD_SD_PULLUP_D2    2          // IO2 (SDIO D2) — pull high, not driven
 #define BOARD_SD_FREQ_KHZ     20000      // 20 MHz; matches NM-CYD-C5
+#define BOARD_SD_SPI_FREQ_HZ  20000000    // board-scoped SPI3 transfer limit
 #define BOARD_SD_MOUNT_POINT  "/sdcard"
 
 // ── WS2812-compatible RGB LED ─────────────────────────────────────────────────
 // Addressable single LED with built-in control IC on IO40.
-#define BOARD_RGB_LED_GPIO   40          // IO40
+#define BOARD_RGB_PIN        40          // IO40 — canonical name used by CYM shared code
+#define BOARD_RGB_LED_GPIO   40          // IO40 — legacy alias
 #define BOARD_RGB_LED_COUNT   1
 
 // ── Boot button ───────────────────────────────────────────────────────────────
@@ -86,15 +88,34 @@
 // ── No vibrator motor ────────────────────────────────────────────────────────
 #define BOARD_VIBRATOR_GPIO  -1
 
-// ── No GPS on this board ─────────────────────────────────────────────────────
-// GPS_TX/RX = -1 gates GPS init in wifi_common.h.
-#define BOARD_GPS_UART_NUM   UART_NUM_1  // unused — gated by BOARD_GPS_TX_GPIO
-#define BOARD_GPS_TX_GPIO    -1
-#define BOARD_GPS_RX_GPIO    -1
+// ── Capability flags (literal values; Kconfig also defines CONFIG_BOARD_HAS_*) ──
+#define BOARD_HAS_PSRAM              1
+#define BOARD_HAS_SD                 1
+#define BOARD_HAS_RGB_LED            1
+#define BOARD_HAS_BATTERY_ADC        1
+#define BOARD_HAS_GPS                1
+#define BOARD_HAS_5GHZ               0  // ESP32-S3 is 2.4 GHz only
+#define BOARD_HAS_IEEE802154         0  // No 802.15.4 on ESP32-S3
+#define BOARD_HAS_AUDIO              0  // Audio codec not yet wired in CYM
+#define BOARD_HAS_VIBRATOR           0
+#define BOARD_HAS_RF_HAT             0
+
+// ── GPS UART connector (UART1 through the GPIO matrix) ───────────────────────
+// P2 pin 3 is board TXD on IO43 (connect to GPS RX); P2 pin 4 is board RXD on
+// IO44 (connect to GPS TX). Application logs use native USB Serial/JTAG only.
+#define BOARD_GPS_UART_NUM           1
+#define BOARD_GPS_TX                 43
+#define BOARD_GPS_RX                 44
+#define BOARD_GPS_TX_GPIO            43  // legacy alias used by wifi_common.h
+#define BOARD_GPS_RX_GPIO            44  // legacy alias used by wifi_common.h
 
 // ── Battery ADC ───────────────────────────────────────────────────────────────
 // IO8 = voltage divider input, ADC1_CHANNEL_7 on ESP32-S3.
-#define BOARD_BATT_ADC_GPIO   8
+// 100 kOhm / 100 kOhm divider → VBAT = ADC_mV * 2 / 1.
+#define BOARD_BATTERY_ADC_GPIO       8
+#define BOARD_BATTERY_DIVIDER_NUM    2
+#define BOARD_BATTERY_DIVIDER_DEN    1
+#define BOARD_BATT_ADC_GPIO          8  // legacy alias
 
 // ── Expansion JST connector (4-pin, 1.25 mm) ─────────────────────────────────
 // IO45/IO46 plus GND and VCC. Future: RF-HAT shim adapter.
@@ -107,9 +128,9 @@
 #define BOARD_RFHAT_PIN_A    45          // mirrors NM-CYD-C5 GPIO8 (IO22) function
 #define BOARD_RFHAT_PIN_B    46          // mirrors NM-CYD-C5 GPIO9 (IO27) function
 
-// ── UART0 (USB serial / console) ─────────────────────────────────────────────
-#define BOARD_UART_TX        44          // IO44 (standard ESP32-S3 UART0)
-#define BOARD_UART_RX        43          // IO43
+// ── External UART connector aliases ──────────────────────────────────────────
+#define BOARD_UART_TX        BOARD_GPS_TX
+#define BOARD_UART_RX        BOARD_GPS_RX
 
 // ── Board identifier strings ──────────────────────────────────────────────────
 #define BOARD_NAME           "hosyond-s3-35"

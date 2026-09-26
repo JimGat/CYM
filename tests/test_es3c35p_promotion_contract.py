@@ -37,6 +37,20 @@ class PromotionContract(unittest.TestCase):
                              "BOARD_GPS_TX":"11", "BOARD_GPS_RX":"12"}.items():
             self.assertRegex(profile, rf"#define\s+{macro}\s+{value}\b")
 
+    def test_board_defaults_and_s3_console_ownership(self):
+        hal = text("ESP32C5/components/board_hal/include/board_hal.h")
+        for macro in ("BOARD_HAS_GPS", "BOARD_GPS_TX", "BOARD_GPS_RX",
+                      "BOARD_HAS_BATTERY_ADC", "BOARD_BATTERY_ADC_GPIO",
+                      "BOARD_BATTERY_DIVIDER_NUM", "BOARD_BATTERY_DIVIDER_DEN",
+                      "BOARD_HAS_RGB_LED", "BOARD_RGB_PIN"):
+            self.assertIn(f"#ifndef {macro}", hal)
+        profile = text("ESP32C5/components/board_hal/include/boards/hosyond_s3_35.h")
+        self.assertRegex(profile, r"#define\s+BOARD_SD_SPI_FREQ_HZ\s+20000000\b")
+        defaults = text("ESP32S3/sdkconfig.defaults.hosyond-s3-35")
+        self.assertIn("CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y", defaults)
+        self.assertIn("CONFIG_ESP_CONSOLE_SECONDARY_NONE=y", defaults)
+        self.assertIn("# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set", defaults)
+
     def test_release_version_and_four_board_gate(self):
         for project in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
             self.assertIn('set(PROJECT_VER "v2.15.27")', text(project))

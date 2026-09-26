@@ -69,9 +69,12 @@
 
 // ── GPS UART ──────────────────────────────────────────────────────────────────
 // Available via UART header (GPIO11=TX, GPIO12=RX). Reassign if needed.
-#define BOARD_GPS_UART_NUM   UART_NUM_1
-#define BOARD_GPS_TX_GPIO    11
-#define BOARD_GPS_RX_GPIO    12
+#define BOARD_HAS_GPS        1
+#define BOARD_GPS_UART_NUM   1           // UART_NUM_1 — literal for contract tests
+#define BOARD_GPS_TX         11          // canonical name used by CYM shared code
+#define BOARD_GPS_RX         12          // canonical name used by CYM shared code
+#define BOARD_GPS_TX_GPIO    11          // legacy alias used by wifi_common.h
+#define BOARD_GPS_RX_GPIO    12          // legacy alias used by wifi_common.h
 
 // ── Boot button ───────────────────────────────────────────────────────────────
 #define BOARD_BOOT_BTN_GPIO  28
