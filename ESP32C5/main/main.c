@@ -26613,6 +26613,7 @@ static void screen_popup_save_cb(lv_event_t *e)
     if (home_layout_changed) lv_async_call(home_layout_show_menu_async, NULL);
 }
 
+#if defined(CONFIG_BOARD_TOUCH_XPT2046)
 static void screen_popup_recal_cb(lv_event_t *e)
 {
     (void)e;
@@ -26625,6 +26626,7 @@ static void screen_popup_recal_cb(lv_event_t *e)
     }
     esp_restart();
 }
+#endif  // CONFIG_BOARD_TOUCH_XPT2046
 
 static void show_screen_popup(void)
 {
@@ -26805,6 +26807,7 @@ static void show_screen_popup(void)
         lv_obj_set_style_pad_all(div2, 0, 0);
     }
 
+#if defined(CONFIG_BOARD_TOUCH_XPT2046)
     /* ── Recalibrate Touch section ────────────────── */
     lv_obj_t *recal_hdr = lv_label_create(pTouch);
     lv_label_set_text(recal_hdr, "Touch Calibration");
@@ -26822,7 +26825,7 @@ static void show_screen_popup(void)
     lv_obj_set_style_text_font(recal_lbl, &lv_font_montserrat_12, 0);
     lv_obj_center(recal_lbl);
     lv_obj_add_event_cb(recal_btn, screen_popup_recal_cb, LV_EVENT_CLICKED, NULL);
-
+#endif  // CONFIG_BOARD_TOUCH_XPT2046
 
     /* Home Layout radio choices */
     lv_obj_t *home_row = lv_obj_create(dialog);
@@ -26840,14 +26843,14 @@ static void show_screen_popup(void)
     lv_obj_set_style_text_font(home_hdr, &lv_font_montserrat_12, 0);
     screen_home_classic_radio = lv_checkbox_create(home_row);
     lv_checkbox_set_text(screen_home_classic_radio, "Classic");
-    lv_obj_set_style_text_color(screen_home_classic_radio, ui_text_color(), 0);
+    lv_obj_set_style_text_color(screen_home_classic_radio, lv_color_hex(0x3F51B5), 0);
     lv_obj_set_style_text_font(screen_home_classic_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_classic_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_classic_radio, screen_home_layout_radio_cb,
                         LV_EVENT_VALUE_CHANGED, (void *)&SCREEN_HOME_LAYOUT_CHOICE[0]);
     screen_home_4cat_radio = lv_checkbox_create(home_row);
     lv_checkbox_set_text(screen_home_4cat_radio, "Modern");
-    lv_obj_set_style_text_color(screen_home_4cat_radio, ui_text_color(), 0);
+    lv_obj_set_style_text_color(screen_home_4cat_radio, lv_color_hex(0x3F51B5), 0);
     lv_obj_set_style_text_font(screen_home_4cat_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_4cat_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_4cat_radio, screen_home_layout_radio_cb,
@@ -27547,8 +27550,6 @@ static void settings_tile_event_cb(lv_event_t *e)
         show_timing_popup();
     } else if (strcmp(tile_name, "Screen") == 0) {
         show_screen_popup();
-    } else if (strcmp(tile_name, "Home Layout") == 0) {
-        show_home_layout_popup();
     } else if (strcmp(tile_name, "Data Transfer") == 0) {
         show_data_transfer_screen();
     } else if (strcmp(tile_name, "RedTeam mode") == 0) {
@@ -27701,7 +27702,6 @@ static void show_settings_screen(void)
     create_tile(tiles, MY_SYMBOL_CLOCK,          "Timing",             COLOR_MATERIAL_PURPLE,   settings_tile_event_cb, "Timing");
     create_tile(tiles, LV_SYMBOL_DOWNLOAD,       "Download\nMode",     COLOR_MATERIAL_RED,      settings_tile_event_cb, "Download Mode");
     create_tile(tiles, MY_SYMBOL_DESKTOP,        "Screen",             COLOR_MATERIAL_TEAL,     settings_tile_event_cb, "Screen");
-    create_tile(tiles, MY_SYMBOL_SITEMAP,        "Home\nLayout",       lv_color_hex(0x3F51B5),  settings_tile_event_cb, "Home Layout");
     create_tile(tiles, LV_SYMBOL_SD_CARD,        "SD\nCard",           COLOR_MATERIAL_GREEN,    settings_tile_event_cb, "SD Card");
     create_tile(tiles, MY_SYMBOL_SATELLITE_DISH, "GPS\nInfo",          lv_color_hex(0x00BCD4),  settings_tile_event_cb, "GPS Info");
     create_tile(tiles, MY_SYMBOL_MICROCHIP,      "Hardware\nOptions",  lv_color_hex(0x607D8B),  settings_tile_event_cb, "Hardware Options");
