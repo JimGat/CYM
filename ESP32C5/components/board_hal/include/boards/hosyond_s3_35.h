@@ -26,6 +26,19 @@
 #define BOARD_LCD_HEIGHT     480
 #define BOARD_BACKLIGHT_GPIO 41          // IO41, active-high, LEDC ch 1
 #define BOARD_LCD_PCLK_HZ    (40 * 1000 * 1000)
+
+// Hardware-qualified ES3C35P display contract (CYM-S3 v2.13.85, 2026-09-25):
+// - native portrait 320x480; no X/Y mirror (MADCTL 0x00)
+// - RGB element order, big-endian RGB565 transport, inversion ON (command 0x21)
+// - vendor/factory 63-entry ES3C35P init table; NEVER use the upstream 532x300 default
+// - 4-pixel X draw alignment; LCD reset is tied to EN/CHIP_PU, not a GPIO
+#define BOARD_LCD_MIRROR_X            0
+#define BOARD_LCD_MIRROR_Y            0
+#define BOARD_LCD_INVERT_COLORS       1
+#define BOARD_LCD_DRAW_ROUNDING       4
+#define BOARD_LCD_INIT_PROFILE        "es3c35p-factory-63"
+#define BOARD_LCD_POWER_CYCLE_BRINGUP 1
+
 // DMA buffer: 320 px wide × 50 lines; MUST stay in internal SRAM (not PSRAM)
 // at 40 MHz QSPI to prevent DMA underruns and display tearing.
 #define BOARD_LCD_BUF_LINES  50

@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.13.83 |
-| Build date | 2026-09-25 |
+| Version | v2.13.86 |
+| Build date | 2026-09-26 |
 | .iram0.text | 68,875 B (67.3 KB) |
-| .dram0.data | 17,421 B (17.0 KB) |
-| .dram0.bss  (internal) | 37,120 B (36.2 KB) |
+| .dram0.data | 17,837 B (17.4 KB) |
+| .dram0.bss  (internal) | 37,168 B (36.3 KB) |
 | .ext_ram.bss  (PSRAM) | 0 B |
-| App binary size | 587,952 B (574.2 KB) |
+| App binary size | 589,696 B (575.9 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -32,7 +32,7 @@
 | `libesp_system.a` | 333 B |
 | `libesp_hw_support.a` | 322 B |
 | `liblog.a` | 276 B |
-| `libmain.a` | 180 B |
+| `libmain.a` | 202 B |
 | `libesp_psram.a` | 62 B |
 | `libfatfs.a` | 56 B |
 | `libesp_driver_ledc.a` | 48 B |
@@ -47,13 +47,13 @@
 
 **Board:** Hosyond 3.5" ES3C35P — ESP32-S3R8, dual-core Xtensa LX7 240 MHz, 16 MB flash, 8 MB OPI PSRAM.
 
-This is a **bring-up firmware** (v2.13.79 framework-test build). The binary is intentionally small —
+This is a **bring-up firmware** (not the shared CYM application). The binary is intentionally small —
 it contains only the S3 display/touch/SD bring-up code, not the full CYM feature set.
 As features are ported from the C5 tree (wardrive, BLE scanner, RF-HAT support, etc.), the binary
 size will grow toward the C5/ESP32 range (~3 MB).
 
 Key S3 characteristics vs NM-CYD-C5:
-- **ST77922 QSPI** at 80 MHz (4-wire, no DC pin) vs ST7789 standard SPI
+- **ST77922 QSPI** at 40 MHz (4 data lines, no DC pin); factory 320×480 init table, RGB565/INVON, no mirror
 - **Dual-core** — jammer/RF tasks can be pinned to Core 1, eliminating single-core timing contention
 - **8 MB OPI PSRAM** — larger buffers available; PSRAM BSS currently unused (will populate as features land)
 - **No 802.15.4** — ESP32-S3 lacks the IEEE 802.15.4 radio; OT Air Survey and Zigbee Scout are not available on this target

@@ -98,7 +98,7 @@ help:
 	@echo ""
 	@echo "  ESP32-S3 boards:"
 	@echo "    make hosyond-s3-28     Hosyond ESP32-S3 2.8\" (dual-core, ILI9341 + FT6336)"
-	@echo "    make hosyond-s3-35     Hosyond ESP32-S3 3.5\" (dual-core, ST7796 + FT6336)"
+	@echo "    make hosyond-s3-35     Hosyond ESP32-S3 3.5\" (dual-core, ST77922 QSPI/TDDI)"
 	@echo "    make hosyond-s3-40     Hosyond ESP32-S3 4.0\" (future -- not yet owned)"
 	@echo ""
 	@echo "  CI verification:"

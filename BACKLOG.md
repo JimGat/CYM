@@ -100,8 +100,9 @@ rules). Start ONE track at a time; do not run all simultaneously.
 - **Port CYM firmware to ESP32-S3 (Hosyond family) → promote qualified variants to release boards** — PLANNED. `ESP32S3/` is
   currently only a **bring-up stub** (its own ~372-line `main.c`, v2.13.80, NOT the shared CYM app).
   Targets: 2.8" ILI9341V+FT6336G, 3.5" ST77922 QSPI/TDDI, and 4.0" ST7796S+FT6336U. Core official
-  2.8/4.0 documentation is tracked under `docs/hardware/`; the current 3.5 vendor page and checked-in
-  package appear to describe different GPIO-map revisions and require board identification/probing.
+  2.8/4.0 documentation is tracked under `docs/hardware/`. The 3.5-inch ES3C35P display/touch
+  path was physically qualified on 2026-09-25: the current LCDWiki pin map is correct for Jim’s board,
+  while the older checked-in package describes another revision. SD and other peripherals remain pending.
   See `docs/hardware/hosyond-s3-family.md`. Until the shared application port and per-model hardware
   gates pass, Hosyond remains **experimental/bring-up** — not version-synced, shipped, manifested, or
   web-flashable. *(scope/documentation refreshed 2026-09-24)*

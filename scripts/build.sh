@@ -67,7 +67,7 @@ case "$BOARD" in
         ;;
 
     hosyond-s3-35)
-        # Hosyond ESP32-S3 3.5" 240x320 ST7796 + FT6336 (Phase 4)
+        # Hosyond ESP32-S3 3.5" 320x480 ST77922 QSPI/TDDI (experimental)
         SOC_DIR="$REPO_ROOT/ESP32S3"
         TARGET="esp32s3"
         BUILD_DIR="build_hosyond-s3-35"

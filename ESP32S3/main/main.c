@@ -115,8 +115,9 @@ static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t 
 static void lvgl_rounder_cb(lv_disp_drv_t *drv, lv_area_t *area)
 {
     (void)drv;
-    area->x1 = (area->x1 >> 2) << 2;
-    area->x2 = ((area->x2 >> 2) << 2) + 3;
+    area->x1 = (area->x1 / BOARD_LCD_DRAW_ROUNDING) * BOARD_LCD_DRAW_ROUNDING;
+    area->x2 = ((area->x2 / BOARD_LCD_DRAW_ROUNDING) * BOARD_LCD_DRAW_ROUNDING)
+             + (BOARD_LCD_DRAW_ROUNDING - 1);
 }
 
 /* Draw raw RGB565 bars before LVGL starts. This isolates the ST77922/QSPI
@@ -220,6 +221,7 @@ static void display_init(lv_disp_t **ret_disp)
     };
     esp_lcd_panel_dev_config_t panel_cfg = {
         .reset_gpio_num = BOARD_LCD_RST,
+        .rgb_ele_order  = LCD_RGB_ELEMENT_ORDER_RGB,
         .data_endian    = LCD_RGB_DATA_ENDIAN_BIG,
         .bits_per_pixel = 16,
         .vendor_config  = &vendor_cfg,
@@ -227,8 +229,10 @@ static void display_init(lv_disp_t **ret_disp)
     ESP_ERROR_CHECK(esp_lcd_new_panel_st77922(io_handle, &panel_cfg, &s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(s_panel));
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
-    /* Mirror/invert to match portrait orientation */
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, false));
+    /* Hardware-qualified native portrait contract: no mirror, INVON. */
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(
+        s_panel, BOARD_LCD_MIRROR_X, BOARD_LCD_MIRROR_Y));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(s_panel, BOARD_LCD_INVERT_COLORS));
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
 
     /* LVGL: two buffers in internal SRAM (PSRAM too slow for QSPI DMA) */
