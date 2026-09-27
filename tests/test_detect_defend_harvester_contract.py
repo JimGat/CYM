@@ -34,6 +34,11 @@ class DetectDefendHarvesterContract(unittest.TestCase):
         self.assertIn('create_function_page_base("Deauth Harvest")', show)
         self.assertIn("g_screen_stop_fn = harvester_detector_stop;", show)
 
+    def test_modern_defend_exposes_harvester_directly(self):
+        defend = function_body("show_cat_defend")
+        self.assertIn('"Deauth\\nHarvest"', defend)
+        self.assertIn('dd_menu_tile_cb, "Harvester"', defend)
+
     def test_pwnagotchi_records_are_per_bssid_and_age_after_60_seconds(self):
         cb = function_body("pwn_promiscuous_cb")
         timer = function_body("pwn_ui_timer_cb")

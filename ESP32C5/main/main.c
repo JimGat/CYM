@@ -42943,6 +42943,7 @@ static void show_cat_defend(void)
     apply_menu_bg();
     lv_obj_t *tiles = cat_sub_tiles();
     create_tile(tiles, MY_SYMBOL_SHIELD,      "Detectors",       lv_color_hex(0x1B5E20), main_tile_event_cb, "Detect & Defend");
+    create_tile(tiles, MY_SYMBOL_SKULL_CROSS, "Deauth\nHarvest", lv_color_hex(0x7A1F1F), dd_menu_tile_cb, "Harvester");
     create_tile(tiles, MY_SYMBOL_SATELLITE,   "Deauth\nMon.",    UI_ACCENT_AMBER,        main_tile_event_cb, "Deauth Monitor");
     create_tile(tiles, MY_SYMBOL_JET_FIGHTER, "Drone\nDetect",   lv_color_hex(0x1B5E20), cat_go_drone_detect, "dd");
 }

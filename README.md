@@ -208,7 +208,53 @@ See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for co
 
 ## Menu Map
 
-Complete navigation tree as of v2.13.43. Items marked `[stub]` are placeholders with "Coming in next version" screens. Items marked `[RF-HAT]` require the NM-RF-HAT expansion board enabled in Settings → Hardware Options.
+CYM has two selectable home layouts. Change layouts under **Settings → Screen → Home Layout**. The selection is saved in NVS and survives reboot.
+
+### Modern Menu
+
+The Modern layout groups existing tools by purpose. Category screens may scroll in landscape mode. **Attack** opens the authorization disclaimer before showing its tools; individual attack warnings still appear when required.
+
+```
+Home (Modern)
+├── Attack
+│   ├── Scan & Attack
+│   ├── WiFi Attacks
+│   ├── Drone Spoof
+│   ├── Bluetooth
+│   └── Radio [RF-HAT enabled]
+├── Detect & Defend
+│   ├── Detectors
+│   │   ├── Pwn Detect
+│   │   ├── Deauth Harvest
+│   │   └── BLE Spam Detect
+│   ├── Deauth Harvest       ← direct shortcut to the behavioral detector
+│   ├── Deauth Mon.          ← original deauthentication monitor
+│   └── Drone Detect
+├── Recon & Scan
+│   ├── WiFi Observer
+│   ├── Channel Analyzer
+│   ├── WiFi Scope
+│   ├── WiFi Capture
+│   ├── ESP-NOW Scout
+│   ├── Passive Log
+│   ├── Wardrive
+│   ├── OT Air Survey
+│   └── Zigbee Scout [ESP32-C5 / IEEE 802.15.4 builds]
+└── Tools & System
+    ├── NFC / RFID
+    ├── Infrared [RF-HAT enabled]
+    └── Settings
+```
+
+`Deauth Harvest` and `Deauth Mon.` are different tools. **Deauth Harvest** is the passive 2.4 GHz behavioral detector for deauth/disassociation and association-sweep activity. **Deauth Mon.** is the original deauthentication monitor.
+
+The Modern layout changes navigation only: it reuses the same underlying screens as Classic. Back returns to the current Modern category, while Home returns to the four-category Modern home.
+
+See the [Modern Menu wiki map](https://github.com/JimGat/CYM/wiki/Modern-Menu) for navigation notes and conditional tiles.
+
+### Classic Menu
+
+Complete Classic navigation tree. Items marked `[stub]` are placeholders with "Coming in next version" screens. Items marked `[RF-HAT]` require the NM-RF-HAT expansion board enabled in Settings → Hardware Options.
 
 ```
 Home
