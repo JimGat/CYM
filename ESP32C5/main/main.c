@@ -3580,6 +3580,7 @@ static const char* deauth_monitor_find_ssid_by_bssid(const uint8_t *bssid);
 // (Starter set: Pwnagotchi Detector [WiFi] + BLE Spam Detector [BT].)
 static void show_detect_defend_screen(void);
 static void show_pwnagotchi_detector_screen(void);
+static void show_harvester_detector_screen(void);   // deauth/handshake-harvester (behavioural)
 static void pwnagotchi_detector_stop(void);
 static void show_blespam_detector_screen(void);
 static void blespam_detector_stop(void);
@@ -42773,6 +42774,7 @@ static void dd_menu_tile_cb(lv_event_t *e)
     if (!name) return;
     if      (strcmp(name, "Pwnagotchi") == 0) show_pwnagotchi_detector_screen();
     else if (strcmp(name, "BLE Spam")   == 0) show_blespam_detector_screen();
+    else if (strcmp(name, "Harvester")  == 0) show_harvester_detector_screen();
 }
 
 static void show_detect_defend_screen(void)
@@ -42796,6 +42798,11 @@ static void show_detect_defend_screen(void)
     // wraps mid-word, so the label is shortened (the ghost icon + this menu give the
     // context). The dispatch key stays "Pwnagotchi".
     create_tile(tiles, MY_SYMBOL_GHOST,       "Pwn\nDetect", lv_color_hex(0x1A237E), dd_menu_tile_cb, "Pwnagotchi");
+    // Deauth/Harvester Detector — WiFi: behavioural — flags a handshake harvester by
+    // its deauth/disassoc attack, so it catches a NON-advertising hunter (Ghostchi,
+    // a pwnagotchi with advertise off, a plain deauther) that the beacon detector can't.
+    // Placed next to Pwn Detect (both WiFi handshake-harvester detectors); BLE last.
+    create_tile(tiles, MY_SYMBOL_SKULL_CROSS, "Deauth\nHarvest",    lv_color_hex(0x7A1F1F), dd_menu_tile_cb, "Harvester");
     // BLE Spam Detector — BT: flag the BLE advert-flood our own BLE Spam runs.
     create_tile(tiles, MY_SYMBOL_BLUETOOTH_B, "BLE Spam\nDetect",   lv_color_hex(0x4A148C), dd_menu_tile_cb, "BLE Spam");
 }
@@ -42986,6 +42993,11 @@ static void category_tile_event_cb(lv_event_t *e)
 // fallback and best-effort extract the unit name. Detection is a best-effort
 // signature match, not proof — that honesty is part of the Detect & Defend line.
 #define PWN_MAX 32
+// Age out a pwnagotchi row not re-heard for this long: the unit has left, so drop it
+// instead of showing a stale single-catch forever (a boot-catch persisted long after the
+// pwnagotchi was gone). A present unit is re-heard every ~4 s sweep, so 60 s is ~15 missed
+// sweeps of margin — it never drops a unit that is still around. Mirrors HARV_AGE_MS.
+#define PWN_AGE_MS 60000
 typedef struct {
     uint8_t  mac[6];
     char     name[24];
@@ -42993,6 +43005,9 @@ typedef struct {
     uint8_t  channel;
     uint32_t hits;
     uint32_t last_ms;
+    uint32_t last_log_ms;   // diagnostic: throttle per-hit serial log to ~1/s per unit
+    uint32_t chan_seen;     // diagnostic: bitmask of 2.4G channels (1-13) this unit was seen on
+    int32_t  pwnd_tot;      // parsed from pwngrid JSON "pwnd_tot" (-1 = unknown)
 } pwn_rec_t;
 // Buffers are heap-allocated on screen open (not static .bss) so the classic
 // ESP32 board (CYD-2432S028, no PSRAM) still links within its tight internal
@@ -43087,10 +43102,27 @@ static void pwn_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         }
     }
 
+    // Best-effort pwnd_tot (handshakes harvested) from the plaintext pwngrid JSON.
+    int32_t pwnd_tot = -1;
+    if (blen > 12) {
+        for (int i = 0; i + 11 <= blen; i++) {
+            if (memcmp(body + i, "\"pwnd_tot\":", 11) == 0) {
+                int j = i + 11; long v = 0; bool got = false;
+                while (j < blen && body[j] == ' ') j++;
+                while (j < blen && body[j] >= '0' && body[j] <= '9') {
+                    v = v * 10 + (body[j] - '0'); j++; got = true;
+                    if (v > 1000000000L) break;
+                }
+                if (got) pwnd_tot = (int32_t)v;
+                break;
+            }
+        }
+    }
+
     int8_t rssi = pkt->rx_ctrl.rssi;
 
     // Locate mode: keep the selected target's live RSSI fresh (channel is locked).
-    if (s_pwn_locate && memcmp(sa, s_pwn_loc_mac, 6) == 0) {
+    if (s_pwn_locate && memcmp(bssid, s_pwn_loc_mac, 6) == 0) {
         // Advertise beacons arrive sparsely (~1/s, spread over channels), so single
         // readings jump. Light EMA (½ old + ½ new) smooths the FAR<->CLOSE jitter
         // while still tracking as you move.
@@ -43101,34 +43133,60 @@ static void pwn_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         s_pwn_loc_seen  = (uint32_t)(esp_timer_get_time() / 1000);
     }
 
+    uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    uint32_t hits_snap = 0, chan_snap = 0;
+    int32_t  pwnd_snap = -1;
+    bool     do_log = false;
+
+    // Key each row by BSSID (Address3), NOT by source MAC: EVERY pwnagotchi advertises
+    // from the SAME pwngrid SignatureAddr de:ad:be:ef:de:ad (source), so keying on the
+    // source merged all units into one row. Address3 is the unit's own per-device MAC,
+    // so it separates e.g. a real pwnagotchi from a brucegotchi. s_pwn[].mac now holds
+    // the BSSID (what the list/locate use).
     portENTER_CRITICAL(&s_pwn_mux);
     int idx = -1;
     for (int i = 0; i < s_pwn_count; i++)
-        if (memcmp(s_pwn[i].mac, sa, 6) == 0) { idx = i; break; }
+        if (memcmp(s_pwn[i].mac, bssid, 6) == 0) { idx = i; break; }
     bool is_new = (idx < 0 && s_pwn_count < PWN_MAX);
     if (is_new) {
         idx = s_pwn_count++;
         memset(&s_pwn[idx], 0, sizeof(s_pwn[idx]));
-        memcpy(s_pwn[idx].mac, sa, 6);
+        memcpy(s_pwn[idx].mac, bssid, 6);
+        s_pwn[idx].pwnd_tot = -1;
     }
     if (idx >= 0) {
         s_pwn[idx].rssi    = rssi;
         s_pwn[idx].channel = (uint8_t)s_pwn_channel;
         s_pwn[idx].hits++;
-        s_pwn[idx].last_ms = (uint32_t)(esp_timer_get_time() / 1000);
+        s_pwn[idx].last_ms = now_ms;
+        s_pwn[idx].chan_seen |= (1u << (s_pwn_channel & 31));
+        if (pwnd_tot >= 0) s_pwn[idx].pwnd_tot = pwnd_tot;
         if (namebuf[0] && s_pwn[idx].name[0] == '\0') {
-            strncpy(s_pwn[idx].name, namebuf, sizeof(s_pwn[idx].name) - 1);
+            memcpy(s_pwn[idx].name, namebuf, sizeof(s_pwn[idx].name));
+        }
+        // Diagnostic per-hit log throttle: at most ~1/s per unit (captured here,
+        // emitted below OUTSIDE the critical section).
+        if (is_new || (now_ms - s_pwn[idx].last_log_ms) >= 5000) {
+            s_pwn[idx].last_log_ms = now_ms;
+            do_log    = true;
+            hits_snap = s_pwn[idx].hits;
+            chan_snap = s_pwn[idx].chan_seen;
+            pwnd_snap = s_pwn[idx].pwnd_tot;
         }
         s_pwn_dirty = true;
     }
     portEXIT_CRITICAL(&s_pwn_mux);
 
-    // Serial line on first sight of a new unit (lets both boards be watched over
-    // USB serial while testing). WiFi-task context — safe for ESP_LOGI, and rare.
-    if (is_new) {
-        ESP_LOGW(TAG, "[DETECT&DEFEND] Pwnagotchi seen: %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm name=%s",
-                 sa[0], sa[1], sa[2], sa[3], sa[4], sa[5],
-                 s_pwn_channel, rssi, namebuf[0] ? namebuf : "?");
+    // Serial diagnostics (WiFi-task context — ESP_LOGW is safe here). "seen" = first
+    // sight; "hit" lines are throttled to ~1/s so a long capture measures the real
+    // advertise rate, channel spread (chmask bitmask of ch 1-13) and RSSI over time.
+    if (do_log) {
+        // MAC shown = BSSID (Address3, per-unit key). src is always de:ad:be:ef:de:ad.
+        ESP_LOGW(TAG, "[DETECT&DEFEND] Pwnagotchi %s: %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm hits=%u chmask=0x%04X pwnd_tot=%ld name=%s",
+                 is_new ? "seen" : "hit",
+                 bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+                 s_pwn_channel, rssi, (unsigned)hits_snap, (unsigned)chan_snap,
+                 (long)pwnd_snap, namebuf[0] ? namebuf : "?");
     }
 }
 
@@ -43237,10 +43295,20 @@ static void pwn_ui_timer_cb(lv_timer_t *t)
         return;                              // list stays hidden while locating
     }
 
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     pwn_rec_t *snap = s_pwn_snap;          // heap scratch (single-threaded LVGL ctx)
     int n;
     bool dirty;
     portENTER_CRITICAL(&s_pwn_mux);
+    // Age out stale rows (compact in place). Locate keys by MAC and pwn_row_tap_cb
+    // re-checks the index, so a shifting index here is safe; marking dirty makes the
+    // list rebuild with the pruned rows on this same tick.
+    {
+        int w = 0;
+        for (int i = 0; i < s_pwn_count; i++)
+            if (now - s_pwn[i].last_ms <= PWN_AGE_MS) { if (w != i) s_pwn[w] = s_pwn[i]; w++; }
+        if (w != s_pwn_count) { s_pwn_count = w; s_pwn_dirty = true; }
+    }
     n = s_pwn_count;
     memcpy(snap, s_pwn, (size_t)n * sizeof(pwn_rec_t));
     dirty = s_pwn_dirty; s_pwn_dirty = false;
@@ -43272,12 +43340,17 @@ static void pwn_ui_timer_cb(lv_timer_t *t)
             char rb[96];
             // 3 short lines (name / MAC / ch·rssi·hits) so each fits one line in
             // BOTH portrait and landscape — no single token wider than the screen.
-            snprintf(rb, sizeof(rb),
-                     "%s\n%02X:%02X:%02X:%02X:%02X:%02X\nch%d   %ddBm   x%lu",
-                     snap[i].name[0] ? snap[i].name : "Pwnagotchi",
-                     snap[i].mac[0], snap[i].mac[1], snap[i].mac[2],
-                     snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
-                     snap[i].channel, snap[i].rssi, (unsigned long)snap[i].hits);
+            if (snap[i].pwnd_tot >= 0) {
+                snprintf(rb, sizeof(rb), "%s\n%02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm x%lu pwnd:%ld",
+                         snap[i].name[0] ? snap[i].name : "Pwnagotchi", snap[i].mac[0], snap[i].mac[1],
+                         snap[i].mac[2], snap[i].mac[3], snap[i].mac[4], snap[i].mac[5], snap[i].channel,
+                         snap[i].rssi, (unsigned long)snap[i].hits, (long)snap[i].pwnd_tot);
+            } else {
+                snprintf(rb, sizeof(rb), "%s\n%02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm x%lu pwnd:?",
+                         snap[i].name[0] ? snap[i].name : "Pwnagotchi", snap[i].mac[0], snap[i].mac[1],
+                         snap[i].mac[2], snap[i].mac[3], snap[i].mac[4], snap[i].mac[5], snap[i].channel,
+                         snap[i].rssi, (unsigned long)snap[i].hits);
+            }
             // Clickable row -> locate this MAC (fox-hunt).
             lv_obj_t *row = lv_obj_create(s_pwn_list);
             lv_obj_set_width(row, lv_pct(100));
@@ -43469,6 +43542,445 @@ static void show_pwnagotchi_detector_screen(void)
         return;
     }
     s_pwn_ui_timer = lv_timer_create(pwn_ui_timer_cb, 400, NULL);
+}
+
+// ── Deauth / Harvester Detector (behavioural, passive) ────────────────────────
+// A handshake harvester (pwnagotchi, Ghostchi, brucegotchi, any deauther) forces
+// clients to re-handshake by DEAUTHing them. Unlike the beacon detector, this
+// catches a hunter that never advertises (grid/advertise off): we watch deauth
+// (0xC0) + disassoc (0xA0) management frames and escalate only sustained or
+// multi-AP activity. Address3 identifies the affected AP; source identity may be
+// spoofed, so RSSI is labeled only as the received deauth-frame signal.
+#define HARV_MAX 24
+// Age out a victim/prober row that has not been observed for this long so stale
+// one-off management frames do not remain on screen as current activity. Alert state
+// already uses a 5s active window; this only prunes persistent rows and counts.
+#define HARV_AGE_MS 60000
+typedef struct {
+    uint8_t  bssid[6];    // observed AP (Address3 of the deauth/disassoc frame)
+    uint32_t hits;        // deauth+disassoc frames seen against this AP
+    int8_t   rssi;        // last received deauth/disassoc frame RSSI
+    uint8_t  channel;
+    uint32_t first_ms;
+    uint32_t last_ms;
+} harv_rec_t;
+
+static harv_rec_t   *s_harv = NULL;
+static harv_rec_t   *s_harv_snap = NULL;
+static volatile int  s_harv_count = 0;
+// Association-recon candidates, keyed by the observed assoc-request source MAC.
+#define HARV_PROBE_MAX 12
+#define HARV_PROBE_TARGET_MAX 8
+#define HARV_PROBE_MIN_AP 3
+typedef struct {
+    uint8_t  mac[6];
+    uint8_t  seen_bssid[HARV_PROBE_TARGET_MAX][6];
+    uint32_t seen_ms[HARV_PROBE_TARGET_MAX];
+    uint8_t  seen_count;
+    uint32_t hits;
+    int8_t   rssi;
+    uint8_t  channel;
+    uint32_t last_ms;
+} harv_probe_t;
+static harv_probe_t *s_harv_probe = NULL;
+static harv_probe_t *s_harv_probe_snap = NULL;
+static volatile int  s_harv_probe_count = 0;
+static portMUX_TYPE  s_harv_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool s_harv_active = false;
+static volatile bool s_harv_dirty  = false;
+static TaskHandle_t  s_harv_task = NULL;
+static volatile uint32_t s_harv_cb_inflight = 0;
+static int           s_harv_ch_idx = 0;
+static int           s_harv_channel = 1;
+static int64_t       s_harv_last_hop = 0;
+// Adaptive dwell: a harvester bursts on ONE channel (450-850ms) while we hop 13ch
+// at 300ms (~8% on-channel), so we miss most bursts. When a deauth is seen we PARK
+// on that channel briefly to catch the rest of the burst + follow-ups, then resume.
+#define HARV_PARK_MS 1200
+#define HARV_PARK_COOLDOWN_MS 4000
+static volatile uint32_t s_harv_park_until = 0;
+static volatile uint32_t s_harv_park_started = 0;
+static volatile int      s_harv_park_chan  = 0;
+static int               s_harv_built_n    = -1;   // last deauth row count (rebuild only on change)
+static int               s_harv_built_m    = -1;   // last prober row count
+static lv_obj_t     *s_harv_status = NULL;
+static lv_obj_t     *s_harv_alert  = NULL;
+static lv_obj_t     *s_harv_list   = NULL;
+static lv_timer_t   *s_harv_ui_timer = NULL;
+// Signal locate: tap an AP row to follow the RSSI of deauth/disassoc frames for
+// that BSSID. Spoofing prevents this from proving which physical device sent them.
+static volatile bool     s_harv_locate   = false;
+static uint8_t           s_harv_loc_bssid[6];
+static int               s_harv_loc_ch   = 1;
+static volatile int8_t   s_harv_loc_rssi = -128;
+static volatile bool     s_harv_loc_found = false;
+static volatile uint32_t s_harv_loc_seen  = 0;
+static lv_obj_t *s_harv_loc_cont  = NULL;
+static lv_obj_t *s_harv_loc_title = NULL;
+static lv_obj_t *s_harv_loc_val   = NULL;
+static lv_obj_t *s_harv_loc_bar   = NULL;
+static lv_obj_t *s_harv_loc_hint  = NULL;
+// Ring of recent deauth/disassoc event times (ms) for a live rate estimate.
+#define HARV_EVT 64
+static uint32_t      s_harv_evt[HARV_EVT];
+static volatile int  s_harv_evt_head = 0;
+
+static const int HARV_CH_2G[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
+static const int HARV_CH_2G_N = (int)(sizeof(HARV_CH_2G) / sizeof(HARV_CH_2G[0]));
+
+static void harv_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    if (type != WIFI_PKT_MGMT) return;
+    const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
+    const uint8_t *f = pkt->payload;
+    int len = pkt->rx_ctrl.sig_len;
+    if (len < 24) return;
+    uint8_t sub = f[0] & 0xFC;
+    bool is_deauth = (sub == 0xC0 || sub == 0xA0);
+    bool is_assoc = (sub == 0x00 || sub == 0x20);
+    if (!is_deauth && !is_assoc) return;
+    if (is_deauth && (f[1] & 0x08)) return;  // ignore retry duplicates
+
+    portENTER_CRITICAL(&s_harv_mux);
+    if (!s_harv_active || !s_harv || !s_harv_probe) {
+        portEXIT_CRITICAL(&s_harv_mux); return;
+    }
+    s_harv_cb_inflight++;
+    int channel = s_harv_channel;
+    portEXIT_CRITICAL(&s_harv_mux);
+
+    int8_t rssi = pkt->rx_ctrl.rssi;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (is_assoc) {
+        const uint8_t *sa = &f[10], *tb = &f[16];
+        if ((sa[0]&1) || !(sa[0]|sa[1]|sa[2]|sa[3]|sa[4]|sa[5]) ||
+            (tb[0]&1) || !(tb[0]|tb[1]|tb[2]|tb[3]|tb[4]|tb[5])) goto done;
+        bool pnew=false, crossed=false; uint8_t unique=0;
+        portENTER_CRITICAL(&s_harv_mux);
+        int pi=-1;
+        for (int i=0;i<s_harv_probe_count;i++) if (!memcmp(s_harv_probe[i].mac,sa,6)){pi=i;break;}
+        if (pi<0) {
+            pnew=true;
+            if (s_harv_probe_count<HARV_PROBE_MAX) pi=s_harv_probe_count++;
+            else {
+                int oldest = 0;
+                for (int i = 1; i < HARV_PROBE_MAX; i++) {
+                    if ((uint32_t)(now - s_harv_probe[i].last_ms) >
+                        (uint32_t)(now - s_harv_probe[oldest].last_ms)) oldest = i;
+                }
+                pi = oldest;
+            }
+            memset(&s_harv_probe[pi],0,sizeof(s_harv_probe[pi])); memcpy(s_harv_probe[pi].mac,sa,6);
+        }
+        harv_probe_t *pr=&s_harv_probe[pi]; int w=0;
+        for(int i=0;i<pr->seen_count;i++) if ((uint32_t)(now-pr->seen_ms[i])<=HARV_AGE_MS) {
+            if(w!=i){memcpy(pr->seen_bssid[w],pr->seen_bssid[i],6);pr->seen_ms[w]=pr->seen_ms[i];} w++; }
+        pr->seen_count=(uint8_t)w; uint8_t before=pr->seen_count; int ti=-1;
+        for(int i=0;i<pr->seen_count;i++) if(!memcmp(pr->seen_bssid[i],tb,6)){ti=i;break;}
+        if(ti<0){
+            if(pr->seen_count<HARV_PROBE_TARGET_MAX) ti=pr->seen_count++;
+            else {int oldest=0;for(int i=1;i<HARV_PROBE_TARGET_MAX;i++) if((uint32_t)(now-pr->seen_ms[i])>(uint32_t)(now-pr->seen_ms[oldest]))oldest=i;ti=oldest;}
+            memcpy(pr->seen_bssid[ti],tb,6);
+        }
+        pr->seen_ms[ti]=now; crossed=before<HARV_PROBE_MIN_AP&&pr->seen_count>=HARV_PROBE_MIN_AP;
+        pr->hits++;pr->rssi=rssi;pr->channel=(uint8_t)channel;pr->last_ms=now;unique=pr->seen_count;s_harv_dirty=true;
+        portEXIT_CRITICAL(&s_harv_mux);
+        if(crossed) ESP_LOGW(TAG,"[DETECT&DEFEND] Possible assoc sweep: %02X:%02X:%02X:%02X:%02X:%02X contacted %u unique APs/60s ch%d %ddBm",sa[0],sa[1],sa[2],sa[3],sa[4],sa[5],(unsigned)unique,channel,rssi);
+        else if(pnew) ESP_LOGI(TAG,"[DETECT&DEFEND] Assoc activity from %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm",sa[0],sa[1],sa[2],sa[3],sa[4],sa[5],channel,rssi);
+        goto done;
+    }
+    const uint8_t *bssid=&f[16];
+    if((bssid[0]&1)||!(bssid[0]|bssid[1]|bssid[2]|bssid[3]|bssid[4]|bssid[5])) goto done;
+    bool is_new=false;
+    portENTER_CRITICAL(&s_harv_mux);
+    if(s_harv_locate&&!memcmp(bssid,s_harv_loc_bssid,6)){
+        s_harv_loc_rssi=!s_harv_loc_found?rssi:(int8_t)(((int)s_harv_loc_rssi+rssi)/2);
+        s_harv_loc_ch=channel;s_harv_loc_found=true;s_harv_loc_seen=now;
+    }
+    s_harv_evt[s_harv_evt_head]=now;s_harv_evt_head=(s_harv_evt_head+1)%HARV_EVT;
+    int idx=-1;for(int i=0;i<s_harv_count;i++)if(!memcmp(s_harv[i].bssid,bssid,6)){idx=i;break;}
+    if(idx<0){is_new=true;if(s_harv_count<HARV_MAX)idx=s_harv_count++;else{int oldest=0;for(int i=1;i<HARV_MAX;i++)if((uint32_t)(now-s_harv[i].last_ms)>(uint32_t)(now-s_harv[oldest].last_ms))oldest=i;idx=oldest;}memset(&s_harv[idx],0,sizeof(s_harv[idx]));memcpy(s_harv[idx].bssid,bssid,6);s_harv[idx].first_ms=now;}
+    s_harv[idx].hits++;s_harv[idx].rssi=rssi;s_harv[idx].channel=(uint8_t)channel;s_harv[idx].last_ms=now;s_harv_dirty=true;
+    if(!s_harv_park_started||(uint32_t)(now-s_harv_park_started)>=HARV_PARK_COOLDOWN_MS){s_harv_park_chan=channel;s_harv_park_started=now;s_harv_park_until=now+HARV_PARK_MS;}
+    portEXIT_CRITICAL(&s_harv_mux);
+    if(is_new)ESP_LOGI(TAG,"[DETECT&DEFEND] Deauth/disassoc activity for AP %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm",bssid[0],bssid[1],bssid[2],bssid[3],bssid[4],bssid[5],channel,rssi);
+done:
+    portENTER_CRITICAL(&s_harv_mux);if(s_harv_cb_inflight)s_harv_cb_inflight--;portEXIT_CRITICAL(&s_harv_mux);
+}
+
+
+static void harv_task(void *arg)
+{
+    (void)arg; uint32_t last_err=0;
+    while(s_harv_active){
+        vTaskDelay(pdMS_TO_TICKS(50));if(!s_harv_active)break;
+        uint32_t now=(uint32_t)(esp_timer_get_time()/1000),until;int park,ch;
+        portENTER_CRITICAL(&s_harv_mux);until=s_harv_park_until;park=s_harv_park_chan;ch=s_harv_channel;portEXIT_CRITICAL(&s_harv_mux);
+        bool parked=ch==park&&(int32_t)(until-now)>0;
+        if(!parked&&(int64_t)now-s_harv_last_hop>=300){
+            int next=HARV_CH_2G[s_harv_ch_idx];s_harv_ch_idx=(s_harv_ch_idx+1)%HARV_CH_2G_N;
+            esp_err_t err=esp_wifi_set_channel(next,WIFI_SECOND_CHAN_NONE);
+            if(err==ESP_OK){portENTER_CRITICAL(&s_harv_mux);s_harv_channel=next;portEXIT_CRITICAL(&s_harv_mux);}
+            else if((uint32_t)(now-last_err)>=5000){ESP_LOGW(TAG,"Harvester detector: channel %d rejected: %s",next,esp_err_to_name(err));last_err=now;}
+            s_harv_last_hop=now;
+        }
+    }
+    s_harv_task=NULL;vTaskDelete(NULL);
+}
+
+
+// Tap an AP row -> show the received deauth-frame signal for that BSSID.
+static void harv_row_tap_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    portENTER_CRITICAL(&s_harv_mux);
+    if (idx < 0 || idx >= s_harv_count) { portEXIT_CRITICAL(&s_harv_mux); return; }
+    memcpy(s_harv_loc_bssid, s_harv[idx].bssid, 6);
+    s_harv_loc_ch = s_harv[idx].channel ? s_harv[idx].channel : 1;
+    portEXIT_CRITICAL(&s_harv_mux);
+
+    s_harv_loc_rssi = -128; s_harv_loc_found = false; s_harv_loc_seen = 0;
+    s_harv_locate = true;                     // detector keeps hopping (see harv_task)
+
+    if (s_harv_list)   lv_obj_add_flag(s_harv_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_status) lv_obj_add_flag(s_harv_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_alert)  lv_obj_add_flag(s_harv_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_loc_cont) lv_obj_clear_flag(s_harv_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_loc_title) {
+        char tb[80];
+        snprintf(tb, sizeof(tb), "Observed AP\n%02X:%02X:%02X:%02X:%02X:%02X  ch%d",
+                 s_harv_loc_bssid[0], s_harv_loc_bssid[1], s_harv_loc_bssid[2],
+                 s_harv_loc_bssid[3], s_harv_loc_bssid[4], s_harv_loc_bssid[5], s_harv_loc_ch);
+        lv_label_set_text(s_harv_loc_title, tb);
+    }
+}
+
+// "< List" — leave signal view, resume the activity list.
+static void harv_loc_back_cb(lv_event_t *e)
+{
+    (void)e;
+    s_harv_locate = false;
+    if (s_harv_loc_cont) lv_obj_add_flag(s_harv_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_status)   lv_obj_clear_flag(s_harv_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_alert)    lv_obj_clear_flag(s_harv_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_harv_list)     lv_obj_clear_flag(s_harv_list, LV_OBJ_FLAG_HIDDEN);
+    s_harv_built_n = -1;                       // force list repaint on return
+}
+
+static void harv_ui_timer_cb(lv_timer_t *t)
+{
+    (void)t;if(!s_harv_active||!s_harv||!s_harv_snap)return;
+    uint32_t now=(uint32_t)(esp_timer_get_time()/1000);
+    portENTER_CRITICAL(&s_harv_mux);
+    int w=0;for(int i=0;i<s_harv_count;i++)if((uint32_t)(now-s_harv[i].last_ms)<=HARV_AGE_MS){if(w!=i)s_harv[w]=s_harv[i];w++;}
+    if(w!=s_harv_count){s_harv_count=w;s_harv_dirty=true;}
+    int pw=0;for(int i=0;i<s_harv_probe_count;i++){
+        harv_probe_t *pr=&s_harv_probe[i];int tw=0;
+        for(int j=0;j<pr->seen_count;j++)if((uint32_t)(now-pr->seen_ms[j])<=HARV_AGE_MS){if(tw!=j){memcpy(pr->seen_bssid[tw],pr->seen_bssid[j],6);pr->seen_ms[tw]=pr->seen_ms[j];}tw++;}
+        pr->seen_count=(uint8_t)tw;
+        if((uint32_t)(now-pr->last_ms)<=HARV_AGE_MS){if(pw!=i)s_harv_probe[pw]=s_harv_probe[i];pw++;}
+    }
+    if(pw!=s_harv_probe_count){s_harv_probe_count=pw;s_harv_dirty=true;}
+    portEXIT_CRITICAL(&s_harv_mux);
+    if(s_harv_locate){
+        bool fresh=s_harv_loc_found&&(uint32_t)(now-s_harv_loc_seen)<12000;int rssi=s_harv_loc_rssi;
+        int pct=!fresh?0:rssi<=-90?0:rssi>=-30?100:(rssi+90)*100/60;
+        if(s_harv_loc_title&&lv_obj_is_valid(s_harv_loc_title)){char b[96];snprintf(b,sizeof(b),"Deauth frame signal\nAP %02X:%02X:%02X:%02X:%02X:%02X\nch%d",s_harv_loc_bssid[0],s_harv_loc_bssid[1],s_harv_loc_bssid[2],s_harv_loc_bssid[3],s_harv_loc_bssid[4],s_harv_loc_bssid[5],s_harv_loc_ch);lv_label_set_text(s_harv_loc_title,b);}
+        if(s_harv_loc_bar)lv_bar_set_value(s_harv_loc_bar,pct,LV_ANIM_ON);
+        if(s_harv_loc_val&&lv_obj_is_valid(s_harv_loc_val)){char b[24];if(fresh)snprintf(b,sizeof(b),"%d dBm",rssi);else snprintf(b,sizeof(b),"-- dBm");lv_label_set_text(s_harv_loc_val,b);}
+        if(s_harv_loc_hint&&lv_obj_is_valid(s_harv_loc_hint))lv_label_set_text(s_harv_loc_hint,pct>=75?"VERY CLOSE":pct>=55?"CLOSE":pct>=30?"NEARBY":fresh?"FAR":"Searching...");
+        return;
+    }
+    harv_rec_t *snap=s_harv_snap;harv_probe_t *psnap=s_harv_probe_snap;int n,m=0,rate=0,ch;
+    portENTER_CRITICAL(&s_harv_mux);n=s_harv_count;memcpy(snap,s_harv,(size_t)n*sizeof(*snap));
+    for(int i=0;i<s_harv_probe_count;i++)if(s_harv_probe[i].seen_count>=HARV_PROBE_MIN_AP)psnap[m++]=s_harv_probe[i];
+    for (int i = 0; i < HARV_EVT; i++) {
+        if (s_harv_evt[i] && (uint32_t)(now - s_harv_evt[i]) <= 1000) rate++;
+    }
+    ch = s_harv_channel;
+    s_harv_dirty = false;
+    portEXIT_CRITICAL(&s_harv_mux);
+    int active=0;for(int i=0;i<n;i++)if((uint32_t)(now-snap[i].last_ms)<=5000)active++;
+    int pa=-1;for(int i=0;i<m;i++)if((uint32_t)(now-psnap[i].last_ms)<=5000){pa=i;break;}
+    if(s_harv_status&&lv_obj_is_valid(s_harv_status)){char b[64];snprintf(b,sizeof(b),LV_SYMBOL_WIFI "  2.4 GHz monitoring ch%d  %d/s",ch,rate);lv_label_set_text(s_harv_status,b);}
+    if(s_harv_alert&&lv_obj_is_valid(s_harv_alert)){char b[104];
+        if(pa>=0){snprintf(b,sizeof(b),LV_SYMBOL_WARNING " Possible assoc sweep %02X:%02X:%02X:%02X:%02X:%02X (%u AP)",psnap[pa].mac[0],psnap[pa].mac[1],psnap[pa].mac[2],psnap[pa].mac[3],psnap[pa].mac[4],psnap[pa].mac[5],(unsigned)psnap[pa].seen_count);lv_obj_set_style_text_color(s_harv_alert,lv_color_make(0xE0,0x90,0x20),0);}
+        else if(n==0&&m==0){snprintf(b,sizeof(b),"No deauth activity");lv_obj_set_style_text_color(s_harv_alert,lv_color_make(150,150,150),0);}
+        else if(active==0){snprintf(b,sizeof(b),"Activity seen - idle now (%d AP, %d candidate)",n,m);lv_obj_set_style_text_color(s_harv_alert,lv_color_make(0xE0,0x90,0x20),0);}
+        else if(active>=3&&rate>=3){snprintf(b,sizeof(b),LV_SYMBOL_WARNING " Possible deauth sweep (%d APs, %d/s)",active,rate);lv_obj_set_style_text_color(s_harv_alert,COLOR_MATERIAL_RED,0);}
+        else if(rate>=4){snprintf(b,sizeof(b),LV_SYMBOL_WARNING " Elevated deauth activity (%d/s)",rate);lv_obj_set_style_text_color(s_harv_alert,lv_color_make(0xE0,0x90,0x20),0);}
+        else{snprintf(b,sizeof(b),"Deauth activity observed (%d AP)",active);lv_obj_set_style_text_color(s_harv_alert,lv_color_make(0xE0,0x90,0x20),0);}lv_label_set_text(s_harv_alert,b);
+    }
+    if(s_harv_list&&lv_obj_is_valid(s_harv_list)){
+        if(n!=s_harv_built_n||m!=s_harv_built_m){lv_obj_clean(s_harv_list);for(int i=0;i<n+m;i++){bool probe=i>=n;lv_obj_t *row=lv_obj_create(s_harv_list);lv_obj_set_width(row,lv_pct(100));lv_obj_set_height(row,LV_SIZE_CONTENT);lv_obj_set_style_bg_color(row,ui_bg_color(),0);lv_obj_set_style_border_width(row,0,0);lv_obj_set_style_pad_all(row,3,0);lv_obj_clear_flag(row,LV_OBJ_FLAG_SCROLLABLE);if(!probe){lv_obj_set_style_bg_color(row,lv_color_lighten(ui_bg_color(),25),LV_STATE_PRESSED);lv_obj_add_flag(row,LV_OBJ_FLAG_CLICKABLE);lv_obj_add_event_cb(row,harv_row_tap_cb,LV_EVENT_CLICKED,(void*)(intptr_t)i);}lv_obj_t *lbl=lv_label_create(row);lv_obj_set_width(lbl,lv_pct(100));lv_label_set_long_mode(lbl,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(lbl,&lv_font_montserrat_12,0);lv_obj_set_style_text_color(lbl,probe?lv_color_make(0xE0,0x90,0x20):ui_text_color(),0);}s_harv_built_n=n;s_harv_built_m=m;}
+        for(int i=0;i<n;i++){lv_obj_t *row=lv_obj_get_child(s_harv_list,i),*lbl=row?lv_obj_get_child(row,0):NULL;if(!lbl)continue;char b[96];snprintf(b,sizeof(b),"AP %02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm x%lu %lus ago",snap[i].bssid[0],snap[i].bssid[1],snap[i].bssid[2],snap[i].bssid[3],snap[i].bssid[4],snap[i].bssid[5],snap[i].channel,snap[i].rssi,(unsigned long)snap[i].hits,(unsigned long)((now-snap[i].last_ms)/1000));lv_label_set_text(lbl,b);}
+        for(int j=0;j<m;j++){lv_obj_t *row=lv_obj_get_child(s_harv_list,n+j),*lbl=row?lv_obj_get_child(row,0):NULL;if(!lbl)continue;char b[112];snprintf(b,sizeof(b),"SRC %02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm assoc:%lu %uAP/60s %lus ago",psnap[j].mac[0],psnap[j].mac[1],psnap[j].mac[2],psnap[j].mac[3],psnap[j].mac[4],psnap[j].mac[5],psnap[j].channel,psnap[j].rssi,(unsigned long)psnap[j].hits,(unsigned)psnap[j].seen_count,(unsigned long)((now-psnap[j].last_ms)/1000));lv_label_set_text(lbl,b);}
+    }
+}
+
+
+static void harv_free_buffers(void)
+{
+    if(s_harv){heap_caps_free(s_harv);s_harv=NULL;}
+    if(s_harv_snap){heap_caps_free(s_harv_snap);s_harv_snap=NULL;}
+    if(s_harv_probe){heap_caps_free(s_harv_probe);s_harv_probe=NULL;}
+    if(s_harv_probe_snap){heap_caps_free(s_harv_probe_snap);s_harv_probe_snap=NULL;}
+}
+
+static void harvester_detector_stop(void)
+{
+    portENTER_CRITICAL(&s_harv_mux);s_harv_active=false;portEXIT_CRITICAL(&s_harv_mux);
+    esp_wifi_set_promiscuous(false);esp_wifi_set_promiscuous_rx_cb(NULL);
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+    if(s_harv_ui_timer){lv_timer_del(s_harv_ui_timer);s_harv_ui_timer=NULL;}
+    for(int i=0;s_harv_task&&i<50;i++)vTaskDelay(pdMS_TO_TICKS(10));
+    uint32_t inflight=0;for(int i=0;i<100;i++){portENTER_CRITICAL(&s_harv_mux);inflight=s_harv_cb_inflight;portEXIT_CRITICAL(&s_harv_mux);if(!inflight)break;vTaskDelay(pdMS_TO_TICKS(5));}
+    s_harv_locate=false;s_harv_status=NULL;s_harv_alert=NULL;s_harv_list=NULL;s_harv_loc_cont=NULL;s_harv_loc_title=NULL;s_harv_loc_val=NULL;s_harv_loc_bar=NULL;s_harv_loc_hint=NULL;
+    if(s_harv_task||inflight){ESP_LOGE(TAG,"Harvester detector did not quiesce (task=%p callbacks=%u); preserving buffers",(void*)s_harv_task,(unsigned)inflight);return;}
+    portENTER_CRITICAL(&s_harv_mux);s_harv_count=0;s_harv_probe_count=0;s_harv_dirty=false;portEXIT_CRITICAL(&s_harv_mux);
+    harv_free_buffers();s_harv_ch_idx=0;s_harv_channel=1;s_harv_built_n=-1;s_harv_built_m=-1;s_harv_park_until=0;s_harv_park_started=0;s_harv_park_chan=0;
+}
+
+
+static void show_harvester_detector_screen(void)
+{
+    if (!ensure_wifi_mode()) {
+        ESP_LOGE(TAG, "Harvester detector: WiFi mode failed");
+        return;
+    }
+    create_function_page_base("Deauth Harvest");
+    g_screen_stop_fn = harvester_detector_stop;
+    apply_menu_bg();
+
+    uint32_t inflight;
+    portENTER_CRITICAL(&s_harv_mux); inflight = s_harv_cb_inflight; portEXIT_CRITICAL(&s_harv_mux);
+    if (s_harv_task || inflight) {
+        lv_obj_t *busy = lv_label_create(function_page);
+        lv_label_set_text(busy, LV_SYMBOL_WARNING " Detector is still stopping - try again");
+        lv_obj_set_width(busy, lv_pct(90)); lv_label_set_long_mode(busy, LV_LABEL_LONG_WRAP); lv_obj_center(busy);
+        return;
+    }
+    harv_free_buffers();
+
+    portENTER_CRITICAL(&s_harv_mux);
+    s_harv_count = 0; s_harv_probe_count = 0; s_harv_dirty = false;
+    for (int i = 0; i < HARV_EVT; i++) s_harv_evt[i] = 0;
+    s_harv_evt_head = 0;
+    portEXIT_CRITICAL(&s_harv_mux);
+    s_harv_built_n = -1; s_harv_built_m = -1; s_harv_park_until = 0; s_harv_park_started = 0; s_harv_park_chan = 0;
+    s_harv_locate = false;
+
+    s_harv_status = lv_label_create(function_page);
+    lv_label_set_text(s_harv_status, LV_SYMBOL_WIFI "  2.4 GHz monitoring...");
+    lv_obj_set_style_text_align(s_harv_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_harv_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_harv_status, ui_text_color(), 0);
+    lv_obj_set_width(s_harv_status, lv_pct(96));
+    lv_label_set_long_mode(s_harv_status, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_harv_status, LV_ALIGN_TOP_MID, 0, 34);
+
+    s_harv_alert = lv_label_create(function_page);
+    lv_label_set_text(s_harv_alert, "No deauth activity");
+    lv_obj_set_style_text_align(s_harv_alert, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_harv_alert, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_harv_alert, lv_color_make(150, 150, 150), 0);
+    lv_obj_set_width(s_harv_alert, lv_pct(96));
+    lv_label_set_long_mode(s_harv_alert, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_harv_alert, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+    s_harv_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_harv_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 60 - 34);
+    lv_obj_align(s_harv_list, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_set_style_bg_color(s_harv_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_harv_list, 0, 0);
+    lv_obj_set_flex_flow(s_harv_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_harv_list, 4, 0);
+    lv_obj_set_style_pad_all(s_harv_list, 4, 0);
+    lv_obj_set_scrollbar_mode(s_harv_list, LV_SCROLLBAR_MODE_AUTO);
+
+    // Fox-hunt overlay (hidden until a deauth row is tapped) — RSSI meter on the
+    // selected AP's deauth-frame signal. This is not device attribution.
+    s_harv_loc_cont = lv_obj_create(function_page);
+    lv_obj_set_size(s_harv_loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_harv_loc_cont, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_harv_loc_cont, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_harv_loc_cont, 0, 0);
+    lv_obj_set_flex_flow(s_harv_loc_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_harv_loc_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_harv_loc_cont, 12, 0);
+    lv_obj_clear_flag(s_harv_loc_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_harv_loc_cont, LV_OBJ_FLAG_HIDDEN);
+
+    s_harv_loc_title = lv_label_create(s_harv_loc_cont);
+    lv_label_set_text(s_harv_loc_title, "");
+    lv_obj_set_style_text_align(s_harv_loc_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_harv_loc_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_harv_loc_title, ui_text_color(), 0);
+    lv_obj_set_width(s_harv_loc_title, lv_pct(92));
+    lv_label_set_long_mode(s_harv_loc_title, LV_LABEL_LONG_WRAP);
+
+    s_harv_loc_val = lv_label_create(s_harv_loc_cont);
+    lv_label_set_text(s_harv_loc_val, "-- dBm");
+    lv_obj_set_style_text_font(s_harv_loc_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_harv_loc_val, COLOR_MATERIAL_RED, 0);
+
+    s_harv_loc_bar = lv_bar_create(s_harv_loc_cont);
+    lv_obj_set_size(s_harv_loc_bar, lv_pct(80), 18);
+    lv_bar_set_range(s_harv_loc_bar, 0, 100);
+    lv_bar_set_value(s_harv_loc_bar, 0, LV_ANIM_OFF);
+
+    s_harv_loc_hint = lv_label_create(s_harv_loc_cont);
+    lv_label_set_text(s_harv_loc_hint, "Searching...");
+    lv_obj_set_style_text_font(s_harv_loc_hint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_harv_loc_hint, ui_text_color(), 0);
+
+    lv_obj_t *harv_loc_back = lv_btn_create(s_harv_loc_cont);
+    lv_obj_set_size(harv_loc_back, 130, 42);
+    lv_obj_set_style_bg_color(harv_loc_back, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(harv_loc_back, 8, 0);
+    lv_obj_t *hlb = lv_label_create(harv_loc_back);
+    lv_label_set_text(hlb, LV_SYMBOL_LEFT "  List");
+    lv_obj_set_style_text_color(hlb, ui_text_color(), 0);
+    lv_obj_center(hlb);
+    lv_obj_add_event_cb(harv_loc_back, harv_loc_back_cb, LV_EVENT_CLICKED, NULL);
+
+    s_harv      = (harv_rec_t *)dd_alloc(sizeof(harv_rec_t) * HARV_MAX);
+    s_harv_snap = (harv_rec_t *)dd_alloc(sizeof(harv_rec_t) * HARV_MAX);
+    s_harv_probe      = (harv_probe_t *)dd_alloc(sizeof(harv_probe_t) * HARV_PROBE_MAX);
+    s_harv_probe_snap = (harv_probe_t *)dd_alloc(sizeof(harv_probe_t) * HARV_PROBE_MAX);
+    if (!s_harv || !s_harv_snap || !s_harv_probe || !s_harv_probe_snap) {
+        lv_label_set_text(s_harv_status, LV_SYMBOL_WARNING "  Out of memory");
+        if (s_harv)            { heap_caps_free(s_harv);            s_harv = NULL; }
+        if (s_harv_snap)       { heap_caps_free(s_harv_snap);       s_harv_snap = NULL; }
+        if (s_harv_probe)      { heap_caps_free(s_harv_probe);      s_harv_probe = NULL; }
+        if (s_harv_probe_snap) { heap_caps_free(s_harv_probe_snap); s_harv_probe_snap = NULL; }
+        return;
+    }
+
+    portENTER_CRITICAL(&s_harv_mux); s_harv_active = true; portEXIT_CRITICAL(&s_harv_mux);
+    s_harv_ch_idx = 0; s_harv_last_hop = 0;
+    wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
+    esp_err_t err = esp_wifi_set_promiscuous_filter(&filt);
+    if (err == ESP_OK) err = esp_wifi_set_promiscuous_rx_cb(harv_promiscuous_cb);
+    if (err == ESP_OK) err = esp_wifi_set_promiscuous(true);
+    if (err != ESP_OK) {
+        portENTER_CRITICAL(&s_harv_mux); s_harv_active = false; portEXIT_CRITICAL(&s_harv_mux);
+        esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(NULL); harv_free_buffers();
+        lv_label_set_text(s_harv_status, LV_SYMBOL_WARNING "  WiFi monitor unavailable");
+        ESP_LOGE(TAG, "Harvester detector setup failed: %s", esp_err_to_name(err)); return;
+    }
+    if (xTaskCreate(harv_task, "harv_det", 3072, NULL, 5, &s_harv_task) != pdPASS) {
+        portENTER_CRITICAL(&s_harv_mux); s_harv_active = false; portEXIT_CRITICAL(&s_harv_mux);
+        esp_wifi_set_promiscuous(false); esp_wifi_set_promiscuous_rx_cb(NULL); harv_free_buffers();
+        lv_label_set_text(s_harv_status, LV_SYMBOL_WARNING "  Task memory unavailable"); return;
+    }
+    s_harv_ui_timer = lv_timer_create(harv_ui_timer_cb, 400, NULL);
+    if (!s_harv_ui_timer) {
+        lv_obj_t *status = s_harv_status; harvester_detector_stop();
+        if (status && lv_obj_is_valid(status)) lv_label_set_text(status, LV_SYMBOL_WARNING "  UI timer unavailable");
+    }
 }
 
 // ── BLE Spam Detector (BLE scan, passive-classify) ────────────────────────────

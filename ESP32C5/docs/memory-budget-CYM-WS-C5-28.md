@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.30 |
-| Build date | 2026-09-26 |
+| Version | v2.15.31 |
+| Build date | 2026-09-27 |
 | .iram0.text | 138,486 B (135.2 KB) |
-| .dram0.data | 23,921 B (23.4 KB) |
-| .dram0.bss  (internal) | 92,256 B (90.1 KB) |
+| .dram0.data | 23,945 B (23.4 KB) |
+| .dram0.bss  (internal) | 92,632 B (90.5 KB) |
 | .ext_ram.bss  (PSRAM) | 218,136 B (213.0 KB) |
-| App binary size | 3,158,336 B (3084.3 KB) |
+| App binary size | 3,168,048 B (3093.8 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,7 +24,7 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 60,164 B (58.8 KB) |
+| `libmain.a` | 60,420 B (59.0 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |
