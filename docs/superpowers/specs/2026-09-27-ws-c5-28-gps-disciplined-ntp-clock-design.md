@@ -491,3 +491,14 @@ The feature is complete only when:
 [2] https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8
 [3] https://docs.espressif.com/projects/esp-idf/en/latest/esp32c5/api-reference/system/system_time.html
 [4] https://www.rfc-editor.org/rfc/rfc5905.html
+
+
+## 13. Approved network recovery extension
+
+The implemented network lifecycle extends the original station-only design:
+
+- Entry always presents `Client Mode`, `AP Mode`, and `Cancel`; no network mode is persisted or started implicitly.
+- Client Mode starts the LAN NTP responder as soon as DHCP is available, then performs a bounded public-pool recovery attempt when GPS is not qualified.
+- Public recovery waits at most approximately five seconds, validates a plausible UTC epoch, never displaces an active qualified GPS source, and repairs the PCF85063A when time is untrusted or differs from the pool by at least five seconds.
+- AP Mode creates a WPA2 local network and serves GPS- or RTC-derived NTP without upstream Internet connectivity.
+- Public NTP is a secondary recovery source. Qualified GPS remains authoritative; RTC remains holdover; all internal, RTC, and served timestamps remain UTC.

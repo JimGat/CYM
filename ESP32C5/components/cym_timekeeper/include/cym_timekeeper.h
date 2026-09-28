@@ -16,6 +16,7 @@ typedef enum {
     CYM_TIME_GPS_ACQUIRING,
     CYM_TIME_GPS_LOCKED,
     CYM_TIME_RTC_HOLDOVER,
+    CYM_TIME_NETWORK_SYNC,
 } cym_time_source_t;
 
 typedef struct {
@@ -41,6 +42,11 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus);
 // rx_monotonic_us is esp_timer_get_time() at sentence completion.
 // The timekeeper qualifies samples internally before accepting them.
 esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us);
+
+// Accept a bounded public-NTP UTC update when GPS is not locked. The system
+// clock is disciplined and the RTC is optionally repaired; qualified GPS wins.
+esp_err_t cym_timekeeper_observe_network_utc(time_t epoch, int64_t rx_monotonic_us,
+                                                  bool repair_rtc);
 
 // Inform the timekeeper whether GPS UART traffic is present.
 void cym_timekeeper_note_gps_present(bool present);

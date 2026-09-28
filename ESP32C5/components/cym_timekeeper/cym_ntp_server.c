@@ -32,8 +32,9 @@ static const char *TAG = "ntp_server";
 #define NTP_LI_ALARM     3   // clock not synchronized (alarm)
 
 // Stratum values
-#define NTP_STRATUM_PRIMARY  1   // primary reference (GPS)
-#define NTP_STRATUM_UNSYNC   16  // unsynchronized
+#define NTP_STRATUM_PRIMARY    1   // local primary reference (GPS/RTC)
+#define NTP_STRATUM_SECONDARY  2   // disciplined from an upstream NTP pool
+#define NTP_STRATUM_UNSYNC    16   // unsynchronized
 
 // Precision: log2 of clock precision in seconds
 // ESP32 system clock ~1us precision = log2(1e-6) ≈ -20
@@ -42,6 +43,7 @@ static const char *TAG = "ntp_server";
 // Reference IDs (4-byte ASCII, zero-padded)
 #define REFID_GPS  0x47505300  // "GPS\0" in network byte order
 #define REFID_RTC  0x52544300  // "RTC\0"
+#define REFID_SNTP 0x534E5450  // "SNTP"
 #define REFID_INIT 0x494E4954  // "INIT"
 
 // NTP UDP port
@@ -219,11 +221,17 @@ static void ntp_server_task(void *arg)
         uint32_t root_dispersion;
 
         if (have_snap && (snap.source == CYM_TIME_GPS_LOCKED ||
-                          snap.source == CYM_TIME_RTC_HOLDOVER)) {
+                          snap.source == CYM_TIME_RTC_HOLDOVER ||
+                          snap.source == CYM_TIME_NETWORK_SYNC)) {
             li = NTP_LI_NONE;
-            stratum = NTP_STRATUM_PRIMARY;  // stratum 1
-            ref_id = (snap.source == CYM_TIME_GPS_LOCKED) ?
-                     htonl(REFID_GPS) : htonl(REFID_RTC);
+            if (snap.source == CYM_TIME_NETWORK_SYNC) {
+                stratum = NTP_STRATUM_SECONDARY;
+                ref_id = htonl(REFID_SNTP);
+            } else {
+                stratum = NTP_STRATUM_PRIMARY;
+                ref_id = (snap.source == CYM_TIME_GPS_LOCKED) ?
+                         htonl(REFID_GPS) : htonl(REFID_RTC);
+            }
             root_dispersion = uncertainty_to_dispersion(snap.uncertainty_us);
         } else {
             li = NTP_LI_ALARM;  // LI = 3

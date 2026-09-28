@@ -26,6 +26,9 @@ static const char *TAG = "timekeeper";
 // physical characterization. 500ms covers UART latency, sentence jitter,
 // scheduling delay, and parse overhead.
 #define GPS_UART_UNCERTAINTY_US 500000
+#define NETWORK_UNCERTAINTY_US  250000
+#define MIN_REASONABLE_EPOCH    1704067200LL  // 2024-01-01 UTC
+#define MAX_REASONABLE_EPOCH    4102444800LL  // 2100-01-01 UTC
 
 // Holdover uncertainty grows at 50 ppm (conservative uncalibrated quartz)
 #define HOLDOVER_DRIFT_PPM      50
@@ -142,8 +145,9 @@ static void write_rtc_if_due(time_t epoch, int64_t now_mono_us)
         s_rtc_ever_written = true;
         s_rtc_trusted = true;
         s_last_gps_sync_epoch = epoch;
+        s_rtc_valid = true;
         persist_trust();
-        ESP_LOGI(TAG, "RTC updated from GPS");
+        ESP_LOGI(TAG, "RTC updated from disciplined UTC source");
     }
 }
 
@@ -308,6 +312,50 @@ esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us)
     return ESP_OK;
 }
 
+esp_err_t cym_timekeeper_observe_network_utc(time_t epoch, int64_t rx_monotonic_us,
+                                                  bool repair_rtc)
+{
+    if (!s_tk_mutex) return ESP_ERR_INVALID_STATE;
+    if ((int64_t)epoch < MIN_REASONABLE_EPOCH || (int64_t)epoch >= MAX_REASONABLE_EPOCH) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(s_tk_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    // Never let a public network source displace a qualified GPS lock.
+    if (s_source == CYM_TIME_GPS_LOCKED) {
+        xSemaphoreGive(s_tk_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    time_t now = time(NULL);
+    int64_t diff_us = ((int64_t)epoch - (int64_t)now) * 1000000LL;
+    if (diff_us < -STEP_THRESHOLD_US || diff_us > STEP_THRESHOLD_US ||
+        (int64_t)now < MIN_REASONABLE_EPOCH) {
+        step_clock(epoch);
+    } else if (diff_us != 0) {
+        slew_clock((int32_t)diff_us);
+    }
+    s_last_correction_us = (int32_t)(diff_us > INT32_MAX ? INT32_MAX :
+                           diff_us < INT32_MIN ? INT32_MIN : diff_us);
+    s_source = CYM_TIME_NETWORK_SYNC;
+    s_last_lock_mono_us = rx_monotonic_us;
+    s_last_gps_sync_epoch = epoch;
+    s_uncertainty_us = NETWORK_UNCERTAINTY_US;
+    s_holdover_base_age_ms = 0;
+    s_holdover_base_uncertainty_us = NETWORK_UNCERTAINTY_US;
+
+    if (repair_rtc) {
+        write_rtc_if_due(epoch, rx_monotonic_us);
+    }
+    ESP_LOGI(TAG, "Clock disciplined from public NTP%s",
+             repair_rtc ? "; RTC repair requested" : "");
+
+    xSemaphoreGive(s_tk_mutex);
+    return ESP_OK;
+}
+
 void cym_timekeeper_note_gps_present(bool present)
 {
     if (!s_tk_mutex) return;
@@ -361,6 +409,15 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
         out->uncertainty_us = GPS_UART_UNCERTAINTY_US;
         out->valid = true;
         break;
+    case CYM_TIME_NETWORK_SYNC: {
+        uint64_t elapsed_us = (uint64_t)(now_mono - s_last_lock_mono_us);
+        out->source_age_ms = elapsed_us / 1000;
+        uint64_t drift_us = (elapsed_us / 1000000ULL) * HOLDOVER_DRIFT_PPM;
+        uint64_t uncertainty = NETWORK_UNCERTAINTY_US + drift_us;
+        out->uncertainty_us = uncertainty > UINT32_MAX ? UINT32_MAX : (uint32_t)uncertainty;
+        out->valid = true;
+        break;
+    }
     case CYM_TIME_RTC_HOLDOVER: {
         uint64_t holdover_us = (uint64_t)(now_mono - s_last_lock_mono_us);
         out->source_age_ms = s_holdover_base_age_ms + holdover_us / 1000;
@@ -397,6 +454,7 @@ const char *cym_timekeeper_source_name(cym_time_source_t source)
     case CYM_TIME_GPS_ACQUIRING:  return "GPS ACQUIRING";
     case CYM_TIME_GPS_LOCKED:     return "GPS LOCK";
     case CYM_TIME_RTC_HOLDOVER:   return "RTC HOLDOVER";
+    case CYM_TIME_NETWORK_SYNC:   return "PUBLIC NTP";
     default:                      return "UNKNOWN";
     }
 }

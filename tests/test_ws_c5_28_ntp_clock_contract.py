@@ -484,9 +484,59 @@ class NTPClockBehaviorContract(unittest.TestCase):
         self.assertIn("vTaskDelete(s_task)", src)
         self.assertIn("portENTER_CRITICAL", src)
 
+    def test_ntp_launch_always_prompts_for_network_mode(self):
+        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        self.assertIn("show_ntp_network_mode_popup", block)
+        self.assertIn('"Client Mode"', block)
+        self.assertIn('"AP Mode"', block)
+        self.assertIn('"Cancel"', block)
+        start = MAIN.rfind("static void show_ntp_clock_or_wifi_prompt")
+        end = MAIN.find("static void ntp_start_mdns_and_server", start)
+        launcher = MAIN[start:end]
+        self.assertIn("show_ntp_network_mode_popup", launcher)
+        self.assertNotIn("ntp_station_has_dhcp()", launcher)
+
+    def test_ntp_client_public_sync_is_bounded_and_updates_timekeeper(self):
+        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        self.assertIn('ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org")', block)
+        self.assertIn("#define NTP_PUBLIC_SYNC_TIMEOUT_MS 5000", MAIN)
+        self.assertIn("#define NTP_RTC_REPAIR_THRESHOLD_SEC 5", MAIN)
+        self.assertRegex(block, re.compile(r"!before\.valid.*!before\.rtc_valid.*llabs", re.S))
+        self.assertIn("esp_netif_sntp_sync_wait(pdMS_TO_TICKS(500))", block)
+        self.assertIn("!s_ntp_stopping", block)
+        self.assertIn("esp_netif_sntp_deinit();", block)
+        self.assertIn("cym_timekeeper_observe_network_utc", block)
+        self.assertRegex(block, r"\w+\.source\s*==\s*CYM_TIME_GPS_LOCKED")
+        self.assertIn("NTP_PUBLIC_SKIPPED_GPS", block)
+
+    def test_ntp_ap_mode_serves_without_public_internet(self):
+        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        self.assertIn("WIFI_MODE_AP", block)
+        self.assertIn("WIFI_AUTH_WPA2_PSK", block)
+        self.assertIn('"CYM-NTP-%02X%02X%02X"', block)
+        self.assertIn('#define NTP_AP_PASSWORD "cymtime28"', MAIN)
+        self.assertIn("esp_netif_create_default_wifi_ap", block)
+        self.assertIn("cym_ntp_server_start", block)
+        self.assertIn("AP IP: %s", block)
+        self.assertIn("AP SSID:", block)
+
+    def test_public_ntp_is_a_valid_timekeeper_source_and_repairs_rtc(self):
+        hdr = _read_if_exists(TK_HEADER)
+        src = _read_if_exists(TK_SRC)
+        ntp = _read_if_exists(NTP_SRC)
+        self.assertIn("CYM_TIME_NETWORK_SYNC", hdr)
+        self.assertIn("cym_timekeeper_observe_network_utc", hdr)
+        self.assertIn("bool repair_rtc", hdr)
+        self.assertRegex(src, re.compile(r"if\s*\(repair_rtc\).*write_rtc_if_due\(epoch", re.S))
+        self.assertIn("CYM_TIME_NETWORK_SYNC", src)
+        self.assertIn('return "PUBLIC NTP"', src)
+        self.assertIn("CYM_TIME_NETWORK_SYNC", ntp)
+        self.assertIn("NTP_STRATUM_SECONDARY", ntp)
+        self.assertIn("REFID_SNTP", ntp)
+
     def test_all_release_soc_versions_match_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.36")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.37")', (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

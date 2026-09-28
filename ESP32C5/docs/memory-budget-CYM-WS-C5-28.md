@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.36 |
+| Version | v2.15.37 |
 | Build date | 2026-09-28 |
 | .iram0.text | 138,486 B (135.2 KB) |
 | .dram0.data | 24,009 B (23.4 KB) |
-| .dram0.bss  (internal) | 95,104 B (92.9 KB) |
-| .ext_ram.bss  (PSRAM) | 218,136 B (213.0 KB) |
-| App binary size | 3,238,208 B (3162.3 KB) |
+| .dram0.bss  (internal) | 95,168 B (92.9 KB) |
+| .ext_ram.bss  (PSRAM) | 218,168 B (213.1 KB) |
+| App binary size | 3,246,320 B (3170.2 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,11 +24,11 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 60,440 B (59.0 KB) |
+| `libmain.a` | 60,464 B (59.0 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |
-| `liblwip.a` | 3,908 B (3.8 KB) |
+| `liblwip.a` | 3,940 B (3.8 KB) |
 | `libieee802154.a` | 3,590 B (3.5 KB) |
 | `libespressif__mdns.a` | 3,529 B (3.4 KB) |
 | `libpp.a` | 3,467 B (3.4 KB) |

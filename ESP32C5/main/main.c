@@ -173,6 +173,9 @@ LV_IMG_DECLARE(deedee_img);
 #include "lwip/sockets.h"
 #include "esp_netif.h"
 #include "esp_netif_net_stack.h"
+#if defined(CONFIG_BOARD_WS_C5_28)
+#include "esp_netif_sntp.h"
+#endif
 
 // TLS (WPA-SEC upload)
 #include "esp_tls.h"
@@ -866,7 +869,23 @@ static void nvs_save_cc1101_offset(void);   // forward — implemented near HW t
 
 // ── NTP Clock state (WS-C5-28 only) ─────────────────────────────────────────
 #if defined(CONFIG_BOARD_WS_C5_28)
+typedef enum {
+    NTP_NETWORK_CLIENT = 0,
+    NTP_NETWORK_AP,
+} ntp_network_mode_t;
+
+typedef enum {
+    NTP_PUBLIC_IDLE = 0,
+    NTP_PUBLIC_SYNCING,
+    NTP_PUBLIC_SUCCESS,
+    NTP_PUBLIC_TIME_OK,
+    NTP_PUBLIC_TIMEOUT,
+    NTP_PUBLIC_SKIPPED_GPS,
+} ntp_public_state_t;
+
 static volatile bool s_ntp_clock_active = false;
+static ntp_network_mode_t s_ntp_network_mode = NTP_NETWORK_CLIENT;
+static volatile ntp_public_state_t s_ntp_public_state = NTP_PUBLIC_IDLE;
 static int16_t  g_clock_offset_minutes = 0;   // display UTC offset (-720..+840)
 static uint8_t  g_ntp_clock_brightness_pct = 100;
 static uint8_t  s_ntp_saved_brightness = 100; // general brightness before NTP mode
@@ -881,11 +900,17 @@ static lv_obj_t *s_ntp_age_lbl = NULL;
 static lv_obj_t *s_ntp_uncert_lbl = NULL;
 static lv_obj_t *s_ntp_req_lbl = NULL;
 static lv_obj_t *s_ntp_offset_lbl = NULL;
+static lv_obj_t *s_ntp_network_lbl = NULL;
+static lv_obj_t *s_ntp_mode_popup = NULL;
 static TaskHandle_t s_ntp_wifi_task = NULL;
 static volatile bool s_ntp_wifi_connected = false;
 static volatile bool s_ntp_wifi_failed = false;
 static volatile bool s_ntp_stopping = false;
 static char s_ntp_ip_str[20] = "";
+static char s_ntp_ap_ssid[24] = "";
+#define NTP_AP_PASSWORD "cymtime28"
+#define NTP_PUBLIC_SYNC_TIMEOUT_MS 5000
+#define NTP_RTC_REPAIR_THRESHOLD_SEC 5
 static bool s_ntp_mdns_ok = false;
 static bool s_ntp_udp_ok = false;
 static bool s_ntp_pending_after_wifi = false;
@@ -27784,9 +27809,19 @@ static bool ntp_station_has_dhcp(void)
     return esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr != 0;
 }
 
-static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void))
+static void ntp_mode_popup_close(void)
 {
-    s_ntp_return_fn = return_fn;
+    if (s_ntp_mode_popup && lv_obj_is_valid(s_ntp_mode_popup)) {
+        lv_obj_del(s_ntp_mode_popup);
+    }
+    s_ntp_mode_popup = NULL;
+}
+
+static void ntp_mode_client_cb(lv_event_t *e)
+{
+    (void)e;
+    ntp_mode_popup_close();
+    s_ntp_network_mode = NTP_NETWORK_CLIENT;
     if (!ntp_station_has_dhcp()) {
         s_ntp_pending_after_wifi = true;
         show_wifi_client_server_screen();
@@ -27795,12 +27830,185 @@ static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void))
     show_ntp_clock_screen();
 }
 
-// WiFi startup task for NTP Clock — runs in background, sets flags for UI
+static void ntp_mode_ap_cb(lv_event_t *e)
+{
+    (void)e;
+    ntp_mode_popup_close();
+    s_ntp_network_mode = NTP_NETWORK_AP;
+    show_ntp_clock_screen();
+}
+
+static void ntp_mode_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    ntp_mode_popup_close();
+}
+
+static void show_ntp_network_mode_popup(void)
+{
+    ntp_mode_popup_close();
+    s_ntp_mode_popup = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_ntp_mode_popup, 280, 210);
+    lv_obj_center(s_ntp_mode_popup);
+    lv_obj_set_style_bg_color(s_ntp_mode_popup, ui_bg_color(), 0);
+    lv_obj_set_style_border_color(s_ntp_mode_popup, UI_ACCENT_CYAN, 0);
+    lv_obj_set_style_border_width(s_ntp_mode_popup, 2, 0);
+    lv_obj_set_style_radius(s_ntp_mode_popup, 8, 0);
+    lv_obj_set_style_pad_all(s_ntp_mode_popup, 8, 0);
+    lv_obj_set_flex_flow(s_ntp_mode_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_ntp_mode_popup, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(s_ntp_mode_popup, 6, 0);
+
+    lv_obj_t *title = lv_label_create(s_ntp_mode_popup);
+    lv_label_set_text(title, "NTP Network Mode");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, COLOR_MATERIAL_TEAL, 0);
+
+    lv_obj_t *hint = lv_label_create(s_ntp_mode_popup);
+    lv_label_set_text(hint, "Client uses LAN/Internet. AP serves offline.");
+    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(hint, lv_pct(100));
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+
+    const char *names[] = { "Client Mode", "AP Mode", "Cancel" };
+    lv_event_cb_t callbacks[] = { ntp_mode_client_cb, ntp_mode_ap_cb, ntp_mode_cancel_cb };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *btn = lv_btn_create(s_ntp_mode_popup);
+        lv_obj_set_size(btn, lv_pct(88), 36);
+        lv_obj_set_style_bg_color(btn, i == 2 ? lv_color_hex(0x616161) : ui_accent_color(), 0);
+        lv_obj_add_event_cb(btn, callbacks[i], LV_EVENT_CLICKED, NULL);
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, names[i]);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_center(lbl);
+    }
+}
+
+static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void))
+{
+    s_ntp_return_fn = return_fn;
+    show_ntp_network_mode_popup();
+}
+
+static void ntp_start_mdns_and_server(void)
+{
+    s_ntp_mdns_ok = false;
+    if (mdns_init() == ESP_OK) {
+        if (mdns_hostname_set("cym-ntp") == ESP_OK) {
+            mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
+            s_ntp_mdns_ok = true;
+        }
+    }
+    s_ntp_udp_ok = (cym_ntp_server_start() == ESP_OK);
+}
+
+static void ntp_try_public_sync(void)
+{
+    cym_time_snapshot_t before = {0};
+    bool have_before = cym_timekeeper_snapshot(&before);
+    if (have_before && before.source == CYM_TIME_GPS_LOCKED) {
+        s_ntp_public_state = NTP_PUBLIC_SKIPPED_GPS;
+        return;
+    }
+
+    s_ntp_public_state = NTP_PUBLIC_SYNCING;
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    config.start = false;
+    esp_err_t err = esp_netif_sntp_init(&config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Public NTP init failed: %s", esp_err_to_name(err));
+        s_ntp_public_state = NTP_PUBLIC_TIMEOUT;
+        return;
+    }
+
+    esp_netif_sntp_start();
+    err = ESP_ERR_TIMEOUT;
+    for (int waited_ms = 0;
+         waited_ms < NTP_PUBLIC_SYNC_TIMEOUT_MS && !s_ntp_stopping;
+         waited_ms += 500) {
+        err = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(500));
+        if (err == ESP_OK) break;
+    }
+    esp_netif_sntp_deinit();
+
+    if (err == ESP_OK && !s_ntp_stopping) {
+        time_t epoch = time(NULL);
+        cym_time_snapshot_t after = {0};
+        if (cym_timekeeper_snapshot(&after) && after.source == CYM_TIME_GPS_LOCKED) {
+            s_ntp_public_state = NTP_PUBLIC_SKIPPED_GPS;
+            return;
+        }
+
+        // Only rewrite the RTC when it is untrusted/unavailable or materially wrong.
+        // The pool request is still useful when no GPS is fitted because it provides
+        // the reference needed to decide whether the RTC is substantially off.
+        bool repair_needed = !have_before || !before.valid || !before.rtc_valid ||
+            llabs((long long)epoch - (long long)before.utc.tv_sec) >=
+                NTP_RTC_REPAIR_THRESHOLD_SEC;
+        if (cym_timekeeper_observe_network_utc(epoch, esp_timer_get_time(),
+                                                  repair_needed) == ESP_OK) {
+            s_ntp_public_state = repair_needed ? NTP_PUBLIC_SUCCESS : NTP_PUBLIC_TIME_OK;
+            return;
+        }
+    }
+
+    ESP_LOGW(TAG, "Public NTP unavailable after bounded wait; retaining RTC state");
+    s_ntp_public_state = NTP_PUBLIC_TIMEOUT;
+}
+
+static bool ntp_start_ap_mode(void)
+{
+    if (!ensure_wifi_mode()) return false;
+    if (!esp_netif_get_handle_from_ifkey("WIFI_AP_DEF") &&
+        !esp_netif_create_default_wifi_ap()) return false;
+
+    esp_wifi_disconnect();
+    if (esp_wifi_set_mode(WIFI_MODE_AP) != ESP_OK) return false;
+
+    uint8_t mac[6] = {0};
+    if (esp_wifi_get_mac(WIFI_IF_AP, mac) != ESP_OK) return false;
+    snprintf(s_ntp_ap_ssid, sizeof(s_ntp_ap_ssid), "CYM-NTP-%02X%02X%02X",
+             mac[3], mac[4], mac[5]);
+
+    wifi_config_t ap_cfg = {0};
+    strlcpy((char *)ap_cfg.ap.ssid, s_ntp_ap_ssid, sizeof(ap_cfg.ap.ssid));
+    ap_cfg.ap.ssid_len = strlen(s_ntp_ap_ssid);
+    strlcpy((char *)ap_cfg.ap.password, NTP_AP_PASSWORD, sizeof(ap_cfg.ap.password));
+    ap_cfg.ap.channel = 6;
+    ap_cfg.ap.max_connection = 4;
+    ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) return false;
+    esp_err_t start_err = esp_wifi_start();
+    if (start_err != ESP_OK && start_err != ESP_ERR_WIFI_CONN) return false;
+
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    esp_netif_ip_info_t ip = {0};
+    if (!ap_netif || esp_netif_get_ip_info(ap_netif, &ip) != ESP_OK || ip.ip.addr == 0) {
+        return false;
+    }
+    snprintf(s_ntp_ip_str, sizeof(s_ntp_ip_str), IPSTR, IP2STR(&ip.ip));
+    s_ntp_public_state = NTP_PUBLIC_IDLE;
+    ntp_start_mdns_and_server();
+    s_ntp_wifi_connected = true;
+    return true;
+}
+
 static void ntp_wifi_startup_task(void *arg)
 {
     (void)arg;
     s_ntp_wifi_connected = false;
     s_ntp_wifi_failed = false;
+    s_ntp_public_state = NTP_PUBLIC_IDLE;
+
+    if (s_ntp_network_mode == NTP_NETWORK_AP) {
+        if (!ntp_start_ap_mode()) s_ntp_wifi_failed = true;
+        s_ntp_wifi_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     if (g_saved_wifi_ssid[0] == '\0') {
         s_ntp_wifi_failed = true;
@@ -27809,7 +28017,6 @@ static void ntp_wifi_startup_task(void *arg)
         return;
     }
 
-    // Ensure WiFi is in STA mode
     if (!ensure_wifi_mode()) {
         s_ntp_wifi_failed = true;
         s_ntp_wifi_task = NULL;
@@ -27823,7 +28030,6 @@ static void ntp_wifi_startup_task(void *arg)
 #endif
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
 
-    // Check if already associated
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
         esp_wifi_start();
@@ -27835,7 +28041,6 @@ static void ntp_wifi_startup_task(void *arg)
         esp_wifi_connect();
     }
 
-    // Wait for DHCP IP (up to 15 seconds)
     bool got_ip = false;
     for (int i = 0; i < 150 && !s_ntp_stopping; i++) {
         if (sta_netif) {
@@ -27850,7 +28055,6 @@ static void ntp_wifi_startup_task(void *arg)
     }
 
     if (s_ntp_stopping) { s_ntp_wifi_task = NULL; vTaskDelete(NULL); return; }
-
     if (!got_ip) {
         s_ntp_wifi_failed = true;
         s_ntp_wifi_task = NULL;
@@ -27858,18 +28062,10 @@ static void ntp_wifi_startup_task(void *arg)
         return;
     }
 
-    // Start mDNS
-    s_ntp_mdns_ok = false;
-    if (mdns_init() == ESP_OK) {
-        if (mdns_hostname_set("cym-ntp") == ESP_OK) {
-            mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
-            s_ntp_mdns_ok = true;
-        }
-    }
-
-    // Start NTP server
-    s_ntp_udp_ok = (cym_ntp_server_start() == ESP_OK);
+    // Serve immediately; public synchronization is bounded recovery.
+    ntp_start_mdns_and_server();
     s_ntp_wifi_connected = true;
+    ntp_try_public_sync();
 
     s_ntp_wifi_task = NULL;
     vTaskDelete(NULL);
@@ -27892,6 +28088,7 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
             case CYM_TIME_GPS_LOCKED:    badge = "GPS LOCK"; break;
             case CYM_TIME_GPS_ACQUIRING: badge = "ACQUIRING"; break;
             case CYM_TIME_RTC_HOLDOVER:  badge = "RTC HOLDOVER"; break;
+            case CYM_TIME_NETWORK_SYNC:  badge = "PUBLIC NTP"; break;
             default: break;
             }
         }
@@ -27899,6 +28096,7 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
         lv_color_t c = lv_color_hex(0xFF5252);  // red default
         if (have_snap && snap.source == CYM_TIME_GPS_LOCKED) c = lv_color_hex(0x69F0AE);
         else if (have_snap && snap.source == CYM_TIME_RTC_HOLDOVER) c = lv_color_hex(0xFFD740);
+        else if (have_snap && snap.source == CYM_TIME_NETWORK_SYNC) c = lv_color_hex(0x69F0AE);
         else if (have_snap && snap.source == CYM_TIME_GPS_ACQUIRING) c = lv_color_hex(0x40C4FF);
         lv_obj_set_style_text_color(s_ntp_source_lbl, c, 0);
     }
@@ -27934,13 +28132,30 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
     if (s_ntp_ip_lbl) {
         if (s_ntp_wifi_connected && s_ntp_ip_str[0]) {
             char ibuf[40];
-            snprintf(ibuf, sizeof(ibuf), "DHCP IP: %s", s_ntp_ip_str);
+            snprintf(ibuf, sizeof(ibuf), s_ntp_network_mode == NTP_NETWORK_AP ?
+                     "AP IP: %s" : "DHCP IP: %s", s_ntp_ip_str);
             lv_label_set_text(s_ntp_ip_lbl, ibuf);
         } else if (s_ntp_wifi_failed) {
             lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: OFFLINE");
         } else {
             lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: connecting...");
         }
+    }
+    if (s_ntp_network_lbl) {
+        char nbuf[80];
+        if (s_ntp_network_mode == NTP_NETWORK_AP) {
+            snprintf(nbuf, sizeof(nbuf), "AP SSID: %s\nPassword: %s",
+                     s_ntp_ap_ssid, NTP_AP_PASSWORD);
+        } else {
+            const char *status = "Public NTP: idle";
+            if (s_ntp_public_state == NTP_PUBLIC_SYNCING) status = "Public NTP: syncing (max 5s)";
+            else if (s_ntp_public_state == NTP_PUBLIC_SUCCESS) status = "Public NTP: RTC updated";
+            else if (s_ntp_public_state == NTP_PUBLIC_TIME_OK) status = "Public NTP: RTC within 5s";
+            else if (s_ntp_public_state == NTP_PUBLIC_TIMEOUT) status = "Public NTP: unavailable; using RTC";
+            else if (s_ntp_public_state == NTP_PUBLIC_SKIPPED_GPS) status = "Public NTP: skipped (GPS lock)";
+            snprintf(nbuf, sizeof(nbuf), "%s", status);
+        }
+        lv_label_set_text(s_ntp_network_lbl, nbuf);
     }
     if (s_ntp_host_lbl) {
         lv_label_set_text(s_ntp_host_lbl, s_ntp_mdns_ok ?
@@ -27962,7 +28177,10 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
             snprintf(abuf, sizeof(abuf), "GPS age: %llus | UART",
                      (unsigned long long)(snap.source_age_ms / 1000));
         } else if (snap.source == CYM_TIME_RTC_HOLDOVER) {
-            snprintf(abuf, sizeof(abuf), "Holdover: %llus | UART",
+            snprintf(abuf, sizeof(abuf), "Holdover: %llus | RTC",
+                     (unsigned long long)(snap.source_age_ms / 1000));
+        } else if (snap.source == CYM_TIME_NETWORK_SYNC) {
+            snprintf(abuf, sizeof(abuf), "Pool sync age: %llus",
                      (unsigned long long)(snap.source_age_ms / 1000));
         } else {
             snprintf(abuf, sizeof(abuf), "Source: --");
@@ -28002,9 +28220,9 @@ static void ntp_clock_retry_cb(lv_event_t *e)
     if (!s_ntp_clock_active || s_ntp_wifi_task) return;
     void (*return_fn)(void) = s_ntp_return_fn;
     ntp_clock_stop();
+    if (return_fn) return_fn();
     s_ntp_return_fn = return_fn;
-    s_ntp_pending_after_wifi = true;
-    show_wifi_client_server_screen();
+    show_ntp_network_mode_popup();
 }
 
 static void ntp_clock_stop(void)
@@ -28034,8 +28252,12 @@ static void ntp_clock_stop(void)
         }
     }
 
-    // Disconnect WiFi
-    esp_wifi_disconnect();
+    // Leave the exclusive network mode cleanly.
+    if (s_ntp_network_mode == NTP_NETWORK_AP) {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+    } else {
+        esp_wifi_disconnect();
+    }
 #if CONFIG_BOARD_HAS_5GHZ
     esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
 #endif
@@ -28051,6 +28273,7 @@ static void ntp_clock_stop(void)
     s_ntp_uncert_lbl = NULL;
     s_ntp_req_lbl = NULL;
     s_ntp_offset_lbl = NULL;
+    s_ntp_network_lbl = NULL;
     s_ntp_retry_btn = NULL;
 
     // Restore general brightness
@@ -28061,6 +28284,8 @@ static void ntp_clock_stop(void)
     s_ntp_ip_str[0] = '\0';
     s_ntp_mdns_ok = false;
     s_ntp_udp_ok = false;
+    s_ntp_public_state = NTP_PUBLIC_IDLE;
+    s_ntp_ap_ssid[0] = '\0';
 }
 
 static void show_ntp_clock_screen(void)
@@ -28121,9 +28346,19 @@ static void show_ntp_clock_screen(void)
     lv_obj_set_style_text_align(s_ntp_offset_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(s_ntp_offset_lbl, lv_pct(100));
 
-    // DHCP IP
+    // Network mode / public synchronization status
+    s_ntp_network_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_network_lbl, s_ntp_network_mode == NTP_NETWORK_AP ?
+                      "AP: starting..." : "Public NTP: waiting for network");
+    lv_label_set_long_mode(s_ntp_network_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_ntp_network_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_network_lbl, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_width(s_ntp_network_lbl, lv_pct(100));
+
+    // DHCP or AP IP
     s_ntp_ip_lbl = lv_label_create(cont);
-    lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: connecting...");
+    lv_label_set_text(s_ntp_ip_lbl, s_ntp_network_mode == NTP_NETWORK_AP ?
+                      "AP IP: starting..." : "DHCP IP: connecting...");
     lv_obj_set_style_text_font(s_ntp_ip_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_ntp_ip_lbl, ui_text_color(), 0);
     lv_obj_set_width(s_ntp_ip_lbl, lv_pct(100));
@@ -28186,7 +28421,7 @@ static void show_ntp_clock_screen(void)
     // Start 1 Hz UI update timer
     s_ntp_ui_timer = lv_timer_create(ntp_clock_ui_timer_cb, 1000, NULL);
 
-    // Start WiFi/mDNS/NTP in background task
+    // Start selected WiFi mode, mDNS, and NTP in a background task.
     s_ntp_wifi_connected = false;
     s_ntp_wifi_failed = false;
     s_ntp_ip_str[0] = '\0';
