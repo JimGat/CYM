@@ -222,9 +222,11 @@ static void ntp_server_task(void *arg)
 
         if (have_snap && (snap.source == CYM_TIME_GPS_LOCKED ||
                           snap.source == CYM_TIME_RTC_HOLDOVER ||
-                          snap.source == CYM_TIME_NETWORK_SYNC)) {
+                          snap.source == CYM_TIME_NETWORK_SYNC ||
+                          snap.source == CYM_TIME_RTOS_HOLDOVER)) {
             li = NTP_LI_NONE;
-            if (snap.source == CYM_TIME_NETWORK_SYNC) {
+            if (snap.source == CYM_TIME_NETWORK_SYNC ||
+                snap.source == CYM_TIME_RTOS_HOLDOVER) {
                 stratum = NTP_STRATUM_SECONDARY;
                 ref_id = htonl(REFID_SNTP);
             } else {

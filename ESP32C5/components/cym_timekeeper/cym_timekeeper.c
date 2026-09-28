@@ -25,13 +25,10 @@ static const char *TAG = "timekeeper";
 // Initial GPS UART uncertainty (microseconds) — conservative before
 // physical characterization. 500ms covers UART latency, sentence jitter,
 // scheduling delay, and parse overhead.
-#define GPS_UART_UNCERTAINTY_US 500000
-#define NETWORK_UNCERTAINTY_US  250000
+#define GPS_UART_UNCERTAINTY_US BOARD_TIME_GPS_UNCERTAINTY_US
+#define NETWORK_UNCERTAINTY_US  BOARD_TIME_NTP_UNCERTAINTY_US
 #define MIN_REASONABLE_EPOCH    1704067200LL  // 2024-01-01 UTC
 #define MAX_REASONABLE_EPOCH    4102444800LL  // 2100-01-01 UTC
-
-// Holdover uncertainty grows at 50 ppm (conservative uncalibrated quartz)
-#define HOLDOVER_DRIFT_PPM      50
 
 // RTC write rate limit: no more often than every 10 minutes (600 seconds)
 #define RTC_WRITE_INTERVAL_S    600
@@ -46,6 +43,7 @@ static const char *TAG = "timekeeper";
 
 // GPS loss timeout: if no valid sample for this long, transition to holdover
 #define GPS_LOSS_TIMEOUT_US     (10 * 1000000LL)  // 10 seconds
+#define NETWORK_LIVE_WINDOW_US  (10 * 1000000LL)  // then RTOS/RTC holdover
 
 // Maximum samples between GPS observations before reacquisition
 #define MAX_DISCONTINUITY_S     5
@@ -72,6 +70,7 @@ static time_t s_last_gps_sync_epoch = 0;
 static int32_t s_last_correction_us = 0;
 static uint32_t s_uncertainty_us = 0;
 static uint32_t s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+static uint32_t s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
 static uint64_t s_holdover_base_age_ms = 0;
 
 // RTC write rate limit
@@ -128,6 +127,31 @@ static void slew_clock(int32_t correction_us)
     ESP_LOGI(TAG, "Clock slewed by %d us", (int)correction_us);
 }
 
+static uint32_t grow_uncertainty(uint32_t base_us,
+                                 uint64_t elapsed_us,
+                                 uint32_t drift_ppm)
+{
+    uint64_t drift_us = (elapsed_us / 1000000ULL) * drift_ppm;
+    uint64_t uncertainty = (uint64_t)base_us + drift_us;
+    return uncertainty > UINT32_MAX ? UINT32_MAX : (uint32_t)uncertainty;
+}
+
+static cym_time_reliability_t derive_reliability(cym_time_source_t source,
+                                                  bool valid,
+                                                  uint32_t uncertainty_us)
+{
+    if (!valid) return CYM_TIME_RELIABILITY_UNTRUSTED;
+    if (source == CYM_TIME_GPS_LOCKED && s_has_rtc && uncertainty_us <= 1000000) {
+        return CYM_TIME_RELIABILITY_EXCELLENT;
+    }
+    if ((source == CYM_TIME_GPS_LOCKED || source == CYM_TIME_NETWORK_SYNC) &&
+        uncertainty_us <= 2000000) {
+        return CYM_TIME_RELIABILITY_GOOD;
+    }
+    if (source == CYM_TIME_RTC_HOLDOVER) return CYM_TIME_RELIABILITY_HOLDOVER;
+    return CYM_TIME_RELIABILITY_DEGRADED;
+}
+
 static void write_rtc_if_due(time_t epoch, int64_t now_mono_us)
 {
     if (!s_has_rtc) return;
@@ -163,7 +187,7 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus)
     s_uncertainty_us = 0;
     s_has_rtc = false;
 
-#if defined(BOARD_RTC_I2C_ADDR)
+#if BOARD_TIME_HAS_RTC
     // Initialize PCF85063A RTC
     if (bus) {
         esp_err_t ret = pcf85063_init(&s_rtc, bus, BOARD_RTC_I2C_ADDR);
@@ -199,8 +223,11 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus)
                             elapsed_s = (uint64_t)(rtc_epoch - s_last_gps_sync_epoch);
                         }
                         s_holdover_base_age_ms = elapsed_s * 1000ULL;
-                        uint64_t base_uncertainty = GPS_UART_UNCERTAINTY_US + elapsed_s * HOLDOVER_DRIFT_PPM;
-                        s_holdover_base_uncertainty_us = base_uncertainty > UINT32_MAX ? UINT32_MAX : (uint32_t)base_uncertainty;
+                        s_holdover_base_uncertainty_us = grow_uncertainty(
+                            GPS_UART_UNCERTAINTY_US,
+                            elapsed_s * 1000000ULL,
+                            BOARD_TIME_RTC_DRIFT_PPM);
+                        s_holdover_drift_ppm = BOARD_TIME_RTC_DRIFT_PPM;
                         s_uncertainty_us = s_holdover_base_uncertainty_us;
                         ESP_LOGI(TAG, "Clock restored from trusted RTC (holdover %llu s)",
                                  (unsigned long long)elapsed_s);
@@ -266,6 +293,8 @@ esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us)
         s_source = CYM_TIME_GPS_LOCKED;
         s_last_lock_mono_us = rx_monotonic_us;
         s_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+        s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+        s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
         s_last_gps_sync_epoch = epoch;
 
         // Discipline the system clock
@@ -298,6 +327,8 @@ esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us)
         s_last_lock_mono_us = rx_monotonic_us;
         s_last_gps_sync_epoch = epoch;
         s_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+        s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+        s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
 
         // Periodic RTC update
         write_rtc_if_due(epoch, rx_monotonic_us);
@@ -345,6 +376,7 @@ esp_err_t cym_timekeeper_observe_network_utc(time_t epoch, int64_t rx_monotonic_
     s_uncertainty_us = NETWORK_UNCERTAINTY_US;
     s_holdover_base_age_ms = 0;
     s_holdover_base_uncertainty_us = NETWORK_UNCERTAINTY_US;
+    s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
 
     if (repair_rtc) {
         write_rtc_if_due(epoch, rx_monotonic_us);
@@ -374,6 +406,9 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
 
     gettimeofday(&out->utc, NULL);
     out->source = s_source;
+    out->has_rtc = BOARD_TIME_HAS_RTC != 0;
+    out->has_gps_uart = BOARD_TIME_HAS_GPS_UART != 0;
+    out->estimate_characterized = BOARD_TIME_ESTIMATE_CHARACTERIZED != 0;
     out->rtc_valid = s_rtc_valid;
     out->gps_present = s_gps_present;
     out->gps_fix = s_gps_fix;
@@ -393,13 +428,30 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
                 s_gps_fix = false;
                 s_holdover_base_age_ms = 0;
                 s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+                s_holdover_drift_ppm = BOARD_TIME_RTC_DRIFT_PPM;
                 s_last_lock_mono_us = now_mono;
                 ESP_LOGW(TAG, "GPS lost — entering RTC holdover");
             } else {
-                s_source = CYM_TIME_UNSYNCED;
-                ESP_LOGW(TAG, "GPS lost — no trusted RTC, UNSYNCED");
+                s_source = CYM_TIME_RTOS_HOLDOVER;
+                s_gps_fix = false;
+                s_holdover_base_age_ms = 0;
+                s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
+                s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
+                s_last_lock_mono_us = now_mono;
+                ESP_LOGW(TAG, "GPS lost — entering RTOS holdover");
             }
         }
+    }
+
+    if (s_source == CYM_TIME_NETWORK_SYNC &&
+        now_mono - s_last_lock_mono_us > NETWORK_LIVE_WINDOW_US) {
+        s_source = (s_rtc_trusted && s_rtc_valid) ?
+                   CYM_TIME_RTC_HOLDOVER : CYM_TIME_RTOS_HOLDOVER;
+        s_holdover_base_age_ms = 0;
+        s_holdover_base_uncertainty_us = NETWORK_UNCERTAINTY_US;
+        s_holdover_drift_ppm = (s_source == CYM_TIME_RTC_HOLDOVER) ?
+                               BOARD_TIME_RTC_DRIFT_PPM : BOARD_TIME_RTOS_DRIFT_PPM;
+        s_last_lock_mono_us = now_mono;
     }
 
     // Compute source age and uncertainty
@@ -412,18 +464,24 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
     case CYM_TIME_NETWORK_SYNC: {
         uint64_t elapsed_us = (uint64_t)(now_mono - s_last_lock_mono_us);
         out->source_age_ms = elapsed_us / 1000;
-        uint64_t drift_us = (elapsed_us / 1000000ULL) * HOLDOVER_DRIFT_PPM;
-        uint64_t uncertainty = NETWORK_UNCERTAINTY_US + drift_us;
-        out->uncertainty_us = uncertainty > UINT32_MAX ? UINT32_MAX : (uint32_t)uncertainty;
+        out->uncertainty_us = grow_uncertainty(
+            NETWORK_UNCERTAINTY_US, elapsed_us, BOARD_TIME_RTOS_DRIFT_PPM);
         out->valid = true;
         break;
     }
     case CYM_TIME_RTC_HOLDOVER: {
         uint64_t holdover_us = (uint64_t)(now_mono - s_last_lock_mono_us);
         out->source_age_ms = s_holdover_base_age_ms + holdover_us / 1000;
-        uint64_t drift_us = (holdover_us / 1000000ULL) * HOLDOVER_DRIFT_PPM;
-        uint64_t uncertainty = (uint64_t)s_holdover_base_uncertainty_us + drift_us;
-        out->uncertainty_us = uncertainty > UINT32_MAX ? UINT32_MAX : (uint32_t)uncertainty;
+        out->uncertainty_us = grow_uncertainty(
+            s_holdover_base_uncertainty_us, holdover_us, s_holdover_drift_ppm);
+        out->valid = true;
+        break;
+    }
+    case CYM_TIME_RTOS_HOLDOVER: {
+        uint64_t holdover_us = (uint64_t)(now_mono - s_last_lock_mono_us);
+        out->source_age_ms = s_holdover_base_age_ms + holdover_us / 1000;
+        out->uncertainty_us = grow_uncertainty(
+            s_holdover_base_uncertainty_us, holdover_us, BOARD_TIME_RTOS_DRIFT_PPM);
         out->valid = true;
         break;
     }
@@ -440,8 +498,10 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
         break;
     }
 
-    // Re-read source after potential transition above
+    // Re-read source after potential transition above and derive UI quality.
     out->source = s_source;
+    out->reliability = derive_reliability(s_source, out->valid, out->uncertainty_us);
+    s_uncertainty_us = out->uncertainty_us;
 
     xSemaphoreGive(s_tk_mutex);
     return true;
@@ -453,8 +513,21 @@ const char *cym_timekeeper_source_name(cym_time_source_t source)
     case CYM_TIME_UNSYNCED:       return "UNSYNCED";
     case CYM_TIME_GPS_ACQUIRING:  return "GPS ACQUIRING";
     case CYM_TIME_GPS_LOCKED:     return "GPS LOCK";
-    case CYM_TIME_RTC_HOLDOVER:   return "RTC HOLDOVER";
     case CYM_TIME_NETWORK_SYNC:   return "PUBLIC NTP";
+    case CYM_TIME_RTC_HOLDOVER:   return "RTC HOLDOVER";
+    case CYM_TIME_RTOS_HOLDOVER:  return "RTOS HOLDOVER";
     default:                      return "UNKNOWN";
+    }
+}
+
+const char *cym_timekeeper_reliability_name(cym_time_reliability_t reliability)
+{
+    switch (reliability) {
+    case CYM_TIME_RELIABILITY_EXCELLENT: return "Excellent";
+    case CYM_TIME_RELIABILITY_GOOD:      return "Good";
+    case CYM_TIME_RELIABILITY_HOLDOVER:  return "Holdover";
+    case CYM_TIME_RELIABILITY_DEGRADED:  return "Degraded";
+    case CYM_TIME_RELIABILITY_UNTRUSTED:
+    default:                             return "Untrusted";
     }
 }

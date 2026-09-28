@@ -133,6 +133,16 @@
 #define BOARD_UART_RX        BOARD_GPS_RX
 
 // ── Board identifier strings ──────────────────────────────────────────────────
+
+// Conservative, uncharacterized timing capability profile.
+#define BOARD_TIME_HAS_RTC                    0
+#define BOARD_TIME_HAS_GPS_UART               1
+#define BOARD_TIME_RTC_DRIFT_PPM              0
+#define BOARD_TIME_RTOS_DRIFT_PPM             100
+#define BOARD_TIME_GPS_UNCERTAINTY_US         500000
+#define BOARD_TIME_NTP_UNCERTAINTY_US         250000
+#define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
+
 #define BOARD_NAME           "hosyond-s3-35"
 #define BOARD_DISPLAY_DRIVER "ST77922"
 #define BOARD_TOUCH_DRIVER   "custom-0x55"

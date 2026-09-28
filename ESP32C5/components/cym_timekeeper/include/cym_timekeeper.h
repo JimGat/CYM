@@ -15,14 +15,27 @@ typedef enum {
     CYM_TIME_UNSYNCED = 0,
     CYM_TIME_GPS_ACQUIRING,
     CYM_TIME_GPS_LOCKED,
-    CYM_TIME_RTC_HOLDOVER,
     CYM_TIME_NETWORK_SYNC,
+    CYM_TIME_RTC_HOLDOVER,
+    CYM_TIME_RTOS_HOLDOVER,
 } cym_time_source_t;
+
+typedef enum {
+    CYM_TIME_RELIABILITY_UNTRUSTED = 0,
+    CYM_TIME_RELIABILITY_DEGRADED,
+    CYM_TIME_RELIABILITY_HOLDOVER,
+    CYM_TIME_RELIABILITY_GOOD,
+    CYM_TIME_RELIABILITY_EXCELLENT,
+} cym_time_reliability_t;
 
 typedef struct {
     struct timeval utc;
     cym_time_source_t source;
+    cym_time_reliability_t reliability;
     bool valid;
+    bool has_rtc;
+    bool has_gps_uart;
+    bool estimate_characterized;
     bool rtc_valid;
     bool gps_present;
     bool gps_fix;
@@ -57,3 +70,6 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out);
 
 // Human-readable name for a time source state.
 const char *cym_timekeeper_source_name(cym_time_source_t source);
+
+// Human-readable reliability derived from source and current uncertainty.
+const char *cym_timekeeper_reliability_name(cym_time_reliability_t reliability);

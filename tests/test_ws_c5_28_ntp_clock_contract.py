@@ -120,7 +120,9 @@ class TimekeeperComponentContract(unittest.TestCase):
     def test_timekeeper_uncertainty_initial(self):
         """GPS-locked UART uncertainty starts at 500ms (500000 us)."""
         src = _read_if_exists(TK_SRC)
-        self.assertIn("500000", src, "Initial GPS uncertainty must be 500000 us")
+        self.assertIn("BOARD_TIME_GPS_UNCERTAINTY_US", src,
+                      "Initial GPS uncertainty must come from the board profile")
+        self.assertRegex(WS_BOARD, r"BOARD_TIME_GPS_UNCERTAINTY_US\s+500000")
 
     def test_timekeeper_holdover_drift_rate(self):
         """Holdover uncertainty grows at 50 ppm."""

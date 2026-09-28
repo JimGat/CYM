@@ -90,6 +90,43 @@
 #endif
 #endif
 
+// Timing capability fallbacks. Released boards define these explicitly; the
+// fallbacks keep future board bring-up honest and safe by default.
+#ifndef BOARD_TIME_HAS_RTC
+#define BOARD_TIME_HAS_RTC 0
+#endif
+#ifndef BOARD_TIME_HAS_GPS_UART
+#define BOARD_TIME_HAS_GPS_UART BOARD_HAS_GPS
+#endif
+#ifndef BOARD_TIME_RTC_DRIFT_PPM
+#define BOARD_TIME_RTC_DRIFT_PPM 0
+#endif
+#ifndef BOARD_TIME_RTOS_DRIFT_PPM
+#define BOARD_TIME_RTOS_DRIFT_PPM 150
+#endif
+#ifndef BOARD_TIME_GPS_UNCERTAINTY_US
+#define BOARD_TIME_GPS_UNCERTAINTY_US 0
+#endif
+#ifndef BOARD_TIME_NTP_UNCERTAINTY_US
+#define BOARD_TIME_NTP_UNCERTAINTY_US 250000
+#endif
+#ifndef BOARD_TIME_ESTIMATE_CHARACTERIZED
+#define BOARD_TIME_ESTIMATE_CHARACTERIZED 0
+#endif
+
+#if BOARD_TIME_HAS_RTC && !defined(BOARD_RTC_I2C_ADDR)
+#error "Board timing profile declares RTC but no BOARD_RTC_I2C_ADDR"
+#endif
+#if BOARD_TIME_HAS_GPS_UART && (BOARD_GPS_TX < 0 || BOARD_GPS_RX < 0)
+#error "Board timing profile declares GPS UART but GPS pins are unavailable"
+#endif
+#if BOARD_TIME_RTC_DRIFT_PPM < 0 || BOARD_TIME_RTOS_DRIFT_PPM < 0
+#error "Board timing drift estimates must be non-negative"
+#endif
+#if BOARD_TIME_NTP_UNCERTAINTY_US == 0
+#error "Board timing profile must define public-NTP uncertainty"
+#endif
+
 // ── Sanity checks — catch impossible combinations at compile time ─────────────
 
 #if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER) && defined(CONFIG_BOARD_TOUCH_XPT2046)

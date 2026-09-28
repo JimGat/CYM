@@ -73,6 +73,16 @@
 #define BOARD_I2C_SCL        -1
 
 // ── Board identifier string ───────────────────────────────────────────────────
+
+// Conservative, uncharacterized timing capability profile.
+#define BOARD_TIME_HAS_RTC                    0
+#define BOARD_TIME_HAS_GPS_UART               1
+#define BOARD_TIME_RTC_DRIFT_PPM              0
+#define BOARD_TIME_RTOS_DRIFT_PPM             100
+#define BOARD_TIME_GPS_UNCERTAINTY_US         500000
+#define BOARD_TIME_NTP_UNCERTAINTY_US         250000
+#define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
+
 #define BOARD_NAME           "NM-CYD-C5"
 #define BOARD_DISPLAY_DRIVER "ST7789"
 #define BOARD_TOUCH_DRIVER   "XPT2046"

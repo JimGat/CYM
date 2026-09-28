@@ -83,6 +83,16 @@
 #define BOARD_I2C_SCL           -1
 
 // ── Board identifier strings ──────────────────────────────────────────────────
+
+// Conservative, uncharacterized timing capability profile.
+#define BOARD_TIME_HAS_RTC                    0
+#define BOARD_TIME_HAS_GPS_UART               0
+#define BOARD_TIME_RTC_DRIFT_PPM              0
+#define BOARD_TIME_RTOS_DRIFT_PPM             150
+#define BOARD_TIME_GPS_UNCERTAINTY_US         0
+#define BOARD_TIME_NTP_UNCERTAINTY_US         250000
+#define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
+
 #define BOARD_NAME             "CYD2USB"
 #define BOARD_DISPLAY_DRIVER   "ILI9341"
 #define BOARD_TOUCH_DRIVER     "XPT2046"
