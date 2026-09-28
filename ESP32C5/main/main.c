@@ -888,9 +888,11 @@ static volatile bool s_ntp_stopping = false;
 static char s_ntp_ip_str[20] = "";
 static bool s_ntp_mdns_ok = false;
 static bool s_ntp_udp_ok = false;
+static bool s_ntp_pending_after_wifi = false;
 static void (*s_ntp_return_fn)(void) = NULL;
 static lv_obj_t *s_ntp_retry_btn = NULL;
 static void show_ntp_clock_screen(void);
+static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void));
 static void show_clock_settings_screen(void);
 static void ntp_clock_stop(void);
 #endif
@@ -17349,11 +17351,9 @@ static void main_tile_event_cb(lv_event_t *e)
         show_wifi_menu_screen();
 #if defined(CONFIG_BOARD_WS_C5_28)
     } else if (strcmp(tile_name, "NTP Clock Classic") == 0) {
-        s_ntp_return_fn = show_wifi_menu_screen;
-        show_ntp_clock_screen();
+        show_ntp_clock_or_wifi_prompt(show_main_tiles);
     } else if (strcmp(tile_name, "NTP Clock Modern") == 0) {
-        s_ntp_return_fn = show_cat_tools;
-        show_ntp_clock_screen();
+        show_ntp_clock_or_wifi_prompt(show_cat_tools);
 #endif
     } else if (strcmp(tile_name, "WiFi Scan & Attack") == 0) {
         show_wifi_scan_attack_screen();
@@ -17671,6 +17671,9 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_SHIELD,      "Detect &\nDefend", lv_color_hex(0x1B5E20), main_tile_event_cb, "Detect & Defend");
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
+#if defined(CONFIG_BOARD_WS_C5_28)
+    create_tile(tiles_container, MY_SYMBOL_CLOCK, "NTP\nClock", lv_color_hex(0x00897B), main_tile_event_cb, "NTP Clock Classic");
+#endif
     // Go Dark moved from a home tile to the top-bar power button (title_bar, far-right).
     create_tile(tiles_container, MY_SYMBOL_SITEMAP,     "IOT/OT",       lv_color_hex(0x00695C), main_tile_event_cb, "IOT/OT");
     // NFC/RFID Hub — always visible; works with RF-HAT PN532 (DIP 3) or standalone breakout on CN1
@@ -21503,9 +21506,6 @@ static void show_wifi_menu_screen(void)
     (void)wcap_tile;
     lv_obj_t *obslog_tile = create_tile(tiles, MY_SYMBOL_DATABASE, "Passive\nLog", lv_color_hex(0x311B92), main_tile_event_cb, "Passive Log");
     (void)obslog_tile;
-#if defined(CONFIG_BOARD_WS_C5_28)
-    create_tile(tiles, MY_SYMBOL_CLOCK, "NTP\nClock", lv_color_hex(0x00897B), main_tile_event_cb, "NTP Clock Classic");
-#endif
 }
 
 // WiFi Sniff & Karma screen
@@ -22452,6 +22452,14 @@ static void s_fileserv_poll_ip_cb(lv_timer_t *t)
         lv_timer_del(t);
         s_fileserv_poll_timer = NULL;
 
+#if defined(CONFIG_BOARD_WS_C5_28)
+        if (s_ntp_pending_after_wifi) {
+            s_ntp_pending_after_wifi = false;
+            show_ntp_clock_screen();
+            return;
+        }
+#endif
+
         if (s_wpasec_pending_after_wifi) {
             s_wpasec_pending_after_wifi = false;
             show_wpa_sec_upload_page();   // now that STA has an IP; task uploads over it
@@ -22541,6 +22549,9 @@ static void fileserv_stop(void)
     s_fileserv_httpd_stop();
     s_wdup_pending_after_wifi = false;    /* consumed on any exit */
     s_wpasec_pending_after_wifi = false;
+#if defined(CONFIG_BOARD_WS_C5_28)
+    s_ntp_pending_after_wifi = false;
+#endif
 }
 
 /* AP File Server variant: also bring the soft-AP fully down. fileserv_stop() alone
@@ -22895,14 +22906,21 @@ static void s_wcs_connect_cb(lv_event_t *e)
 static void show_wifi_client_server_screen(void)
 {
     log_heap_stats("fileserv-screen-open");
-    create_function_page_base((s_wdup_pending_after_wifi || s_wpasec_pending_after_wifi)
-                              ? "WiFi for Upload" : "WiFi File Server");
+    const char *page_title = (s_wdup_pending_after_wifi || s_wpasec_pending_after_wifi)
+                           ? "WiFi for Upload" : "WiFi File Server";
+#if defined(CONFIG_BOARD_WS_C5_28)
+    if (s_ntp_pending_after_wifi) page_title = "WiFi for NTP Clock";
+#endif
+    create_function_page_base(page_title);
     apply_menu_bg();
     g_screen_stop_fn = fileserv_stop;  /* top ‹ Back / Home stops the client + HTTP server */
     /* wdup "WiFi for Upload" comes from Wardrive Upload (not in NAV_SHOW_TABLE) — route
        ‹ Back back to it; the normal "WiFi File Server" resolves Data Transfer via nav stack. */
     if (s_wdup_pending_after_wifi)         g_screen_back_fn = show_wardrive_upload_screen;
     else if (s_wpasec_pending_after_wifi)  g_screen_back_fn = show_data_transfer_screen;
+#if defined(CONFIG_BOARD_WS_C5_28)
+    else if (s_ntp_pending_after_wifi)     g_screen_back_fn = s_ntp_return_fn;
+#endif
 
     lv_obj_t *content = lv_obj_create(function_page);
     lv_obj_set_size(content, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 50);
@@ -26907,18 +26925,18 @@ static void show_screen_popup(void)
     lv_obj_set_flex_align(home_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_t *home_hdr = lv_label_create(home_row);
     lv_label_set_text(home_hdr, "Home:");
-    lv_obj_set_style_text_color(home_hdr, lv_color_hex(0x3F51B5), 0);
+    lv_obj_set_style_text_color(home_hdr, COLOR_MATERIAL_TEAL, 0);
     lv_obj_set_style_text_font(home_hdr, &lv_font_montserrat_12, 0);
     screen_home_classic_radio = lv_checkbox_create(home_row);
     lv_checkbox_set_text(screen_home_classic_radio, "Classic");
-    lv_obj_set_style_text_color(screen_home_classic_radio, lv_color_hex(0x3F51B5), 0);
+    lv_obj_set_style_text_color(screen_home_classic_radio, COLOR_MATERIAL_TEAL, 0);
     lv_obj_set_style_text_font(screen_home_classic_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_classic_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_classic_radio, screen_home_layout_radio_cb,
                         LV_EVENT_VALUE_CHANGED, (void *)&SCREEN_HOME_LAYOUT_CHOICE[0]);
     screen_home_4cat_radio = lv_checkbox_create(home_row);
     lv_checkbox_set_text(screen_home_4cat_radio, "Modern");
-    lv_obj_set_style_text_color(screen_home_4cat_radio, lv_color_hex(0x3F51B5), 0);
+    lv_obj_set_style_text_color(screen_home_4cat_radio, COLOR_MATERIAL_TEAL, 0);
     lv_obj_set_style_text_font(screen_home_4cat_radio, &lv_font_montserrat_12, 0);
     lv_obj_set_style_radius(screen_home_4cat_radio, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
     lv_obj_add_event_cb(screen_home_4cat_radio, screen_home_layout_radio_cb,
@@ -27758,6 +27776,25 @@ static void show_home_layout_popup(void)
 // ============================================================================
 #if defined(CONFIG_BOARD_WS_C5_28)
 
+static bool ntp_station_has_dhcp(void)
+{
+    esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!sta) return false;
+    esp_netif_ip_info_t ip = {0};
+    return esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr != 0;
+}
+
+static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void))
+{
+    s_ntp_return_fn = return_fn;
+    if (!ntp_station_has_dhcp()) {
+        s_ntp_pending_after_wifi = true;
+        show_wifi_client_server_screen();
+        return;
+    }
+    show_ntp_clock_screen();
+}
+
 // WiFi startup task for NTP Clock — runs in background, sets flags for UI
 static void ntp_wifi_startup_task(void *arg)
 {
@@ -27963,14 +28000,11 @@ static void ntp_clock_retry_cb(lv_event_t *e)
 {
     (void)e;
     if (!s_ntp_clock_active || s_ntp_wifi_task) return;
-    cym_ntp_server_stop();
-    if (s_ntp_mdns_ok) mdns_free();
-    s_ntp_mdns_ok = false;
-    s_ntp_udp_ok = false;
-    s_ntp_wifi_connected = false;
-    s_ntp_wifi_failed = false;
-    s_ntp_ip_str[0] = '\0';
-    xTaskCreate(ntp_wifi_startup_task, "ntp_wifi", 4096, NULL, 5, &s_ntp_wifi_task);
+    void (*return_fn)(void) = s_ntp_return_fn;
+    ntp_clock_stop();
+    s_ntp_return_fn = return_fn;
+    s_ntp_pending_after_wifi = true;
+    show_wifi_client_server_screen();
 }
 
 static void ntp_clock_stop(void)

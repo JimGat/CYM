@@ -37,7 +37,7 @@ class ScreenSettingsContract(unittest.TestCase):
     def test_home_layout_radios_have_explicit_visible_text_color(self):
         for radio in ("screen_home_classic_radio", "screen_home_4cat_radio"):
             self.assertIn(
-                f"lv_obj_set_style_text_color({radio}, lv_color_hex(0x3F51B5), 0);",
+                f"lv_obj_set_style_text_color({radio}, COLOR_MATERIAL_TEAL, 0);",
                 MAIN,
             )
 

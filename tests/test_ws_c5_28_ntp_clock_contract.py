@@ -283,17 +283,16 @@ class ClockSettingsContract(unittest.TestCase):
 class NTPClockDashboardContract(unittest.TestCase):
     """NTP Clock dashboard must show all required operational fields."""
 
-    def test_ntp_clock_tile_in_wifi_menu(self):
-        """Classic path: WiFi -> NTP Clock."""
-        pattern = re.compile(
-            r'#if\s+defined\(CONFIG_BOARD_WS_C5_28\).*?"NTP.*Clock".*?show_wifi_menu_screen',
-            re.S,
-        )
-        # The tile must be INSIDE the wifi menu function, gated by board config
-        self.assertRegex(MAIN, re.compile(
-            r'show_wifi_menu_screen.*?#if\s+defined\(CONFIG_BOARD_WS_C5_28\).*?"NTP',
-            re.S,
-        ))
+    def test_ntp_clock_tile_on_classic_home(self):
+        """Classic path exposes NTP Clock directly on its home grid."""
+        main = MAIN[MAIN.index("static void show_main_tiles(void)\n{"):
+                    MAIN.index("// ── WiFi Scan paginated list renderer")]
+        self.assertIn("#if defined(CONFIG_BOARD_WS_C5_28)", main)
+        self.assertIn('"NTP\\nClock"', main)
+        self.assertIn('"NTP Clock Classic"', main)
+        wifi = MAIN[MAIN.index("static void show_wifi_menu_screen(void)\n{"):
+                    MAIN.index("// WiFi Sniff & Karma screen")]
+        self.assertNotIn('"NTP Clock Classic"', wifi)
 
     def test_ntp_clock_tile_in_cat_tools(self):
         """Modern path: Tools & System -> NTP Clock."""
@@ -418,8 +417,8 @@ class NTPClockBehaviorContract(unittest.TestCase):
         self.assertNotIn("s_gps_synced", parser)
         self.assertIn("cym_timekeeper_observe_gps_utc(epoch, esp_timer_get_time())", parser)
 
-    def test_classic_wifi_menu_has_exact_board_gated_tile(self):
-        menu = self._section("static void show_wifi_menu_screen(void)\n{", "// WiFi Sniff & Karma screen")
+    def test_classic_home_has_exact_board_gated_tile(self):
+        menu = self._section("static void show_main_tiles(void)\n{", "// ── WiFi Scan paginated list renderer")
         self.assertIn("#if defined(CONFIG_BOARD_WS_C5_28)", menu)
         self.assertIn('"NTP\\nClock"', menu)
         self.assertIn('"NTP Clock Classic"', menu)
@@ -435,7 +434,7 @@ class NTPClockBehaviorContract(unittest.TestCase):
         settings_cb = self._section("static void settings_tile_event_cb(lv_event_t *e)\n{", "// Settings screen")
         self.assertIn('strcmp(tile_name, "NTP Clock Classic")', main_cb)
         self.assertIn('strcmp(tile_name, "NTP Clock Modern")', main_cb)
-        self.assertIn("show_ntp_clock_screen();", main_cb)
+        self.assertIn("show_ntp_clock_or_wifi_prompt", main_cb)
         self.assertIn('strcmp(tile_name, "Clock")', settings_cb)
         self.assertIn("show_clock_settings_screen();", settings_cb)
 
@@ -447,6 +446,24 @@ class NTPClockBehaviorContract(unittest.TestCase):
         exit_cb = self._section("static void ntp_clock_exit_cb", "static void ntp_clock_stop")
         self.assertIn("ntp_clock_stop();", exit_cb)
         self.assertIn("return_fn();", exit_cb)
+
+    def test_screen_settings_home_labels_use_visible_teal(self):
+        screen = self._section("static void show_screen_popup(void)\n{", "// ── Home Layout chooser popup")
+        self.assertIn("lv_obj_set_style_text_color(home_hdr, COLOR_MATERIAL_TEAL, 0);", screen)
+        self.assertIn("lv_obj_set_style_text_color(screen_home_classic_radio, COLOR_MATERIAL_TEAL, 0);", screen)
+        self.assertIn("lv_obj_set_style_text_color(screen_home_4cat_radio, COLOR_MATERIAL_TEAL, 0);", screen)
+
+    def test_ntp_uses_shared_wifi_prompt_until_dhcp(self):
+        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        self.assertIn("s_ntp_pending_after_wifi", MAIN)
+        self.assertIn('"WiFi for NTP Clock"', MAIN)
+        self.assertIn("show_ntp_clock_or_wifi_prompt", block)
+        self.assertIn("esp_netif_get_ip_info", block)
+        poll = self._section("static void s_fileserv_poll_ip_cb", "static void fileserv_stop")
+        self.assertIn("s_ntp_pending_after_wifi", poll)
+        self.assertIn("show_ntp_clock_screen();", poll)
+        wifi_screen = self._section("static void show_wifi_client_server_screen(void)\n{", "/* SSID label */")
+        self.assertIn("s_ntp_return_fn", wifi_screen)
 
     def test_mdns_api_is_declared(self):
         self.assertIn('#include "mdns.h"', MAIN)
@@ -469,7 +486,7 @@ class NTPClockBehaviorContract(unittest.TestCase):
 
     def test_all_release_soc_versions_match_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.35")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.36")', (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

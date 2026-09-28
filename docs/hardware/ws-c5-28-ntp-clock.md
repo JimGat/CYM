@@ -6,7 +6,7 @@ on the local network while the NTP Clock screen is open.
 
 ## Before use
 
-1. Save the Wi-Fi client SSID and password in CYM Wi-Fi settings.
+1. Have the target Wi-Fi SSID and password available. If CYM does not already have a usable DHCP connection, opening NTP Clock presents the same Wi-Fi Client scan and credential prompt used by Data Transfer.
 2. Connect a supported GPS receiver to the WS-C5-28 UART connector. Version one
    uses UART RMC time only; PPS is not implemented or configurable.
 3. For clients that require a stable numeric address, create a DHCP reservation
@@ -27,12 +27,15 @@ UTC. The display offset never changes RTC contents or NTP replies.
 
 ## Start and stop
 
-- Classic layout: `WiFi -> NTP Clock`
+- Classic layout: `Home -> NTP Clock`
 - Modern layout: `Tools & System -> NTP Clock`
 
-The screen connects with the saved Wi-Fi credentials, obtains an address by
-DHCP, and starts the NTP service on UDP port 123. It shows the actual IPv4
-address prominently. It also advertises:
+If a valid DHCP address is not already available, the feature opens `WiFi for
+NTP Clock`, reusing the Data Transfer Wi-Fi Client scan/manual credential flow.
+After a successful connection and DHCP lease, it automatically continues into
+the clock. Cancel returns to Classic Home or Modern Tools & System, depending on
+where the clock was launched. The dashboard shows the actual IPv4 address
+prominently and starts NTP on UDP port 123. It also advertises:
 
 - hostname: `cym-ntp.local`
 - service: `_ntp._udp`
@@ -61,7 +64,7 @@ a future enhancement and is intentionally absent from the current settings.
 
 ## Troubleshooting
 
-- No DHCP address: verify saved Wi-Fi credentials and select `Retry WiFi`.
+- No DHCP address: use the `WiFi for NTP Clock` prompt to scan or enter credentials. `Retry WiFi` returns to that prompt after a dashboard connection failure.
 - `cym-ntp.local` does not resolve: use the displayed IPv4 address and verify
   that the client network permits mDNS multicast.
 - UDP/123 is unreachable: confirm the screen says `NTP: UDP/123 SERVING` and

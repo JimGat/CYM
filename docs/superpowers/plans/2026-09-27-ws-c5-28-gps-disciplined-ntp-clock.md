@@ -4,7 +4,7 @@
 
 **Goal:** Build a WS-C5-28-only functional clock that continuously disciplines UTC from GPS, maintains the PCF85063A RTC, serves NTP over DHCP Wi-Fi, and displays the assigned IP and timing state without automatic dimming.
 
-**Architecture:** Add a focused `cym_timekeeper` ESP-IDF component containing PCF85063A access, source-state discipline, and an isolated UDP NTP responder. Integrate it with the existing GPS parser and WS-C5-28 I2C bus, then add board-gated Clock Settings and NTP Clock LVGL screens in `main.c`. Classic launches from WiFi; Modern launches from Tools & System; both share the same screen and bounded teardown.
+**Architecture:** Add a focused `cym_timekeeper` ESP-IDF component containing PCF85063A access, source-state discipline, and an isolated UDP NTP responder. Integrate it with the existing GPS parser and WS-C5-28 I2C bus, then add board-gated Clock Settings and NTP Clock LVGL screens in `main.c`. Classic launches directly from Home; Modern launches from Tools & System; both share the same screen and bounded teardown. If DHCP is unavailable, both reuse the Data Transfer Wi-Fi Client credential prompt and continue automatically after connection.
 
 **Tech Stack:** ESP-IDF C, FreeRTOS, new I2C master driver, lwIP sockets, mDNS, NVS, LVGL 8, Python `unittest` source contracts, ESP-IDF multi-board build scripts.
 
@@ -338,7 +338,7 @@ git commit -m "feat(ws-c5-28): add NTP Clock dashboard"
 
 **Interfaces:**
 - Consumes: `show_ntp_clock_screen()` and `show_clock_settings_screen()`.
-- Produces: Classic `WiFi -> NTP Clock`, Modern `Tools & System -> NTP Clock`, and `Settings -> Clock` documentation.
+- Produces: Classic `Home -> NTP Clock`, Modern `Tools & System -> NTP Clock`, and `Settings -> Clock` documentation.
 
 - [ ] **Step 1: Extend navigation contracts**
 

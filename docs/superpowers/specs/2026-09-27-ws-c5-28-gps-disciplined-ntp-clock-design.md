@@ -363,7 +363,7 @@ The shared feature screens have separate navigation entries and return contracts
 
 Classic:
 
-- `WiFi -> NTP Clock` launches the operating mode.
+- A board-gated `NTP Clock` tile on Classic Home launches the operating mode.
 - `Settings -> Clock` opens persistent clock configuration.
 
 Modern:
