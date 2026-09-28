@@ -351,20 +351,36 @@ class NTPPacketContract(unittest.TestCase):
             self.assertEqual((byte0 >> 3) & 0x07, client_version)
 
     def test_ntp_timestamp_conversion(self):
-        """Unix timestamp -> NTP seconds + fraction."""
-        import time
-        unix_ts = 1700000000  # 2023-11-14
-        ntp_secs = unix_ts + self.NTP_EPOCH_OFFSET
-        # Network byte order (big-endian)
-        packed = struct.pack("!I", ntp_secs)
-        self.assertEqual(struct.unpack("!I", packed)[0], ntp_secs)
+        """Production helper converts Unix seconds and microseconds to network-order NTP."""
+        src = _read_if_exists(NTP_SRC)
+        helper = re.search(
+            r"static void timeval_to_ntp\([^)]*\)\s*\{(?P<body>.*?)\n\}",
+            src,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(helper, "Production timeval_to_ntp helper must exist")
+        body = helper.group("body")
+        self.assertRegex(
+            body,
+            r"\*secs\s*=\s*htonl\(\(uint32_t\)\(tv->tv_sec\s*\+\s*NTP_EPOCH_OFFSET\)\)",
+        )
+        self.assertRegex(
+            body,
+            r"\(\(uint64_t\)tv->tv_usec\s*<<\s*32\)\s*/\s*1000000ULL",
+        )
+        self.assertRegex(body, r"\*frac\s*=\s*htonl\(\(uint32_t\)f\)")
 
     def test_originate_echo_position(self):
-        """Originate timestamp is at bytes 24-31 in the response."""
-        # Client sends transmit timestamp at bytes 40-47
-        # Server echoes it back at originate (bytes 24-31)
-        self.assertEqual(24, 24)  # byte offset for originate
-        self.assertEqual(40, 40)  # byte offset for client transmit
+        """Production response echoes client transmit bytes 40-47 at bytes 24-31."""
+        src = _read_if_exists(NTP_SRC)
+        self.assertRegex(
+            src,
+            r"memcpy\s*\(\s*&resp\[24\]\s*,\s*&buf\[40\]\s*,\s*8\s*\)",
+        )
+        self.assertRegex(src, r"memcpy\s*\(\s*&resp\[32\]\s*,\s*&rx_s\s*,\s*4\s*\)")
+        self.assertRegex(src, r"memcpy\s*\(\s*&resp\[36\]\s*,\s*&rx_f\s*,\s*4\s*\)")
+        self.assertRegex(src, r"memcpy\s*\(\s*&resp\[40\]\s*,\s*&tx_s\s*,\s*4\s*\)")
+        self.assertRegex(src, r"memcpy\s*\(\s*&resp\[44\]\s*,\s*&tx_f\s*,\s*4\s*\)")
 
     def test_stratum_1_for_primary_reference(self):
         """A GPS-disciplined server is stratum 1 (primary reference)."""
