@@ -28,6 +28,7 @@ idf_component_register(
         heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi
         board_hal esp_lcd_st77922 esp_lcd esp_timer freertos log nvs_flash fatfs
         sdmmc lvgl led_strip
+        cym_timekeeper
     PRIV_REQUIRES
         wifi_attacks wifi_cli wifi_scanner wifi_sniffer wifi_wardrive sniffer
         frame_analyzer hccapx_serializer pcap_serializer esp_driver_ledc

@@ -196,11 +196,9 @@ LV_IMG_DECLARE(deedee_img);
 #include "obs_detectors.h"
 #include "ot_radio.h"
 #include "ot_survey.h"
-#if defined(CONFIG_BOARD_WS_C5_28)
 #include "cym_timekeeper.h"
 #include "cym_ntp_server.h"
 #include "mdns.h"
-#endif
 #include "wh_detect.h"
 #include "ble_honeypair.h"
 #include "chameleon_ble.h"
@@ -7248,9 +7246,11 @@ void app_main(void)
     g_font_icon14.fallback = &lv_extra_symbols;
     memcpy(&g_font_icon16, &lv_font_montserrat_16, sizeof(lv_font_t));
     g_font_icon16.fallback = &lv_extra_symbols;
-#if defined(CONFIG_BOARD_WS_C5_28)
-    init_i2c_bus();   // I2C bus for CST3530 touch + CH32V003 backlight — must be first
+#if BOARD_TIME_HAS_RTC
+    init_i2c_bus();   // WS-C5-28 shared I2C bus must be ready before RTC probe
     ESP_ERROR_CHECK_WITHOUT_ABORT(cym_timekeeper_init(s_i2c_bus));
+#else
+    ESP_ERROR_CHECK_WITHOUT_ABORT(cym_timekeeper_init(NULL));
 #endif
     init_display();
     init_touch();
@@ -41459,17 +41459,15 @@ static bool parse_gps_nmea(const char *nmea_sentence)
             t.tm_isdst = 0;
             time_t epoch = timegm(&t);
             if (epoch != (time_t)-1) {
-#if defined(CONFIG_BOARD_WS_C5_28)
+#if BOARD_TIME_HAS_GPS_UART
                 cym_timekeeper_note_gps_present(true);
-#endif
-#if defined(CONFIG_BOARD_WS_C5_28)
                 cym_timekeeper_observe_gps_utc(epoch, esp_timer_get_time());
 #endif
             }
 			return true;
 		}
         if (status == 'V') {
-#if defined(CONFIG_BOARD_WS_C5_28)
+#if BOARD_TIME_HAS_GPS_UART
             cym_timekeeper_note_gps_present(true);
 #endif
         }

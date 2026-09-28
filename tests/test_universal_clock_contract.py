@@ -106,6 +106,10 @@ class BuildIntegrationContract(unittest.TestCase):
         for rel in ("ESP32/main/CMakeLists.txt", "ESP32C5/main/CMakeLists.txt", "ESP32S3/main/CMakeLists.txt"):
             self.assertIn("cym_timekeeper", (ROOT / rel).read_text(), rel)
 
+    def test_all_application_manifests_depend_on_mdns(self):
+        for rel in ("ESP32/main/idf_component.yml", "ESP32C5/main/idf_component.yml", "ESP32S3/main/idf_component.yml"):
+            self.assertIn("espressif/mdns", (ROOT / rel).read_text(), rel)
+
     def test_timekeeper_initializes_every_board(self):
         block = section("void app_main(void)", "// Main loop")
         self.assertIn("cym_timekeeper_init", block)
@@ -113,7 +117,7 @@ class BuildIntegrationContract(unittest.TestCase):
         self.assertIn("cym_timekeeper_init(NULL)", block)
 
     def test_gps_observation_is_capability_gated(self):
-        start = MAIN.index("static bool parse_gps_nmea")
+        start = MAIN.index("static bool parse_gps_nmea(const char *nmea_sentence)\n{")
         end = MAIN.index("static void gps_task", start)
         parser = MAIN[start:end]
         self.assertIn("BOARD_TIME_HAS_GPS_UART", parser)
