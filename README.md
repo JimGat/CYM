@@ -87,10 +87,10 @@ CYM builds and packages four supported software targets from one shared firmware
 | **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4, no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
-| **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Supported software target in v2.15.27; peripheral hardware acceptance pending** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi, BLE, SD, RGB LED, battery ADC, and external UART GPS. Display, orientation, colors, and touch are physically qualified. SD, RGB, battery voltage, GPS, Wi-Fi, BLE, and bounded soak still require validation on the shared-CYM image. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
+| **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Released in v2.15.34; available in the web flasher** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi and BLE. The shared CYM application, display, orientation, colors, capacitive touch, Modern/Classic menus, and Deauth Harvest have been physically exercised. SD, RGB LED, battery voltage, external UART GPS, broader radio coverage, and bounded soak remain pending qualification. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
 | **[Hosyond/LCDWiki ESP32-S3 4.0-inch](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display)** (`hosyond-s3-40`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ST7796S 320×480 SPI display, FT6336U capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 
-See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for controller, bus, pin-map, and acceptance details. All four supported software targets are integrated with the shared web-flasher source. The live [web-based flasher](https://jimgat.github.io/CYM/) will expose ES3C35P after this change is formally released to `main`; until then, use the branch test image and flash its full image at `0x0000`.
+See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for controller, bus, pin-map, and acceptance details. All four supported software targets are integrated with the shared [web-based flasher](https://jimgat.github.io/CYM/), including the released ES3C35P selector and its board-specific manifest and binaries.
 
 ---
 
@@ -99,6 +99,7 @@ See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for co
 - [Featured Videos](#-featured-videos)
 - [Supported Hardware](#supported-hardware)
 - [Features Overview](#features-overview)
+- [Modern Menu Showcase](#modern-menu-showcase)
 - [Menu Map](#menu-map)
 - [Screenshots](#screenshots)
 - [Hardware](#hardware)
@@ -206,9 +207,21 @@ See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for co
 
 ---
 
+## Modern Menu Showcase
+
+The selectable **Modern Menu** was designed and developed by CYM co-developer [@birolt29](https://github.com/birolt29). It reorganizes the same CYM tools into four purpose-based categories—**Attack**, **Detect & Defend**, **Recon & Scan**, and **Tools & System**—without removing the original Classic navigation. Both layouts open the same underlying feature screens.
+
+**Choose Modern on first boot:** when CYM has no saved Home-layout preference, the **Home Layout** chooser appears automatically. Tap **Modern**; the new home opens immediately and the selection is saved in NVS.
+
+**Switch later or change back to Classic:** open **Settings → Screen**, find the **Home:** row, select **Modern** or **Classic**, and tap **Save**. Choosing **Classic** restores the original tile-oriented Home menu. No firmware reinstall or reboot is required, and changing layouts does not erase settings or captures.
+
+The Modern **Attack** category displays an authorization warning before opening. **Detect & Defend** showcases defensive tools including the direct **Deauth Harvest** shortcut, while conditional RF-HAT and 802.15.4 tiles still follow the active board capabilities. See the [Modern Menu wiki](https://github.com/JimGat/CYM/wiki/Modern-Menu) for the complete category map.
+
+---
+
 ## Menu Map
 
-CYM has two selectable home layouts. Change layouts under **Settings → Screen → Home Layout**. The selection is saved in NVS and survives reboot.
+CYM has two selectable home layouts. On first boot with no saved preference, choose **Modern** or **Classic** in the automatic **Home Layout** prompt. To switch later—or to change back—open **Settings → Screen**, select **Modern** or **Classic** in the **Home:** row, and tap **Save**. The selection is stored in NVS and survives reboot and firmware updates.
 
 ### Modern Menu
 

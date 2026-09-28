@@ -41,7 +41,7 @@ The source-of-truth profile is `ESP32C5/components/board_hal/include/boards/hosy
 
 ## Qualification boundary
 
-Display rendering, orientation, RGB565 colors, and responsive touch are physically qualified for Jim's ES3C35P. The v2.15.27 image is now the canonical shared CYM application and is packaged and integrated with the web flasher. Compilation does not qualify the remaining hardware: SD read/write, RGB LED, plausible battery voltage, external UART GPS, 2.4-GHz Wi-Fi, BLE, and bounded long-run stability remain pending. Audio, vibrator, RF-HAT, 5 GHz, and IEEE 802.15.4 are intentionally unavailable.
+Display rendering, orientation, RGB565 colors, responsive touch, Modern/Classic navigation, and the current Deauth Harvest workflow are physically exercised on Jim's ES3C35P. The v2.15.34 image is the released canonical shared CYM application and is selectable in the web flasher. This does not qualify the remaining hardware: SD read/write, RGB LED, plausible battery voltage, external UART GPS, broader 2.4-GHz Wi-Fi/BLE behavior, and bounded long-run stability remain pending. Audio, vibrator, RF-HAT, 5 GHz, and IEEE 802.15.4 are intentionally unavailable.
 
 ## Shared-CYM physical acceptance
 

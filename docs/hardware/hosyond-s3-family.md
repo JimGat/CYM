@@ -1,6 +1,6 @@
 # Hosyond ESP32-S3 Display Family
 
-CYM supports the Hosyond/LCDWiki ES3C35P 3.5-inch as a shared-CYM software target beginning with v2.15.27. It compiles the canonical `ESP32C5/main/` application and is integrated into the shared web flasher. Display and touch are physically qualified; the remaining peripheral acceptance checklist is pending. The 2.8-inch and 4.0-inch variants remain experimental development targets.
+CYM releases the Hosyond/LCDWiki ES3C35P 3.5-inch as a shared-CYM web-flasher target beginning with v2.15.34. It compiles the canonical `ESP32C5/main/` application through a narrow board adapter. Display/touch, Modern and Classic navigation, and the current Deauth Harvest workflow are physically exercised; the remaining peripheral acceptance checklist is still gated. The 2.8-inch and 4.0-inch variants remain experimental development targets.
 
 ## Family summary
 
@@ -9,7 +9,7 @@ All three boards use an ESP32-S3 N16R8 module: dual-core Xtensa LX7 at up to 240
 | CYM target | Vendor/SKU | Display | Touch | Native resolution | CYM state |
 |---|---|---|---|---|---|
 | `hosyond-s3-28` | ES3C28P (touch); ES3N28P is the no-touch sibling | ILI9341V, 4-line SPI | FT6336G, I2C | 240×320 | Planned; official core documentation imported |
-| `hosyond-s3-35` | ES3C35P | ST77922, 4-data-line QSPI | Integrated ST77922/TDDI I2C path at 0x55 | 320×480 | Supported shared-CYM software target v2.15.27; display/touch qualified; peripheral acceptance pending |
+| `hosyond-s3-35` | ES3C35P | ST77922, 4-data-line QSPI | Integrated ST77922/TDDI I2C path at 0x55 | 320×480 | Released shared-CYM target v2.15.34; web flasher; remaining peripherals gated |
 | `hosyond-s3-40` | ES3C40P | ST7796S, 4-line SPI | FT6336U, I2C | 320×480 | Planned; official individual documentation imported |
 
 Sources: [LCDWiki 2.8-inch product page](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display), [LCDWiki 3.5-inch product page](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display), and [LCDWiki 4.0-inch product page](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display).
@@ -63,6 +63,6 @@ The repository stores the core specifications, schematics, pin workbook where a 
 As of this document update:
 
 - Supported software targets are NM-CYD-C5, WS-C5-28, CYD-2432S028, and Hosyond ES3C35P 3.5-inch.
-- ES3C35P display/touch are physically qualified; SD, RGB, battery, external GPS, Wi-Fi, BLE, and bounded soak remain pending on the shared-CYM image.
+- ES3C35P display/touch, Modern/Classic navigation, and current Deauth Harvest behavior are physically exercised; SD, RGB, battery, external GPS, broader Wi-Fi/BLE qualification, and bounded soak remain pending on the shared-CYM image.
 - Hosyond S3 2.8-inch and 4.0-inch remain experimental documented port candidates.
 - Build success is not physical qualification.
