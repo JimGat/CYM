@@ -1,8 +1,8 @@
 # Universal Capability-Aware Clock Design
 
-**Status:** Proposed design for review
-**Approved direction:** Jim Gatwood
-**Date:** 2026-09-28
+**Status:** Approved for implementation
+**Approved by:** Jim Gatwood
+**Date approved:** 2026-09-28
 **Target:** All released CYM display boards
 
 ## 1. Purpose
