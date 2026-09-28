@@ -193,6 +193,11 @@ LV_IMG_DECLARE(deedee_img);
 #include "obs_detectors.h"
 #include "ot_radio.h"
 #include "ot_survey.h"
+#if defined(CONFIG_BOARD_WS_C5_28)
+#include "cym_timekeeper.h"
+#include "cym_ntp_server.h"
+#include "mdns.h"
+#endif
 #include "wh_detect.h"
 #include "ble_honeypair.h"
 #include "chameleon_ble.h"
@@ -832,6 +837,8 @@ static char     g_saved_wifi_pass[65] = ""; // Home network password
 #define NVS_KEY_ORIENT       "scr_orient"  // u8 screen orientation 0-3 (see screen_orientation)
 #define NVS_KEY_HOME_4CAT    "home_4cat"   // u8 home layout (0=classic tile grid, 1=4-category router)
 #define NVS_KEY_HOME_ASKED   "home_asked"  // u8 one-time setup chooser completed
+#define NVS_KEY_CLK_OFFSET   "clk_offset"  // i16 display UTC offset in minutes (-720..+840)
+#define NVS_KEY_CLK_BRIGHT   "clk_bright"  // u8 NTP Clock brightness percent (10..100)
 
 // ── CC1101 crystal calibration — declared here so NVS load can access them ────
 // CC1101 uses a 26 MHz crystal whose error multiplies with the PLL.
@@ -856,6 +863,37 @@ static inline float cc1101_freq_cal(float mhz) {
 }
 
 static void nvs_save_cc1101_offset(void);   // forward — implemented near HW test screen
+
+// ── NTP Clock state (WS-C5-28 only) ─────────────────────────────────────────
+#if defined(CONFIG_BOARD_WS_C5_28)
+static volatile bool s_ntp_clock_active = false;
+static int16_t  g_clock_offset_minutes = 0;   // display UTC offset (-720..+840)
+static uint8_t  g_ntp_clock_brightness_pct = 100;
+static uint8_t  s_ntp_saved_brightness = 100; // general brightness before NTP mode
+static lv_timer_t *s_ntp_ui_timer = NULL;
+static lv_obj_t *s_ntp_time_lbl = NULL;
+static lv_obj_t *s_ntp_date_lbl = NULL;
+static lv_obj_t *s_ntp_source_lbl = NULL;
+static lv_obj_t *s_ntp_ip_lbl = NULL;
+static lv_obj_t *s_ntp_host_lbl = NULL;
+static lv_obj_t *s_ntp_service_lbl = NULL;
+static lv_obj_t *s_ntp_age_lbl = NULL;
+static lv_obj_t *s_ntp_uncert_lbl = NULL;
+static lv_obj_t *s_ntp_req_lbl = NULL;
+static lv_obj_t *s_ntp_offset_lbl = NULL;
+static TaskHandle_t s_ntp_wifi_task = NULL;
+static volatile bool s_ntp_wifi_connected = false;
+static volatile bool s_ntp_wifi_failed = false;
+static volatile bool s_ntp_stopping = false;
+static char s_ntp_ip_str[20] = "";
+static bool s_ntp_mdns_ok = false;
+static bool s_ntp_udp_ok = false;
+static void (*s_ntp_return_fn)(void) = NULL;
+static lv_obj_t *s_ntp_retry_btn = NULL;
+static void show_ntp_clock_screen(void);
+static void show_clock_settings_screen(void);
+static void ntp_clock_stop(void);
+#endif
 
 // Wardrive band selection
 typedef enum { WD_BAND_BOTH = 0, WD_BAND_24G, WD_BAND_5G } wd_band_t;
@@ -4464,6 +4502,20 @@ static void nvs_settings_load(void)
                      (double)g_gps_last_known.latitude, (double)g_gps_last_known.longitude,
                      (double)GPS_STALE_ACCURACY_M);
         }
+#if defined(CONFIG_BOARD_WS_C5_28)
+        {
+            int16_t co = 0;
+            if (nvs_get_i16(h, NVS_KEY_CLK_OFFSET, &co) == ESP_OK &&
+                co >= -720 && co <= 840) {
+                g_clock_offset_minutes = co;
+            }
+            uint8_t cb = 100;
+            if (nvs_get_u8(h, NVS_KEY_CLK_BRIGHT, &cb) == ESP_OK &&
+                cb >= 10 && cb <= 100) {
+                g_ntp_clock_brightness_pct = cb;
+            }
+        }
+#endif
         nvs_close(h);
         ESP_LOGI(TAG, "NVS settings loaded: timeout=%ldms, brightness=%u%%, scan=%u-%ums, dark=%d, max_power=%d, gatt_tmo=%ums",
                  (long)screen_timeout_ms, screen_brightness_pct, scan_time_min_ms, scan_time_max_ms,
@@ -4819,6 +4871,9 @@ static void screen_set_dimmed(bool dimmed)
 static void screen_idle_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
+#if defined(CONFIG_BOARD_WS_C5_28)
+    if (s_ntp_clock_active) return;  // NTP Clock keeps screen on at selected brightness
+#endif
     const int64_t now_ms = esp_timer_get_time() / 1000;
     if (!screen_dimmed && (now_ms - last_input_ms) >= screen_timeout_ms) {
         screen_set_dimmed(true);
@@ -7168,6 +7223,7 @@ void app_main(void)
     g_font_icon16.fallback = &lv_extra_symbols;
 #if defined(CONFIG_BOARD_WS_C5_28)
     init_i2c_bus();   // I2C bus for CST3530 touch + CH32V003 backlight — must be first
+    ESP_ERROR_CHECK_WITHOUT_ABORT(cym_timekeeper_init(s_i2c_bus));
 #endif
     init_display();
     init_touch();
@@ -17291,6 +17347,14 @@ static void main_tile_event_cb(lv_event_t *e)
 
     if (strcmp(tile_name, "WiFi Menu") == 0) {
         show_wifi_menu_screen();
+#if defined(CONFIG_BOARD_WS_C5_28)
+    } else if (strcmp(tile_name, "NTP Clock Classic") == 0) {
+        s_ntp_return_fn = show_wifi_menu_screen;
+        show_ntp_clock_screen();
+    } else if (strcmp(tile_name, "NTP Clock Modern") == 0) {
+        s_ntp_return_fn = show_cat_tools;
+        show_ntp_clock_screen();
+#endif
     } else if (strcmp(tile_name, "WiFi Scan & Attack") == 0) {
         show_wifi_scan_attack_screen();
     } else if (strcmp(tile_name, "Global WiFi Attacks") == 0) {
@@ -21439,6 +21503,9 @@ static void show_wifi_menu_screen(void)
     (void)wcap_tile;
     lv_obj_t *obslog_tile = create_tile(tiles, MY_SYMBOL_DATABASE, "Passive\nLog", lv_color_hex(0x311B92), main_tile_event_cb, "Passive Log");
     (void)obslog_tile;
+#if defined(CONFIG_BOARD_WS_C5_28)
+    create_tile(tiles, MY_SYMBOL_CLOCK, "NTP\nClock", lv_color_hex(0x00897B), main_tile_event_cb, "NTP Clock Classic");
+#endif
 }
 
 // WiFi Sniff & Karma screen
@@ -27563,6 +27630,10 @@ static void settings_tile_event_cb(lv_event_t *e)
         show_gps_info_screen();
     } else if (strcmp(tile_name, "Hardware Options") == 0) {
         show_hardware_options_screen();
+#if defined(CONFIG_BOARD_WS_C5_28)
+    } else if (strcmp(tile_name, "Clock") == 0) {
+        show_clock_settings_screen();
+#endif
 #if CONFIG_BOARD_HAS_VIBRATOR
     } else if (strcmp(tile_name, "Vibrator Test") == 0) {
         show_vibrator_test_popup();
@@ -27682,6 +27753,595 @@ static void show_home_layout_popup(void)
     }
 }
 
+// ============================================================================
+// NTP Clock — WS-C5-28 only: GPS-disciplined NTP server dashboard
+// ============================================================================
+#if defined(CONFIG_BOARD_WS_C5_28)
+
+// WiFi startup task for NTP Clock — runs in background, sets flags for UI
+static void ntp_wifi_startup_task(void *arg)
+{
+    (void)arg;
+    s_ntp_wifi_connected = false;
+    s_ntp_wifi_failed = false;
+
+    if (g_saved_wifi_ssid[0] == '\0') {
+        s_ntp_wifi_failed = true;
+        s_ntp_wifi_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Ensure WiFi is in STA mode
+    if (!ensure_wifi_mode()) {
+        s_ntp_wifi_failed = true;
+        s_ntp_wifi_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    esp_wifi_set_mode(WIFI_MODE_STA);
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
+#endif
+    esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+
+    // Check if already associated
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        esp_wifi_start();
+        wifi_config_t cfg = {0};
+        strncpy((char *)cfg.sta.ssid, g_saved_wifi_ssid, sizeof(cfg.sta.ssid) - 1);
+        strncpy((char *)cfg.sta.password, g_saved_wifi_pass, sizeof(cfg.sta.password) - 1);
+        esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        esp_wifi_clear_fast_connect();
+        esp_wifi_connect();
+    }
+
+    // Wait for DHCP IP (up to 15 seconds)
+    bool got_ip = false;
+    for (int i = 0; i < 150 && !s_ntp_stopping; i++) {
+        if (sta_netif) {
+            esp_netif_ip_info_t ip;
+            if (esp_netif_get_ip_info(sta_netif, &ip) == ESP_OK && ip.ip.addr != 0) {
+                snprintf(s_ntp_ip_str, sizeof(s_ntp_ip_str), IPSTR, IP2STR(&ip.ip));
+                got_ip = true;
+                break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (s_ntp_stopping) { s_ntp_wifi_task = NULL; vTaskDelete(NULL); return; }
+
+    if (!got_ip) {
+        s_ntp_wifi_failed = true;
+        s_ntp_wifi_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    // Start mDNS
+    s_ntp_mdns_ok = false;
+    if (mdns_init() == ESP_OK) {
+        if (mdns_hostname_set("cym-ntp") == ESP_OK) {
+            mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
+            s_ntp_mdns_ok = true;
+        }
+    }
+
+    // Start NTP server
+    s_ntp_udp_ok = (cym_ntp_server_start() == ESP_OK);
+    s_ntp_wifi_connected = true;
+
+    s_ntp_wifi_task = NULL;
+    vTaskDelete(NULL);
+}
+
+// 1 Hz UI update timer for NTP Clock dashboard
+static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_ntp_clock_active) return;
+
+    cym_time_snapshot_t snap = {0};
+    bool have_snap = cym_timekeeper_snapshot(&snap);
+
+    // Source badge
+    if (s_ntp_source_lbl) {
+        const char *badge = "UNSYNCED";
+        if (have_snap) {
+            switch (snap.source) {
+            case CYM_TIME_GPS_LOCKED:    badge = "GPS LOCK"; break;
+            case CYM_TIME_GPS_ACQUIRING: badge = "ACQUIRING"; break;
+            case CYM_TIME_RTC_HOLDOVER:  badge = "RTC HOLDOVER"; break;
+            default: break;
+            }
+        }
+        lv_label_set_text(s_ntp_source_lbl, badge);
+        lv_color_t c = lv_color_hex(0xFF5252);  // red default
+        if (have_snap && snap.source == CYM_TIME_GPS_LOCKED) c = lv_color_hex(0x69F0AE);
+        else if (have_snap && snap.source == CYM_TIME_RTC_HOLDOVER) c = lv_color_hex(0xFFD740);
+        else if (have_snap && snap.source == CYM_TIME_GPS_ACQUIRING) c = lv_color_hex(0x40C4FF);
+        lv_obj_set_style_text_color(s_ntp_source_lbl, c, 0);
+    }
+
+    // Time and date with display offset
+    if (s_ntp_time_lbl && have_snap) {
+        time_t display_epoch = snap.utc.tv_sec + (int32_t)g_clock_offset_minutes * 60;
+        struct tm dt;
+        gmtime_r(&display_epoch, &dt);
+        char tbuf[16];
+        snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", dt.tm_hour, dt.tm_min, dt.tm_sec);
+        lv_label_set_text(s_ntp_time_lbl, tbuf);
+    }
+    if (s_ntp_date_lbl && have_snap) {
+        time_t display_epoch = snap.utc.tv_sec + (int32_t)g_clock_offset_minutes * 60;
+        struct tm dt;
+        gmtime_r(&display_epoch, &dt);
+        char dbuf[32];
+        snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d", dt.tm_year + 1900, dt.tm_mon + 1, dt.tm_mday);
+        lv_label_set_text(s_ntp_date_lbl, dbuf);
+    }
+
+    // Offset label
+    if (s_ntp_offset_lbl) {
+        int h_off = g_clock_offset_minutes / 60;
+        int m_off = abs(g_clock_offset_minutes % 60);
+        char obuf[40];
+        snprintf(obuf, sizeof(obuf), "DISPLAY UTC%+d:%02d - NTP UTC", h_off, m_off);
+        lv_label_set_text(s_ntp_offset_lbl, obuf);
+    }
+
+    // IP / hostname / service
+    if (s_ntp_ip_lbl) {
+        if (s_ntp_wifi_connected && s_ntp_ip_str[0]) {
+            char ibuf[40];
+            snprintf(ibuf, sizeof(ibuf), "DHCP IP: %s", s_ntp_ip_str);
+            lv_label_set_text(s_ntp_ip_lbl, ibuf);
+        } else if (s_ntp_wifi_failed) {
+            lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: OFFLINE");
+        } else {
+            lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: connecting...");
+        }
+    }
+    if (s_ntp_host_lbl) {
+        lv_label_set_text(s_ntp_host_lbl, s_ntp_mdns_ok ?
+            "Hostname: cym-ntp.local" : "Hostname: mDNS failed");
+    }
+    if (s_ntp_service_lbl) {
+        lv_label_set_text(s_ntp_service_lbl, s_ntp_udp_ok ?
+            "NTP: UDP/123 SERVING" : "NTP: OFFLINE");
+    }
+    if (s_ntp_retry_btn) {
+        if (s_ntp_wifi_failed) lv_obj_clear_flag(s_ntp_retry_btn, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(s_ntp_retry_btn, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Age / uncertainty / requests
+    if (s_ntp_age_lbl && have_snap) {
+        char abuf[48];
+        if (snap.source == CYM_TIME_GPS_LOCKED) {
+            snprintf(abuf, sizeof(abuf), "GPS age: %llus | UART",
+                     (unsigned long long)(snap.source_age_ms / 1000));
+        } else if (snap.source == CYM_TIME_RTC_HOLDOVER) {
+            snprintf(abuf, sizeof(abuf), "Holdover: %llus | UART",
+                     (unsigned long long)(snap.source_age_ms / 1000));
+        } else {
+            snprintf(abuf, sizeof(abuf), "Source: --");
+        }
+        lv_label_set_text(s_ntp_age_lbl, abuf);
+    }
+    if (s_ntp_uncert_lbl && have_snap) {
+        char ubuf[32];
+        if (snap.uncertainty_us > 0) {
+            snprintf(ubuf, sizeof(ubuf), "Uncertainty: %lu ms",
+                     (unsigned long)(snap.uncertainty_us / 1000));
+        } else {
+            snprintf(ubuf, sizeof(ubuf), "Uncertainty: --");
+        }
+        lv_label_set_text(s_ntp_uncert_lbl, ubuf);
+    }
+    if (s_ntp_req_lbl) {
+        cym_ntp_server_stats_t stats;
+        cym_ntp_server_get_stats(&stats);
+        char rbuf[32];
+        snprintf(rbuf, sizeof(rbuf), "NTP requests: %lu", (unsigned long)stats.valid_requests);
+        lv_label_set_text(s_ntp_req_lbl, rbuf);
+    }
+}
+
+static void ntp_clock_exit_cb(lv_event_t *e)
+{
+    (void)e;
+    void (*return_fn)(void) = s_ntp_return_fn;
+    ntp_clock_stop();
+    if (return_fn) return_fn();
+}
+
+static void ntp_clock_retry_cb(lv_event_t *e)
+{
+    (void)e;
+    if (!s_ntp_clock_active || s_ntp_wifi_task) return;
+    cym_ntp_server_stop();
+    if (s_ntp_mdns_ok) mdns_free();
+    s_ntp_mdns_ok = false;
+    s_ntp_udp_ok = false;
+    s_ntp_wifi_connected = false;
+    s_ntp_wifi_failed = false;
+    s_ntp_ip_str[0] = '\0';
+    xTaskCreate(ntp_wifi_startup_task, "ntp_wifi", 4096, NULL, 5, &s_ntp_wifi_task);
+}
+
+static void ntp_clock_stop(void)
+{
+    if (!s_ntp_clock_active) return;
+    s_ntp_clock_active = false;
+    s_ntp_stopping = true;
+
+    // Stop NTP server
+    cym_ntp_server_stop();
+
+    // Stop only the mDNS instance started by this mode.
+    if (s_ntp_mdns_ok) mdns_free();
+
+    // Delete UI timer
+    if (s_ntp_ui_timer) { lv_timer_del(s_ntp_ui_timer); s_ntp_ui_timer = NULL; }
+
+    // Wait bounded for WiFi task
+    if (s_ntp_wifi_task) {
+        for (int i = 0; i < 20 && s_ntp_wifi_task; i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (s_ntp_wifi_task) {
+            ESP_LOGW(TAG, "Forcing stalled NTP WiFi task cleanup");
+            vTaskDelete(s_ntp_wifi_task);
+            s_ntp_wifi_task = NULL;
+        }
+    }
+
+    // Disconnect WiFi
+    esp_wifi_disconnect();
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+
+    // NULL all LVGL pointers
+    s_ntp_time_lbl = NULL;
+    s_ntp_date_lbl = NULL;
+    s_ntp_source_lbl = NULL;
+    s_ntp_ip_lbl = NULL;
+    s_ntp_host_lbl = NULL;
+    s_ntp_service_lbl = NULL;
+    s_ntp_age_lbl = NULL;
+    s_ntp_uncert_lbl = NULL;
+    s_ntp_req_lbl = NULL;
+    s_ntp_offset_lbl = NULL;
+    s_ntp_retry_btn = NULL;
+
+    // Restore general brightness
+    set_backlight_percent(s_ntp_saved_brightness);
+    s_ntp_stopping = false;
+    s_ntp_wifi_connected = false;
+    s_ntp_wifi_failed = false;
+    s_ntp_ip_str[0] = '\0';
+    s_ntp_mdns_ok = false;
+    s_ntp_udp_ok = false;
+}
+
+static void show_ntp_clock_screen(void)
+{
+    create_function_page_base("NTP Clock");
+    g_screen_stop_fn = ntp_clock_stop;
+    apply_menu_bg();
+
+    s_ntp_clock_active = true;
+    s_ntp_stopping = false;
+
+    // Save and apply NTP brightness
+    s_ntp_saved_brightness = screen_brightness_pct;
+    set_backlight_percent(g_ntp_clock_brightness_pct);
+
+    int ver = lv_disp_get_ver_res(NULL);
+
+    // Scrollable container for dashboard
+    lv_obj_t *cont = lv_obj_create(function_page);
+    lv_obj_set_size(cont, lv_pct(100), ver - 34);
+    lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_pad_all(cont, 6, 0);
+    lv_obj_set_style_pad_gap(cont, 2, 0);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_AUTO);
+
+    // Source badge
+    s_ntp_source_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_source_lbl, "UNSYNCED");
+    lv_obj_set_style_text_font(s_ntp_source_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_ntp_source_lbl, lv_color_hex(0xFF5252), 0);
+    lv_obj_set_style_text_align(s_ntp_source_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_ntp_source_lbl, lv_pct(100));
+
+    // Large time display
+    s_ntp_time_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_time_lbl, "--:--:--");
+    lv_obj_set_style_text_font(s_ntp_time_lbl, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_ntp_time_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_align(s_ntp_time_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_ntp_time_lbl, lv_pct(100));
+
+    // Date
+    s_ntp_date_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_date_lbl, "----/--/--");
+    lv_obj_set_style_text_font(s_ntp_date_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_ntp_date_lbl, ui_text_color(), 0);
+    lv_obj_set_style_text_align(s_ntp_date_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_ntp_date_lbl, lv_pct(100));
+
+    // Offset label
+    s_ntp_offset_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_offset_lbl, "DISPLAY UTC+0:00 - NTP UTC");
+    lv_obj_set_style_text_font(s_ntp_offset_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_offset_lbl, ui_muted_color(), 0);
+    lv_obj_set_style_text_align(s_ntp_offset_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_ntp_offset_lbl, lv_pct(100));
+
+    // DHCP IP
+    s_ntp_ip_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: connecting...");
+    lv_obj_set_style_text_font(s_ntp_ip_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_ip_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_ntp_ip_lbl, lv_pct(100));
+
+    // Hostname
+    s_ntp_host_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_host_lbl, "Hostname: cym-ntp.local");
+    lv_obj_set_style_text_font(s_ntp_host_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_host_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_ntp_host_lbl, lv_pct(100));
+
+    // NTP service status
+    s_ntp_service_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_service_lbl, "NTP: OFFLINE");
+    lv_obj_set_style_text_font(s_ntp_service_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_service_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_ntp_service_lbl, lv_pct(100));
+
+    // Age / method
+    s_ntp_age_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_age_lbl, "Source: --");
+    lv_obj_set_style_text_font(s_ntp_age_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_age_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_ntp_age_lbl, lv_pct(100));
+
+    // Uncertainty
+    s_ntp_uncert_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_uncert_lbl, "Uncertainty: --");
+    lv_obj_set_style_text_font(s_ntp_uncert_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_uncert_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_ntp_uncert_lbl, lv_pct(100));
+
+    // Request count
+    s_ntp_req_lbl = lv_label_create(cont);
+    lv_label_set_text(s_ntp_req_lbl, "NTP requests: 0");
+    lv_obj_set_style_text_font(s_ntp_req_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_ntp_req_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_ntp_req_lbl, lv_pct(100));
+
+    // Retry is shown only after a network startup failure.
+    s_ntp_retry_btn = lv_btn_create(cont);
+    lv_obj_set_size(s_ntp_retry_btn, lv_pct(80), 32);
+    lv_obj_add_flag(s_ntp_retry_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *retry_lbl = lv_label_create(s_ntp_retry_btn);
+    lv_label_set_text(retry_lbl, "Retry WiFi");
+    lv_obj_center(retry_lbl);
+    lv_obj_add_event_cb(s_ntp_retry_btn, ntp_clock_retry_cb, LV_EVENT_CLICKED, NULL);
+
+    // Exit button
+    lv_obj_t *exit_btn = lv_btn_create(cont);
+    lv_obj_set_size(exit_btn, lv_pct(80), 36);
+    lv_obj_set_style_bg_color(exit_btn, lv_color_hex(0xD32F2F), 0);
+    lv_obj_set_style_radius(exit_btn, 6, 0);
+    lv_obj_t *exit_lbl = lv_label_create(exit_btn);
+    lv_label_set_text(exit_lbl, "Exit NTP Clock");
+    lv_obj_set_style_text_color(exit_lbl, lv_color_white(), 0);
+    lv_obj_center(exit_lbl);
+    lv_obj_add_event_cb(exit_btn, ntp_clock_exit_cb, LV_EVENT_CLICKED, NULL);
+
+    // Start 1 Hz UI update timer
+    s_ntp_ui_timer = lv_timer_create(ntp_clock_ui_timer_cb, 1000, NULL);
+
+    // Start WiFi/mDNS/NTP in background task
+    s_ntp_wifi_connected = false;
+    s_ntp_wifi_failed = false;
+    s_ntp_ip_str[0] = '\0';
+    xTaskCreate(ntp_wifi_startup_task, "ntp_wifi", 4096, NULL, 5, &s_ntp_wifi_task);
+}
+
+// ── Clock Settings screen (Settings -> Clock, WS-C5-28 only) ────────────────
+
+static lv_obj_t *s_clk_offset_lbl = NULL;
+static lv_obj_t *s_clk_bright_slider = NULL;
+
+static void clock_settings_save_cb(lv_event_t *e)
+{
+    (void)e;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_i16(h, NVS_KEY_CLK_OFFSET, g_clock_offset_minutes);
+        nvs_set_u8(h, NVS_KEY_CLK_BRIGHT, g_ntp_clock_brightness_pct);
+        nvs_commit(h);
+        nvs_close(h);
+        ESP_LOGI(TAG, "Clock settings saved: offset=%d min, brightness=%u%%",
+                 g_clock_offset_minutes, g_ntp_clock_brightness_pct);
+    }
+    show_settings_screen();
+}
+
+static void clock_offset_inc_cb(lv_event_t *e)
+{
+    (void)e;
+    if (g_clock_offset_minutes < 840) {
+        g_clock_offset_minutes += 15;
+        if (s_clk_offset_lbl) {
+            char buf[24];
+            int h = g_clock_offset_minutes / 60;
+            int m = abs(g_clock_offset_minutes % 60);
+            snprintf(buf, sizeof(buf), "UTC%+d:%02d", h, m);
+            lv_label_set_text(s_clk_offset_lbl, buf);
+        }
+    }
+}
+
+static void clock_offset_dec_cb(lv_event_t *e)
+{
+    (void)e;
+    if (g_clock_offset_minutes > -720) {
+        g_clock_offset_minutes -= 15;
+        if (s_clk_offset_lbl) {
+            char buf[24];
+            int h = g_clock_offset_minutes / 60;
+            int m = abs(g_clock_offset_minutes % 60);
+            snprintf(buf, sizeof(buf), "UTC%+d:%02d", h, m);
+            lv_label_set_text(s_clk_offset_lbl, buf);
+        }
+    }
+}
+
+static void clock_bright_slider_cb(lv_event_t *e)
+{
+    lv_obj_t *slider = lv_event_get_target(e);
+    g_ntp_clock_brightness_pct = (uint8_t)lv_slider_get_value(slider);
+}
+
+static void clock_settings_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    nvs_settings_load();
+    show_settings_screen();
+}
+
+static void show_clock_settings_screen(void)
+{
+    create_function_page_base("Clock Settings");
+    apply_menu_bg();
+
+    int ver = lv_disp_get_ver_res(NULL);
+    lv_obj_t *cont = lv_obj_create(function_page);
+    lv_obj_set_size(cont, lv_pct(100), ver - 34);
+    lv_obj_align(cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cont, 0, 0);
+    lv_obj_set_style_pad_all(cont, 8, 0);
+    lv_obj_set_style_pad_gap(cont, 6, 0);
+    lv_obj_set_flex_flow(cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(cont, LV_SCROLLBAR_MODE_AUTO);
+
+    // Display offset section
+    lv_obj_t *off_title = lv_label_create(cont);
+    lv_label_set_text(off_title, "Display UTC Offset");
+    lv_obj_set_style_text_font(off_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(off_title, ui_text_color(), 0);
+
+    // Offset row: [-] [value] [+]
+    lv_obj_t *off_row = lv_obj_create(cont);
+    lv_obj_set_size(off_row, lv_pct(100), 36);
+    lv_obj_set_style_bg_opa(off_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(off_row, 0, 0);
+    lv_obj_set_style_pad_all(off_row, 0, 0);
+    lv_obj_set_flex_flow(off_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(off_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t *dec_btn = lv_btn_create(off_row);
+    lv_obj_set_size(dec_btn, 40, 30);
+    lv_obj_t *dec_lbl = lv_label_create(dec_btn);
+    lv_label_set_text(dec_lbl, "-");
+    lv_obj_set_style_text_color(dec_lbl, lv_color_white(), 0);
+    lv_obj_center(dec_lbl);
+    lv_obj_add_event_cb(dec_btn, clock_offset_dec_cb, LV_EVENT_CLICKED, NULL);
+
+    s_clk_offset_lbl = lv_label_create(off_row);
+    char obuf[24];
+    int h_off = g_clock_offset_minutes / 60;
+    int m_off = abs(g_clock_offset_minutes % 60);
+    snprintf(obuf, sizeof(obuf), "UTC%+d:%02d", h_off, m_off);
+    lv_label_set_text(s_clk_offset_lbl, obuf);
+    lv_obj_set_style_text_font(s_clk_offset_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_clk_offset_lbl, ui_text_color(), 0);
+    lv_obj_set_style_pad_hor(s_clk_offset_lbl, 12, 0);
+
+    lv_obj_t *inc_btn = lv_btn_create(off_row);
+    lv_obj_set_size(inc_btn, 40, 30);
+    lv_obj_t *inc_lbl = lv_label_create(inc_btn);
+    lv_label_set_text(inc_lbl, "+");
+    lv_obj_set_style_text_color(inc_lbl, lv_color_white(), 0);
+    lv_obj_center(inc_lbl);
+    lv_obj_add_event_cb(inc_btn, clock_offset_inc_cb, LV_EVENT_CLICKED, NULL);
+
+    // Brightness section
+    lv_obj_t *br_title = lv_label_create(cont);
+    lv_label_set_text(br_title, "NTP Clock Brightness");
+    lv_obj_set_style_text_font(br_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(br_title, ui_text_color(), 0);
+
+    s_clk_bright_slider = lv_slider_create(cont);
+    lv_obj_set_width(s_clk_bright_slider, lv_pct(90));
+    lv_slider_set_range(s_clk_bright_slider, 10, 100);
+    lv_slider_set_value(s_clk_bright_slider, g_ntp_clock_brightness_pct, LV_ANIM_OFF);
+    lv_obj_add_event_cb(s_clk_bright_slider, clock_bright_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // Read-only status: RTC and GPS source
+    lv_obj_t *status_title = lv_label_create(cont);
+    lv_label_set_text(status_title, "Time Status");
+    lv_obj_set_style_text_font(status_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(status_title, ui_text_color(), 0);
+
+    cym_time_snapshot_t snap = {0};
+    cym_timekeeper_snapshot(&snap);
+
+    lv_obj_t *src_lbl = lv_label_create(cont);
+    char sbuf[48];
+    snprintf(sbuf, sizeof(sbuf), "Source: %s", cym_timekeeper_source_name(snap.source));
+    lv_label_set_text(src_lbl, sbuf);
+    lv_obj_set_style_text_font(src_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(src_lbl, ui_text_color(), 0);
+
+    lv_obj_t *rtc_lbl = lv_label_create(cont);
+    lv_label_set_text(rtc_lbl, snap.rtc_valid ? "RTC: Valid" : "RTC: Invalid");
+    lv_obj_set_style_text_font(rtc_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(rtc_lbl, ui_text_color(), 0);
+
+    // Save / Cancel buttons
+    lv_obj_t *btn_row = lv_obj_create(cont);
+    lv_obj_set_size(btn_row, lv_pct(100), 40);
+    lv_obj_set_style_bg_opa(btn_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(btn_row, 0, 0);
+    lv_obj_set_style_pad_all(btn_row, 0, 0);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(btn_row, 10, 0);
+
+    lv_obj_t *save_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(save_btn, 90, 32);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x4CAF50), 0);
+    lv_obj_t *save_lbl = lv_label_create(save_btn);
+    lv_label_set_text(save_lbl, "Save Clock");
+    lv_obj_set_style_text_color(save_lbl, lv_color_white(), 0);
+    lv_obj_center(save_lbl);
+    lv_obj_add_event_cb(save_btn, clock_settings_save_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *cancel_btn = lv_btn_create(btn_row);
+    lv_obj_set_size(cancel_btn, 90, 32);
+    lv_obj_set_style_bg_color(cancel_btn, lv_color_hex(0x757575), 0);
+    lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
+    lv_label_set_text(cancel_lbl, "Cancel");
+    lv_obj_set_style_text_color(cancel_lbl, lv_color_white(), 0);
+    lv_obj_center(cancel_lbl);
+    lv_obj_add_event_cb(cancel_btn, clock_settings_cancel_cb, LV_EVENT_CLICKED, NULL);
+}
+#endif // CONFIG_BOARD_WS_C5_28
+
 static void show_settings_screen(void)
 {
     create_function_page_base("Settings");
@@ -27709,6 +28369,9 @@ static void show_settings_screen(void)
     create_tile(tiles, MY_SYMBOL_SERVER,         "Data\nTransfer",     lv_color_hex(0xE91E63),  settings_tile_event_cb, "Data Transfer");
 #if CONFIG_BOARD_HAS_VIBRATOR
     create_tile(tiles, LV_SYMBOL_AUDIO,          "Vibrator\nTest",     lv_color_hex(0x9C27B0),  settings_tile_event_cb, "Vibrator Test");
+#endif
+#if defined(CONFIG_BOARD_WS_C5_28)
+    create_tile(tiles, MY_SYMBOL_CLOCK,          "Clock",              lv_color_hex(0x00897B),  settings_tile_event_cb, "Clock");
 #endif
 
     lv_obj_t *ver = lv_label_create(function_page);
@@ -40394,9 +41057,23 @@ static esp_err_t init_gps_uart(void)
 	return ESP_OK;
 }
 
+static bool nmea_checksum_valid(const char *sentence)
+{
+    if (!sentence || sentence[0] != '$') return false;
+    const char *star = strchr(sentence, '*');
+    if (!star || star - sentence < 2 || !star[1] || !star[2]) return false;
+    uint8_t checksum = 0;
+    for (const char *p = sentence + 1; p < star; ++p) checksum ^= (uint8_t)*p;
+    char hex[3] = { star[1], star[2], '\0' };
+    char *end = NULL;
+    unsigned long expected = strtoul(hex, &end, 16);
+    return end == hex + 2 && checksum == (uint8_t)expected;
+}
+
 static bool parse_gps_nmea(const char *nmea_sentence)
 {
 	if (!nmea_sentence || strlen(nmea_sentence) < 10) return false;
+    if (!nmea_checksum_valid(nmea_sentence)) return false;
 	// Parse GPGGA or GNGGA for fix
 	if (strncmp(nmea_sentence, "$GPGGA", 6) == 0 || strncmp(nmea_sentence, "$GNGGA", 6) == 0) {
 		char sentence[256];
@@ -40503,37 +41180,30 @@ static bool parse_gps_nmea(const char *nmea_sentence)
 		}
 
 		if (status == 'A' && yr > 0) {
-			// Sync if clock looks wrong (year < 2024) or we haven't synced yet.
-			// Re-checked every RMC so late GPS fixes correct files written before first lock.
-			static bool s_gps_synced = false;
-			time_t now = time(NULL);
-			struct tm now_utc;
-			gmtime_r(&now, &now_utc);
-			bool clock_wrong = (now_utc.tm_year + 1900 < 2024);
-			if (clock_wrong || !s_gps_synced) {
-				struct tm t = {0};
-				t.tm_year  = 100 + yr; // 2000+yr, minus 1900
-				t.tm_mon   = mon - 1;
-				t.tm_mday  = day;
-				t.tm_hour  = hh;
-				t.tm_min   = mm;
-				t.tm_sec   = ss;
-				t.tm_isdst = 0;
-				setenv("TZ", "UTC0", 1);
-				tzset();
-				time_t epoch = mktime(&t);
-				if (epoch != (time_t)-1) {
-					struct timeval tv = { .tv_sec = epoch, .tv_usec = 0 };
-					settimeofday(&tv, NULL);
-					if (!s_gps_synced) {
-						s_gps_synced = true;
-						ESP_LOGI(TAG, "System clock synced from GPS: %04d-%02d-%02d %02d:%02d:%02d UTC",
-						         2000+yr, mon, day, hh, mm, ss);
-					}
-				}
-			}
+            struct tm t = {0};
+            t.tm_year = 100 + yr;
+            t.tm_mon = mon - 1;
+            t.tm_mday = day;
+            t.tm_hour = hh;
+            t.tm_min = mm;
+            t.tm_sec = ss;
+            t.tm_isdst = 0;
+            time_t epoch = timegm(&t);
+            if (epoch != (time_t)-1) {
+#if defined(CONFIG_BOARD_WS_C5_28)
+                cym_timekeeper_note_gps_present(true);
+#endif
+#if defined(CONFIG_BOARD_WS_C5_28)
+                cym_timekeeper_observe_gps_utc(epoch, esp_timer_get_time());
+#endif
+            }
 			return true;
 		}
+        if (status == 'V') {
+#if defined(CONFIG_BOARD_WS_C5_28)
+            cym_timekeeper_note_gps_present(true);
+#endif
+        }
 	}
 	return false;
 }
@@ -42975,6 +43645,9 @@ static void show_cat_tools(void)
     if (g_rf_hat_enabled)
         create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
+#if defined(CONFIG_BOARD_WS_C5_28)
+    create_tile(tiles, MY_SYMBOL_CLOCK, "NTP\nClock", lv_color_hex(0x00897B), main_tile_event_cb, "NTP Clock Modern");
+#endif
 }
 
 static void category_tile_event_cb(lv_event_t *e)

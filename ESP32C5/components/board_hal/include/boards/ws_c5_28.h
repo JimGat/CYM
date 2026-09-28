@@ -60,6 +60,9 @@
 #define BOARD_I2C_SDA        0
 #define BOARD_I2C_SCL        1
 
+// ── PCF85063A RTC (battery-backed, on shared I2C bus) ────────────────────────
+#define BOARD_RTC_I2C_ADDR   0x51
+
 // ── RF-HAT control signals via JST 12-pin SH1.0 connector ────────────────────
 // GPIO2 → RF-HAT signal A (replaces NM-CYD-C5's GPIO8)
 // GPIO3 → RF-HAT signal B (replaces NM-CYD-C5's GPIO9)
