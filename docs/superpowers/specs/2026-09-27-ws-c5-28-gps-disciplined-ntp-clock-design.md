@@ -368,7 +368,7 @@ Classic:
 
 Modern:
 
-- the Wi-Fi category contains `NTP Clock` and launches the same operating mode;
+- `Tools & System` contains `NTP Clock` and launches the same operating mode;
 - the Settings path contains `Clock` and launches the same settings screen; and
 - Back returns to the correct Modern category rather than assuming Classic tile ancestry.
 
