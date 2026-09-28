@@ -173,9 +173,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "lwip/sockets.h"
 #include "esp_netif.h"
 #include "esp_netif_net_stack.h"
-#if defined(CONFIG_BOARD_WS_C5_28)
 #include "esp_netif_sntp.h"
-#endif
 
 // TLS (WPA-SEC upload)
 #include "esp_tls.h"
@@ -198,7 +196,9 @@ LV_IMG_DECLARE(deedee_img);
 #include "ot_survey.h"
 #include "cym_timekeeper.h"
 #include "cym_ntp_server.h"
+#if BOARD_TIME_HAS_MDNS
 #include "mdns.h"
+#endif
 #include "wh_detect.h"
 #include "ble_honeypair.h"
 #include "chameleon_ble.h"
@@ -865,12 +865,12 @@ static inline float cc1101_freq_cal(float mhz) {
 
 static void nvs_save_cc1101_offset(void);   // forward — implemented near HW test screen
 
-// ── NTP Clock state (WS-C5-28 only) ─────────────────────────────────────────
-#if defined(CONFIG_BOARD_WS_C5_28)
+// ── Universal capability-aware Clock state ──────────────────────────────────
 typedef enum {
-    NTP_NETWORK_CLIENT = 0,
-    NTP_NETWORK_AP,
-} ntp_network_mode_t;
+    CLOCK_MODE_DISPLAY_ONLY = 0,
+    CLOCK_MODE_CLIENT_NTP,
+    CLOCK_MODE_AP_NTP,
+} clock_mode_t;
 
 typedef enum {
     NTP_PUBLIC_IDLE = 0,
@@ -882,7 +882,7 @@ typedef enum {
 } ntp_public_state_t;
 
 static volatile bool s_ntp_clock_active = false;
-static ntp_network_mode_t s_ntp_network_mode = NTP_NETWORK_CLIENT;
+static clock_mode_t s_clock_mode = CLOCK_MODE_DISPLAY_ONLY;
 static volatile ntp_public_state_t s_ntp_public_state = NTP_PUBLIC_IDLE;
 static int16_t  g_clock_offset_minutes = 0;   // display UTC offset (-720..+840)
 static uint8_t  g_ntp_clock_brightness_pct = 100;
@@ -899,6 +899,8 @@ static lv_obj_t *s_ntp_uncert_lbl = NULL;
 static lv_obj_t *s_ntp_req_lbl = NULL;
 static lv_obj_t *s_ntp_offset_lbl = NULL;
 static lv_obj_t *s_ntp_network_lbl = NULL;
+static lv_obj_t *s_clock_reliability_lbl = NULL;
+static lv_obj_t *s_clock_caps_lbl = NULL;
 static lv_obj_t *s_ntp_mode_popup = NULL;
 static TaskHandle_t s_ntp_wifi_task = NULL;
 static volatile bool s_ntp_wifi_connected = false;
@@ -914,11 +916,11 @@ static bool s_ntp_udp_ok = false;
 static bool s_ntp_pending_after_wifi = false;
 static void (*s_ntp_return_fn)(void) = NULL;
 static lv_obj_t *s_ntp_retry_btn = NULL;
-static void show_ntp_clock_screen(void);
-static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void));
+static void show_clock_screen(void);
+static void show_clock_mode_popup(void);
+static void show_clock_or_mode_prompt(void (*return_fn)(void));
 static void show_clock_settings_screen(void);
-static void ntp_clock_stop(void);
-#endif
+static void clock_stop(void);
 
 // Wardrive band selection
 typedef enum { WD_BAND_BOTH = 0, WD_BAND_24G, WD_BAND_5G } wd_band_t;
@@ -4527,7 +4529,6 @@ static void nvs_settings_load(void)
                      (double)g_gps_last_known.latitude, (double)g_gps_last_known.longitude,
                      (double)GPS_STALE_ACCURACY_M);
         }
-#if defined(CONFIG_BOARD_WS_C5_28)
         {
             int16_t co = 0;
             if (nvs_get_i16(h, NVS_KEY_CLK_OFFSET, &co) == ESP_OK &&
@@ -4540,7 +4541,6 @@ static void nvs_settings_load(void)
                 g_ntp_clock_brightness_pct = cb;
             }
         }
-#endif
         nvs_close(h);
         ESP_LOGI(TAG, "NVS settings loaded: timeout=%ldms, brightness=%u%%, scan=%u-%ums, dark=%d, max_power=%d, gatt_tmo=%ums",
                  (long)screen_timeout_ms, screen_brightness_pct, scan_time_min_ms, scan_time_max_ms,
@@ -17374,12 +17374,10 @@ static void main_tile_event_cb(lv_event_t *e)
 
     if (strcmp(tile_name, "WiFi Menu") == 0) {
         show_wifi_menu_screen();
-#if defined(CONFIG_BOARD_WS_C5_28)
-    } else if (strcmp(tile_name, "NTP Clock Classic") == 0) {
-        show_ntp_clock_or_wifi_prompt(show_main_tiles);
-    } else if (strcmp(tile_name, "NTP Clock Modern") == 0) {
-        show_ntp_clock_or_wifi_prompt(show_cat_tools);
-#endif
+    } else if (strcmp(tile_name, "Clock Classic") == 0) {
+        show_clock_or_mode_prompt(show_main_tiles);
+    } else if (strcmp(tile_name, "Clock Modern") == 0) {
+        show_clock_or_mode_prompt(show_cat_tools);
     } else if (strcmp(tile_name, "WiFi Scan & Attack") == 0) {
         show_wifi_scan_attack_screen();
     } else if (strcmp(tile_name, "Global WiFi Attacks") == 0) {
@@ -17696,9 +17694,7 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_SHIELD,      "Detect &\nDefend", lv_color_hex(0x1B5E20), main_tile_event_cb, "Detect & Defend");
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
-#if defined(CONFIG_BOARD_WS_C5_28)
-    create_tile(tiles_container, MY_SYMBOL_CLOCK, "NTP\nClock", lv_color_hex(0x00897B), main_tile_event_cb, "NTP Clock Classic");
-#endif
+    create_tile(tiles_container, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Classic");
     // Go Dark moved from a home tile to the top-bar power button (title_bar, far-right).
     create_tile(tiles_container, MY_SYMBOL_SITEMAP,     "IOT/OT",       lv_color_hex(0x00695C), main_tile_event_cb, "IOT/OT");
     // NFC/RFID Hub — always visible; works with RF-HAT PN532 (DIP 3) or standalone breakout on CN1
@@ -22480,7 +22476,7 @@ static void s_fileserv_poll_ip_cb(lv_timer_t *t)
 #if defined(CONFIG_BOARD_WS_C5_28)
         if (s_ntp_pending_after_wifi) {
             s_ntp_pending_after_wifi = false;
-            show_ntp_clock_screen();
+            show_clock_screen();
             return;
         }
 #endif
@@ -27673,10 +27669,8 @@ static void settings_tile_event_cb(lv_event_t *e)
         show_gps_info_screen();
     } else if (strcmp(tile_name, "Hardware Options") == 0) {
         show_hardware_options_screen();
-#if defined(CONFIG_BOARD_WS_C5_28)
     } else if (strcmp(tile_name, "Clock") == 0) {
         show_clock_settings_screen();
-#endif
 #if CONFIG_BOARD_HAS_VIBRATOR
     } else if (strcmp(tile_name, "Vibrator Test") == 0) {
         show_vibrator_test_popup();
@@ -27797,9 +27791,8 @@ static void show_home_layout_popup(void)
 }
 
 // ============================================================================
-// NTP Clock — WS-C5-28 only: GPS-disciplined NTP server dashboard
+// Universal Clock: offline display, client sync, and local AP NTP service
 // ============================================================================
-#if defined(CONFIG_BOARD_WS_C5_28)
 
 static bool ntp_station_has_dhcp(void)
 {
@@ -27809,7 +27802,7 @@ static bool ntp_station_has_dhcp(void)
     return esp_netif_get_ip_info(sta, &ip) == ESP_OK && ip.ip.addr != 0;
 }
 
-static void ntp_mode_popup_close(void)
+static void clock_mode_popup_close(void)
 {
     if (s_ntp_mode_popup && lv_obj_is_valid(s_ntp_mode_popup)) {
         lv_obj_del(s_ntp_mode_popup);
@@ -27817,38 +27810,46 @@ static void ntp_mode_popup_close(void)
     s_ntp_mode_popup = NULL;
 }
 
-static void ntp_mode_client_cb(lv_event_t *e)
+static void clock_mode_display_cb(lv_event_t *e)
 {
     (void)e;
-    ntp_mode_popup_close();
-    s_ntp_network_mode = NTP_NETWORK_CLIENT;
+    clock_mode_popup_close();
+    s_clock_mode = CLOCK_MODE_DISPLAY_ONLY;
+    show_clock_screen();
+}
+
+static void clock_mode_client_cb(lv_event_t *e)
+{
+    (void)e;
+    clock_mode_popup_close();
+    s_clock_mode = CLOCK_MODE_CLIENT_NTP;
     if (!ntp_station_has_dhcp()) {
         s_ntp_pending_after_wifi = true;
         show_wifi_client_server_screen();
         return;
     }
-    show_ntp_clock_screen();
+    show_clock_screen();
 }
 
-static void ntp_mode_ap_cb(lv_event_t *e)
+static void clock_mode_ap_cb(lv_event_t *e)
 {
     (void)e;
-    ntp_mode_popup_close();
-    s_ntp_network_mode = NTP_NETWORK_AP;
-    show_ntp_clock_screen();
+    clock_mode_popup_close();
+    s_clock_mode = CLOCK_MODE_AP_NTP;
+    show_clock_screen();
 }
 
-static void ntp_mode_cancel_cb(lv_event_t *e)
+static void clock_mode_cancel_cb(lv_event_t *e)
 {
     (void)e;
-    ntp_mode_popup_close();
+    clock_mode_popup_close();
 }
 
-static void show_ntp_network_mode_popup(void)
+static void show_clock_mode_popup(void)
 {
-    ntp_mode_popup_close();
+    clock_mode_popup_close();
     s_ntp_mode_popup = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(s_ntp_mode_popup, 280, 210);
+    lv_obj_set_size(s_ntp_mode_popup, 280, 250);
     lv_obj_center(s_ntp_mode_popup);
     lv_obj_set_style_bg_color(s_ntp_mode_popup, ui_bg_color(), 0);
     lv_obj_set_style_border_color(s_ntp_mode_popup, UI_ACCENT_CYAN, 0);
@@ -27861,24 +27862,25 @@ static void show_ntp_network_mode_popup(void)
     lv_obj_set_style_pad_gap(s_ntp_mode_popup, 6, 0);
 
     lv_obj_t *title = lv_label_create(s_ntp_mode_popup);
-    lv_label_set_text(title, "NTP Network Mode");
+    lv_label_set_text(title, "Clock Mode");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(title, COLOR_MATERIAL_TEAL, 0);
 
     lv_obj_t *hint = lv_label_create(s_ntp_mode_popup);
-    lv_label_set_text(hint, "Client uses LAN/Internet. AP serves offline.");
+    lv_label_set_text(hint, "Display stays offline. Client may use Internet. AP serves locally.");
     lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(hint, lv_pct(100));
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
 
-    const char *names[] = { "Client Mode", "AP Mode", "Cancel" };
-    lv_event_cb_t callbacks[] = { ntp_mode_client_cb, ntp_mode_ap_cb, ntp_mode_cancel_cb };
-    for (int i = 0; i < 3; i++) {
+    const char *names[] = { "Display Only", "Client NTP", "AP NTP", "Cancel" };
+    lv_event_cb_t callbacks[] = { clock_mode_display_cb, clock_mode_client_cb,
+                                  clock_mode_ap_cb, clock_mode_cancel_cb };
+    for (int i = 0; i < 4; i++) {
         lv_obj_t *btn = lv_btn_create(s_ntp_mode_popup);
         lv_obj_set_size(btn, lv_pct(88), 36);
-        lv_obj_set_style_bg_color(btn, i == 2 ? lv_color_hex(0x616161) : ui_accent_color(), 0);
+        lv_obj_set_style_bg_color(btn, i == 3 ? lv_color_hex(0x616161) : ui_accent_color(), 0);
         lv_obj_add_event_cb(btn, callbacks[i], LV_EVENT_CLICKED, NULL);
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, names[i]);
@@ -27887,25 +27889,27 @@ static void show_ntp_network_mode_popup(void)
     }
 }
 
-static void show_ntp_clock_or_wifi_prompt(void (*return_fn)(void))
+static void show_clock_or_mode_prompt(void (*return_fn)(void))
 {
     s_ntp_return_fn = return_fn;
-    show_ntp_network_mode_popup();
+    show_clock_mode_popup();
 }
 
 static void ntp_start_mdns_and_server(void)
 {
     s_ntp_mdns_ok = false;
+#if BOARD_TIME_HAS_MDNS
     if (mdns_init() == ESP_OK) {
         if (mdns_hostname_set("cym-ntp") == ESP_OK) {
             mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
             s_ntp_mdns_ok = true;
         }
     }
+#endif
     s_ntp_udp_ok = (cym_ntp_server_start() == ESP_OK);
 }
 
-static void ntp_try_public_sync(void)
+static void clock_try_public_sync(void)
 {
     cym_time_snapshot_t before = {0};
     bool have_before = cym_timekeeper_snapshot(&before);
@@ -27996,14 +28000,14 @@ static bool ntp_start_ap_mode(void)
     return true;
 }
 
-static void ntp_wifi_startup_task(void *arg)
+static void clock_wifi_task(void *arg)
 {
     (void)arg;
     s_ntp_wifi_connected = false;
     s_ntp_wifi_failed = false;
     s_ntp_public_state = NTP_PUBLIC_IDLE;
 
-    if (s_ntp_network_mode == NTP_NETWORK_AP) {
+    if (s_clock_mode == CLOCK_MODE_AP_NTP) {
         if (!ntp_start_ap_mode()) s_ntp_wifi_failed = true;
         s_ntp_wifi_task = NULL;
         vTaskDelete(NULL);
@@ -28065,14 +28069,14 @@ static void ntp_wifi_startup_task(void *arg)
     // Serve immediately; public synchronization is bounded recovery.
     ntp_start_mdns_and_server();
     s_ntp_wifi_connected = true;
-    ntp_try_public_sync();
+    clock_try_public_sync();
 
     s_ntp_wifi_task = NULL;
     vTaskDelete(NULL);
 }
 
 // 1 Hz UI update timer for NTP Clock dashboard
-static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
+static void clock_ui_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
     if (!s_ntp_clock_active) return;
@@ -28089,6 +28093,7 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
             case CYM_TIME_GPS_ACQUIRING: badge = "ACQUIRING"; break;
             case CYM_TIME_RTC_HOLDOVER:  badge = "RTC HOLDOVER"; break;
             case CYM_TIME_NETWORK_SYNC:  badge = "PUBLIC NTP"; break;
+            case CYM_TIME_RTOS_HOLDOVER:  badge = "RTOS HOLDOVER"; break;
             default: break;
             }
         }
@@ -28132,7 +28137,7 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
     if (s_ntp_ip_lbl) {
         if (s_ntp_wifi_connected && s_ntp_ip_str[0]) {
             char ibuf[40];
-            snprintf(ibuf, sizeof(ibuf), s_ntp_network_mode == NTP_NETWORK_AP ?
+            snprintf(ibuf, sizeof(ibuf), s_clock_mode == CLOCK_MODE_AP_NTP ?
                      "AP IP: %s" : "DHCP IP: %s", s_ntp_ip_str);
             lv_label_set_text(s_ntp_ip_lbl, ibuf);
         } else if (s_ntp_wifi_failed) {
@@ -28143,7 +28148,9 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
     }
     if (s_ntp_network_lbl) {
         char nbuf[80];
-        if (s_ntp_network_mode == NTP_NETWORK_AP) {
+        if (s_clock_mode == CLOCK_MODE_DISPLAY_ONLY) {
+            snprintf(nbuf, sizeof(nbuf), "Display Only: offline");
+        } else if (s_clock_mode == CLOCK_MODE_AP_NTP) {
             snprintf(nbuf, sizeof(nbuf), "AP SSID: %s\nPassword: %s",
                      s_ntp_ap_ssid, NTP_AP_PASSWORD);
         } else {
@@ -28158,8 +28165,12 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
         lv_label_set_text(s_ntp_network_lbl, nbuf);
     }
     if (s_ntp_host_lbl) {
+#if BOARD_TIME_HAS_MDNS
         lv_label_set_text(s_ntp_host_lbl, s_ntp_mdns_ok ?
             "Hostname: cym-ntp.local" : "Hostname: mDNS failed");
+#else
+        lv_label_set_text(s_ntp_host_lbl, "Hostname: mDNS not available");
+#endif
     }
     if (s_ntp_service_lbl) {
         lv_label_set_text(s_ntp_service_lbl, s_ntp_udp_ok ?
@@ -28170,7 +28181,20 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
         else lv_obj_add_flag(s_ntp_retry_btn, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Age / uncertainty / requests
+    // Reliability, capabilities, age, uncertainty, and requests.
+    if (s_clock_reliability_lbl) {
+        char rbuf[64];
+        snprintf(rbuf, sizeof(rbuf), "Reliability: %s",
+                 have_snap ? cym_timekeeper_reliability_name(snap.reliability) : "Untrusted");
+        lv_label_set_text(s_clock_reliability_lbl, rbuf);
+    }
+    if (s_clock_caps_lbl) {
+        char cbuf[96];
+        snprintf(cbuf, sizeof(cbuf), "%s | %s",
+                 BOARD_TIME_HAS_RTC ? "RTC: fitted" : "RTC: not fitted",
+                 BOARD_TIME_HAS_GPS_UART ? "GPS: UART available" : "GPS: not supported");
+        lv_label_set_text(s_clock_caps_lbl, cbuf);
+    }
     if (s_ntp_age_lbl && have_snap) {
         char abuf[48];
         if (snap.source == CYM_TIME_GPS_LOCKED) {
@@ -28180,7 +28204,10 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
             snprintf(abuf, sizeof(abuf), "Holdover: %llus | RTC",
                      (unsigned long long)(snap.source_age_ms / 1000));
         } else if (snap.source == CYM_TIME_NETWORK_SYNC) {
-            snprintf(abuf, sizeof(abuf), "Pool sync age: %llus",
+            snprintf(abuf, sizeof(abuf), "Source age: %llus | Public NTP",
+                     (unsigned long long)(snap.source_age_ms / 1000));
+        } else if (snap.source == CYM_TIME_RTOS_HOLDOVER) {
+            snprintf(abuf, sizeof(abuf), "Source age: %llus | RTOS holdover",
                      (unsigned long long)(snap.source_age_ms / 1000));
         } else {
             snprintf(abuf, sizeof(abuf), "Source: --");
@@ -28190,10 +28217,11 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
     if (s_ntp_uncert_lbl && have_snap) {
         char ubuf[32];
         if (snap.uncertainty_us > 0) {
-            snprintf(ubuf, sizeof(ubuf), "Uncertainty: %lu ms",
-                     (unsigned long)(snap.uncertainty_us / 1000));
+            snprintf(ubuf, sizeof(ubuf), "Estimated uncertainty: %lu ms%s",
+                     (unsigned long)(snap.uncertainty_us / 1000),
+                     snap.estimate_characterized ? "" : " (estimated (unqualified))");
         } else {
-            snprintf(ubuf, sizeof(ubuf), "Uncertainty: --");
+            snprintf(ubuf, sizeof(ubuf), "Estimated uncertainty: --");
         }
         lv_label_set_text(s_ntp_uncert_lbl, ubuf);
     }
@@ -28206,36 +28234,38 @@ static void ntp_clock_ui_timer_cb(lv_timer_t *timer)
     }
 }
 
-static void ntp_clock_exit_cb(lv_event_t *e)
+static void clock_exit_cb(lv_event_t *e)
 {
     (void)e;
     void (*return_fn)(void) = s_ntp_return_fn;
-    ntp_clock_stop();
+    clock_stop();
     if (return_fn) return_fn();
 }
 
-static void ntp_clock_retry_cb(lv_event_t *e)
+static void clock_retry_cb(lv_event_t *e)
 {
     (void)e;
     if (!s_ntp_clock_active || s_ntp_wifi_task) return;
     void (*return_fn)(void) = s_ntp_return_fn;
-    ntp_clock_stop();
+    clock_stop();
     if (return_fn) return_fn();
     s_ntp_return_fn = return_fn;
-    show_ntp_network_mode_popup();
+    show_clock_mode_popup();
 }
 
-static void ntp_clock_stop(void)
+static void clock_stop(void)
 {
     if (!s_ntp_clock_active) return;
     s_ntp_clock_active = false;
     s_ntp_stopping = true;
 
-    // Stop NTP server
-    cym_ntp_server_stop();
-
-    // Stop only the mDNS instance started by this mode.
-    if (s_ntp_mdns_ok) mdns_free();
+    // Display Only never starts network resources.
+    if (s_clock_mode != CLOCK_MODE_DISPLAY_ONLY) {
+        cym_ntp_server_stop();
+#if BOARD_TIME_HAS_MDNS
+        if (s_ntp_mdns_ok) mdns_free();
+#endif
+    }
 
     // Delete UI timer
     if (s_ntp_ui_timer) { lv_timer_del(s_ntp_ui_timer); s_ntp_ui_timer = NULL; }
@@ -28252,10 +28282,10 @@ static void ntp_clock_stop(void)
         }
     }
 
-    // Leave the exclusive network mode cleanly.
-    if (s_ntp_network_mode == NTP_NETWORK_AP) {
+    // Leave only an explicitly entered network mode cleanly.
+    if (s_clock_mode == CLOCK_MODE_AP_NTP) {
         esp_wifi_set_mode(WIFI_MODE_STA);
-    } else {
+    } else if (s_clock_mode == CLOCK_MODE_CLIENT_NTP) {
         esp_wifi_disconnect();
     }
 #if CONFIG_BOARD_HAS_5GHZ
@@ -28274,6 +28304,8 @@ static void ntp_clock_stop(void)
     s_ntp_req_lbl = NULL;
     s_ntp_offset_lbl = NULL;
     s_ntp_network_lbl = NULL;
+    s_clock_reliability_lbl = NULL;
+    s_clock_caps_lbl = NULL;
     s_ntp_retry_btn = NULL;
 
     // Restore general brightness
@@ -28288,10 +28320,10 @@ static void ntp_clock_stop(void)
     s_ntp_ap_ssid[0] = '\0';
 }
 
-static void show_ntp_clock_screen(void)
+static void show_clock_screen(void)
 {
-    create_function_page_base("NTP Clock");
-    g_screen_stop_fn = ntp_clock_stop;
+    create_function_page_base("Clock");
+    g_screen_stop_fn = clock_stop;
     apply_menu_bg();
 
     s_ntp_clock_active = true;
@@ -28348,8 +28380,10 @@ static void show_ntp_clock_screen(void)
 
     // Network mode / public synchronization status
     s_ntp_network_lbl = lv_label_create(cont);
-    lv_label_set_text(s_ntp_network_lbl, s_ntp_network_mode == NTP_NETWORK_AP ?
-                      "AP: starting..." : "Public NTP: waiting for network");
+    lv_label_set_text(s_ntp_network_lbl,
+                      s_clock_mode == CLOCK_MODE_DISPLAY_ONLY ? "Display Only: offline" :
+                      (s_clock_mode == CLOCK_MODE_AP_NTP ? "AP: starting..." :
+                       "Public NTP: waiting for network"));
     lv_label_set_long_mode(s_ntp_network_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(s_ntp_network_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_ntp_network_lbl, COLOR_MATERIAL_TEAL, 0);
@@ -28357,8 +28391,10 @@ static void show_ntp_clock_screen(void)
 
     // DHCP or AP IP
     s_ntp_ip_lbl = lv_label_create(cont);
-    lv_label_set_text(s_ntp_ip_lbl, s_ntp_network_mode == NTP_NETWORK_AP ?
-                      "AP IP: starting..." : "DHCP IP: connecting...");
+    lv_label_set_text(s_ntp_ip_lbl,
+                      s_clock_mode == CLOCK_MODE_DISPLAY_ONLY ? "Network: OFFLINE" :
+                      (s_clock_mode == CLOCK_MODE_AP_NTP ? "AP IP: starting..." :
+                       "DHCP IP: connecting..."));
     lv_obj_set_style_text_font(s_ntp_ip_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_ntp_ip_lbl, ui_text_color(), 0);
     lv_obj_set_width(s_ntp_ip_lbl, lv_pct(100));
@@ -28377,16 +28413,31 @@ static void show_ntp_clock_screen(void)
     lv_obj_set_style_text_color(s_ntp_service_lbl, ui_text_color(), 0);
     lv_obj_set_width(s_ntp_service_lbl, lv_pct(100));
 
-    // Age / method
+    s_clock_reliability_lbl = lv_label_create(cont);
+    lv_label_set_text(s_clock_reliability_lbl, "Reliability: Untrusted");
+    lv_obj_set_style_text_font(s_clock_reliability_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_clock_reliability_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_clock_reliability_lbl, lv_pct(100));
+
+    s_clock_caps_lbl = lv_label_create(cont);
+    lv_label_set_text(s_clock_caps_lbl,
+                      BOARD_TIME_HAS_RTC ?
+                      (BOARD_TIME_HAS_GPS_UART ? "RTC: fitted | GPS: UART available" : "RTC: fitted | GPS: not supported") :
+                      (BOARD_TIME_HAS_GPS_UART ? "RTC: not fitted | GPS: UART available" : "RTC: not fitted | GPS: not supported"));
+    lv_obj_set_style_text_font(s_clock_caps_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_clock_caps_lbl, ui_text_color(), 0);
+    lv_obj_set_width(s_clock_caps_lbl, lv_pct(100));
+
+    // Source age / method
     s_ntp_age_lbl = lv_label_create(cont);
-    lv_label_set_text(s_ntp_age_lbl, "Source: --");
+    lv_label_set_text(s_ntp_age_lbl, "Source age: --");
     lv_obj_set_style_text_font(s_ntp_age_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_ntp_age_lbl, ui_text_color(), 0);
     lv_obj_set_width(s_ntp_age_lbl, lv_pct(100));
 
     // Uncertainty
     s_ntp_uncert_lbl = lv_label_create(cont);
-    lv_label_set_text(s_ntp_uncert_lbl, "Uncertainty: --");
+    lv_label_set_text(s_ntp_uncert_lbl, "Estimated uncertainty: -- (estimated (unqualified))");
     lv_obj_set_style_text_font(s_ntp_uncert_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_ntp_uncert_lbl, ui_text_color(), 0);
     lv_obj_set_width(s_ntp_uncert_lbl, lv_pct(100));
@@ -28405,7 +28456,7 @@ static void show_ntp_clock_screen(void)
     lv_obj_t *retry_lbl = lv_label_create(s_ntp_retry_btn);
     lv_label_set_text(retry_lbl, "Retry WiFi");
     lv_obj_center(retry_lbl);
-    lv_obj_add_event_cb(s_ntp_retry_btn, ntp_clock_retry_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(s_ntp_retry_btn, clock_retry_cb, LV_EVENT_CLICKED, NULL);
 
     // Exit button
     lv_obj_t *exit_btn = lv_btn_create(cont);
@@ -28413,22 +28464,24 @@ static void show_ntp_clock_screen(void)
     lv_obj_set_style_bg_color(exit_btn, lv_color_hex(0xD32F2F), 0);
     lv_obj_set_style_radius(exit_btn, 6, 0);
     lv_obj_t *exit_lbl = lv_label_create(exit_btn);
-    lv_label_set_text(exit_lbl, "Exit NTP Clock");
+    lv_label_set_text(exit_lbl, "Exit Clock");
     lv_obj_set_style_text_color(exit_lbl, lv_color_white(), 0);
     lv_obj_center(exit_lbl);
-    lv_obj_add_event_cb(exit_btn, ntp_clock_exit_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(exit_btn, clock_exit_cb, LV_EVENT_CLICKED, NULL);
 
     // Start 1 Hz UI update timer
-    s_ntp_ui_timer = lv_timer_create(ntp_clock_ui_timer_cb, 1000, NULL);
+    s_ntp_ui_timer = lv_timer_create(clock_ui_timer_cb, 1000, NULL);
 
-    // Start selected WiFi mode, mDNS, and NTP in a background task.
+    // Display Only is deliberately network-silent. Network modes start explicitly.
     s_ntp_wifi_connected = false;
     s_ntp_wifi_failed = false;
     s_ntp_ip_str[0] = '\0';
-    xTaskCreate(ntp_wifi_startup_task, "ntp_wifi", 4096, NULL, 5, &s_ntp_wifi_task);
+    if (s_clock_mode != CLOCK_MODE_DISPLAY_ONLY) {
+        xTaskCreate(clock_wifi_task, "clock_wifi", 4096, NULL, 5, &s_ntp_wifi_task);
+    }
 }
 
-// ── Clock Settings screen (Settings -> Clock, WS-C5-28 only) ────────────────
+// ── Universal Clock Settings screen ──────────────────────────────────────────
 
 static lv_obj_t *s_clk_offset_lbl = NULL;
 static lv_obj_t *s_clk_bright_slider = NULL;
@@ -28550,7 +28603,7 @@ static void show_clock_settings_screen(void)
 
     // Brightness section
     lv_obj_t *br_title = lv_label_create(cont);
-    lv_label_set_text(br_title, "NTP Clock Brightness");
+    lv_label_set_text(br_title, "Clock Brightness");
     lv_obj_set_style_text_font(br_title, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(br_title, ui_text_color(), 0);
 
@@ -28577,7 +28630,7 @@ static void show_clock_settings_screen(void)
     lv_obj_set_style_text_color(src_lbl, ui_text_color(), 0);
 
     lv_obj_t *rtc_lbl = lv_label_create(cont);
-    lv_label_set_text(rtc_lbl, snap.rtc_valid ? "RTC: Valid" : "RTC: Invalid");
+    lv_label_set_text(rtc_lbl, !snap.has_rtc ? "RTC: not fitted" : (snap.rtc_valid ? "RTC: Valid" : "RTC: Invalid"));
     lv_obj_set_style_text_font(rtc_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(rtc_lbl, ui_text_color(), 0);
 
@@ -28609,7 +28662,6 @@ static void show_clock_settings_screen(void)
     lv_obj_center(cancel_lbl);
     lv_obj_add_event_cb(cancel_btn, clock_settings_cancel_cb, LV_EVENT_CLICKED, NULL);
 }
-#endif // CONFIG_BOARD_WS_C5_28
 
 static void show_settings_screen(void)
 {
@@ -28639,9 +28691,7 @@ static void show_settings_screen(void)
 #if CONFIG_BOARD_HAS_VIBRATOR
     create_tile(tiles, LV_SYMBOL_AUDIO,          "Vibrator\nTest",     lv_color_hex(0x9C27B0),  settings_tile_event_cb, "Vibrator Test");
 #endif
-#if defined(CONFIG_BOARD_WS_C5_28)
     create_tile(tiles, MY_SYMBOL_CLOCK,          "Clock",              lv_color_hex(0x00897B),  settings_tile_event_cb, "Clock");
-#endif
 
     lv_obj_t *ver = lv_label_create(function_page);
     lv_label_set_text(ver, "LAB5 " FW_VERSION);
@@ -43912,9 +43962,7 @@ static void show_cat_tools(void)
     if (g_rf_hat_enabled)
         create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
-#if defined(CONFIG_BOARD_WS_C5_28)
-    create_tile(tiles, MY_SYMBOL_CLOCK, "NTP\nClock", lv_color_hex(0x00897B), main_tile_event_cb, "NTP Clock Modern");
-#endif
+    create_tile(tiles, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Modern");
 }
 
 static void category_tile_event_cb(lv_event_t *e)

@@ -81,6 +81,7 @@
 #define BOARD_TIME_RTOS_DRIFT_PPM             100
 #define BOARD_TIME_GPS_UNCERTAINTY_US         500000
 #define BOARD_TIME_NTP_UNCERTAINTY_US         250000
+#define BOARD_TIME_HAS_MDNS                   1
 #define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
 
 #define BOARD_NAME           "NM-CYD-C5"

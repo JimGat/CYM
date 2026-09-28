@@ -22,16 +22,16 @@ def section(start, end):
 
 class BoardProfileContract(unittest.TestCase):
     expected = {
-        "ws_c5_28.h": (1, 1, 50, 100, 500000, 250000),
-        "nm_cyd_c5.h": (0, 1, 0, 100, 500000, 250000),
-        "cyd2usb.h": (0, 0, 0, 150, 0, 250000),
-        "hosyond_s3_35.h": (0, 1, 0, 100, 500000, 250000),
+        "ws_c5_28.h": (1, 1, 50, 100, 500000, 250000, 1),
+        "nm_cyd_c5.h": (0, 1, 0, 100, 500000, 250000, 1),
+        "cyd2usb.h": (0, 0, 0, 150, 0, 250000, 0),
+        "hosyond_s3_35.h": (0, 1, 0, 100, 500000, 250000, 1),
     }
     symbols = (
         "BOARD_TIME_HAS_RTC", "BOARD_TIME_HAS_GPS_UART",
         "BOARD_TIME_RTC_DRIFT_PPM", "BOARD_TIME_RTOS_DRIFT_PPM",
         "BOARD_TIME_GPS_UNCERTAINTY_US", "BOARD_TIME_NTP_UNCERTAINTY_US",
-        "BOARD_TIME_ESTIMATE_CHARACTERIZED",
+        "BOARD_TIME_HAS_MDNS", "BOARD_TIME_ESTIMATE_CHARACTERIZED",
     )
 
     def _value(self, text, name):
@@ -106,9 +106,19 @@ class BuildIntegrationContract(unittest.TestCase):
         for rel in ("ESP32/main/CMakeLists.txt", "ESP32C5/main/CMakeLists.txt", "ESP32S3/main/CMakeLists.txt"):
             self.assertIn("cym_timekeeper", (ROOT / rel).read_text(), rel)
 
-    def test_all_application_manifests_depend_on_mdns(self):
-        for rel in ("ESP32/main/idf_component.yml", "ESP32C5/main/idf_component.yml", "ESP32S3/main/idf_component.yml"):
+    def test_sntp_header_is_universal(self):
+        include = '#include "esp_netif_sntp.h"'
+        self.assertIn(include, MAIN)
+        prefix = MAIN[max(0, MAIN.index(include) - 100):MAIN.index(include)]
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", prefix)
+
+    def test_mdns_is_omitted_from_constrained_cyd_build(self):
+        self.assertNotIn("espressif/mdns", (ROOT / "ESP32/main/idf_component.yml").read_text())
+        for rel in ("ESP32C5/main/idf_component.yml", "ESP32S3/main/idf_component.yml"):
             self.assertIn("espressif/mdns", (ROOT / rel).read_text(), rel)
+        include = '#include "mdns.h"'
+        prefix = MAIN[max(0, MAIN.index(include) - 100):MAIN.index(include)]
+        self.assertIn("BOARD_TIME_HAS_MDNS", prefix)
 
     def test_timekeeper_initializes_every_board(self):
         block = section("void app_main(void)", "// Main loop")
@@ -159,10 +169,11 @@ class ModeContract(unittest.TestCase):
 
 class DashboardContract(unittest.TestCase):
     def test_dashboard_has_truthful_status_fields(self):
-        block = section("static void show_clock_screen", "static void show_clock_settings_screen")
+        block = section("static void show_clock_screen(void)\n{", "static void show_clock_settings_screen")
         for label in ("Reliability", "Estimated uncertainty", "Source age", "RTC: not fitted", "GPS: not supported", "estimated (unqualified)"):
             self.assertIn(label, block)
-        self.assertIn("cym_timekeeper_reliability_name", block)
+        timer = section("static void clock_ui_timer_cb", "static void clock_exit_cb")
+        self.assertIn("cym_timekeeper_reliability_name", timer)
 
     def test_display_offset_is_presentation_only(self):
         block = section("static void clock_ui_timer_cb", "static void clock_exit_cb")
@@ -179,11 +190,15 @@ class NetworkLifecycleContract(unittest.TestCase):
         self.assertIn('ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org")', block)
 
     def test_ap_path_has_no_public_sntp(self):
-        block = section("static void clock_wifi_task", "static void clock_ui_timer_cb")
-        ap = block[block.index("CLOCK_MODE_AP_NTP"):]
-        self.assertIn("WIFI_MODE_AP", ap)
-        self.assertIn("cym_ntp_server_start", ap)
-        self.assertNotIn("ESP_NETIF_SNTP_DEFAULT_CONFIG", ap)
+        helper = section("static bool ntp_start_ap_mode", "static void clock_wifi_task")
+        task = section("static void clock_wifi_task", "static void clock_ui_timer_cb")
+        ap = task[task.index("CLOCK_MODE_AP_NTP"):task.index("if (g_saved_wifi_ssid")]
+        self.assertIn("WIFI_MODE_AP", helper)
+        self.assertIn("ntp_start_mdns_and_server", helper)
+        service = section("static void ntp_start_mdns_and_server", "static void clock_try_public_sync")
+        self.assertIn("cym_ntp_server_start", service)
+        self.assertIn("ntp_start_ap_mode", ap)
+        self.assertNotIn("ESP_NETIF_SNTP_DEFAULT_CONFIG", helper + ap)
 
 
 class SettingsContract(unittest.TestCase):
@@ -191,9 +206,10 @@ class SettingsContract(unittest.TestCase):
         load = section("static void nvs_settings_load(void)", "static void nvs_settings_save_timeout")
         self.assertIn("NVS_KEY_CLK_OFFSET", load)
         self.assertNotRegex(load, re.compile(r"CONFIG_BOARD_WS_C5_28.*?NVS_KEY_CLK_OFFSET", re.S))
-        routing = section("static void settings_tile_event_cb", "// Settings screen")
+        routing = section("static void settings_tile_event_cb(lv_event_t *e)\n{", "// Settings screen")
         self.assertIn('strcmp(tile_name, "Clock")', routing)
-        self.assertNotRegex(routing, re.compile(r"CONFIG_BOARD_WS_C5_28.*?strcmp\(tile_name, \"Clock\"", re.S))
+        clock_route = routing[routing.index('strcmp(tile_name, "Clock")') - 120:routing.index('strcmp(tile_name, "Clock")') + 160]
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", clock_route)
 
 
 class DocumentationContract(unittest.TestCase):

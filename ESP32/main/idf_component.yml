@@ -6,4 +6,3 @@ dependencies:
   lvgl/lvgl: '8.4.0'
   espressif/esp_lcd_touch: '1.1.2'
   espressif/esp_lcd_ili9341: '>=1.0.0'
-  espressif/mdns: '*'
