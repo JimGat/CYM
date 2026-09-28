@@ -93,6 +93,26 @@ class DetectDefendHarvesterContract(unittest.TestCase):
         self.assertIn("esp_wifi_set_channel", task)
         self.assertIn("ESP_OK", task)
 
+    def test_harvester_captures_frame_evidence_for_roaming_diagnosis(self):
+        cb = function_body("harv_promiscuous_cb")
+        timer = function_body("harv_ui_timer_cb")
+        self.assertIn("uint8_t  subtype;", SOURCE)
+        self.assertIn("uint16_t reason;", SOURCE)
+        self.assertIn("bool     protected_frame;", SOURCE)
+        self.assertRegex(cb, r"f\[1\]\s*&\s*0x40")
+        self.assertIn('"protected"', timer)
+        self.assertIn("uint8_t  direction;", SOURCE)
+        self.assertIn("uint8_t  dst[6];", SOURCE)
+        self.assertIn("pkt->rx_ctrl.channel", cb)
+        self.assertRegex(cb, r"f\[24\].*f\[25\].*<<\s*8")
+        self.assertIn("HARV_DIR_AP_TO_BROADCAST", cb)
+        self.assertIn("HARV_DIR_AP_TO_CLIENT", cb)
+        self.assertIn("HARV_DIR_CLIENT_TO_AP", cb)
+        self.assertIn('"deauth"', timer)
+        self.assertIn('"disassoc"', timer)
+        self.assertIn("reason", timer)
+        self.assertIn("dst", timer)
+
     def test_stop_waits_for_callback_quiescence_and_reentry_is_guarded(self):
         stop = function_body("harvester_detector_stop")
         show = function_body("show_harvester_detector_screen")

@@ -43557,11 +43557,23 @@ static void show_pwnagotchi_detector_screen(void)
 // one-off management frames do not remain on screen as current activity. Alert state
 // already uses a 5s active window; this only prunes persistent rows and counts.
 #define HARV_AGE_MS 60000
+typedef enum {
+    HARV_DIR_UNKNOWN = 0,
+    HARV_DIR_AP_TO_BROADCAST,
+    HARV_DIR_AP_TO_CLIENT,
+    HARV_DIR_CLIENT_TO_AP,
+} harv_direction_t;
+
 typedef struct {
     uint8_t  bssid[6];    // observed AP (Address3 of the deauth/disassoc frame)
+    uint8_t  dst[6];      // receiver/destination (Address1)
     uint32_t hits;        // deauth+disassoc frames seen against this AP
     int8_t   rssi;        // last received deauth/disassoc frame RSSI
-    uint8_t  channel;
+    uint8_t  channel;     // actual RX channel from packet metadata
+    uint8_t  subtype;     // 0xC0 deauth, 0xA0 disassociation
+    uint8_t  direction;   // harv_direction_t, inferred from BSSID/TA/RA
+    uint16_t reason;      // IEEE 802.11 reason code from unprotected frame body
+    bool     protected_frame; // PMF body is protected; reason cannot be decoded here
     uint32_t first_ms;
     uint32_t last_ms;
 } harv_rec_t;
@@ -43629,6 +43641,21 @@ static volatile int  s_harv_evt_head = 0;
 static const int HARV_CH_2G[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };
 static const int HARV_CH_2G_N = (int)(sizeof(HARV_CH_2G) / sizeof(HARV_CH_2G[0]));
 
+static const char *harv_subtype_name(uint8_t subtype)
+{
+    return subtype == 0xC0 ? "deauth" : "disassoc";
+}
+
+static const char *harv_direction_name(uint8_t direction)
+{
+    switch ((harv_direction_t)direction) {
+        case HARV_DIR_AP_TO_BROADCAST: return "AP->broadcast";
+        case HARV_DIR_AP_TO_CLIENT:    return "AP->client";
+        case HARV_DIR_CLIENT_TO_AP:    return "client->AP";
+        default:                       return "unknown";
+    }
+}
+
 static void harv_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
 {
     if (type != WIFI_PKT_MGMT) return;
@@ -43651,6 +43678,9 @@ static void harv_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     portEXIT_CRITICAL(&s_harv_mux);
 
     int8_t rssi = pkt->rx_ctrl.rssi;
+    uint8_t rx_channel = pkt->rx_ctrl.channel;
+    if (rx_channel < 1 || rx_channel > 13) rx_channel = (uint8_t)channel;
+    channel = rx_channel;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     if (is_assoc) {
         const uint8_t *sa = &f[10], *tb = &f[16];
@@ -43690,9 +43720,19 @@ static void harv_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         else if(pnew) ESP_LOGI(TAG,"[DETECT&DEFEND] Assoc activity from %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm",sa[0],sa[1],sa[2],sa[3],sa[4],sa[5],channel,rssi);
         goto done;
     }
-    const uint8_t *bssid=&f[16];
+    if (len < 26) goto done;
+    const uint8_t *dst = &f[4], *src = &f[10], *bssid = &f[16];
     if((bssid[0]&1)||!(bssid[0]|bssid[1]|bssid[2]|bssid[3]|bssid[4]|bssid[5])) goto done;
-    bool is_new=false;
+    bool protected_frame = (f[1] & 0x40) != 0;
+    uint16_t reason = protected_frame ? 0 : (uint16_t)f[24] | ((uint16_t)f[25] << 8);
+    harv_direction_t direction = HARV_DIR_UNKNOWN;
+    bool is_broadcast = true;
+    for (int i = 0; i < 6; i++) if (dst[i] != 0xFF) { is_broadcast = false; break; }
+    if (!memcmp(src, bssid, 6))
+        direction = is_broadcast ? HARV_DIR_AP_TO_BROADCAST : HARV_DIR_AP_TO_CLIENT;
+    else if (!memcmp(dst, bssid, 6))
+        direction = HARV_DIR_CLIENT_TO_AP;
+    bool is_new=false, evidence_changed=false;
     portENTER_CRITICAL(&s_harv_mux);
     if(s_harv_locate&&!memcmp(bssid,s_harv_loc_bssid,6)){
         s_harv_loc_rssi=!s_harv_loc_found?rssi:(int8_t)(((int)s_harv_loc_rssi+rssi)/2);
@@ -43701,10 +43741,16 @@ static void harv_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
     s_harv_evt[s_harv_evt_head]=now;s_harv_evt_head=(s_harv_evt_head+1)%HARV_EVT;
     int idx=-1;for(int i=0;i<s_harv_count;i++)if(!memcmp(s_harv[i].bssid,bssid,6)){idx=i;break;}
     if(idx<0){is_new=true;if(s_harv_count<HARV_MAX)idx=s_harv_count++;else{int oldest=0;for(int i=1;i<HARV_MAX;i++)if((uint32_t)(now-s_harv[i].last_ms)>(uint32_t)(now-s_harv[oldest].last_ms))oldest=i;idx=oldest;}memset(&s_harv[idx],0,sizeof(s_harv[idx]));memcpy(s_harv[idx].bssid,bssid,6);s_harv[idx].first_ms=now;}
-    s_harv[idx].hits++;s_harv[idx].rssi=rssi;s_harv[idx].channel=(uint8_t)channel;s_harv[idx].last_ms=now;s_harv_dirty=true;
+    evidence_changed = is_new || s_harv[idx].subtype != sub || s_harv[idx].reason != reason ||
+                       s_harv[idx].protected_frame != protected_frame ||
+                       s_harv[idx].direction != (uint8_t)direction || memcmp(s_harv[idx].dst, dst, 6);
+    s_harv[idx].hits++;s_harv[idx].rssi=rssi;s_harv[idx].channel=(uint8_t)channel;
+    s_harv[idx].subtype=sub;s_harv[idx].reason=reason;s_harv[idx].protected_frame=protected_frame;
+    s_harv[idx].direction=(uint8_t)direction;memcpy(s_harv[idx].dst,dst,6);
+    s_harv[idx].last_ms=now;s_harv_dirty=true;
     if(!s_harv_park_started||(uint32_t)(now-s_harv_park_started)>=HARV_PARK_COOLDOWN_MS){s_harv_park_chan=channel;s_harv_park_started=now;s_harv_park_until=now+HARV_PARK_MS;}
     portEXIT_CRITICAL(&s_harv_mux);
-    if(is_new)ESP_LOGI(TAG,"[DETECT&DEFEND] Deauth/disassoc activity for AP %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm",bssid[0],bssid[1],bssid[2],bssid[3],bssid[4],bssid[5],channel,rssi);
+    if(evidence_changed){char reason_text[16];if(protected_frame)snprintf(reason_text,sizeof(reason_text),"protected");else snprintf(reason_text,sizeof(reason_text),"%u",(unsigned)reason);ESP_LOGI(TAG,"[DETECT&DEFEND] %s AP %02X:%02X:%02X:%02X:%02X:%02X ch%d %ddBm dir=%s dst=%02X:%02X:%02X:%02X:%02X:%02X reason=%s",harv_subtype_name(sub),bssid[0],bssid[1],bssid[2],bssid[3],bssid[4],bssid[5],channel,rssi,harv_direction_name((uint8_t)direction),dst[0],dst[1],dst[2],dst[3],dst[4],dst[5],reason_text);}
 done:
     portENTER_CRITICAL(&s_harv_mux);if(s_harv_cb_inflight)s_harv_cb_inflight--;portEXIT_CRITICAL(&s_harv_mux);
 }
@@ -43814,7 +43860,7 @@ static void harv_ui_timer_cb(lv_timer_t *t)
     }
     if(s_harv_list&&lv_obj_is_valid(s_harv_list)){
         if(n!=s_harv_built_n||m!=s_harv_built_m){lv_obj_clean(s_harv_list);for(int i=0;i<n+m;i++){bool probe=i>=n;lv_obj_t *row=lv_obj_create(s_harv_list);lv_obj_set_width(row,lv_pct(100));lv_obj_set_height(row,LV_SIZE_CONTENT);lv_obj_set_style_bg_color(row,ui_bg_color(),0);lv_obj_set_style_border_width(row,0,0);lv_obj_set_style_pad_all(row,3,0);lv_obj_clear_flag(row,LV_OBJ_FLAG_SCROLLABLE);if(!probe){lv_obj_set_style_bg_color(row,lv_color_lighten(ui_bg_color(),25),LV_STATE_PRESSED);lv_obj_add_flag(row,LV_OBJ_FLAG_CLICKABLE);lv_obj_add_event_cb(row,harv_row_tap_cb,LV_EVENT_CLICKED,(void*)(intptr_t)i);}lv_obj_t *lbl=lv_label_create(row);lv_obj_set_width(lbl,lv_pct(100));lv_label_set_long_mode(lbl,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(lbl,&lv_font_montserrat_12,0);lv_obj_set_style_text_color(lbl,probe?lv_color_make(0xE0,0x90,0x20):ui_text_color(),0);}s_harv_built_n=n;s_harv_built_m=m;}
-        for(int i=0;i<n;i++){lv_obj_t *row=lv_obj_get_child(s_harv_list,i),*lbl=row?lv_obj_get_child(row,0):NULL;if(!lbl)continue;char b[96];snprintf(b,sizeof(b),"AP %02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm x%lu %lus ago",snap[i].bssid[0],snap[i].bssid[1],snap[i].bssid[2],snap[i].bssid[3],snap[i].bssid[4],snap[i].bssid[5],snap[i].channel,snap[i].rssi,(unsigned long)snap[i].hits,(unsigned long)((now-snap[i].last_ms)/1000));lv_label_set_text(lbl,b);}
+        for(int i=0;i<n;i++){lv_obj_t *row=lv_obj_get_child(s_harv_list,i),*lbl=row?lv_obj_get_child(row,0):NULL;if(!lbl)continue;char b[160],reason_text[24];const char *kind=snap[i].subtype==0xC0?"deauth":"disassoc";const char *dir=harv_direction_name(snap[i].direction);if(snap[i].protected_frame)snprintf(reason_text,sizeof(reason_text),"protected");else snprintf(reason_text,sizeof(reason_text),"%u",(unsigned)snap[i].reason);snprintf(b,sizeof(b),"AP %02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm x%lu %lus ago  %s reason %s\n%s  dst %02X:%02X:%02X:%02X:%02X:%02X",snap[i].bssid[0],snap[i].bssid[1],snap[i].bssid[2],snap[i].bssid[3],snap[i].bssid[4],snap[i].bssid[5],snap[i].channel,snap[i].rssi,(unsigned long)snap[i].hits,(unsigned long)((now-snap[i].last_ms)/1000),kind,reason_text,dir,snap[i].dst[0],snap[i].dst[1],snap[i].dst[2],snap[i].dst[3],snap[i].dst[4],snap[i].dst[5]);lv_label_set_text(lbl,b);}
         for(int j=0;j<m;j++){lv_obj_t *row=lv_obj_get_child(s_harv_list,n+j),*lbl=row?lv_obj_get_child(row,0):NULL;if(!lbl)continue;char b[112];snprintf(b,sizeof(b),"SRC %02X:%02X:%02X:%02X:%02X:%02X\nch%d %ddBm assoc:%lu %uAP/60s %lus ago",psnap[j].mac[0],psnap[j].mac[1],psnap[j].mac[2],psnap[j].mac[3],psnap[j].mac[4],psnap[j].mac[5],psnap[j].channel,psnap[j].rssi,(unsigned long)psnap[j].hits,(unsigned)psnap[j].seen_count,(unsigned long)((now-psnap[j].last_ms)/1000));lv_label_set_text(lbl,b);}
     }
 }
