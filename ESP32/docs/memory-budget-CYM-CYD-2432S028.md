@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.38 |
+| Version | v2.15.39 |
 | Build date | 2026-09-29 |
 | .iram0.text | 103,267 B (100.8 KB) |
 | .dram0.data | 26,467 B (25.8 KB) |
 | .dram0.bss  (internal) | 97,000 B (94.7 KB) |
 | .ext_ram.bss  (PSRAM) | 0 B |
-| App binary size | 2,725,152 B (2661.3 KB) |
+| App binary size | 2,725,344 B (2661.5 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,7 +24,7 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 63,451 B (62.0 KB) |
+| `libmain.a` | 63,452 B (62.0 KB) |
 | `libnet80211.a` | 9,857 B (9.6 KB) |
 | `liblwip.a` | 4,147 B (4.0 KB) |
 | `libwifi_scanner.a` | 3,949 B (3.9 KB) |

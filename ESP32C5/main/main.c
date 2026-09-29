@@ -22473,13 +22473,11 @@ static void s_fileserv_poll_ip_cb(lv_timer_t *t)
         lv_timer_del(t);
         s_fileserv_poll_timer = NULL;
 
-#if defined(CONFIG_BOARD_WS_C5_28)
         if (s_ntp_pending_after_wifi) {
             s_ntp_pending_after_wifi = false;
             show_clock_screen();
             return;
         }
-#endif
 
         if (s_wpasec_pending_after_wifi) {
             s_wpasec_pending_after_wifi = false;
@@ -22570,9 +22568,7 @@ static void fileserv_stop(void)
     s_fileserv_httpd_stop();
     s_wdup_pending_after_wifi = false;    /* consumed on any exit */
     s_wpasec_pending_after_wifi = false;
-#if defined(CONFIG_BOARD_WS_C5_28)
     s_ntp_pending_after_wifi = false;
-#endif
 }
 
 /* AP File Server variant: also bring the soft-AP fully down. fileserv_stop() alone
@@ -22929,9 +22925,7 @@ static void show_wifi_client_server_screen(void)
     log_heap_stats("fileserv-screen-open");
     const char *page_title = (s_wdup_pending_after_wifi || s_wpasec_pending_after_wifi)
                            ? "WiFi for Upload" : "WiFi File Server";
-#if defined(CONFIG_BOARD_WS_C5_28)
     if (s_ntp_pending_after_wifi) page_title = "WiFi for NTP Clock";
-#endif
     create_function_page_base(page_title);
     apply_menu_bg();
     g_screen_stop_fn = fileserv_stop;  /* top ‹ Back / Home stops the client + HTTP server */
@@ -22939,9 +22933,7 @@ static void show_wifi_client_server_screen(void)
        ‹ Back back to it; the normal "WiFi File Server" resolves Data Transfer via nav stack. */
     if (s_wdup_pending_after_wifi)         g_screen_back_fn = show_wardrive_upload_screen;
     else if (s_wpasec_pending_after_wifi)  g_screen_back_fn = show_data_transfer_screen;
-#if defined(CONFIG_BOARD_WS_C5_28)
     else if (s_ntp_pending_after_wifi)     g_screen_back_fn = s_ntp_return_fn;
-#endif
 
     lv_obj_t *content = lv_obj_create(function_page);
     lv_obj_set_size(content, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 50);

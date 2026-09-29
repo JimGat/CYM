@@ -163,6 +163,17 @@ class ModeContract(unittest.TestCase):
         for forbidden in ("esp_wifi_", "esp_netif_", "esp_sntp_", "mdns_", "cym_ntp_server_start"):
             self.assertNotIn(forbidden, block)
 
+    def test_client_wifi_handoff_is_universal(self):
+        poll = section("static void s_fileserv_poll_ip_cb", "static void fileserv_stop")
+        self.assertIn("s_ntp_pending_after_wifi", poll)
+        self.assertIn("show_clock_screen();", poll)
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", poll)
+
+        wifi_screen = section("static void show_wifi_client_server_screen(void)\n{", "static void wdup_push_msg")
+        self.assertIn('"WiFi for NTP Clock"', wifi_screen)
+        self.assertIn("s_ntp_return_fn", wifi_screen)
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", wifi_screen)
+
     def test_mode_is_not_persisted(self):
         self.assertNotRegex(MAIN, r'NVS_KEY_[A-Z_]*CLOCK_MODE|nvs_set_\w+\([^\n]*clock_mode')
 
@@ -223,11 +234,11 @@ class DocumentationContract(unittest.TestCase):
 
 
 class ReleaseVersionContract(unittest.TestCase):
-    def test_all_release_versions_are_v21538(self):
+    def test_all_release_versions_are_v21539(self):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.38")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.39")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v2.15.38", (ROOT / rel).read_text(), rel)
+            self.assertIn("v2.15.39", (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":
