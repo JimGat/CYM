@@ -243,7 +243,7 @@ class MainIntegrationContract(unittest.TestCase):
         self.assertIn("cym-ntp", MAIN)
 
     def test_screen_stop_fn_registered(self):
-        self.assertIn("ntp_clock_stop", MAIN)
+        self.assertIn("clock_stop", MAIN)
 
 
 class ClockSettingsContract(unittest.TestCase):
@@ -289,23 +289,22 @@ class NTPClockDashboardContract(unittest.TestCase):
         """Classic path exposes NTP Clock directly on its home grid."""
         main = MAIN[MAIN.index("static void show_main_tiles(void)\n{"):
                     MAIN.index("// ── WiFi Scan paginated list renderer")]
-        self.assertIn("#if defined(CONFIG_BOARD_WS_C5_28)", main)
-        self.assertIn('"NTP\\nClock"', main)
-        self.assertIn('"NTP Clock Classic"', main)
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", main)
+        self.assertIn('"Clock"', main)
+        self.assertIn('"Clock Classic"', main)
         wifi = MAIN[MAIN.index("static void show_wifi_menu_screen(void)\n{"):
                     MAIN.index("// WiFi Sniff & Karma screen")]
         self.assertNotIn('"NTP Clock Classic"', wifi)
 
     def test_ntp_clock_tile_in_cat_tools(self):
-        """Modern path: Tools & System -> NTP Clock."""
-        pattern = re.compile(
-            r'show_cat_tools.*?#if\s+defined\(CONFIG_BOARD_WS_C5_28\).*?"NTP',
-            re.S,
-        )
-        self.assertRegex(MAIN, pattern)
+        """Modern path: Tools & System -> universal Clock."""
+        start = MAIN.rindex("static void show_cat_tools(void)\n{")
+        tools = MAIN[start:MAIN.index("static void category_tile_event_cb", start)]
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", tools)
+        self.assertIn('"Clock Modern"', tools)
 
     def test_exit_control(self):
-        self.assertRegex(MAIN, r"[Ee]xit.*NTP|ntp.*[Ee]xit")
+        self.assertIn("Exit Clock", MAIN)
 
     def test_udp_123_status(self):
         self.assertIn("UDP/123", MAIN)
@@ -421,32 +420,32 @@ class NTPClockBehaviorContract(unittest.TestCase):
 
     def test_classic_home_has_exact_board_gated_tile(self):
         menu = self._section("static void show_main_tiles(void)\n{", "// ── WiFi Scan paginated list renderer")
-        self.assertIn("#if defined(CONFIG_BOARD_WS_C5_28)", menu)
-        self.assertIn('"NTP\\nClock"', menu)
-        self.assertIn('"NTP Clock Classic"', menu)
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", menu)
+        self.assertIn('"Clock"', menu)
+        self.assertIn('"Clock Classic"', menu)
 
     def test_modern_tools_has_exact_board_gated_tile(self):
         menu = self._section("static void show_cat_tools(void)\n{", "static void category_tile_event_cb")
-        self.assertIn("#if defined(CONFIG_BOARD_WS_C5_28)", menu)
-        self.assertIn('"NTP\\nClock"', menu)
-        self.assertIn('"NTP Clock Modern"', menu)
+        self.assertNotIn("CONFIG_BOARD_WS_C5_28", menu)
+        self.assertIn('"Clock"', menu)
+        self.assertIn('"Clock Modern"', menu)
 
     def test_callbacks_route_clock_and_both_ntp_parents(self):
         main_cb = self._section("static void main_tile_event_cb(lv_event_t *e)\n{", "// Attack tile event callback")
         settings_cb = self._section("static void settings_tile_event_cb(lv_event_t *e)\n{", "// Settings screen")
-        self.assertIn('strcmp(tile_name, "NTP Clock Classic")', main_cb)
-        self.assertIn('strcmp(tile_name, "NTP Clock Modern")', main_cb)
-        self.assertIn("show_ntp_clock_or_wifi_prompt", main_cb)
+        self.assertIn('strcmp(tile_name, "Clock Classic")', main_cb)
+        self.assertIn('strcmp(tile_name, "Clock Modern")', main_cb)
+        self.assertIn("show_clock_or_mode_prompt", main_cb)
         self.assertIn('strcmp(tile_name, "Clock")', settings_cb)
         self.assertIn("show_clock_settings_screen();", settings_cb)
 
     def test_exit_and_retry_are_functional(self):
-        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
-        self.assertIn("ntp_clock_retry_cb", block)
+        block = self._section("// Universal Clock: offline display, client sync, and local AP NTP service", "static void show_settings_screen(void)")
+        self.assertIn("clock_retry_cb", block)
         self.assertIn("Retry WiFi", block)
         self.assertIn("s_ntp_return_fn", block)
-        exit_cb = self._section("static void ntp_clock_exit_cb", "static void ntp_clock_stop")
-        self.assertIn("ntp_clock_stop();", exit_cb)
+        exit_cb = self._section("static void clock_exit_cb", "static void clock_stop")
+        self.assertIn("clock_stop();", exit_cb)
         self.assertIn("return_fn();", exit_cb)
 
     def test_screen_settings_home_labels_use_visible_teal(self):
@@ -456,14 +455,14 @@ class NTPClockBehaviorContract(unittest.TestCase):
         self.assertIn("lv_obj_set_style_text_color(screen_home_4cat_radio, COLOR_MATERIAL_TEAL, 0);", screen)
 
     def test_ntp_uses_shared_wifi_prompt_until_dhcp(self):
-        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        block = self._section("// Universal Clock: offline display, client sync, and local AP NTP service", "static void show_settings_screen(void)")
         self.assertIn("s_ntp_pending_after_wifi", MAIN)
         self.assertIn('"WiFi for NTP Clock"', MAIN)
-        self.assertIn("show_ntp_clock_or_wifi_prompt", block)
+        self.assertIn("show_clock_or_mode_prompt", block)
         self.assertIn("esp_netif_get_ip_info", block)
         poll = self._section("static void s_fileserv_poll_ip_cb", "static void fileserv_stop")
         self.assertIn("s_ntp_pending_after_wifi", poll)
-        self.assertIn("show_ntp_clock_screen();", poll)
+        self.assertIn("show_clock_screen();", poll)
         wifi_screen = self._section("static void show_wifi_client_server_screen(void)\n{", "/* SSID label */")
         self.assertIn("s_ntp_return_fn", wifi_screen)
 
@@ -487,19 +486,20 @@ class NTPClockBehaviorContract(unittest.TestCase):
         self.assertIn("portENTER_CRITICAL", src)
 
     def test_ntp_launch_always_prompts_for_network_mode(self):
-        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
-        self.assertIn("show_ntp_network_mode_popup", block)
-        self.assertIn('"Client Mode"', block)
-        self.assertIn('"AP Mode"', block)
+        block = self._section("// Universal Clock: offline display, client sync, and local AP NTP service", "static void show_settings_screen(void)")
+        self.assertIn("show_clock_mode_popup", block)
+        self.assertIn('"Client NTP"', block)
+        self.assertIn('"AP NTP"', block)
+        self.assertIn('"Display Only"', block)
         self.assertIn('"Cancel"', block)
-        start = MAIN.rfind("static void show_ntp_clock_or_wifi_prompt")
+        start = MAIN.rfind("static void show_clock_or_mode_prompt")
         end = MAIN.find("static void ntp_start_mdns_and_server", start)
         launcher = MAIN[start:end]
-        self.assertIn("show_ntp_network_mode_popup", launcher)
+        self.assertIn("show_clock_mode_popup", launcher)
         self.assertNotIn("ntp_station_has_dhcp()", launcher)
 
     def test_ntp_client_public_sync_is_bounded_and_updates_timekeeper(self):
-        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        block = self._section("// Universal Clock: offline display, client sync, and local AP NTP service", "static void show_settings_screen(void)")
         self.assertIn('ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org")', block)
         self.assertIn("#define NTP_PUBLIC_SYNC_TIMEOUT_MS 5000", MAIN)
         self.assertIn("#define NTP_RTC_REPAIR_THRESHOLD_SEC 5", MAIN)
@@ -512,7 +512,7 @@ class NTPClockBehaviorContract(unittest.TestCase):
         self.assertIn("NTP_PUBLIC_SKIPPED_GPS", block)
 
     def test_ntp_ap_mode_serves_without_public_internet(self):
-        block = self._section("// NTP Clock — WS-C5-28 only", "static void show_settings_screen(void)")
+        block = self._section("// Universal Clock: offline display, client sync, and local AP NTP service", "static void show_settings_screen(void)")
         self.assertIn("WIFI_MODE_AP", block)
         self.assertIn("WIFI_AUTH_WPA2_PSK", block)
         self.assertIn('"CYM-NTP-%02X%02X%02X"', block)
