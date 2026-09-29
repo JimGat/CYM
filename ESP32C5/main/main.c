@@ -901,6 +901,7 @@ static lv_obj_t *s_ntp_offset_lbl = NULL;
 static lv_obj_t *s_ntp_network_lbl = NULL;
 static lv_obj_t *s_clock_reliability_lbl = NULL;
 static lv_obj_t *s_clock_caps_lbl = NULL;
+static lv_obj_t *s_clock_maidenhead_lbl = NULL;
 static lv_obj_t *s_ntp_mode_popup = NULL;
 static TaskHandle_t s_ntp_wifi_task = NULL;
 static volatile bool s_ntp_wifi_connected = false;
@@ -9750,6 +9751,16 @@ void app_main(void)
         } else if (g_gps_save_pending) {
             g_gps_save_pending = false;
             nvs_save_last_gps(&g_gps_last_known);
+        }
+
+        // Flush timekeeper trust from main_task, whose stack is internal RAM.
+        // Never perform nvs_commit() from the PSRAM-backed GPS task.
+        {
+            static uint8_t timekeeper_persist_divider = 0;
+            if (++timekeeper_persist_divider >= 100) {  // about once per second
+                timekeeper_persist_divider = 0;
+                cym_timekeeper_flush_pending_persistence();
+            }
         }
         
 #if defined(NRF24_BENCH) && defined(CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS)
@@ -28067,6 +28078,35 @@ static void clock_wifi_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static bool maidenhead6(double lat, double lon, char out[7])
+{
+    if (!out || !isfinite(lat) || !isfinite(lon) ||
+        lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0) {
+        return false;
+    }
+
+    // Keep exact upper boundaries inside the final valid subsquare.
+    if (lat == 90.0) lat = nextafter(90.0, -INFINITY);
+    if (lon == 180.0) lon = nextafter(180.0, -INFINITY);
+
+    double x = lon + 180.0;
+    double y = lat + 90.0;
+    out[0] = 'A' + (int)(x / 20.0);
+    out[1] = 'A' + (int)(y / 10.0);
+
+    x = fmod(x, 20.0);
+    y = fmod(y, 10.0);
+    out[2] = '0' + (int)(x / 2.0);
+    out[3] = '0' + (int)y;
+
+    x = fmod(x, 2.0);
+    y = fmod(y, 1.0);
+    out[4] = 'a' + (int)(x * 12.0);
+    out[5] = 'a' + (int)(y * 24.0);
+    out[6] = '\0';
+    return true;
+}
+
 // 1 Hz UI update timer for NTP Clock dashboard
 static void clock_ui_timer_cb(lv_timer_t *timer)
 {
@@ -28114,6 +28154,19 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         char dbuf[32];
         snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d", dt.tm_year + 1900, dt.tm_mon + 1, dt.tm_mday);
         lv_label_set_text(s_ntp_date_lbl, dbuf);
+    }
+    if (s_clock_maidenhead_lbl) {
+        char grid[7];
+        if (current_gps.valid &&
+            maidenhead6(current_gps.latitude, current_gps.longitude, grid)) {
+            char gbuf[24];
+            snprintf(gbuf, sizeof(gbuf), "Grid: %s", grid);
+            lv_label_set_text(s_clock_maidenhead_lbl, gbuf);
+        } else {
+            lv_label_set_text(s_clock_maidenhead_lbl,
+                              BOARD_TIME_HAS_GPS_UART ?
+                              "Grid: waiting for GPS fix" : "Grid: unavailable");
+        }
     }
 
     // Offset label
@@ -28298,6 +28351,7 @@ static void clock_stop(void)
     s_ntp_network_lbl = NULL;
     s_clock_reliability_lbl = NULL;
     s_clock_caps_lbl = NULL;
+    s_clock_maidenhead_lbl = NULL;
     s_ntp_retry_btn = NULL;
 
     // Restore general brightness
@@ -28361,6 +28415,16 @@ static void show_clock_screen(void)
     lv_obj_set_style_text_color(s_ntp_date_lbl, ui_text_color(), 0);
     lv_obj_set_style_text_align(s_ntp_date_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(s_ntp_date_lbl, lv_pct(100));
+
+    // Six-character Maidenhead locator from the current live GPS fix.
+    s_clock_maidenhead_lbl = lv_label_create(cont);
+    lv_label_set_text(s_clock_maidenhead_lbl,
+                      BOARD_TIME_HAS_GPS_UART ?
+                      "Grid: waiting for GPS fix" : "Grid: unavailable");
+    lv_obj_set_style_text_font(s_clock_maidenhead_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_clock_maidenhead_lbl, UI_ACCENT_CYAN, 0);
+    lv_obj_set_style_text_align(s_clock_maidenhead_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_clock_maidenhead_lbl, lv_pct(100));
 
     // Offset label
     s_ntp_offset_lbl = lv_label_create(cont);

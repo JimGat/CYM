@@ -61,6 +61,11 @@ esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us);
 esp_err_t cym_timekeeper_observe_network_utc(time_t epoch, int64_t rx_monotonic_us,
                                                   bool repair_rtc);
 
+// Flush a pending RTC-trust record from an internal-RAM task such as main_task.
+// GPS observation only marks persistence pending because its task stack is in
+// PSRAM and cannot safely survive the cache-disabled interval of nvs_commit().
+esp_err_t cym_timekeeper_flush_pending_persistence(void);
+
 // Inform the timekeeper whether GPS UART traffic is present.
 void cym_timekeeper_note_gps_present(bool present);
 

@@ -192,6 +192,21 @@ class DashboardContract(unittest.TestCase):
         self.assertNotIn("settimeofday", block)
         self.assertNotIn("cym_timekeeper_observe", block)
 
+    def test_clock_shows_six_character_maidenhead_grid_below_time(self):
+        helper = section("static bool maidenhead6", "static void clock_ui_timer_cb")
+        for token in ("lon + 180.0", "lat + 90.0", "x / 20.0", "y / 10.0",
+                      "x / 2.0", "x * 12.0", "y * 24.0", "out[6] = '\\0'"):
+            self.assertIn(token, helper)
+
+        timer = section("static void clock_ui_timer_cb", "static void clock_exit_cb")
+        for token in ("s_clock_maidenhead_lbl", "current_gps.valid",
+                      "current_gps.latitude", "current_gps.longitude", '"Grid: %s"'):
+            self.assertIn(token, timer)
+
+        dashboard = section("static void show_clock_screen(void)\n{", "static void show_clock_settings_screen")
+        self.assertLess(dashboard.index("s_ntp_date_lbl ="), dashboard.index("s_clock_maidenhead_lbl ="))
+        self.assertLess(dashboard.index("s_clock_maidenhead_lbl ="), dashboard.index("s_ntp_offset_lbl ="))
+
 
 class NetworkLifecycleContract(unittest.TestCase):
     def test_client_sync_is_bounded_and_disciplines_timekeeper(self):
@@ -229,16 +244,16 @@ class DocumentationContract(unittest.TestCase):
         self.assertTrue(p.exists())
         text = p.read_text()
         self.assertIn("Timing values are conservative uncharacterized engineering estimates, not measured accuracy.", text)
-        for value in ("Display Only", "Client NTP", "AP NTP", "WS-C5-28", "NM-CYD-C5", "CYD-2432S028", "Hosyond ES3C35P"):
+        for value in ("Display Only", "Client NTP", "AP NTP", "Maidenhead", "WS-C5-28", "NM-CYD-C5", "CYD-2432S028", "Hosyond ES3C35P"):
             self.assertIn(value, text)
 
 
 class ReleaseVersionContract(unittest.TestCase):
-    def test_all_release_versions_are_v21539(self):
+    def test_all_release_versions_are_v21540(self):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.39")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.40")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v2.15.39", (ROOT / rel).read_text(), rel)
+            self.assertIn("v2.15.40", (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

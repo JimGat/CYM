@@ -117,6 +117,20 @@ class TimekeeperComponentContract(unittest.TestCase):
         self.assertRegex(src, r"600|RTC_WRITE_INTERVAL|rtc_write_interval",
                          "Must rate-limit RTC writes (~600s)")
 
+    def test_gps_task_defers_flash_persistence_to_main_task(self):
+        """GPS uses a PSRAM stack, so it must never call NVS flash writes directly."""
+        header = _read_if_exists(TK_HEADER)
+        src = _read_if_exists(TK_SRC)
+        main = MAIN
+        self.assertIn("cym_timekeeper_flush_pending_persistence", header)
+        start = src.index("static void write_rtc_if_due")
+        end = src.index("// ── Public API", start)
+        rtc_write = src[start:end]
+        self.assertIn("s_persist_pending", rtc_write)
+        self.assertNotIn("persist_trust()", rtc_write)
+        self.assertNotIn("persist_trust_values", rtc_write)
+        self.assertIn("cym_timekeeper_flush_pending_persistence();", main)
+
     def test_timekeeper_uncertainty_initial(self):
         """GPS-locked UART uncertainty starts at 500ms (500000 us)."""
         src = _read_if_exists(TK_SRC)
@@ -538,7 +552,7 @@ class NTPClockBehaviorContract(unittest.TestCase):
 
     def test_all_release_soc_versions_match_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.39")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.40")', (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

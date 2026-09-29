@@ -80,18 +80,23 @@ static bool s_rtc_ever_written = false;
 // PCF85063A handle (NULL if no RTC on this board)
 static pcf85063_handle_t s_rtc = {0};
 static bool s_has_rtc = false;
+static bool s_persist_pending = false;
 
 // ── NVS helpers ─────────────────────────────────────────────────────────────
 
-static void persist_trust(void)
+static esp_err_t persist_trust_values(bool rtc_trusted, time_t last_sync_epoch)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, NVS_KEY_RTC_TRUSTED, s_rtc_trusted ? 1 : 0);
-        nvs_set_i64(h, NVS_KEY_LAST_GPS_EPOCH, (int64_t)s_last_gps_sync_epoch);
-        nvs_commit(h);
-        nvs_close(h);
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+
+    err = nvs_set_u8(h, NVS_KEY_RTC_TRUSTED, rtc_trusted ? 1 : 0);
+    if (err == ESP_OK) {
+        err = nvs_set_i64(h, NVS_KEY_LAST_GPS_EPOCH, (int64_t)last_sync_epoch);
     }
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
 }
 
 static void load_trust(void)
@@ -170,8 +175,10 @@ static void write_rtc_if_due(time_t epoch, int64_t now_mono_us)
         s_rtc_trusted = true;
         s_last_gps_sync_epoch = epoch;
         s_rtc_valid = true;
-        persist_trust();
-        ESP_LOGI(TAG, "RTC updated from disciplined UTC source");
+        // GPS parsing runs on a PSRAM-backed task stack. nvs_commit() disables
+        // the flash/PSRAM cache, so persistence must be flushed by main_task.
+        s_persist_pending = true;
+        ESP_LOGI(TAG, "RTC updated from disciplined UTC source; trust save deferred");
     }
 }
 
@@ -385,6 +392,37 @@ esp_err_t cym_timekeeper_observe_network_utc(time_t epoch, int64_t rx_monotonic_
              repair_rtc ? "; RTC repair requested" : "");
 
     xSemaphoreGive(s_tk_mutex);
+    return ESP_OK;
+}
+
+esp_err_t cym_timekeeper_flush_pending_persistence(void)
+{
+    if (!s_tk_mutex) return ESP_ERR_INVALID_STATE;
+
+    bool rtc_trusted;
+    time_t last_sync_epoch;
+    if (xSemaphoreTake(s_tk_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (!s_persist_pending) {
+        xSemaphoreGive(s_tk_mutex);
+        return ESP_OK;
+    }
+    rtc_trusted = s_rtc_trusted;
+    last_sync_epoch = s_last_gps_sync_epoch;
+    s_persist_pending = false;
+    xSemaphoreGive(s_tk_mutex);
+
+    esp_err_t err = persist_trust_values(rtc_trusted, last_sync_epoch);
+    if (err != ESP_OK) {
+        if (xSemaphoreTake(s_tk_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            s_persist_pending = true;
+            xSemaphoreGive(s_tk_mutex);
+        }
+        ESP_LOGW(TAG, "Deferred time trust save failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "Deferred time trust saved");
     return ESP_OK;
 }
 

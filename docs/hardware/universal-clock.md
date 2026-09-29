@@ -57,6 +57,8 @@ Clock reports both a qualitative level and a conservative uncertainty:
 
 Uncertainty grows with source age using the selected board profile. The dashboard also reports source age, RTC capability, GPS-UART capability, and whether the estimate is characterized.
 
+When a live GPS fix is available, the Clock displays a six-character Maidenhead locator (`Grid: EM12ab`) directly below the date. The grid is calculated locally from latitude and longitude without Internet access. Without a fix it displays `Grid: waiting for GPS fix`; boards without GPS-UART capability display `Grid: unavailable`.
+
 **Timing values are conservative uncharacterized engineering estimates, not measured accuracy.** Compilation validates software integration only; it does not physically characterize oscillator drift, RTC persistence, GPS transport delay, network accuracy, or NTP-client interoperability.
 
 ## Board profiles
