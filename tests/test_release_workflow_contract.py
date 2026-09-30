@@ -15,6 +15,11 @@ class ReleaseWorkflowContract(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", release_job)
         self.assertIn("inputs.release_tag != ''", release_job)
 
+    def test_release_build_uses_canonical_nm_profile(self):
+        workflow = (ROOT / ".github/workflows/esp32c5-build-master.yml").read_text()
+        self.assertIn("bash scripts/build.sh nm-cyd-c5", workflow)
+        self.assertNotIn("bash ESP32C5/.github/scripts/container_build.sh --no-docker", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

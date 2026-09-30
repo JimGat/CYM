@@ -47,7 +47,10 @@ jobs:
             espidf-release-v6.0-
 
       - name: Build firmware
-        run: bash ESP32C5/.github/scripts/container_build.sh --no-docker
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh >/dev/null 2>&1
+          bash scripts/build.sh nm-cyd-c5
 
       - name: Upload raw firmware artifacts
         uses: actions/upload-artifact@v4
