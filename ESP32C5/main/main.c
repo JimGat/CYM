@@ -57385,9 +57385,17 @@ static lv_obj_t *s_hf_dump_btn     = NULL;
 static bool      s_hf_dump_active  = false;
 static int       s_hf_dump_type    = 0;  /* 0=none, 1=NTAG pages done, 2=MFC blocks done */
 
-/* MIFARE Classic dump state */
-static uint8_t  s_mf_dump[64][16];
-static bool     s_mf_block_ok[64];
+/* Full geometries are supported on every release board.  Allocate dump storage
+ * only while the HF reader screen is in use so the DRAM-constrained ESP32 does
+ * not pay the ~5 KB cost in static BSS. */
+#define CHAM_MF_MAX_BLOCKS  256  /* MIFARE Classic 4K */
+#define CHAM_NTAG_MAX_PAGES 231  /* NTAG216 */
+
+/* MIFARE Classic dump state.
+ * Geometry: Mini = 5 sectors (20 blocks), 1K = 16/64, 4K = 40/256.
+ * Sectors 0-31 have 4 blocks each; sectors 32-39 (4K only) have 16 blocks each. */
+static uint8_t (*s_mf_dump)[16] = NULL;
+static bool    *s_mf_block_ok   = NULL;
 static int      s_mf_cur_sector;
 static int      s_mf_cur_block;
 static uint8_t  s_mf_found_key[6];
@@ -57397,11 +57405,29 @@ static bool     s_mf_trying_b;
 static int      s_mf_sectors_done;
 static uint8_t *s_mf_dict_keys  = NULL;
 static int      s_mf_dict_count = 0;
+static int      s_mf_total_sectors = 16;  /* set from SAK: Mini=5, 1K=16, 4K=40 */
+static int      s_mf_total_blocks  = 64;  /* Mini=20, 1K=64, 4K=256 */
 
-/* NTAG dump state */
-static uint8_t s_ntag_dump[222][4];
-static int     s_ntag_cur_page;
+/* Return the number of blocks in a given sector.
+ * Sectors 0-31: 4 blocks each.  Sectors 32-39 (4K only): 16 blocks each. */
+static int s_mf_sector_block_count(int sector)
+{
+    return (sector >= 32) ? 16 : 4;
+}
+
+/* Return the absolute block number of the first block in a given sector. */
+static int s_mf_sector_first_block(int sector)
+{
+    if (sector < 32) return sector * 4;
+    /* 4K large sectors: first 32 sectors occupy 128 blocks */
+    return 128 + (sector - 32) * 16;
+}
+
+/* NTAG dump state — allocated on demand through the full NTAG216 geometry. */
+static uint8_t (*s_ntag_dump)[4] = NULL;
+static int     s_ntag_cur_page;  /* next destination page */
 static int     s_ntag_max_pages;
+static int     s_ntag_req_page;  /* page address used by the outstanding four-page READ */
 
 /* Determine card type from ATQA+SAK */
 static void s_hf_detect_type(void)
@@ -57712,8 +57738,9 @@ static void s_hf_poll_timer(lv_timer_t *t)
 
 /* ════════════════════════════════════════════════════════════════════════════
  * PHASE 6 — Full card dump
- *   MIFARE Classic 1K: MF1_CHECK_ONE_KEY_BLOCK (4009) → MF1_READ_ONE_BLOCK (4010)
- *   NTAG / Ultralight: HF14A_RAW (2001) with ISO 14443-A READ command (0x30)
+ *   MIFARE Classic (Mini/1K/4K): mf1CheckKey (2007) → mf1ReadBlock (2008)
+ *     Payload: [keyType, blockNum, key[6]]   (upstream ChameleonUltraGUI protocol)
+ *   NTAG / Ultralight: hf14ARawCommand (2010) with ISO 14443-A READ command (0x30)
  * ════════════════════════════════════════════════════════════════════════════ */
 
 #define MF_BUILTIN_KEY_COUNT 8
@@ -57781,6 +57808,7 @@ static void s_mf_on_key_check(bool ok, const uint8_t *data, uint16_t dlen);
 /* ── Save MIFARE dump to .nfc (Flipper format with Block N: lines) ── */
 static bool s_mf_save_dump_file(const char *name)
 {
+    if (!s_mf_dump || !s_mf_block_ok) return false;
     char path[80];
     snprintf(path, sizeof(path), "%s/%.36s.nfc", RFID_DIR_HF, name);
     FILE *f = fopen(path, "w");
@@ -57799,15 +57827,22 @@ static bool s_mf_save_dump_file(const char *name)
     else if (s_hf_sak == 0x18 || s_hf_sak == 0x38)
         fprintf(f, "Mifare Classic type: 4K\n");
     fprintf(f, "Data format version: 2\n# Captured by CYM-NM28C5 via Chameleon Ultra BLE\n");
-    fprintf(f, "# Blocks read: %d/64\n", s_mf_sectors_done * 4);
-    for (int b = 0; b < 64; b++) {
+    /* Count actual blocks read (sectors_done*4 is wrong for 4K sectors 32-39 which have 16 blocks) */
+    int blocks_ok = 0;
+    for (int b = 0; b < s_mf_total_blocks && b < CHAM_MF_MAX_BLOCKS; b++)
+        if (s_mf_block_ok[b]) blocks_ok++;
+    fprintf(f, "# Blocks read: %d/%d\n", blocks_ok, s_mf_total_blocks);
+    if (blocks_ok != s_mf_total_blocks) fprintf(f, "# Partial dump: yes\n");
+    for (int b = 0; b < s_mf_total_blocks && b < CHAM_MF_MAX_BLOCKS; b++) {
+        bool unread = !s_mf_block_ok[b];
         fprintf(f, "Block %d:", b);
-        if (s_mf_block_ok[b]) {
+        if (!unread) {
             for (int j = 0; j < 16; j++) fprintf(f, " %02X", s_mf_dump[b][j]);
         } else {
-            for (int j = 0; j < 16; j++) fprintf(f, " 00"); /* unknown block */
+            for (int j = 0; j < 16; j++) fprintf(f, " 00"); /* compatibility placeholder */
         }
         fprintf(f, "\n");
+        if (unread) fprintf(f, "# Block %d unread\n", b);
     }
     fclose(f);
     return true;
@@ -57816,6 +57851,7 @@ static bool s_mf_save_dump_file(const char *name)
 /* ── Save NTAG dump to .nfc (Flipper format with Page N: lines) ── */
 static bool s_ntag_save_dump_file(const char *name)
 {
+    if (!s_ntag_dump) return false;
     char path[80];
     snprintf(path, sizeof(path), "%s/%.36s.nfc", RFID_DIR_HF, name);
     FILE *f = fopen(path, "w");
@@ -57838,15 +57874,33 @@ static bool s_ntag_save_dump_file(const char *name)
     return true;
 }
 
+/* ── MIFARE dump aborted by transport failure ── */
+static void s_mf_dump_abort(const char *reason)
+{
+    s_hf_dump_active = false;
+    s_hf_dump_type = 0;
+    if (s_mf_dict_keys) { free(s_mf_dict_keys); s_mf_dict_keys = NULL; s_mf_dict_count = 0; }
+    free(s_mf_dump); s_mf_dump = NULL;
+    free(s_mf_block_ok); s_mf_block_ok = NULL;
+    if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, reason ? reason : "Dump interrupted - retry");
+    if (s_hf_save_btn) lv_obj_add_flag(s_hf_save_btn, LV_OBJ_FLAG_HIDDEN);
+    if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
+}
+
 /* ── MIFARE dump complete ── */
 static void s_mf_dump_done(void)
 {
     s_hf_dump_active = false;
     if (s_mf_dict_keys) { free(s_mf_dict_keys); s_mf_dict_keys = NULL; s_mf_dict_count = 0; }
-    s_hf_dump_type = 2; /* MFC */
+    s_hf_dump_type = 2; /* MFC; partial files are marked and cannot be emulator-loaded */
     if (!s_hf_status_lbl) return;
-    char sb[64];
-    snprintf(sb, sizeof(sb), "Dumped %d/16 sectors - tap Save", s_mf_sectors_done);
+    char sb[72];
+    if (s_mf_sectors_done == s_mf_total_sectors)
+        snprintf(sb, sizeof(sb), "Dumped %d/%d sectors - tap Save",
+                 s_mf_sectors_done, s_mf_total_sectors);
+    else
+        snprintf(sb, sizeof(sb), "Partial %d/%d - Save only (not loadable)",
+                 s_mf_sectors_done, s_mf_total_sectors);
     lv_label_set_text(s_hf_status_lbl, sb);
     if (s_hf_save_btn) lv_obj_clear_flag(s_hf_save_btn, LV_OBJ_FLAG_HIDDEN);
     if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
@@ -57856,13 +57910,14 @@ static void s_mf_dump_done(void)
 static void s_mf_advance_sector(void)
 {
     s_mf_cur_sector++;
-    if (s_mf_cur_sector >= 16) {
+    if (s_mf_cur_sector >= s_mf_total_sectors) {
         s_mf_dump_done();
         return;
     }
     if (s_hf_status_lbl) {
         char sb[48];
-        snprintf(sb, sizeof(sb), "Attacking sector %d/16...", s_mf_cur_sector);
+        snprintf(sb, sizeof(sb), "Attacking sector %d/%d...",
+                 s_mf_cur_sector, s_mf_total_sectors);
         lv_label_set_text(s_hf_status_lbl, sb);
     }
     s_mf_key_try_idx = 0;
@@ -57873,23 +57928,33 @@ static void s_mf_advance_sector(void)
 /* ── Read blocks of current sector (called when key is found) ── */
 static void s_mf_on_block_read(bool ok, const uint8_t *data, uint16_t dlen)
 {
-    int blk = s_mf_cur_sector * 4 + s_mf_cur_block;
-    if (ok && data && dlen >= 16) {
+    int blk = s_mf_sector_first_block(s_mf_cur_sector) + s_mf_cur_block;
+    if (ok && data && dlen >= 16 && blk < CHAM_MF_MAX_BLOCKS) {
         memcpy(s_mf_dump[blk], data, 16);
         s_mf_block_ok[blk] = true;
     }
     s_mf_cur_block++;
-    if (s_mf_cur_block < 4) {
-        /* Read next block in same sector using same found key */
-        int next_blk = s_mf_cur_sector * 4 + s_mf_cur_block;
+    int blks_in_sector = s_mf_sector_block_count(s_mf_cur_sector);
+    if (s_mf_cur_block < blks_in_sector) {
+        /* Read next block in same sector using same found key.
+         * cmd 2008 (mf1ReadBlock): [keyType, block, key[6]] per upstream protocol. */
+        int next_blk = s_mf_sector_first_block(s_mf_cur_sector) + s_mf_cur_block;
         uint8_t payload[8] = {
-            (uint8_t)next_blk, s_mf_found_type,
+            s_mf_found_type, (uint8_t)next_blk,
             s_mf_found_key[0], s_mf_found_key[1], s_mf_found_key[2],
             s_mf_found_key[3], s_mf_found_key[4], s_mf_found_key[5]
         };
-        if (!cham_send_cmd(4010, payload, 8, s_mf_on_block_read))
-            s_mf_advance_sector(); /* busy fallback */
+        if (!cham_send_cmd(2008, payload, 8, s_mf_on_block_read))
+            s_mf_dump_abort("Dump interrupted - Chameleon busy");
     } else {
+        /* Count a sector only when every block was actually read. */
+        bool sector_ok = true;
+        int first = s_mf_sector_first_block(s_mf_cur_sector);
+        for (int i = 0; i < blks_in_sector; i++) {
+            int b = first + i;
+            if (b >= CHAM_MF_MAX_BLOCKS || !s_mf_block_ok[b]) { sector_ok = false; break; }
+        }
+        if (sector_ok) s_mf_sectors_done++;
         s_mf_advance_sector();
     }
 }
@@ -57911,28 +57976,29 @@ static void s_mf_try_next_check(void)
         return;
     }
     uint8_t key_type = s_mf_trying_b ? 0x61 : 0x60;
-    int auth_blk = s_mf_cur_sector * 4; /* any block in sector works for auth */
-    uint8_t payload[8] = { (uint8_t)auth_blk, key_type,
+    int auth_blk = s_mf_sector_first_block(s_mf_cur_sector);
+    /* cmd 2007 (mf1CheckKey): [keyType, block, key[6]] per upstream protocol */
+    uint8_t payload[8] = { key_type, (uint8_t)auth_blk,
                             key[0], key[1], key[2], key[3], key[4], key[5] };
-    if (!cham_send_cmd(4009, payload, 8, s_mf_on_key_check))
-        s_mf_dump_done(); /* channel busy — abort */
+    if (!cham_send_cmd(2007, payload, 8, s_mf_on_key_check))
+        s_mf_dump_abort("Dump interrupted - Chameleon busy");
 }
 
 static void s_mf_on_key_check(bool ok, const uint8_t *data, uint16_t dlen)
 {
     (void)data; (void)dlen;
     if (ok) {
-        /* Key found — store it and read all 4 blocks */
+        /* Key found — store it and read all blocks in sector */
         const uint8_t *key = s_mf_get_key(s_mf_key_try_idx);
         if (key) memcpy(s_mf_found_key, key, 6);
         s_mf_found_type = s_mf_trying_b ? 0x61 : 0x60;
-        s_mf_sectors_done++;
         s_mf_cur_block = 0;
-        int blk = s_mf_cur_sector * 4;
-        uint8_t payload[8] = { (uint8_t)blk, s_mf_found_type,
+        int blk = s_mf_sector_first_block(s_mf_cur_sector);
+        /* cmd 2008 (mf1ReadBlock): [keyType, block, key[6]] per upstream protocol */
+        uint8_t payload[8] = { s_mf_found_type, (uint8_t)blk,
             s_mf_found_key[0], s_mf_found_key[1], s_mf_found_key[2],
             s_mf_found_key[3], s_mf_found_key[4], s_mf_found_key[5] };
-        if (!cham_send_cmd(4010, payload, 8, s_mf_on_block_read))
+        if (!cham_send_cmd(2008, payload, 8, s_mf_on_block_read))
             s_mf_advance_sector();
     } else {
         s_mf_key_try_idx++;
@@ -57945,42 +58011,91 @@ static void s_mf_dump_start(void)
 {
     cham_cancel_pending();
     s_mf_load_dict();
-    memset(s_mf_dump, 0, sizeof(s_mf_dump));
-    memset(s_mf_block_ok, 0, sizeof(s_mf_block_ok));
+    free(s_mf_dump); s_mf_dump = NULL;
+    free(s_mf_block_ok); s_mf_block_ok = NULL;
+    s_mf_dump = (uint8_t (*)[16])calloc(CHAM_MF_MAX_BLOCKS, 16);
+    s_mf_block_ok = (bool *)calloc(CHAM_MF_MAX_BLOCKS, sizeof(bool));
+    if (!s_mf_dump || !s_mf_block_ok) {
+        free(s_mf_dump); s_mf_dump = NULL;
+        free(s_mf_block_ok); s_mf_block_ok = NULL;
+        if (s_mf_dict_keys) { free(s_mf_dict_keys); s_mf_dict_keys = NULL; s_mf_dict_count = 0; }
+        if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Out of memory - dump not started");
+        if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
     s_mf_cur_sector  = 0;
     s_mf_cur_block   = 0;
     s_mf_key_try_idx = 0;
     s_mf_trying_b    = false;
     s_mf_sectors_done = 0;
+    /* Set geometry from detected SAK:
+     *   Mini (SAK 0x09): 5 sectors, 20 blocks
+     *   1K   (SAK 0x08/0x28): 16 sectors, 64 blocks
+     *   4K   (SAK 0x18/0x38): 40 sectors, 256 blocks (sectors 32-39 have 16 blocks) */
+    if (s_hf_sak == 0x09) {
+        s_mf_total_sectors = 5;  s_mf_total_blocks = 20;
+    } else if (s_hf_sak == 0x18 || s_hf_sak == 0x38) {
+        s_mf_total_sectors = 40; s_mf_total_blocks = 256;
+    } else {
+        s_mf_total_sectors = 16; s_mf_total_blocks = 64;
+    }
+    /* Defensive geometry check: never start a partial/truncated card dump. */
+    if (s_mf_total_blocks > CHAM_MF_MAX_BLOCKS) {
+        free(s_mf_dump); s_mf_dump = NULL;
+        free(s_mf_block_ok); s_mf_block_ok = NULL;
+        if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Unsupported MIFARE geometry");
+        return;
+    }
     s_hf_dump_active = true;
     s_hf_dump_type   = 0;
     if (s_hf_dump_btn) lv_obj_add_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
-    if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Attacking sector 0/16...");
+    {
+        char sb[48];
+        snprintf(sb, sizeof(sb), "Attacking sector 0/%d...", s_mf_total_sectors);
+        if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, sb);
+    }
     s_mf_try_next_check();
 }
 
 /* ── NTAG page read callback ── */
 static void s_ntag_on_page_read(bool ok, const uint8_t *data, uint16_t dlen)
 {
-    if (ok && data && dlen >= 16 && s_ntag_cur_page + 4 <= 222) {
-        /* READ returns 4 pages × 4 bytes = 16 bytes */
-        for (int i = 0; i < 4 && s_ntag_cur_page + i < 222; i++) {
-            memcpy(s_ntag_dump[s_ntag_cur_page + i], data + i * 4, 4);
+    if (!ok || !data || dlen < 16) {
+        s_hf_dump_active = false;
+        s_hf_dump_type   = 0;
+        if (s_hf_status_lbl) {
+            char sb[56];
+            snprintf(sb, sizeof(sb), "Dump failed at page %d", s_ntag_cur_page);
+            lv_label_set_text(s_hf_status_lbl, sb);
         }
-        /* Auto-detect total pages from CC byte at page 3 byte 2 */
-        if (s_ntag_cur_page == 0) {
-            uint8_t cc = s_ntag_dump[3][2]; /* CC memory size byte */
-            if      (cc == 0x12) s_ntag_max_pages = 45;
-            else if (cc == 0x3E) s_ntag_max_pages = 135;
-            else if (cc == 0x6D) s_ntag_max_pages = 231;
-        }
-        s_ntag_cur_page += 4;
+        if (s_hf_save_btn) lv_obj_add_flag(s_hf_save_btn, LV_OBJ_FLAG_HIDDEN);
+        if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
+        return;
     }
 
-    if (!ok || s_ntag_cur_page >= s_ntag_max_pages) {
-        /* Done */
+    /* READ returns four pages.  The last request may start before the next
+     * destination page so that its four-page window remains inside the tag. */
+    int src_page = s_ntag_cur_page - s_ntag_req_page;
+    while (src_page < 4 && s_ntag_cur_page < s_ntag_max_pages
+                        && s_ntag_cur_page < CHAM_NTAG_MAX_PAGES) {
+        memcpy(s_ntag_dump[s_ntag_cur_page], data + src_page * 4, 4);
+        s_ntag_cur_page++;
+        src_page++;
+    }
+
+    /* Auto-detect total pages from CC byte at page 3 byte 2. */
+    if (s_ntag_req_page == 0) {
+        uint8_t cc = s_ntag_dump[3][2];
+        if      (cc == 0x12) s_ntag_max_pages = 45;
+        else if (cc == 0x3E) s_ntag_max_pages = 135;
+        else if (cc == 0x6D) s_ntag_max_pages = 231;
+        if (s_ntag_max_pages > CHAM_NTAG_MAX_PAGES)
+            s_ntag_max_pages = CHAM_NTAG_MAX_PAGES;
+    }
+
+    if (s_ntag_cur_page >= s_ntag_max_pages) {
         s_hf_dump_active = false;
-        s_hf_dump_type   = 1; /* NTAG */
+        s_hf_dump_type   = 1;
         if (!s_hf_status_lbl) return;
         char sb[56];
         snprintf(sb, sizeof(sb), "Read %d pages - tap Save", s_ntag_cur_page);
@@ -57989,16 +58104,24 @@ static void s_ntag_on_page_read(bool ok, const uint8_t *data, uint16_t dlen)
         if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
         return;
     }
+
     if (s_hf_status_lbl) {
         char sb[48];
         snprintf(sb, sizeof(sb), "Reading page %d/%d...", s_ntag_cur_page, s_ntag_max_pages);
         lv_label_set_text(s_hf_status_lbl, sb);
     }
-    /* Send next READ: HF14A_RAW (2001), options=0x0F (wait|auto-sel|append-crc|check-crc) */
-    uint8_t payload[3] = { 0x0F, 0x30, (uint8_t)s_ntag_cur_page };
-    if (!cham_send_cmd(2001, payload, 3, s_ntag_on_page_read)) {
+    int read_page = s_ntag_cur_page;
+    if (s_ntag_max_pages - read_page < 4)
+        read_page = s_ntag_max_pages - 4;
+    s_ntag_req_page = read_page;
+    /* hf14ARawCommand (2010): upstream options 0xF4, timeout=100ms BE,
+     * bitlen=16 BE, READ(0x30), and an in-range start page. */
+    uint8_t payload[7] = { 0xF4, 0x00, 0x64, 0x00, 0x10, 0x30, (uint8_t)read_page };
+    if (!cham_send_cmd(2010, payload, 7, s_ntag_on_page_read)) {
         s_hf_dump_active = false;
+        s_hf_dump_type   = 0;
         if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Dump stopped - Chameleon busy");
+        if (s_hf_save_btn) lv_obj_add_flag(s_hf_save_btn, LV_OBJ_FLAG_HIDDEN);
         if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
     }
 }
@@ -58007,15 +58130,25 @@ static void s_ntag_on_page_read(bool ok, const uint8_t *data, uint16_t dlen)
 static void s_ntag_dump_start(void)
 {
     cham_cancel_pending();
-    memset(s_ntag_dump, 0, sizeof(s_ntag_dump));
+    free(s_ntag_dump); s_ntag_dump = NULL;
+    s_ntag_dump = (uint8_t (*)[4])calloc(CHAM_NTAG_MAX_PAGES, 4);
+    if (!s_ntag_dump) {
+        if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Out of memory - dump not started");
+        if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
     s_ntag_cur_page  = 0;
     s_ntag_max_pages = 45; /* default NTAG213; auto-detected from CC at page 3 */
+    s_ntag_req_page  = 0;
     s_hf_dump_active = true;
     s_hf_dump_type   = 0;
+    if (s_hf_save_btn) lv_obj_add_flag(s_hf_save_btn, LV_OBJ_FLAG_HIDDEN);
     if (s_hf_dump_btn) lv_obj_add_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
     if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Reading page 0...");
-    uint8_t payload[3] = { 0x0F, 0x30, 0x00 }; /* READ page 0 */
-    if (!cham_send_cmd(2001, payload, 3, s_ntag_on_page_read)) {
+    /* hf14ARawCommand (2010): upstream default options 0xF4, timeout=100ms BE,
+     * bitlen=16 BE, READ(0x30) page 0. */
+    uint8_t payload[7] = { 0xF4, 0x00, 0x64, 0x00, 0x10, 0x30, 0x00 };
+    if (!cham_send_cmd(2010, payload, 7, s_ntag_on_page_read)) {
         s_hf_dump_active = false;
         if (s_hf_status_lbl) lv_label_set_text(s_hf_status_lbl, "Chameleon busy - try again");
         if (s_hf_dump_btn) lv_obj_clear_flag(s_hf_dump_btn, LV_OBJ_FLAG_HIDDEN);
@@ -58027,12 +58160,15 @@ static void s_hf_dump_cb(lv_event_t *e)
 {
     (void)e;
     if (s_hf_dump_active) return;
-    bool is_ntag = (s_hf_sak == 0x00 || !(s_hf_sak & 0x08));
+    /* SAK 0x00 = NTAG/Ultralight; 0x08/0x28 = MFC 1K; 0x18/0x38 = MFC 4K; 0x09 = MFC Mini */
+    bool is_ntag = (s_hf_sak == 0x00);
     bool is_mfc  = (s_hf_sak == 0x08 || s_hf_sak == 0x28 ||
                     s_hf_sak == 0x18 || s_hf_sak == 0x38 ||
                     s_hf_sak == 0x09);
     if (is_mfc)       s_mf_dump_start();
     else if (is_ntag) s_ntag_dump_start();
+    else if (s_hf_status_lbl)
+        lv_label_set_text(s_hf_status_lbl, "Unsupported card type for dump");
 }
 
 /* Stop hook — fires on Back/Home before parent screen is rebuilt */
@@ -58052,10 +58188,13 @@ static void cham_hf_read_stop(void)
     s_hf_result_ok    = false;
     s_hf_mode_ok      = false;
     s_hf_uid_len      = 0;
-    /* Cancel any running dump; dict heap freed in s_mf_dump_done but guard here too */
+    /* Cancel any running dump and release on-demand geometry buffers. */
     s_hf_dump_active  = false;
     s_hf_dump_type    = 0;
     if (s_mf_dict_keys) { free(s_mf_dict_keys); s_mf_dict_keys = NULL; s_mf_dict_count = 0; }
+    free(s_mf_dump); s_mf_dump = NULL;
+    free(s_mf_block_ok); s_mf_block_ok = NULL;
+    free(s_ntag_dump); s_ntag_dump = NULL;
 }
 
 /* Tile button callback */
@@ -58854,6 +58993,9 @@ static void s_clone_on_write(bool ok, const uint8_t *data, uint16_t dlen)
     }
 }
 
+/* Forward decl — HF chunked-write sender (defined below s_parse_nfc_file) */
+static void s_clone_hf_send_next_chunk(void);
+
 /* Step 2 — SET_SLOT_TAG_TYPE response */
 static void s_clone_on_type_set(bool ok, const uint8_t *data, uint16_t dlen)
 {
@@ -58866,11 +59008,13 @@ static void s_clone_on_type_set(bool ok, const uint8_t *data, uint16_t dlen)
     }
     lv_label_set_text(s_clone_status_lbl, "Writing card data...");
     if (s_clone_sense == CHAM_SENSE_HF && s_clone_hf_buf && s_clone_hf_buf_len > 0) {
-        /* HF path: large NTAG page buffer allocated on heap */
-        if (!cham_send_cmd(s_clone_write_cmd, s_clone_hf_buf, s_clone_hf_buf_len,
-                           s_clone_hf_on_write)) {
-            lv_label_set_text(s_clone_status_lbl, "Busy - retry later");
-        }
+        /* HF path: chunked write for both NTAG (4022) and MFC (4000).
+         * s_clone_hf_chunk_idx/total are set by s_parse_nfc_file. */
+        s_clone_hf_send_next_chunk();
+        return; /* chain continues through s_clone_hf_chunk_cb */
+    } else if (s_clone_sense == CHAM_SENSE_HF) {
+        lv_label_set_text(s_clone_status_lbl, "No card data to write");
+        return;
     } else {
         /* LF path: small fixed buffer */
         if (!cham_send_cmd(s_clone_write_cmd, s_clone_payload, s_clone_payload_len,
@@ -58933,6 +59077,9 @@ static void s_clone_slot_btn_cb(lv_event_t *e)
 static void s_clone_close_cb(lv_event_t *e)
 {
     (void)e;
+    /* Closing is cancellation, not permission for an invisible multi-chunk write. */
+    cham_cancel_pending();
+    if (s_clone_hf_buf) { free(s_clone_hf_buf); s_clone_hf_buf = NULL; s_clone_hf_buf_len = 0; }
     if (s_clone_popup) { lv_obj_del(s_clone_popup); s_clone_popup = NULL; s_clone_status_lbl = NULL; }
 }
 
@@ -59682,90 +59829,242 @@ static bool s_parse_rfid_file(const char *path)
     return true;
 }
 
+/* ── HF chunked-write state for 4022 (NTAG) and 4000 (MFC) ──
+ * The BLE transport is limited to ~512 bytes per command.  Large card data
+ * (NTAG216 = 231 pages × 4 = 924 bytes; MFC 4K = 256 blocks × 16 = 4096 bytes)
+ * must be split into bounded chunks.
+ *
+ * NTAG (cmd 4022): payload = [start_page(1), count(1), page_data...]
+ *   Max ~120 pages per chunk (480 bytes data + 2 header < 512).
+ * MFC  (cmd 4000): payload = [startBlock(1), block0(16), block1(16), ...]
+ *   Max 30 blocks per chunk (480 bytes data + 1 header < 512).
+ */
+#define CHAM_NTAG_CHUNK_PAGES  120   /* pages per 4022 chunk */
+#define CHAM_MFC_CHUNK_BLOCKS   30   /* blocks per 4000 chunk */
+static int      s_clone_hf_chunk_idx  = 0;   /* next page/block to send */
+static int      s_clone_hf_chunk_total = 0;  /* total pages (NTAG) or blocks (MFC) */
+static bool     s_clone_hf_is_mfc     = false;
+
+
+
+/* Chunk-write callback: on success send next chunk or save */
+static void s_clone_hf_chunk_cb(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    (void)data; (void)dlen;
+    if (!s_clone_status_lbl) {
+        /* UI gone (screen navigated away) — free buffer to prevent leak */
+        if (s_clone_hf_buf) { free(s_clone_hf_buf); s_clone_hf_buf = NULL; s_clone_hf_buf_len = 0; }
+        return;
+    }
+    if (!ok) {
+        lv_label_set_text(s_clone_status_lbl, "Chunk write failed");
+        lv_obj_set_style_text_color(s_clone_status_lbl, lv_color_hex(0xEF9A9A), 0);
+        if (s_clone_hf_buf) { free(s_clone_hf_buf); s_clone_hf_buf = NULL; s_clone_hf_buf_len = 0; }
+        return;
+    }
+    if (s_clone_hf_chunk_idx < s_clone_hf_chunk_total) {
+        /* More chunks remaining */
+        s_clone_hf_send_next_chunk();
+    } else {
+        /* All chunks sent — free buffer and save to flash */
+        if (s_clone_hf_buf) { free(s_clone_hf_buf); s_clone_hf_buf = NULL; s_clone_hf_buf_len = 0; }
+        lv_label_set_text(s_clone_status_lbl, "Saving to flash...");
+        if (!cham_send_cmd(1013, NULL, 0, s_clone_on_saved)) {
+            lv_label_set_text(s_clone_status_lbl, "Busy - retry later");
+        }
+    }
+}
+
+/* Send the next chunk of NTAG pages (4022) or MFC blocks (4000) */
+static void s_clone_hf_send_next_chunk(void)
+{
+    if (!s_clone_hf_buf || !s_clone_status_lbl) return;
+
+    if (s_clone_hf_is_mfc) {
+        /* MFC: cmd 4000 payload = [startBlock, block0(16B), block1(16B), ...] */
+        int remaining = s_clone_hf_chunk_total - s_clone_hf_chunk_idx;
+        int this_chunk = (remaining > CHAM_MFC_CHUNK_BLOCKS) ? CHAM_MFC_CHUNK_BLOCKS : remaining;
+        uint16_t plen = (uint16_t)(1 + this_chunk * 16);
+        uint8_t *chunk = (uint8_t *)malloc(plen);
+        if (!chunk) { lv_label_set_text(s_clone_status_lbl, "Out of memory"); return; }
+        chunk[0] = (uint8_t)(s_clone_hf_chunk_idx & 0xFF);
+        memcpy(chunk + 1, s_clone_hf_buf + s_clone_hf_chunk_idx * 16, this_chunk * 16);
+        s_clone_hf_chunk_idx += this_chunk;
+        {
+            char sb[48];
+            snprintf(sb, sizeof(sb), "Loading block %d/%d...",
+                     s_clone_hf_chunk_idx, s_clone_hf_chunk_total);
+            lv_label_set_text(s_clone_status_lbl, sb);
+        }
+        if (!cham_send_cmd(4000, chunk, plen, s_clone_hf_chunk_cb)) {
+            lv_label_set_text(s_clone_status_lbl, "Busy - retry later");
+        }
+        free(chunk);
+    } else {
+        /* NTAG: cmd 4022 payload = [start_page, count, page_data...] */
+        int remaining = s_clone_hf_chunk_total - s_clone_hf_chunk_idx;
+        int this_chunk = (remaining > CHAM_NTAG_CHUNK_PAGES) ? CHAM_NTAG_CHUNK_PAGES : remaining;
+        uint16_t plen = (uint16_t)(2 + this_chunk * 4);
+        uint8_t *chunk = (uint8_t *)malloc(plen);
+        if (!chunk) { lv_label_set_text(s_clone_status_lbl, "Out of memory"); return; }
+        chunk[0] = (uint8_t)(s_clone_hf_chunk_idx & 0xFF);
+        chunk[1] = (uint8_t)this_chunk;
+        memcpy(chunk + 2, s_clone_hf_buf + s_clone_hf_chunk_idx * 4, this_chunk * 4);
+        s_clone_hf_chunk_idx += this_chunk;
+        {
+            char sb[48];
+            snprintf(sb, sizeof(sb), "Loading page %d/%d...",
+                     s_clone_hf_chunk_idx, s_clone_hf_chunk_total);
+            lv_label_set_text(s_clone_status_lbl, sb);
+        }
+        if (!cham_send_cmd(4022, chunk, plen, s_clone_hf_chunk_cb)) {
+            lv_label_set_text(s_clone_status_lbl, "Busy - retry later");
+        }
+        free(chunk);
+    }
+}
+
 /* Parse a .nfc file; allocates s_clone_hf_buf. Returns true on success.
+ * Supports NTAG (loaded via chunked cmd 4022) and MIFARE Classic (loaded via
+ * chunked cmd 4000 = mf1LoadBlockData, then 1013 save).
  * err_out is filled with a short error message on failure. */
 static bool s_parse_nfc_file(const char *path, char *err_out, size_t err_sz)
 {
     FILE *f = fopen(path, "r");
-    if (!f) {
-        snprintf(err_out, err_sz, "Cannot open file");
-        return false;
-    }
+    if (!f) { snprintf(err_out, err_sz, "Cannot open file"); return false; }
 
     char line[128];
     uint16_t tag_type = 0;
-    /* Temporary page storage: up to 222 pages for NTAG216 */
-    uint8_t pages[222][4];
-    int max_page = -1;
-    memset(pages, 0, sizeof(pages));
+    bool is_mfc = false;
+    bool parse_error = false;
+    bool partial_mfc_dump = false;
+    uint8_t (*pages)[4] = (uint8_t (*)[4])calloc(CHAM_NTAG_MAX_PAGES, 4);
+    uint8_t (*blocks)[16] = (uint8_t (*)[16])calloc(CHAM_MF_MAX_BLOCKS, 16);
+    bool *page_seen = (bool *)calloc(CHAM_NTAG_MAX_PAGES, sizeof(bool));
+    bool *block_seen = (bool *)calloc(CHAM_MF_MAX_BLOCKS, sizeof(bool));
+    if (!pages || !blocks || !page_seen || !block_seen) {
+        free(pages); free(blocks); free(page_seen); free(block_seen); fclose(f);
+        snprintf(err_out, err_sz, "Out of memory");
+        return false;
+    }
+    int max_page = -1, max_block = -1;
+    int mfc_subtype = 0; /* 1=Mini, 2=1K, 3=2K, 4=4K */
 
-    while (fgets(line, sizeof(line), f)) {
+    while (!parse_error && fgets(line, sizeof(line), f)) {
         size_t ll = strlen(line);
-        while (ll > 0 && (line[ll-1]=='\n' || line[ll-1]=='\r')) line[--ll] = '\0';
+        while (ll > 0 && (line[ll-1] == '\n' || line[ll-1] == '\r')) line[--ll] = '\0';
 
-        if (strncmp(line, "Device type:", 12) == 0) {
-            const char *dt = line + 13;
-            if (strstr(dt, "NTAG213"))          tag_type = 1100;
-            else if (strstr(dt, "NTAG215"))     tag_type = 1101;
-            else if (strstr(dt, "NTAG216"))     tag_type = 1102;
-            else if (strstr(dt, "Ultralight"))  tag_type = 1100; /* best guess */
-            else if (strstr(dt, "Classic") || strstr(dt, "classic")) {
-                /* MFC slot-write command not yet confirmed - dump works, load to slot pending */
-                fclose(f);
-                snprintf(err_out, err_sz, "MFC load to slot not supported yet");
-                return false;
-            }
+        if (strcmp(line, "# Partial dump: yes") == 0) {
+            partial_mfc_dump = true;
+        } else if (strncmp(line, "Device type:", 12) == 0) {
+            const char *dt = line + 12; while (*dt == ' ') dt++;
+            if (strstr(dt, "NTAG213")) tag_type = 1100;
+            else if (strstr(dt, "NTAG215")) tag_type = 1101;
+            else if (strstr(dt, "NTAG216")) tag_type = 1102;
+            else if (strstr(dt, "Mini")) { is_mfc = true; mfc_subtype = 1; tag_type = 1000; }
+            else if (strstr(dt, "Classic") || strstr(dt, "classic")) { is_mfc = true; tag_type = 1001; }
         } else if (strncmp(line, "Mifare Classic type:", 20) == 0) {
-            fclose(f);
-            snprintf(err_out, err_sz, "MFC load to slot not supported yet");
-            return false;
-        } else if (strncmp(line, "Page ", 5) == 0) {
-            int pg = atoi(line + 5);
-            const char *colon = strchr(line + 5, ':');
-            if (colon && pg >= 0 && pg < 222) {
-                const char *p = colon + 1;
-                for (int b = 0; b < 4; b++) {
-                    while (*p == ' ') p++;
-                    if (!*p) break;
-                    char *end;
-                    pages[pg][b] = (uint8_t)strtoul(p, &end, 16);
-                    p = end;
-                }
-                if (pg > max_page) max_page = pg;
+            const char *mt = line + 20; while (*mt == ' ') mt++;
+            if (strstr(mt, "Mini")) { mfc_subtype = 1; tag_type = 1000; }
+            else if (strstr(mt, "4K")) { mfc_subtype = 4; tag_type = 1003; }
+            else if (strstr(mt, "2K")) { mfc_subtype = 3; tag_type = 1002; }
+            else if (strstr(mt, "1K")) { mfc_subtype = 2; tag_type = 1001; }
+            else { parse_error = true; break; }
+            is_mfc = true;
+        } else if (strncmp(line, "Block ", 6) == 0 || strncmp(line, "Page ", 5) == 0) {
+            bool block = (line[0] == 'B');
+            const char *idxp = line + (block ? 6 : 5);
+            char *idx_end = NULL;
+            long idx = strtol(idxp, &idx_end, 10);
+            const char *colon = strchr(idxp, ':');
+            if (!colon || idx_end == idxp || idx_end != colon || idx < 0 ||
+                (block && idx >= CHAM_MF_MAX_BLOCKS) || (!block && idx >= CHAM_NTAG_MAX_PAGES)) {
+                parse_error = true; break;
+            }
+            int need = block ? 16 : 4;
+            uint8_t *dst = block ? blocks[idx] : pages[idx];
+            bool *seen = block ? &block_seen[idx] : &page_seen[idx];
+            if (*seen) { parse_error = true; break; }
+            const char *q = colon + 1;
+            for (int b = 0; b < need; b++) {
+                while (*q == ' ') q++;
+                char *hex_end = NULL;
+                unsigned long v = strtoul(q, &hex_end, 16);
+                if (hex_end == q || hex_end - q != 2 || v > 0xFF) { parse_error = true; break; }
+                dst[b] = (uint8_t)v;
+                q = hex_end;
+            }
+            while (*q == ' ') q++;
+            if (*q != '\0') parse_error = true;
+            if (!parse_error) {
+                *seen = true;
+                if (block && idx > max_block) max_block = (int)idx;
+                if (!block && idx > max_page) max_page = (int)idx;
             }
         }
     }
     fclose(f);
 
-    if (tag_type == 0) {
-        snprintf(err_out, err_sz, "Unknown NFC type");
-        return false;
-    }
-    if (max_page < 0) {
-        snprintf(err_out, err_sz, "No page data - full dump needed");
+    if (parse_error || tag_type == 0) {
+        free(pages); free(blocks); free(page_seen); free(block_seen);
+        snprintf(err_out, err_sz, parse_error ? "Malformed NFC data" : "Unknown NFC type");
         return false;
     }
 
-    /* Build cmd 4022 payload: [page_start=0, count] + raw page data */
-    int total_pages = max_page + 1;
-    uint16_t buf_len = (uint16_t)(2 + total_pages * 4);
+    if (is_mfc) {
+        if (partial_mfc_dump) {
+            free(pages); free(blocks); free(page_seen); free(block_seen);
+            snprintf(err_out, err_sz, "Partial MFC dump - not loadable");
+            return false;
+        }
+        int expected = (tag_type == 1000) ? 20 : (tag_type == 1001) ? 64 :
+                       (tag_type == 1002) ? 128 : (tag_type == 1003) ? 256 : 0;
+        if (mfc_subtype == 0) {
+            int observed = max_block + 1;
+            if (observed == 20) { tag_type = 1000; expected = 20; }
+            else if (observed == 64) { tag_type = 1001; expected = 64; }
+            else if (observed == 128) { tag_type = 1002; expected = 128; }
+            else if (observed == 256) { tag_type = 1003; expected = 256; }
+        }
+        bool complete = expected > 0 && max_block + 1 == expected && max_page < 0;
+        for (int i = 0; complete && i < expected; i++) complete = block_seen[i];
+        if (!complete) {
+            free(pages); free(blocks); free(page_seen); free(block_seen);
+            snprintf(err_out, err_sz, "Incomplete MFC geometry");
+            return false;
+        }
+        uint16_t buf_len = (uint16_t)(expected * 16);
+        uint8_t *buf = (uint8_t *)malloc(buf_len);
+        if (!buf) { free(pages); free(blocks); free(page_seen); free(block_seen); snprintf(err_out, err_sz, "Out of memory"); return false; }
+        memcpy(buf, blocks, buf_len);
+        free(pages); free(blocks); free(page_seen); free(block_seen);
+        if (s_clone_hf_buf) free(s_clone_hf_buf);
+        s_clone_hf_buf = buf; s_clone_hf_buf_len = buf_len;
+        s_clone_tag_type = tag_type; s_clone_sense = CHAM_SENSE_HF;
+        s_clone_write_cmd = 4000; s_clone_hf_is_mfc = true;
+        s_clone_hf_chunk_idx = 0; s_clone_hf_chunk_total = expected;
+        return true;
+    }
+
+    int expected = (tag_type == 1100) ? 45 : (tag_type == 1101) ? 135 :
+                   (tag_type == 1102) ? 231 : 0;
+    bool complete = expected > 0 && max_page + 1 == expected && max_block < 0;
+    for (int i = 0; complete && i < expected; i++) complete = page_seen[i];
+    if (!complete) {
+        free(pages); free(blocks); free(page_seen); free(block_seen);
+        snprintf(err_out, err_sz, "Incomplete NTAG geometry");
+        return false;
+    }
+    uint16_t buf_len = (uint16_t)(expected * 4);
     uint8_t *buf = (uint8_t *)malloc(buf_len);
-    if (!buf) {
-        snprintf(err_out, err_sz, "Out of memory");
-        return false;
-    }
-    buf[0] = 0x00;                 /* page_start */
-    buf[1] = (uint8_t)total_pages; /* page_count */
-    for (int i = 0; i < total_pages; i++) {
-        memcpy(buf + 2 + i * 4, pages[i], 4);
-    }
-
-    if (s_clone_hf_buf) { free(s_clone_hf_buf); }
-    s_clone_hf_buf     = buf;
-    s_clone_hf_buf_len = buf_len;
-    s_clone_tag_type   = tag_type;
-    s_clone_sense      = CHAM_SENSE_HF;
-    s_clone_write_cmd  = 4022;
+    if (!buf) { free(pages); free(blocks); free(page_seen); free(block_seen); snprintf(err_out, err_sz, "Out of memory"); return false; }
+    memcpy(buf, pages, buf_len);
+    free(pages); free(blocks); free(page_seen); free(block_seen);
+    if (s_clone_hf_buf) free(s_clone_hf_buf);
+    s_clone_hf_buf = buf; s_clone_hf_buf_len = buf_len;
+    s_clone_tag_type = tag_type; s_clone_sense = CHAM_SENSE_HF;
+    s_clone_write_cmd = 4022; s_clone_hf_is_mfc = false;
+    s_clone_hf_chunk_idx = 0; s_clone_hf_chunk_total = expected;
     return true;
 }
 
@@ -60090,6 +60389,1031 @@ static void s_cham_slots_tile_cb(lv_event_t *e)
     (void)e;
     s_cham_nav_child = true;
     show_cham_slots_screen();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * SAVED CARDS SCREEN — browse .rfid/.nfc on SD, select target slot, delete.
+ * Replaces the former "Cards Phase 5" stub.  Uses existing s_fb_scan_dir()
+ * and s_parse_rfid_file()/s_parse_nfc_file() for the load backend.
+ * Long-press slot file browser is preserved in the Slot Manager.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static lv_timer_t *s_cards_tmr       = NULL;
+static lv_obj_t   *s_cards_list      = NULL;
+static lv_obj_t   *s_cards_status    = NULL;
+static lv_obj_t   *s_cards_confirm   = NULL;
+static lv_obj_t   *s_cards_slot_popup = NULL;
+static char        s_cards_del_path[52];
+static char        s_cards_load_path[52];
+
+static void s_cards_click_cb(lv_event_t *e);
+static void s_cards_long_press_cb(lv_event_t *e);
+
+static void cham_saved_cards_stop(void)
+{
+    cham_cancel_pending();
+    if (s_cards_tmr)        { lv_timer_del(s_cards_tmr);        s_cards_tmr        = NULL; }
+    if (s_cards_confirm)    { lv_obj_del(s_cards_confirm);      s_cards_confirm    = NULL; }
+    if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup);   s_cards_slot_popup = NULL; }
+    if (s_clone_popup)     { lv_obj_del(s_clone_popup);         s_clone_popup = NULL;
+                             s_clone_status_lbl = NULL; }
+    if (s_clone_hf_buf)    { free(s_clone_hf_buf);              s_clone_hf_buf = NULL;
+                             s_clone_hf_buf_len = 0; }
+    s_clone_hf_chunk_idx = 0;
+    s_clone_hf_chunk_total = 0;
+    s_cards_load_path[0] = '\0';
+    s_cards_list   = NULL;
+    s_cards_status = NULL;
+}
+
+static void s_cards_del_confirm_yes(lv_event_t *e)
+{
+    (void)e;
+    if (s_cards_del_path[0]) {
+        if (remove(s_cards_del_path) != 0)
+            ESP_LOGW("cham", "Failed to delete %s", s_cards_del_path);
+    }
+    if (s_cards_confirm) { lv_obj_del(s_cards_confirm); s_cards_confirm = NULL; }
+    if (s_cards_status) lv_label_set_text(s_cards_status, "Deleted - refreshing...");
+    /* Rebuild the list on next poll */
+    if (s_cards_list) { lv_obj_clean(s_cards_list); }
+    s_fb_lf_count = s_fb_scan_dir("/sdcard/lab/rfid", ".rfid", s_fb_lf_files, CHAM_FB_MAX_FILES);
+    s_fb_hf_count = s_fb_scan_dir(RFID_DIR_HF, ".nfc", s_fb_hf_files, CHAM_FB_MAX_FILES);
+    /* Re-render inline with both click and long-press handlers */
+    if (s_cards_list) {
+        for (int i = 0; i < s_fb_lf_count; i++) {
+            const char *fn = strrchr(s_fb_lf_files[i], '/');
+            fn = fn ? fn + 1 : s_fb_lf_files[i];
+            lv_obj_t *item = lv_list_add_btn(s_cards_list, LV_SYMBOL_FILE, fn);
+            lv_obj_set_style_text_font(lv_obj_get_child(item, 1), &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(lv_obj_get_child(item, 1), lv_color_hex(0x66BB6A), 0);
+            lv_obj_set_style_bg_color(item, lv_color_hex(0x1B2A1B), 0);
+            lv_obj_add_event_cb(item, s_cards_click_cb, LV_EVENT_CLICKED,
+                                (void *)s_fb_lf_files[i]);
+            lv_obj_add_event_cb(item, s_cards_long_press_cb, LV_EVENT_LONG_PRESSED,
+                                (void *)s_fb_lf_files[i]);
+        }
+        for (int i = 0; i < s_fb_hf_count; i++) {
+            const char *fn = strrchr(s_fb_hf_files[i], '/');
+            fn = fn ? fn + 1 : s_fb_hf_files[i];
+            lv_obj_t *item = lv_list_add_btn(s_cards_list, LV_SYMBOL_FILE, fn);
+            lv_obj_set_style_text_font(lv_obj_get_child(item, 1), &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_color(lv_obj_get_child(item, 1), lv_color_hex(0x42A5F5), 0);
+            lv_obj_set_style_bg_color(item, lv_color_hex(0x1A2A3A), 0);
+            lv_obj_add_event_cb(item, s_cards_click_cb, LV_EVENT_CLICKED,
+                                (void *)s_fb_hf_files[i]);
+            lv_obj_add_event_cb(item, s_cards_long_press_cb, LV_EVENT_LONG_PRESSED,
+                                (void *)s_fb_hf_files[i]);
+        }
+    }
+    if (s_cards_status) {
+        char sb[32];
+        snprintf(sb, sizeof(sb), "%d LF + %d HF files", s_fb_lf_count, s_fb_hf_count);
+        lv_label_set_text(s_cards_status, sb);
+    }
+}
+
+static void s_cards_del_confirm_no(lv_event_t *e)
+{
+    (void)e;
+    if (s_cards_confirm) { lv_obj_del(s_cards_confirm); s_cards_confirm = NULL; }
+}
+
+static void s_cards_long_press_cb(lv_event_t *e)
+{
+    const char *path = (const char *)lv_event_get_user_data(e);
+    if (!path) return;
+    strlcpy(s_cards_del_path, path, sizeof(s_cards_del_path));
+    const char *fn = strrchr(path, '/');
+    fn = fn ? fn + 1 : path;
+
+    if (s_cards_confirm) { lv_obj_del(s_cards_confirm); s_cards_confirm = NULL; }
+    s_cards_confirm = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_cards_confirm, 210, 90);
+    lv_obj_align(s_cards_confirm, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(s_cards_confirm, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(s_cards_confirm, lv_color_hex(0xC62828), 0);
+    lv_obj_set_style_border_width(s_cards_confirm, 2, 0);
+    lv_obj_set_style_radius(s_cards_confirm, 8, 0);
+    lv_obj_set_style_pad_all(s_cards_confirm, 6, 0);
+    lv_obj_clear_flag(s_cards_confirm, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *msg = lv_label_create(s_cards_confirm);
+    char mb[64];
+    snprintf(mb, sizeof(mb), "Delete %.28s?", fn);
+    lv_label_set_text(msg, mb);
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xEF9A9A), 0);
+    lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(msg, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(msg, 194);
+    lv_obj_align(msg, LV_ALIGN_TOP_MID, 0, 2);
+
+    lv_obj_t *yes = lv_btn_create(s_cards_confirm);
+    lv_obj_set_size(yes, 80, 28);
+    lv_obj_align(yes, LV_ALIGN_BOTTOM_LEFT, 4, -2);
+    lv_obj_set_style_bg_color(yes, lv_color_hex(0xC62828), 0);
+    lv_obj_set_style_radius(yes, 4, 0);
+    lv_obj_add_event_cb(yes, s_cards_del_confirm_yes, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *yl = lv_label_create(yes);
+    lv_label_set_text(yl, "Delete");
+    lv_obj_set_style_text_font(yl, &lv_font_montserrat_12, 0);
+    lv_obj_center(yl);
+
+    lv_obj_t *no = lv_btn_create(s_cards_confirm);
+    lv_obj_set_size(no, 80, 28);
+    lv_obj_align(no, LV_ALIGN_BOTTOM_RIGHT, -4, -2);
+    lv_obj_set_style_bg_color(no, lv_color_hex(0x37474F), 0);
+    lv_obj_set_style_radius(no, 4, 0);
+    lv_obj_add_event_cb(no, s_cards_del_confirm_no, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *nl = lv_label_create(no);
+    lv_label_set_text(nl, "Cancel");
+    lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0);
+    lv_obj_center(nl);
+}
+
+/* ── Click-to-load: tap a file → slot picker → parse → clone chain ── */
+static void s_cards_slot_pick_cb(lv_event_t *e)
+{
+    int slot = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup); s_cards_slot_popup = NULL; }
+    if (s_cards_load_path[0] == '\0') return;
+
+    size_t plen = strlen(s_cards_load_path);
+    bool is_nfc = (plen >= 4 && strcmp(s_cards_load_path + plen - 4, ".nfc") == 0);
+
+    char err[52] = "Could not parse file";
+    bool ok;
+    if (is_nfc) {
+        ok = s_parse_nfc_file(s_cards_load_path, err, sizeof(err));
+    } else {
+        ok = s_parse_rfid_file(s_cards_load_path);
+    }
+    if (!ok) {
+        if (s_cards_status) {
+            char sb[72];
+            snprintf(sb, sizeof(sb), "Load error: %s", err);
+            lv_label_set_text(s_cards_status, sb);
+        }
+        return;
+    }
+
+    /* Kick off the clone chain through the existing slot-browser path */
+    s_fb_target_slot = slot;
+    s_clone_slot = slot;
+    lv_obj_t *fp = function_page ? function_page : lv_scr_act();
+    if (s_clone_popup) { lv_obj_del(s_clone_popup); s_clone_popup = NULL; s_clone_status_lbl = NULL; }
+    s_clone_popup = lv_obj_create(fp);
+    lv_obj_set_size(s_clone_popup, 200, 110);
+    lv_obj_align(s_clone_popup, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(s_clone_popup, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(s_clone_popup, lv_color_hex(0x4A148C), 0);
+    lv_obj_set_style_border_width(s_clone_popup, 2, 0);
+    lv_obj_set_style_radius(s_clone_popup, 8, 0);
+    lv_obj_set_style_pad_all(s_clone_popup, 8, 0);
+    lv_obj_clear_flag(s_clone_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    char title_buf[32];
+    snprintf(title_buf, sizeof(title_buf), "Loading to Slot %d", slot + 1);
+    lv_obj_t *title_lbl = lv_label_create(s_clone_popup);
+    lv_label_set_text(title_lbl, title_buf);
+    lv_obj_set_style_text_font(title_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(title_lbl, lv_color_hex(0xCE93D8), 0);
+    lv_obj_align(title_lbl, LV_ALIGN_TOP_MID, 0, 0);
+
+    s_clone_status_lbl = lv_label_create(s_clone_popup);
+    lv_label_set_text(s_clone_status_lbl, "Switching slot...");
+    lv_obj_set_style_text_font(s_clone_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_clone_status_lbl, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_set_style_text_align(s_clone_status_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(s_clone_status_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_clone_status_lbl, 184);
+    lv_obj_align(s_clone_status_lbl, LV_ALIGN_CENTER, 0, 8);
+
+    /* Start 4-step clone chain: SET_ACTIVE_SLOT → type → write → SAVE */
+    uint8_t slot_payload[1] = { (uint8_t)slot };
+    if (!cham_send_cmd(1003, slot_payload, 1, s_clone_on_slot_set)) {
+        lv_label_set_text(s_clone_status_lbl, "Chameleon busy - try again");
+    }
+}
+
+static void s_cards_slot_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup); s_cards_slot_popup = NULL; }
+}
+
+static void s_cards_click_cb(lv_event_t *e)
+{
+    const char *path = (const char *)lv_event_get_user_data(e);
+    if (!path) return;
+    strlcpy(s_cards_load_path, path, sizeof(s_cards_load_path));
+
+    /* Show slot picker popup */
+    if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup); s_cards_slot_popup = NULL; }
+    s_cards_slot_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_cards_slot_popup, 220, 120);
+    lv_obj_align(s_cards_slot_popup, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(s_cards_slot_popup, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(s_cards_slot_popup, lv_color_hex(0x7B1FA2), 0);
+    lv_obj_set_style_border_width(s_cards_slot_popup, 2, 0);
+    lv_obj_set_style_radius(s_cards_slot_popup, 8, 0);
+    lv_obj_set_style_pad_all(s_cards_slot_popup, 6, 0);
+    lv_obj_clear_flag(s_cards_slot_popup, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *msg = lv_label_create(s_cards_slot_popup);
+    lv_label_set_text(msg, "Load to which slot?");
+    lv_obj_set_style_text_font(msg, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(msg, lv_color_hex(0xCE93D8), 0);
+    lv_obj_align(msg, LV_ALIGN_TOP_MID, 0, 0);
+
+    /* 2 rows of 4 slot buttons */
+    for (int r = 0; r < 2; r++) {
+        for (int c = 0; c < 4; c++) {
+            int slot = r * 4 + c;
+            lv_obj_t *btn = lv_btn_create(s_cards_slot_popup);
+            lv_obj_set_size(btn, 44, 28);
+            lv_obj_set_pos(btn, 8 + c * 52, 24 + r * 34);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x6A1B9A), 0);
+            lv_obj_set_style_radius(btn, 4, 0);
+            lv_obj_add_event_cb(btn, s_cards_slot_pick_cb, LV_EVENT_CLICKED,
+                                (void *)(intptr_t)slot);
+            lv_obj_t *bl = lv_label_create(btn);
+            char sn[4]; snprintf(sn, sizeof(sn), "%d", slot + 1);
+            lv_label_set_text(bl, sn);
+            lv_obj_set_style_text_font(bl, &lv_font_montserrat_12, 0);
+            lv_obj_center(bl);
+        }
+    }
+    lv_obj_t *cancel = lv_btn_create(s_cards_slot_popup);
+    lv_obj_set_size(cancel, 80, 24);
+    lv_obj_align(cancel, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_obj_set_style_bg_color(cancel, lv_color_hex(0x37474F), 0);
+    lv_obj_set_style_radius(cancel, 4, 0);
+    lv_obj_add_event_cb(cancel, s_cards_slot_cancel_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *cl = lv_label_create(cancel);
+    lv_label_set_text(cl, "Cancel");
+    lv_obj_set_style_text_font(cl, &lv_font_montserrat_12, 0);
+    lv_obj_center(cl);
+}
+
+static void s_cards_poll_timer(lv_timer_t *t)
+{
+    (void)t;
+    cham_poll();
+}
+
+static void show_cham_saved_cards_screen(void)
+{
+    create_function_page_base("Saved Cards");
+    g_screen_stop_fn = cham_saved_cards_stop;
+    g_screen_back_fn = show_chameleon_screen;
+    apply_menu_bg();
+
+    s_cards_status = lv_label_create(function_page);
+    lv_obj_set_style_text_font(s_cards_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_cards_status, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_set_style_text_align(s_cards_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_cards_status, 236);
+    lv_obj_align(s_cards_status, LV_ALIGN_BOTTOM_MID, 0, -2);
+
+    s_cards_list = lv_list_create(function_page);
+    lv_obj_set_size(s_cards_list, 236, lv_disp_get_ver_res(NULL) - 60);
+    lv_obj_align(s_cards_list, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_cards_list, lv_color_hex(0x12122A), 0);
+    lv_obj_set_style_border_color(s_cards_list, lv_color_hex(0x3D3D6B), 0);
+    lv_obj_set_style_border_width(s_cards_list, 1, 0);
+    lv_obj_set_style_radius(s_cards_list, 4, 0);
+
+    /* Scan SD for saved cards */
+    s_fb_lf_count = s_fb_scan_dir("/sdcard/lab/rfid", ".rfid", s_fb_lf_files, CHAM_FB_MAX_FILES);
+    s_fb_hf_count = s_fb_scan_dir(RFID_DIR_HF, ".nfc", s_fb_hf_files, CHAM_FB_MAX_FILES);
+
+    if (s_fb_lf_count > 0) {
+        lv_obj_t *hdr = lv_list_add_text(s_cards_list, "-- LF Cards (.rfid) --");
+        if (hdr) { lv_obj_set_style_text_color(hdr, lv_color_hex(0x66BB6A), 0);
+                   lv_obj_set_style_text_font(hdr, &lv_font_montserrat_12, 0); }
+    }
+    for (int i = 0; i < s_fb_lf_count; i++) {
+        const char *fn = strrchr(s_fb_lf_files[i], '/');
+        fn = fn ? fn + 1 : s_fb_lf_files[i];
+        lv_obj_t *item = lv_list_add_btn(s_cards_list, LV_SYMBOL_FILE, fn);
+        lv_obj_set_style_text_font(lv_obj_get_child(item, 1), &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(item, 1), lv_color_hex(0x66BB6A), 0);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0x1B2A1B), 0);
+        lv_obj_add_event_cb(item, s_cards_click_cb, LV_EVENT_CLICKED,
+                            (void *)s_fb_lf_files[i]);
+        lv_obj_add_event_cb(item, s_cards_long_press_cb, LV_EVENT_LONG_PRESSED,
+                            (void *)s_fb_lf_files[i]);
+    }
+    if (s_fb_hf_count > 0) {
+        lv_obj_t *hdr = lv_list_add_text(s_cards_list, "-- HF Cards (.nfc) --");
+        if (hdr) { lv_obj_set_style_text_color(hdr, lv_color_hex(0x42A5F5), 0);
+                   lv_obj_set_style_text_font(hdr, &lv_font_montserrat_12, 0); }
+    }
+    for (int i = 0; i < s_fb_hf_count; i++) {
+        const char *fn = strrchr(s_fb_hf_files[i], '/');
+        fn = fn ? fn + 1 : s_fb_hf_files[i];
+        lv_obj_t *item = lv_list_add_btn(s_cards_list, LV_SYMBOL_FILE, fn);
+        lv_obj_set_style_text_font(lv_obj_get_child(item, 1), &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(lv_obj_get_child(item, 1), lv_color_hex(0x42A5F5), 0);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0x1A2A3A), 0);
+        lv_obj_add_event_cb(item, s_cards_click_cb, LV_EVENT_CLICKED,
+                            (void *)s_fb_hf_files[i]);
+        lv_obj_add_event_cb(item, s_cards_long_press_cb, LV_EVENT_LONG_PRESSED,
+                            (void *)s_fb_hf_files[i]);
+    }
+    if (s_fb_lf_count == 0 && s_fb_hf_count == 0) {
+        lv_obj_t *empty = lv_label_create(s_cards_list);
+        lv_label_set_text(empty, "No saved cards found.\nSave from Read HF / Read LF first.");
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x546E7A), 0);
+        lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(empty, 220);
+    }
+    char sb[40];
+    snprintf(sb, sizeof(sb), "%d LF + %d HF | Tap=load, Hold=delete",
+             s_fb_lf_count, s_fb_hf_count);
+    lv_label_set_text(s_cards_status, sb);
+
+    s_cards_tmr = lv_timer_create(s_cards_poll_timer, 50, NULL);
+}
+
+static void s_cham_cards_tile_cb(lv_event_t *e)
+{
+    (void)e;
+    s_cham_nav_child = true;
+    show_cham_saved_cards_screen();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * MF KEYS SCREEN — dictionary status/reload.
+ * Shows built-in count, external count from /sdcard/lab/rfid/keys/mf_keys.dic,
+ * total, file path, and a reload button.  Does NOT display actual key values.
+ * Replaces the former "MF Keys Phase 6" stub.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static lv_timer_t *s_mfk_tmr        = NULL;
+static lv_obj_t   *s_mfk_status     = NULL;
+static lv_obj_t   *s_mfk_builtin_lbl = NULL;
+static lv_obj_t   *s_mfk_ext_lbl    = NULL;
+static lv_obj_t   *s_mfk_total_lbl  = NULL;
+static lv_obj_t   *s_mfk_path_lbl   = NULL;
+
+static void cham_mfkeys_stop(void)
+{
+    cham_cancel_pending();
+    if (s_mfk_tmr) { lv_timer_del(s_mfk_tmr); s_mfk_tmr = NULL; }
+    s_mfk_status      = NULL;
+    s_mfk_builtin_lbl = NULL;
+    s_mfk_ext_lbl     = NULL;
+    s_mfk_total_lbl   = NULL;
+    s_mfk_path_lbl    = NULL;
+}
+
+static void s_mfk_refresh(void)
+{
+    /* Re-load dictionary from SD */
+    s_mf_load_dict();
+    int builtin = MF_BUILTIN_KEY_COUNT;
+    int ext = s_mf_dict_count;
+    int total = builtin + ext;
+    char sb[40];
+    if (s_mfk_builtin_lbl) {
+        snprintf(sb, sizeof(sb), "Built-in: %d keys", builtin);
+        lv_label_set_text(s_mfk_builtin_lbl, sb);
+    }
+    if (s_mfk_ext_lbl) {
+        snprintf(sb, sizeof(sb), "External: %d keys", ext);
+        lv_label_set_text(s_mfk_ext_lbl, sb);
+    }
+    if (s_mfk_total_lbl) {
+        snprintf(sb, sizeof(sb), "Total: %d keys", total);
+        lv_label_set_text(s_mfk_total_lbl, sb);
+    }
+    if (s_mfk_path_lbl) {
+        lv_label_set_text(s_mfk_path_lbl, ext > 0
+            ? "/sdcard/lab/rfid/keys/mf_keys.dic"
+            : "No external dict found");
+    }
+    if (s_mfk_status) {
+        lv_label_set_text(s_mfk_status, ext > 0 ? "Dictionary loaded" : "Built-in keys only");
+    }
+    /* Free the dict buffer — it's only needed during dump, not display */
+    if (s_mf_dict_keys) { free(s_mf_dict_keys); s_mf_dict_keys = NULL; s_mf_dict_count = 0; }
+}
+
+static void s_mfk_reload_cb(lv_event_t *e) { (void)e; s_mfk_refresh(); }
+
+static void s_mfk_poll_timer(lv_timer_t *t) { (void)t; cham_poll(); }
+
+static void show_cham_mfkeys_screen(void)
+{
+    create_function_page_base("MF Keys");
+    g_screen_stop_fn = cham_mfkeys_stop;
+    g_screen_back_fn = show_chameleon_screen;
+    apply_menu_bg();
+
+    lv_obj_t *card = lv_obj_create(function_page);
+    lv_obj_set_size(card, 228, 160);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0xFFA000), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 6, 0);
+    lv_obj_set_style_pad_all(card, 8, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "MIFARE Key Dictionary");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xFFA000), 0);
+
+    s_mfk_builtin_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(s_mfk_builtin_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_mfk_builtin_lbl, lv_color_hex(0x81C784), 0);
+
+    s_mfk_ext_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(s_mfk_ext_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_mfk_ext_lbl, lv_color_hex(0x90A4AE), 0);
+
+    s_mfk_total_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(s_mfk_total_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_mfk_total_lbl, lv_color_white(), 0);
+
+    s_mfk_path_lbl = lv_label_create(card);
+    lv_obj_set_style_text_font(s_mfk_path_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_mfk_path_lbl, lv_color_hex(0x546E7A), 0);
+    lv_label_set_long_mode(s_mfk_path_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(s_mfk_path_lbl, 210);
+
+    lv_obj_t *btn = lv_btn_create(card);
+    lv_obj_set_size(btn, 120, 28);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0xFFA000), 0);
+    lv_obj_set_style_radius(btn, 4, 0);
+    lv_obj_add_event_cb(btn, s_mfk_reload_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(btn);
+    lv_label_set_text(bl, LV_SYMBOL_REFRESH " Reload");
+    lv_obj_set_style_text_font(bl, &lv_font_montserrat_12, 0);
+    lv_obj_center(bl);
+
+    s_mfk_status = lv_label_create(function_page);
+    lv_obj_set_style_text_font(s_mfk_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_mfk_status, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_set_style_text_align(s_mfk_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_mfk_status, 236);
+    lv_obj_align(s_mfk_status, LV_ALIGN_BOTTOM_MID, 0, -2);
+
+    s_mfk_refresh();
+    s_mfk_tmr = lv_timer_create(s_mfk_poll_timer, 50, NULL);
+}
+
+static void s_cham_mfkeys_tile_cb(lv_event_t *e)
+{
+    (void)e;
+    s_cham_nav_child = true;
+    show_cham_mfkeys_screen();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * MF1 DETECT SCREEN — MIFARE Classic detection nonce capture (mfkey32v2).
+ * Uses verified upstream ChameleonUltraGUI protocol only:
+ *   4004: mf1SetDetectionEnable    — payload [0/1]
+ *   4005: mf1GetDetectionCount     — response u32 BE
+ *   4006: mf1GetDetectionResult    — payload start_index u32 BE, 18-byte records
+ *   4007: mf1GetDetectionStatus    — response one-byte status
+ *
+ * Detection record (18 bytes each):
+ *   [block(1), flags(1), uid(4 BE), nt(4 BE), nr(4 BE), ar(4 BE)]
+ *   flags bit 0 = key type (0=A, 1=B), bit 1 = isNested
+ *
+ * Exports bounded nonce pairs in mfkey32v2-compatible text format under
+ * /sdcard/lab/rfid/hf/.  Nonces are for offline
+ * recovery with mfkey32v2 on a PC.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+#if defined(CONFIG_BOARD_CYD2USB)
+#define DETECT_MAX_RECORDS 32   /* reduced on DRAM-constrained ESP32 */
+#else
+#define DETECT_MAX_RECORDS 256  /* bounded nonce storage */
+#endif
+typedef struct {
+    uint8_t  block;
+    uint8_t  key_type; /* 0x60=A, 0x61=B */
+    bool     is_nested;
+    uint32_t uid;
+    uint32_t nt;
+    uint32_t nr;
+    uint32_t ar;
+} s_det_record_t;
+
+static lv_timer_t    *s_det_tmr         = NULL;
+static lv_obj_t      *s_det_status      = NULL;
+static lv_obj_t      *s_det_count_lbl   = NULL;
+static lv_obj_t      *s_det_enable_btn  = NULL;
+static s_det_record_t s_det_records[DETECT_MAX_RECORDS];
+static int             s_det_count       = 0;
+static int             s_det_remote_count = 0; /* total records on Chameleon */
+static bool            s_det_enabled     = false;
+static bool            s_det_query_busy  = false;
+static int             s_det_max = DETECT_MAX_RECORDS;
+
+static void cham_detect_stop(void)
+{
+    cham_cancel_pending();
+    if (s_det_tmr) { lv_timer_del(s_det_tmr); s_det_tmr = NULL; }
+    s_det_status     = NULL;
+    s_det_count_lbl  = NULL;
+    s_det_enable_btn = NULL;
+    s_det_query_busy = false;
+}
+
+/* Parse detection results from cmd 4006 response (18-byte records) */
+static void s_det_on_results(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    if (!ok || !data || dlen < 18 || (dlen % 18) != 0) {
+        s_det_query_busy = false;
+        return;
+    }
+    int recs = dlen / 18;
+    for (int i = 0; i < recs && s_det_count < DETECT_MAX_RECORDS; i++) {
+        const uint8_t *r = data + i * 18;
+        s_det_record_t *d = &s_det_records[s_det_count];
+        d->block     = r[0];
+        d->key_type  = 0x60 + (r[1] & 0x01);
+        d->is_nested = (r[1] & 0x02) != 0;
+        d->uid = ((uint32_t)r[2] << 24) | ((uint32_t)r[3] << 16) |
+                 ((uint32_t)r[4] << 8)  | r[5];
+        d->nt  = ((uint32_t)r[6] << 24) | ((uint32_t)r[7] << 16) |
+                 ((uint32_t)r[8] << 8)  | r[9];
+        d->nr  = ((uint32_t)r[10] << 24) | ((uint32_t)r[11] << 16) |
+                 ((uint32_t)r[12] << 8) | r[13];
+        d->ar  = ((uint32_t)r[14] << 24) | ((uint32_t)r[15] << 16) |
+                 ((uint32_t)r[16] << 8) | r[17];
+        s_det_count++;
+    }
+    if (s_det_count_lbl) {
+        char sb[32];
+        snprintf(sb, sizeof(sb), "Nonces: %d", s_det_count);
+        lv_label_set_text(s_det_count_lbl, sb);
+    }
+    /* Multi-batch: if more records remain on Chameleon, fetch next batch */
+    if (s_det_count < s_det_remote_count && s_det_count < DETECT_MAX_RECORDS) {
+        uint8_t idx_be[4] = {
+            (uint8_t)(s_det_count >> 24), (uint8_t)(s_det_count >> 16),
+            (uint8_t)(s_det_count >> 8),  (uint8_t)(s_det_count)
+        };
+        if (!cham_send_cmd(4006, idx_be, 4, s_det_on_results))
+            s_det_query_busy = false;
+        return; /* keep query_busy only when send succeeded */
+    }
+    s_det_query_busy = false;
+}
+
+/* Callback for cmd 4005 (count) — store remote count, chain to 4006 if new records */
+static void s_det_on_count(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    s_det_query_busy = false;
+    if (!ok || !data || dlen < 4) return;
+    uint32_t remote = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
+                      ((uint32_t)data[2] << 8)  | data[3];
+    s_det_remote_count = (int)remote;
+    if (s_det_remote_count > s_det_count && s_det_count < DETECT_MAX_RECORDS) {
+        /* Fetch new records starting at our current count */
+        uint8_t idx_be[4] = {
+            (uint8_t)(s_det_count >> 24), (uint8_t)(s_det_count >> 16),
+            (uint8_t)(s_det_count >> 8),  (uint8_t)(s_det_count)
+        };
+        s_det_query_busy = true;
+        if (!cham_send_cmd(4006, idx_be, 4, s_det_on_results))
+            s_det_query_busy = false;
+    }
+}
+
+/* Callback for cmd 4007 (status) — update enable button label */
+static void s_det_on_status(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    s_det_query_busy = false;
+    if (!ok || !data || dlen < 1) return;
+    s_det_enabled = (data[0] != 0);
+    if (s_det_enable_btn) {
+        lv_obj_t *lbl = lv_obj_get_child(s_det_enable_btn, 0);
+        if (lbl) lv_label_set_text(lbl, s_det_enabled ? "Disable Detect" : "Enable Detect");
+    }
+}
+
+/* Callback for cmd 4004 (setter-only) — chain to 4007 to read actual status */
+static void s_det_on_enable_set(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    (void)data; (void)dlen;
+    if (!ok) {
+        s_det_query_busy = false;
+        if (s_det_status) lv_label_set_text(s_det_status, "Toggle failed");
+        return;
+    }
+    if (s_det_status) lv_label_set_text(s_det_status, "Toggled - reading status...");
+    /* 4004 is setter-only (no status payload) — read back via 4007. */
+    if (!cham_send_cmd(4007, NULL, 0, s_det_on_status)) s_det_query_busy = false;
+}
+
+static void s_det_toggle_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_det_query_busy) return;
+    uint8_t val = s_det_enabled ? 0 : 1;
+    s_det_query_busy = true;
+    if (!cham_send_cmd(4004, &val, 1, s_det_on_enable_set)) {
+        s_det_query_busy = false;
+        if (s_det_status) lv_label_set_text(s_det_status, "Chameleon busy - try again");
+    }
+}
+
+static void s_det_refresh_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_det_query_busy) return;
+    s_det_query_busy = true;
+    if (!cham_send_cmd(4005, NULL, 0, s_det_on_count)) {
+        s_det_query_busy = false;
+        if (s_det_status) lv_label_set_text(s_det_status, "Chameleon busy - try again");
+    }
+}
+
+static void s_det_export_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_det_count < 2) {
+        if (s_det_status) lv_label_set_text(s_det_status, "Need >= 2 nonces to export");
+        return;
+    }
+    /* Export mfkey32v2-compatible text: one line per nonce pair.
+     * Format: mfkey32v2 <uid> <nt0> <nr0> <ar0> <nt1> <nr1> <ar1>
+     * Pairs require matching block+keytype for the same UID. */
+    char path[72];
+    snprintf(path, sizeof(path), "/sdcard/lab/rfid/hf/mfkey32_nonces.txt");
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        if (s_det_status) lv_label_set_text(s_det_status, "SD write failed");
+        return;
+    }
+    fprintf(f, "# mfkey32v2 nonce pairs - captured by CYM via Chameleon Ultra\n");
+    fprintf(f, "# Format: uid nt0 nr0 ar0 nt1 nr1 ar1\n");
+    int pairs = 0;
+    for (int i = 0; i < s_det_count && i < DETECT_MAX_RECORDS; i++) {
+        for (int j = i + 1; j < s_det_count && j < DETECT_MAX_RECORDS; j++) {
+            if (s_det_records[i].uid == s_det_records[j].uid &&
+                s_det_records[i].block == s_det_records[j].block &&
+                s_det_records[i].key_type == s_det_records[j].key_type) {
+                fprintf(f, "%08lX %08lX %08lX %08lX %08lX %08lX %08lX\n",
+                        (unsigned long)s_det_records[i].uid,
+                        (unsigned long)s_det_records[i].nt,
+                        (unsigned long)s_det_records[i].nr,
+                        (unsigned long)s_det_records[i].ar,
+                        (unsigned long)s_det_records[j].nt,
+                        (unsigned long)s_det_records[j].nr,
+                        (unsigned long)s_det_records[j].ar);
+                pairs++;
+                break; /* one pair per first nonce */
+            }
+        }
+    }
+    fclose(f);
+    if (s_det_status) {
+        char sb[56];
+        snprintf(sb, sizeof(sb), "Exported %d pairs to mfkey32_nonces.txt", pairs);
+        lv_label_set_text(s_det_status, sb);
+    }
+}
+
+static void s_det_poll_timer(lv_timer_t *t)
+{
+    (void)t;
+    cham_poll();
+}
+
+static void show_cham_detect_screen(void)
+{
+    create_function_page_base("MF1 Detect");
+    g_screen_stop_fn = cham_detect_stop;
+    g_screen_back_fn = show_chameleon_screen;
+    apply_menu_bg();
+
+    s_det_count = 0;
+    s_det_enabled = false;
+    s_det_query_busy = false;
+
+    lv_obj_t *card = lv_obj_create(function_page);
+    lv_obj_set_size(card, 228, 190);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0xF44336), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 6, 0);
+    lv_obj_set_style_pad_all(card, 6, 0);
+    lv_obj_set_style_pad_row(card, 4, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "MIFARE Classic Nonce Capture");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xF44336), 0);
+
+    lv_obj_t *desc = lv_label_create(card);
+    lv_label_set_text(desc, "Captures auth nonces while emulating.\n"
+                            "Export for offline mfkey32v2 recovery.\n"
+                            "Offline PC tool required.");
+    lv_obj_set_style_text_font(desc, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(desc, lv_color_hex(0x90A4AE), 0);
+    lv_label_set_long_mode(desc, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(desc, 210);
+
+    s_det_count_lbl = lv_label_create(card);
+    lv_label_set_text(s_det_count_lbl, "Nonces: 0");
+    lv_obj_set_style_text_font(s_det_count_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_det_count_lbl, lv_color_white(), 0);
+
+    /* Button row */
+    lv_obj_t *row = lv_obj_create(card);
+    lv_obj_set_size(row, 210, 60);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_gap(row, 4, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_det_enable_btn = lv_btn_create(row);
+    lv_obj_set_size(s_det_enable_btn, 100, 24);
+    lv_obj_set_style_bg_color(s_det_enable_btn, lv_color_hex(0x1B5E20), 0);
+    lv_obj_set_style_radius(s_det_enable_btn, 4, 0);
+    lv_obj_add_event_cb(s_det_enable_btn, s_det_toggle_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *ebl = lv_label_create(s_det_enable_btn);
+    lv_label_set_text(ebl, "Enable Detect");
+    lv_obj_set_style_text_font(ebl, &lv_font_montserrat_12, 0);
+    lv_obj_center(ebl);
+
+    lv_obj_t *ref_btn = lv_btn_create(row);
+    lv_obj_set_size(ref_btn, 100, 24);
+    lv_obj_set_style_bg_color(ref_btn, lv_color_hex(0x37474F), 0);
+    lv_obj_set_style_radius(ref_btn, 4, 0);
+    lv_obj_add_event_cb(ref_btn, s_det_refresh_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *rl = lv_label_create(ref_btn);
+    lv_label_set_text(rl, LV_SYMBOL_REFRESH " Refresh");
+    lv_obj_set_style_text_font(rl, &lv_font_montserrat_12, 0);
+    lv_obj_center(rl);
+
+    lv_obj_t *exp_btn = lv_btn_create(row);
+    lv_obj_set_size(exp_btn, 100, 24);
+    lv_obj_set_style_bg_color(exp_btn, lv_color_hex(0x01579B), 0);
+    lv_obj_set_style_radius(exp_btn, 4, 0);
+    lv_obj_add_event_cb(exp_btn, s_det_export_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *xl = lv_label_create(exp_btn);
+    lv_label_set_text(xl, LV_SYMBOL_DOWNLOAD " Export");
+    lv_obj_set_style_text_font(xl, &lv_font_montserrat_12, 0);
+    lv_obj_center(xl);
+
+    s_det_status = lv_label_create(function_page);
+    lv_obj_set_style_text_font(s_det_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_det_status, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_set_style_text_align(s_det_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_det_status, 236);
+    lv_obj_align(s_det_status, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_label_set_text(s_det_status, "Query status to begin");
+
+    /* Query initial status */
+    s_det_query_busy = true;
+    if (!cham_send_cmd(4007, NULL, 0, s_det_on_status)) s_det_query_busy = false;
+
+    s_det_tmr = lv_timer_create(s_det_poll_timer, 50, NULL);
+}
+
+static void s_cham_detect_tile_cb(lv_event_t *e)
+{
+    (void)e;
+    s_cham_nav_child = true;
+    show_cham_detect_screen();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * CHAMELEON SETTINGS SCREEN — animation and sleep timeout.
+ *   1015: setAnimationMode   — payload [mode: 0=full,1=minimal,2=none,3=symmetric]
+ *   1016: getAnimationMode   — response data[0]
+ *   1039: getSleepTimeout    — response data[0] (seconds)
+ *   1040: setSleepTimeout    — payload [seconds]
+ * No BLE passkeys, bonds, or factory reset per scope constraint.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+static lv_timer_t *s_set_tmr       = NULL;
+static lv_obj_t   *s_set_anim_lbl  = NULL;
+static lv_obj_t   *s_set_sleep_lbl = NULL;
+static lv_obj_t   *s_set_status    = NULL;
+static uint8_t     s_set_anim_val  = 0;
+static uint8_t     s_set_sleep_val = 0;
+
+static void cham_settings_stop(void)
+{
+    cham_cancel_pending();
+    if (s_set_tmr) { lv_timer_del(s_set_tmr); s_set_tmr = NULL; }
+    s_set_anim_lbl  = NULL;
+    s_set_sleep_lbl = NULL;
+    s_set_status    = NULL;
+}
+
+static const char *s_anim_name(uint8_t v)
+{
+    switch (v) {
+        case 0: return "Full";
+        case 1: return "Minimal";
+        case 2: return "None";
+        case 3: return "Symmetric";
+        default: return "Unknown";
+    }
+}
+
+static void s_set_on_sleep_get(bool ok, const uint8_t *data, uint16_t dlen);
+
+static void s_set_on_anim_get(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    if (ok && data && dlen >= 1) {
+        s_set_anim_val = data[0];
+        if (s_set_anim_lbl) {
+            char sb[32];
+            snprintf(sb, sizeof(sb), "Animation: %s", s_anim_name(s_set_anim_val));
+            lv_label_set_text(s_set_anim_lbl, sb);
+        }
+    }
+    /* Chain: single-pending BLE transport — read sleep timeout AFTER anim response arrives. */
+    if (!cham_send_cmd(1039, NULL, 0, s_set_on_sleep_get) && s_set_status)
+        lv_label_set_text(s_set_status, "Failed to read sleep timeout");
+}
+
+static void s_set_on_sleep_get(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    if (ok && data && dlen >= 1) {
+        s_set_sleep_val = data[0];
+        if (s_set_sleep_lbl) {
+            char sb[32];
+            snprintf(sb, sizeof(sb), "Sleep: %d seconds", (int)s_set_sleep_val);
+            lv_label_set_text(s_set_sleep_lbl, sb);
+        }
+    }
+}
+
+static void s_set_on_anim_set(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    (void)data; (void)dlen;
+    if (s_set_status)
+        lv_label_set_text(s_set_status, ok ? "Animation updated" : "Failed to set animation");
+    /* Re-read to confirm. */
+    if (!cham_send_cmd(1016, NULL, 0, s_set_on_anim_get) && s_set_status)
+        lv_label_set_text(s_set_status, "Animation changed; confirmation busy");
+}
+
+static void s_set_on_sleep_set(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    (void)data; (void)dlen;
+    if (s_set_status)
+        lv_label_set_text(s_set_status, ok ? "Sleep timeout updated" : "Failed to set sleep");
+    if (!cham_send_cmd(1039, NULL, 0, s_set_on_sleep_get) && s_set_status)
+        lv_label_set_text(s_set_status, "Sleep changed; confirmation busy");
+}
+
+static void s_set_anim_cycle_cb(lv_event_t *e)
+{
+    (void)e;
+    uint8_t old = s_set_anim_val;
+    s_set_anim_val = (s_set_anim_val + 1) % 4;
+    if (!cham_send_cmd(1015, &s_set_anim_val, 1, s_set_on_anim_set)) {
+        s_set_anim_val = old;
+        if (s_set_status) lv_label_set_text(s_set_status, "Chameleon busy - animation unchanged");
+    }
+}
+
+static void s_set_sleep_inc_cb(lv_event_t *e)
+{
+    (void)e;
+    uint8_t old = s_set_sleep_val;
+    if (s_set_sleep_val <= 245) s_set_sleep_val += 10;
+    else s_set_sleep_val = 255;
+    if (!cham_send_cmd(1040, &s_set_sleep_val, 1, s_set_on_sleep_set)) {
+        s_set_sleep_val = old;
+        if (s_set_status) lv_label_set_text(s_set_status, "Chameleon busy - sleep unchanged");
+    }
+}
+
+static void s_set_sleep_dec_cb(lv_event_t *e)
+{
+    (void)e;
+    uint8_t old = s_set_sleep_val;
+    if (s_set_sleep_val > 10) s_set_sleep_val -= 10;
+    else s_set_sleep_val = 0;
+    if (!cham_send_cmd(1040, &s_set_sleep_val, 1, s_set_on_sleep_set)) {
+        s_set_sleep_val = old;
+        if (s_set_status) lv_label_set_text(s_set_status, "Chameleon busy - sleep unchanged");
+    }
+}
+
+static void s_set_poll_timer(lv_timer_t *t) { (void)t; cham_poll(); }
+
+static void show_cham_settings_screen(void)
+{
+    create_function_page_base("Chameleon Settings");
+    g_screen_stop_fn = cham_settings_stop;
+    g_screen_back_fn = show_chameleon_screen;
+    apply_menu_bg();
+
+    lv_obj_t *card = lv_obj_create(function_page);
+    lv_obj_set_size(card, 228, 170);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 38);
+    lv_obj_set_style_bg_color(card, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_border_color(card, lv_color_hex(0x7B1FA2), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 6, 0);
+    lv_obj_set_style_pad_all(card, 8, 0);
+    lv_obj_set_style_pad_row(card, 6, 0);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(card);
+    lv_label_set_text(title, "Device Settings");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0xCE93D8), 0);
+
+    /* Animation row */
+    s_set_anim_lbl = lv_label_create(card);
+    lv_label_set_text(s_set_anim_lbl, "Animation: ...");
+    lv_obj_set_style_text_font(s_set_anim_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_set_anim_lbl, lv_color_white(), 0);
+
+    lv_obj_t *abtn = lv_btn_create(card);
+    lv_obj_set_size(abtn, 130, 24);
+    lv_obj_set_style_bg_color(abtn, lv_color_hex(0x6A1B9A), 0);
+    lv_obj_set_style_radius(abtn, 4, 0);
+    lv_obj_add_event_cb(abtn, s_set_anim_cycle_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *al = lv_label_create(abtn);
+    lv_label_set_text(al, "Cycle Animation");
+    lv_obj_set_style_text_font(al, &lv_font_montserrat_12, 0);
+    lv_obj_center(al);
+
+    /* Sleep timeout row */
+    s_set_sleep_lbl = lv_label_create(card);
+    lv_label_set_text(s_set_sleep_lbl, "Sleep: ... seconds");
+    lv_obj_set_style_text_font(s_set_sleep_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_set_sleep_lbl, lv_color_white(), 0);
+
+    lv_obj_t *srow = lv_obj_create(card);
+    lv_obj_set_size(srow, 210, 28);
+    lv_obj_set_style_bg_opa(srow, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(srow, 0, 0);
+    lv_obj_set_style_pad_all(srow, 0, 0);
+    lv_obj_set_flex_flow(srow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(srow, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(srow, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *dec = lv_btn_create(srow);
+    lv_obj_set_size(dec, 80, 24);
+    lv_obj_set_style_bg_color(dec, lv_color_hex(0x37474F), 0);
+    lv_obj_set_style_radius(dec, 4, 0);
+    lv_obj_add_event_cb(dec, s_set_sleep_dec_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *dl = lv_label_create(dec);
+    lv_label_set_text(dl, "- 10s");
+    lv_obj_set_style_text_font(dl, &lv_font_montserrat_12, 0);
+    lv_obj_center(dl);
+
+    lv_obj_t *inc = lv_btn_create(srow);
+    lv_obj_set_size(inc, 80, 24);
+    lv_obj_set_style_bg_color(inc, lv_color_hex(0x37474F), 0);
+    lv_obj_set_style_radius(inc, 4, 0);
+    lv_obj_add_event_cb(inc, s_set_sleep_inc_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *il = lv_label_create(inc);
+    lv_label_set_text(il, "+ 10s");
+    lv_obj_set_style_text_font(il, &lv_font_montserrat_12, 0);
+    lv_obj_center(il);
+
+    s_set_status = lv_label_create(function_page);
+    lv_obj_set_style_text_font(s_set_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_set_status, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_set_style_text_align(s_set_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_set_status, 236);
+    lv_obj_align(s_set_status, LV_ALIGN_BOTTOM_MID, 0, -2);
+    lv_label_set_text(s_set_status, "Loading settings...");
+
+    /* Read current values — serialized: anim callback chains to sleep read (single-pending BLE). */
+    if (!cham_send_cmd(1016, NULL, 0, s_set_on_anim_get) && s_set_status)
+        lv_label_set_text(s_set_status, "Chameleon busy - settings not loaded");
+
+    s_set_tmr = lv_timer_create(s_set_poll_timer, 50, NULL);
+}
+
+static void s_cham_settings_tile_cb(lv_event_t *e)
+{
+    (void)e;
+    s_cham_nav_child = true;
+    show_cham_settings_screen();
 }
 
 /* ── Stub tile helper — grayed-out upcoming-phase placeholder ── */
@@ -60537,23 +61861,136 @@ static void s_cham_rebuild_content(cham_state_t st)
             lv_obj_add_event_cb(btn, s_cham_slots_tile_cb, LV_EVENT_CLICKED, NULL);
         }
 
-        /* Tile row 2: upcoming-phase placeholders at y=152 */
+        /* Tile row 2: Cards / MF Keys / Detect / Settings (Phase 5+6) at y=152 */
         {
             lv_obj_t *tiles2 = lv_obj_create(s_cham_content);
-            lv_obj_set_size(tiles2, ls ? 72 : 228, ls ? 202 : 60);
+            lv_obj_set_size(tiles2, ls ? 54 : 228, ls ? 268 : 60);
             lv_obj_align(tiles2, ls ? LV_ALIGN_TOP_LEFT : LV_ALIGN_TOP_MID, ls ? 240 : 0, ls ? 0 : 152);
             lv_obj_set_style_bg_opa(tiles2, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(tiles2, 0, 0);
             lv_obj_set_style_pad_all(tiles2, 0, 0);
-            lv_obj_set_style_pad_column(tiles2, 6, 0);
+            lv_obj_set_style_pad_column(tiles2, 4, 0);
             lv_obj_clear_flag(tiles2, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_set_flex_flow(tiles2, ls ? LV_FLEX_FLOW_COLUMN : LV_FLEX_FLOW_ROW);
-            if (ls) lv_obj_set_style_pad_row(tiles2, 6, 0);
+            if (ls) lv_obj_set_style_pad_row(tiles2, 4, 0);
             lv_obj_set_flex_align(tiles2, ls ? LV_FLEX_ALIGN_SPACE_BETWEEN : LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                                   LV_FLEX_ALIGN_CENTER);
-            s_cham_stub_tile(tiles2, MY_SYMBOL_FOLDER_PLUS, "Cards",   "Phase 5");
-            s_cham_stub_tile(tiles2, MY_SYMBOL_KEY,         "MF Keys", "Phase 6");
-            s_cham_stub_tile(tiles2, MY_SYMBOL_XRAY,        "Detect",  "Phase 6");
+
+            /* Cards — saved cards manager (Phase 5) */
+            {
+                lv_obj_t *btn = lv_btn_create(tiles2);
+                lv_obj_set_size(btn, 52, 54);
+                lv_obj_set_style_bg_color(btn, ui_card_color(), LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_color(btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+                lv_obj_set_style_radius(btn, 8, 0);
+                lv_obj_set_style_border_width(btn, 2, 0);
+                lv_obj_set_style_border_color(btn, lv_color_hex(0xFF8F00), 0); /* amber = cards */
+                lv_obj_set_style_shadow_width(btn, 0, 0);
+                lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_all(btn, 3, 0);
+                lv_obj_set_style_pad_row(btn, 2, 0);
+
+                lv_obj_t *ico = lv_label_create(btn);
+                lv_label_set_text(ico, MY_SYMBOL_FOLDER_PLUS);
+                lv_obj_set_style_text_font(ico, &lv_extra_symbols, 0);
+                lv_obj_set_style_text_color(ico, lv_color_hex(0xFFB300), 0);
+
+                lv_obj_t *nm = lv_label_create(btn);
+                lv_label_set_text(nm, "Cards");
+                lv_obj_set_style_text_font(nm, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_color(nm, ui_text_color(), 0);
+                lv_obj_set_style_text_align(nm, LV_TEXT_ALIGN_CENTER, 0);
+
+                lv_obj_add_event_cb(btn, s_cham_cards_tile_cb, LV_EVENT_CLICKED, NULL);
+            }
+
+            /* MF Keys — dictionary status (Phase 6) */
+            {
+                lv_obj_t *btn = lv_btn_create(tiles2);
+                lv_obj_set_size(btn, 52, 54);
+                lv_obj_set_style_bg_color(btn, ui_card_color(), LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_color(btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+                lv_obj_set_style_radius(btn, 8, 0);
+                lv_obj_set_style_border_width(btn, 2, 0);
+                lv_obj_set_style_border_color(btn, lv_color_hex(0x00897B), 0); /* teal = keys */
+                lv_obj_set_style_shadow_width(btn, 0, 0);
+                lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_all(btn, 3, 0);
+                lv_obj_set_style_pad_row(btn, 2, 0);
+
+                lv_obj_t *ico = lv_label_create(btn);
+                lv_label_set_text(ico, MY_SYMBOL_KEY);
+                lv_obj_set_style_text_font(ico, &lv_extra_symbols, 0);
+                lv_obj_set_style_text_color(ico, lv_color_hex(0x26A69A), 0);
+
+                lv_obj_t *nm = lv_label_create(btn);
+                lv_label_set_text(nm, "MF Keys");
+                lv_obj_set_style_text_font(nm, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_color(nm, ui_text_color(), 0);
+                lv_obj_set_style_text_align(nm, LV_TEXT_ALIGN_CENTER, 0);
+
+                lv_obj_add_event_cb(btn, s_cham_mfkeys_tile_cb, LV_EVENT_CLICKED, NULL);
+            }
+
+            /* Detect — MF1 nonce detection (Phase 6) */
+            {
+                lv_obj_t *btn = lv_btn_create(tiles2);
+                lv_obj_set_size(btn, 52, 54);
+                lv_obj_set_style_bg_color(btn, ui_card_color(), LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_color(btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+                lv_obj_set_style_radius(btn, 8, 0);
+                lv_obj_set_style_border_width(btn, 2, 0);
+                lv_obj_set_style_border_color(btn, lv_color_hex(0xE53935), 0); /* red = detect */
+                lv_obj_set_style_shadow_width(btn, 0, 0);
+                lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_all(btn, 3, 0);
+                lv_obj_set_style_pad_row(btn, 2, 0);
+
+                lv_obj_t *ico = lv_label_create(btn);
+                lv_label_set_text(ico, MY_SYMBOL_XRAY);
+                lv_obj_set_style_text_font(ico, &lv_extra_symbols, 0);
+                lv_obj_set_style_text_color(ico, lv_color_hex(0xEF5350), 0);
+
+                lv_obj_t *nm = lv_label_create(btn);
+                lv_label_set_text(nm, "Detect");
+                lv_obj_set_style_text_font(nm, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_color(nm, ui_text_color(), 0);
+                lv_obj_set_style_text_align(nm, LV_TEXT_ALIGN_CENTER, 0);
+
+                lv_obj_add_event_cb(btn, s_cham_detect_tile_cb, LV_EVENT_CLICKED, NULL);
+            }
+
+            /* Settings — Chameleon device settings (Phase 6) */
+            {
+                lv_obj_t *btn = lv_btn_create(tiles2);
+                lv_obj_set_size(btn, 52, 54);
+                lv_obj_set_style_bg_color(btn, ui_card_color(), LV_STATE_DEFAULT);
+                lv_obj_set_style_bg_color(btn, ui_card_pressed_color(), LV_STATE_PRESSED);
+                lv_obj_set_style_radius(btn, 8, 0);
+                lv_obj_set_style_border_width(btn, 2, 0);
+                lv_obj_set_style_border_color(btn, lv_color_hex(0x546E7A), 0); /* blue-grey = settings */
+                lv_obj_set_style_shadow_width(btn, 0, 0);
+                lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
+                lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+                lv_obj_set_style_pad_all(btn, 3, 0);
+                lv_obj_set_style_pad_row(btn, 2, 0);
+
+                lv_obj_t *ico = lv_label_create(btn);
+                lv_label_set_text(ico, MY_SYMBOL_DRAGON);
+                lv_obj_set_style_text_font(ico, &lv_extra_symbols, 0);
+                lv_obj_set_style_text_color(ico, lv_color_hex(0x78909C), 0);
+
+                lv_obj_t *nm = lv_label_create(btn);
+                lv_label_set_text(nm, "Settings");
+                lv_obj_set_style_text_font(nm, &lv_font_montserrat_12, 0);
+                lv_obj_set_style_text_color(nm, ui_text_color(), 0);
+                lv_obj_set_style_text_align(nm, LV_TEXT_ALIGN_CENTER, 0);
+
+                lv_obj_add_event_cb(btn, s_cham_settings_tile_cb, LV_EVENT_CLICKED, NULL);
+            }
         }
 
         /* Disconnect button */
@@ -60642,7 +62079,7 @@ static void chameleon_screen_stop(void)
 static void show_chameleon_screen(void)
 {
     create_function_page_base("Chameleon Ultra");
-    g_screen_stop_fn  = chameleon_screen_stop;   /* MANDATORY — before building UI */
+    g_screen_stop_fn = chameleon_screen_stop;   /* MANDATORY — before building UI */
     g_screen_back_fn  = show_nfc_hub_screen;
     apply_menu_bg();
 

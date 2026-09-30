@@ -90,7 +90,7 @@ class PromotionContract(unittest.TestCase):
         wardrive = text("ESP32C5/components/wifi_wardrive/wifi_wardrive.c")
         self.assertIn("BOARD_SD_SPI_FREQ_HZ / 1000", wardrive)
         cli = text("ESP32C5/components/wifi_cli/wifi_cli.c")
-        self.assertIn("if (!BOARD_HAS_RGB_LED) return ESP_OK;", cli)
+        self.assertIn("if (BOARD_RGB_LED_COUNT <= 0 || BOARD_RGB_LED_GPIO < 0) return ESP_OK;", cli)
         main = text("ESP32C5/main/main.c")
         self.assertIn("#if BOARD_HAS_GPS", main)
         self.assertIn("adc_oneshot_io_to_channel(BOARD_BATTERY_ADC_GPIO", main)
@@ -105,7 +105,7 @@ class PromotionContract(unittest.TestCase):
 
     def test_release_version_and_four_board_gate(self):
         for project in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.43")', text(project))
+            self.assertIn('set(PROJECT_VER "v2.15.44")', text(project))
         makefile = text("Makefile")
         self.assertIn(
             "all-boards: nm-cyd-c5 ws-c5-28 pancake-c5 cyd-2432s028 hosyond-s3-35",
@@ -115,7 +115,7 @@ class PromotionContract(unittest.TestCase):
     def test_manifest_and_flasher(self):
         manifest_path = ROOT / "ESP32S3/docs/manifest.hosyond-s3-35.json"
         manifest = json.loads(manifest_path.read_text())
-        self.assertEqual(manifest["name"], "CYM Hosyond ES3C35P 3.5 v2.15.43")
+        self.assertEqual(manifest["name"], "CYM Hosyond ES3C35P 3.5 v2.15.44")
         manifest_parts = manifest.get("parts") or manifest["builds"][0]["parts"]
         parts = {item["offset"]: item["path"] for item in manifest_parts}
         self.assertIn(0, parts)

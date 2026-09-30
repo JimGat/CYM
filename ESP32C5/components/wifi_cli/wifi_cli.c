@@ -120,8 +120,9 @@ static esp_err_t init_wifi(void) {
 
 esp_err_t init_led(void) {
     if (g_led_strip != NULL) return ESP_OK;  // already initialised (e.g. after BLE→WiFi switch)
-    // Only boards advertising an addressable RGB LED may claim/configure its GPIO.
-    if (!BOARD_HAS_RGB_LED) return ESP_OK;
+    /* This function is WS2812/RMT-specific. BOARD_HAS_RGB_LED also covers the
+     * Classic CYD's discrete common-anode LED, whose WS2812 profile is -1 x0. */
+    if (BOARD_RGB_LED_COUNT <= 0 || BOARD_RGB_LED_GPIO < 0) return ESP_OK;
     led_strip_config_t strip_cfg = {
         .strip_gpio_num = BOARD_RGB_LED_GPIO,
         .max_leds = BOARD_RGB_LED_COUNT,
@@ -136,7 +137,12 @@ esp_err_t init_led(void) {
         .flags.with_dma = false,
     };
     
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &g_led_strip));
+    esp_err_t ret = led_strip_new_rmt_device(&strip_cfg, &rmt_cfg, &g_led_strip);
+    if (ret != ESP_OK) {
+        g_led_strip = NULL;
+        ESP_LOGE(TAG, "WS2812 init skipped: %s", esp_err_to_name(ret));
+        return ret;
+    }
     ESP_LOGI(TAG, "LED strip initialized");
 
     return ESP_OK;

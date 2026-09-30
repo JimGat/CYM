@@ -2259,11 +2259,17 @@ CYM can pair with a **Chameleon Ultra** or **Chameleon Lite** over Bluetooth and
 - **BLE scan & connect** — auto-discovers Chameleon devices by NUS service UUID, shows RSSI-coded signal strength; supports both pairing-disabled and pairing-enabled units (auto-injects fixed passkey 123456 for units with BLE pairing ON)
 - **Read LF 125 kHz** — EM4100, HID Prox H10301 (FC+CN display); saves Flipper-compatible `.rfid` files to `/sdcard/lab/rfid/lf/`
 - **Read HF 13.56 MHz** — ISO 14443-A scan; MIFARE Classic, NTAG213/215/216, Ultralight detection from SAK byte; saves Flipper-compatible `.nfc` files to `/sdcard/lab/rfid/hf/`
-- **Dump Card (full sector/page read)** — appears after any card is detected on HF Read; for MIFARE Classic 1K runs a key attack (8 built-in keys + `/sdcard/lab/rfid/keys/mf_keys.dic` dictionary) and reads all 64 blocks; for NTAG/Ultralight reads all pages via raw ISO 14443-A READ commands; output `.nfc` file includes full `Block N:` / `Page N:` data in Flipper format
-- **Slot Manager** — 8-slot view showing LF/HF type per slot; activate slot, clear slot
-- **Clone to Slot** — after an LF card read, tap "Clone to Slot", pick a target slot; 4-step BLE chain writes card to Chameleon flash (EM410X and HID H10301 supported)
+- **Dump Card (full sector/page read)** — appears after a supported HF card is detected. MIFARE Classic Mini/1K/4K uses the 8 built-in keys plus `/sdcard/lab/rfid/keys/mf_keys.dic`, preserves the exact 20/64/128/256-block geometry, and records failed blocks explicitly rather than claiming them as read. Partial MIFARE captures can be saved for analysis, but carry machine-readable partial/unread markers and are rejected by the emulator-slot loader. NTAG213/215/216 uses framed ISO 14443-A raw READ commands and preserves the exact 45/135/231-page geometry. Output `.nfc` files contain complete `Block N:` / `Page N:` records in Flipper format.
+- **Slot Manager** — manage all 8 emulator slots: activate, view tag type, read UID, delete slot, and load a saved file into a slot. MIFARE and NTAG loaders validate exact, contiguous geometry before changing emulator memory.
+- **Saved Cards** — browse `.rfid` and `.nfc` files independently of Slot Manager, tap a file to choose its target slot, or long-press for confirmed deletion.
+- **MF Keys** — inspect built-in/external dictionary source and key counts and reload `mf_keys.dic`; key values are not displayed.
+- **Detect** — enable Chameleon MIFARE Classic detection mode, retrieve bounded nonce records in all available batches, and export paired captures in `mfkey32v2`-compatible text form for authorized offline analysis. CYM does not perform on-device key cracking.
+- **Settings** — read and change the Chameleon animation mode and sleep timeout using serialized BLE requests.
+- **Clone to Slot** — after an LF card read, tap "Clone to Slot", pick a target slot; the BLE chain writes the card to Chameleon emulator flash (EM410X and HID H10301 supported).
 - **Clone T5577** — a separate, confirmed physical-tag workflow for EM410x and HID Prox. CYM writes through the existing Chameleon Ultra BLE transport, then rescans and requires an exact 5-byte or 13-byte read-back match before reporting verified success. See [Chameleon T5577/T55xx cloning](docs/chameleon-t55xx.md).
-- **Load from SD** — long-press any slot row to open the SD file browser; lists `.rfid` (LF) and `.nfc` (HF, NTAG/Ultralight) files; tap to load directly to that slot
+
+The existing physical T5577 flow has been hardware-validated. The new MIFARE/NTAG dump and emulator-load paths, Saved Cards UX, nonce capture/export, and Chameleon settings UX require physical Chameleon Ultra/Lite and representative-card validation. Successful builds and automated protocol contracts are not hardware validation.
+
 
 Protocol reference: [ChameleonUltraGUI by GameTec-live](https://github.com/GameTec-live/ChameleonUltraGUI).
 Concept credit: **@bkbroiler**.
