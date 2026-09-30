@@ -202,6 +202,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "wh_detect.h"
 #include "ble_honeypair.h"
 #include "chameleon_ble.h"
+#include "chameleon_t55xx.h"
 #include "ble_blueduck.h"
 #include "ble_whisperpair.h"
 #include "rf_hat_config.h"
@@ -58191,9 +58192,32 @@ static const struct { uint16_t cmd; const char *name; } s_lf_protos[LF_PROTO_COU
 static int s_lf_proto_idx       = 0;  /* which protocol is being tried now */
 static int s_lf_found_proto_idx = 0;  /* which protocol found the card (for display) */
 
+/* Physical T5577/T55xx clone flow.  This is deliberately separate from the
+ * existing Chameleon emulator "Clone to Slot" path below. */
+typedef enum {
+    LF_T55_IDLE = 0,
+    LF_T55_CONFIRM,
+    LF_T55_WRITING,
+    LF_T55_SETTLE,
+    LF_T55_VERIFYING,
+    LF_T55_RESULT,
+} lf_t55_state_t;
+static lf_t55_state_t s_lf_t55_state = LF_T55_IDLE;
+static lv_obj_t *s_lf_t55_btn = NULL;
+static lv_obj_t *s_lf_t55_popup = NULL;
+static lv_obj_t *s_lf_t55_status = NULL;
+static uint8_t s_lf_t55_expected[CHAM_T55XX_HID_DATA_LEN] = {0};
+static size_t s_lf_t55_expected_len = 0;
+static int s_lf_t55_proto_idx = -1;
+static int64_t s_lf_t55_settle_at = 0;
+static int64_t s_lf_t55_verify_deadline = 0;
+
 /* Forward declarations */
 static void show_cham_lf_read_screen(void);
 static void s_lf_on_mode_set(bool ok, const uint8_t *data, uint16_t dlen);
+static void s_lf_t55_confirm_cb(lv_event_t *e);
+static void s_lf_t55_start_write(void);
+static void s_lf_t55_start_verify(bool reset_deadline);
 
 /* ── LF read: tile button callback ── */
 static void s_cham_lf_tile_cb(lv_event_t *e)
@@ -58391,9 +58415,11 @@ static void s_lf_restart_scan(void)
     s_lf_mode_ok      = false;
     s_lf_uid_len      = 0;
     s_lf_proto_idx    = 0;  /* always start with EM410X */
-    if (s_lf_uid_lbl)  lv_obj_add_flag(s_lf_uid_lbl,  LV_OBJ_FLAG_HIDDEN);
-    if (s_lf_save_btn) lv_obj_add_flag(s_lf_save_btn, LV_OBJ_FLAG_HIDDEN);
-    if (s_lf_scan_btn) lv_obj_add_flag(s_lf_scan_btn, LV_OBJ_FLAG_HIDDEN);
+    if (s_lf_uid_lbl)   lv_obj_add_flag(s_lf_uid_lbl,   LV_OBJ_FLAG_HIDDEN);
+    if (s_lf_save_btn)  lv_obj_add_flag(s_lf_save_btn,  LV_OBJ_FLAG_HIDDEN);
+    if (s_lf_clone_btn) lv_obj_add_flag(s_lf_clone_btn, LV_OBJ_FLAG_HIDDEN);
+    if (s_lf_t55_btn)   lv_obj_add_flag(s_lf_t55_btn,   LV_OBJ_FLAG_HIDDEN);
+    if (s_lf_scan_btn)  lv_obj_add_flag(s_lf_scan_btn,  LV_OBJ_FLAG_HIDDEN);
     if (s_lf_status_lbl)
         lv_label_set_text(s_lf_status_lbl, "Hold 125 kHz card near Chameleon...");
     static const uint8_t reader_mode[] = {1};
@@ -58457,11 +58483,219 @@ static void s_lf_on_mode_set(bool ok, const uint8_t *data, uint16_t dlen)
     cham_send_cmd_ex(s_lf_protos[0].cmd, NULL, 0, s_lf_on_scan_result, 2000000LL);
 }
 
+/* ── Physical T5577/T55xx write + read-back verification ───────────────── */
+static lv_obj_t *s_lf_t55_make_button(lv_obj_t *parent, const char *text,
+                                      lv_event_cb_t cb, int x, int y, int w)
+{
+    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, w, 34);
+    lv_obj_align(btn, LV_ALIGN_CENTER, x, y);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x006064), LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(btn, 6, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_center(lbl);
+    return btn;
+}
+
+static void s_lf_t55_close_popup(void)
+{
+    if (s_lf_t55_popup) {
+        lv_obj_del(s_lf_t55_popup);
+        s_lf_t55_popup = NULL;
+        s_lf_t55_status = NULL;
+    }
+}
+
+static lv_obj_t *s_lf_t55_open_popup(const char *title, const char *message)
+{
+    s_lf_t55_close_popup();
+    s_lf_t55_popup = lv_obj_create(lv_scr_act());
+    lv_obj_set_size(s_lf_t55_popup, LV_PCT(92), 210);
+    lv_obj_center(s_lf_t55_popup);
+    lv_obj_set_style_bg_color(s_lf_t55_popup, lv_color_hex(0x101820), 0);
+    lv_obj_set_style_border_color(s_lf_t55_popup, lv_color_hex(0x00BCD4), 0);
+    lv_obj_set_style_border_width(s_lf_t55_popup, 2, 0);
+    lv_obj_set_style_radius(s_lf_t55_popup, 8, 0);
+    lv_obj_clear_flag(s_lf_t55_popup, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *heading = lv_label_create(s_lf_t55_popup);
+    lv_label_set_text(heading, title);
+    lv_obj_set_style_text_color(heading, lv_color_hex(0x00E5FF), 0);
+    lv_obj_set_style_text_font(heading, &lv_font_montserrat_16, 0);
+    lv_obj_align(heading, LV_ALIGN_TOP_MID, 0, 8);
+    s_lf_t55_status = lv_label_create(s_lf_t55_popup);
+    lv_label_set_text(s_lf_t55_status, message);
+    lv_label_set_long_mode(s_lf_t55_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(s_lf_t55_status, LV_PCT(92));
+    lv_obj_set_style_text_align(s_lf_t55_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(s_lf_t55_status, lv_color_white(), 0);
+    lv_obj_set_style_text_font(s_lf_t55_status, &lv_font_montserrat_12, 0);
+    lv_obj_align(s_lf_t55_status, LV_ALIGN_TOP_MID, 0, 48);
+    return s_lf_t55_popup;
+}
+
+static void s_lf_t55_cancel_cb(lv_event_t *e)
+{
+    (void)e;
+    if (s_lf_t55_state == LF_T55_WRITING || s_lf_t55_state == LF_T55_VERIFYING)
+        cham_cancel_pending();
+    s_lf_t55_state = LF_T55_IDLE;
+    s_lf_t55_close_popup();
+}
+
+static void s_lf_t55_retry_write_cb(lv_event_t *e) { (void)e; s_lf_t55_start_write(); }
+static void s_lf_t55_retry_verify_cb(lv_event_t *e) { (void)e; s_lf_t55_start_verify(true); }
+
+static void s_lf_t55_show_result(const char *message, bool retry_verify, bool retry_write)
+{
+    s_lf_t55_state = LF_T55_RESULT;
+    lv_obj_t *popup = s_lf_t55_open_popup("T5577 Clone", message);
+    int count = (retry_verify ? 1 : 0) + (retry_write ? 1 : 0) + 1;
+    int w = count == 3 ? 78 : (count == 2 ? 108 : 120);
+    int gap = 8, total = count * w + (count - 1) * gap;
+    int x = -total / 2 + w / 2;
+    if (retry_verify) {
+        s_lf_t55_make_button(popup, "Retry Verify", s_lf_t55_retry_verify_cb, x, 73, w);
+        x += w + gap;
+    }
+    if (retry_write) {
+        s_lf_t55_make_button(popup, "Retry Write", s_lf_t55_retry_write_cb, x, 73, w);
+        x += w + gap;
+    }
+    s_lf_t55_make_button(popup, "Cancel", s_lf_t55_cancel_cb, x, 73, w);
+}
+
+static const char *s_lf_t55_failure_text(bool write_phase)
+{
+    const cham_cmd_result_info_t *result = cham_get_last_cmd_result();
+    if (!result) return write_phase ? "Write transport failure" : "Verification transport failure";
+    switch (result->outcome) {
+    case CHAM_CMD_OUTCOME_PROTOCOL_ERROR:
+        if (result->status == 0x0067) return "Unsupported Chameleon firmware";
+        return write_phase ? "T5577 write rejected by device" : "Verification scan rejected by device";
+    case CHAM_CMD_OUTCOME_TIMEOUT:
+        return write_phase ? "T5577 write timed out" : "Verification scan timed out";
+    case CHAM_CMD_OUTCOME_DISCONNECTED: return "Chameleon disconnected";
+    case CHAM_CMD_OUTCOME_BLE_WRITE_ERROR: return "BLE transport/send failure";
+    case CHAM_CMD_OUTCOME_CANCELLED: return "Operation cancelled";
+    default: return write_phase ? "T5577 write failed" : "Verification scan failed";
+    }
+}
+
+static void s_lf_t55_on_verify(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    if (s_lf_t55_state != LF_T55_VERIFYING) return;
+    if (ok && data && dlen >= s_lf_t55_expected_len) {
+        cham_t55xx_credential_type_t type = s_lf_t55_proto_idx == 0 ?
+            CHAM_T55XX_CRED_EM410X : CHAM_T55XX_CRED_HIDPROX;
+        if (cham_t55xx_credential_matches(type,
+                                          s_lf_t55_expected, s_lf_t55_expected_len,
+                                          data, s_lf_t55_expected_len))
+            s_lf_t55_show_result("Verified - T5577 matches", false, false);
+        else
+            s_lf_t55_show_result("Verification mismatch", true, true);
+        return;
+    }
+    const cham_cmd_result_info_t *result = cham_get_last_cmd_result();
+    bool no_tag = result && result->outcome == CHAM_CMD_OUTCOME_PROTOCOL_ERROR &&
+                  result->status == 0x0041;
+    if (no_tag && esp_timer_get_time() < s_lf_t55_verify_deadline) {
+        s_lf_t55_start_verify(false);
+        return;
+    }
+    if (no_tag) s_lf_t55_show_result("No tag found during verification", true, true);
+    else s_lf_t55_show_result(s_lf_t55_failure_text(false), true, true);
+}
+
+static void s_lf_t55_start_verify(bool reset_deadline)
+{
+    if (reset_deadline) s_lf_t55_verify_deadline = esp_timer_get_time() + 7000000LL;
+    s_lf_t55_state = LF_T55_VERIFYING;
+    if (!s_lf_t55_popup) s_lf_t55_open_popup("T5577 Clone", "Verifying target tag...");
+    else if (s_lf_t55_status) lv_label_set_text(s_lf_t55_status, "Verifying target tag...");
+    uint16_t cmd = s_lf_t55_proto_idx == 0 ? CHAM_CMD_EM410X_SCAN : CHAM_CMD_HIDPROX_SCAN;
+    if (!cham_send_cmd_ex(cmd, NULL, 0, s_lf_t55_on_verify, 7000000LL))
+        s_lf_t55_show_result("Verification transport/send failure", true, true);
+}
+
+static void s_lf_t55_on_write(bool ok, const uint8_t *data, uint16_t dlen)
+{
+    (void)data; (void)dlen;
+    if (s_lf_t55_state != LF_T55_WRITING) return;
+    if (!ok) {
+        s_lf_t55_show_result(s_lf_t55_failure_text(true), false, true);
+        return;
+    }
+    s_lf_t55_state = LF_T55_SETTLE;
+    s_lf_t55_settle_at = esp_timer_get_time() + 100000LL;
+    if (s_lf_t55_status) lv_label_set_text(s_lf_t55_status, "Write complete. Waiting to verify...");
+}
+
+static void s_lf_t55_start_write(void)
+{
+    uint8_t payload[CHAM_T55XX_HID_PAYLOAD_LEN];
+    size_t payload_len = 0;
+    uint16_t cmd = 0;
+    bool built = false;
+    if (s_lf_t55_proto_idx == 0) {
+        cmd = CHAM_CMD_EM410X_WRITE_TO_T55XX;
+        built = cham_t55xx_build_em_payload(s_lf_t55_expected, s_lf_t55_expected_len,
+                                            payload, sizeof(payload), &payload_len);
+    } else if (s_lf_t55_proto_idx == 1) {
+        cmd = CHAM_CMD_HIDPROX_WRITE_TO_T55XX;
+        built = cham_t55xx_build_hid_payload(s_lf_t55_expected, s_lf_t55_expected_len,
+                                             payload, sizeof(payload), &payload_len);
+    }
+    if (!built) {
+        s_lf_t55_show_result("Invalid source credential", false, false);
+        return;
+    }
+    lv_obj_t *popup = s_lf_t55_open_popup("T5577 Clone", "Writing target tag...");
+    s_lf_t55_make_button(popup, "Cancel", s_lf_t55_cancel_cb, 0, 73, 120);
+    s_lf_t55_state = LF_T55_WRITING;
+    if (!cham_send_cmd_ex(cmd, payload, (uint16_t)payload_len,
+                          s_lf_t55_on_write, 5000000LL))
+        s_lf_t55_show_result("BLE transport/send failure", false, true);
+}
+
+static void s_lf_t55_confirm_cb(lv_event_t *e) { (void)e; s_lf_t55_start_write(); }
+
+static void s_lf_t55_clone_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    if ((s_lf_found_proto_idx == 0 && s_lf_uid_len == CHAM_T55XX_EM_ID_LEN) ||
+        (s_lf_found_proto_idx == 1 && s_lf_uid_len >= CHAM_T55XX_HID_DATA_LEN)) {
+        s_lf_t55_proto_idx = s_lf_found_proto_idx;
+        s_lf_t55_expected_len = s_lf_found_proto_idx == 0 ?
+                                CHAM_T55XX_EM_ID_LEN : CHAM_T55XX_HID_DATA_LEN;
+        memcpy(s_lf_t55_expected, s_lf_uid, s_lf_t55_expected_len);
+        s_lf_t55_state = LF_T55_CONFIRM;
+        lv_obj_t *popup = s_lf_t55_open_popup(
+            "Clone T5577",
+            "Remove source card" "\n"
+            "Place blank/target T5577" "\n\n"
+            "Writing will overwrite the target.");
+        s_lf_t55_make_button(popup, "Write", s_lf_t55_confirm_cb, -65, 73, 110);
+        s_lf_t55_make_button(popup, "Cancel", s_lf_t55_cancel_cb, 65, 73, 110);
+    }
+}
+
+static void s_lf_t55_poll(void)
+{
+    if (s_lf_t55_state == LF_T55_SETTLE && esp_timer_get_time() >= s_lf_t55_settle_at)
+        s_lf_t55_start_verify(true);
+}
+
 /* ── LF read: 50 ms poll timer ── */
 static void s_lf_poll_timer(lv_timer_t *t)
 {
     (void)t;
     cham_poll();   /* keep BLE state machine alive */
+    s_lf_t55_poll();
 
     if (!s_lf_result_ready) return;
     s_lf_result_ready = false;
@@ -58496,8 +58730,12 @@ static void s_lf_poll_timer(lv_timer_t *t)
         }
         if (s_lf_save_btn)  lv_obj_clear_flag(s_lf_save_btn,  LV_OBJ_FLAG_HIDDEN);
         if (s_lf_clone_btn) lv_obj_clear_flag(s_lf_clone_btn, LV_OBJ_FLAG_HIDDEN);
+        if (s_lf_t55_btn &&
+            ((s_lf_found_proto_idx == 0 && s_lf_uid_len == CHAM_T55XX_EM_ID_LEN) ||
+             (s_lf_found_proto_idx == 1 && s_lf_uid_len >= CHAM_T55XX_HID_DATA_LEN)))
+            lv_obj_clear_flag(s_lf_t55_btn, LV_OBJ_FLAG_HIDDEN);
         if (s_lf_scan_btn)  lv_obj_clear_flag(s_lf_scan_btn,  LV_OBJ_FLAG_HIDDEN);
-        lv_label_set_text(s_lf_status_lbl, "Card read - Save or Clone to Slot");
+        lv_label_set_text(s_lf_status_lbl, "Card read - Save, Clone to Slot, or Clone T5577");
     } else if (!s_lf_mode_ok) {
         lv_label_set_text(s_lf_status_lbl, "Mode switch failed - tap Scan Again");
         if (s_lf_scan_btn) lv_obj_clear_flag(s_lf_scan_btn, LV_OBJ_FLAG_HIDDEN);
@@ -58514,6 +58752,12 @@ static void cham_lf_read_stop(void)
      * into freed LVGL objects after this screen is torn down. */
     cham_cancel_pending();
     if (s_lf_tmr) { lv_timer_del(s_lf_tmr); s_lf_tmr = NULL; }
+    s_lf_t55_close_popup();
+    s_lf_t55_popup = NULL;
+    s_lf_t55_status = NULL;
+    s_lf_t55_state = LF_T55_IDLE;
+    s_lf_t55_expected_len = 0;
+    s_lf_t55_proto_idx = -1;
     /* Close keyboard overlay if open — prevents use-after-free on the textarea */
     if (s_lf_save_overlay) { lv_obj_del(s_lf_save_overlay); s_lf_save_overlay = NULL; s_lf_save_ta = NULL; }
     /* Clone popup is parented to function_page and gets deleted with it, but NULL the
@@ -58524,6 +58768,7 @@ static void cham_lf_read_stop(void)
     s_lf_uid_lbl       = NULL;
     s_lf_save_btn      = NULL;
     s_lf_clone_btn     = NULL;
+    s_lf_t55_btn       = NULL;
     s_lf_scan_btn      = NULL;
     s_lf_result_ready  = false;
     s_lf_result_ok     = false;
@@ -58813,7 +59058,7 @@ static void show_cham_lf_read_screen(void)
     /* Scan Again button (hidden until any result) */
     s_lf_scan_btn = lv_btn_create(function_page);
     lv_obj_set_size(s_lf_scan_btn, 140, 34);
-    lv_obj_align(s_lf_scan_btn, LV_ALIGN_BOTTOM_MID, 0, -90);
+    lv_obj_align(s_lf_scan_btn, LV_ALIGN_BOTTOM_MID, 0, -128);
     lv_obj_set_style_bg_color(s_lf_scan_btn, lv_color_hex(0x1A237E), 0);
     lv_obj_set_style_radius(s_lf_scan_btn, 6, 0);
     lv_obj_set_style_shadow_width(s_lf_scan_btn, 0, 0);
@@ -58823,6 +59068,20 @@ static void show_cham_lf_read_screen(void)
     lv_label_set_text(sb, LV_SYMBOL_REFRESH " Scan Again");
     lv_obj_set_style_text_font(sb, &lv_font_montserrat_12, 0);
     lv_obj_center(sb);
+
+    /* Physical T5577/T55xx write button (separate from emulator slot clone). */
+    s_lf_t55_btn = lv_btn_create(function_page);
+    lv_obj_set_size(s_lf_t55_btn, 140, 34);
+    lv_obj_align(s_lf_t55_btn, LV_ALIGN_BOTTOM_MID, 0, -90);
+    lv_obj_set_style_bg_color(s_lf_t55_btn, lv_color_hex(0x8E0000), 0);
+    lv_obj_set_style_radius(s_lf_t55_btn, 6, 0);
+    lv_obj_set_style_shadow_width(s_lf_t55_btn, 0, 0);
+    lv_obj_add_flag(s_lf_t55_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_lf_t55_btn, s_lf_t55_clone_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *t55b = lv_label_create(s_lf_t55_btn);
+    lv_label_set_text(t55b, "Clone T5577");
+    lv_obj_set_style_text_font(t55b, &lv_font_montserrat_12, 0);
+    lv_obj_center(t55b);
 
     /* Clone to Slot button (hidden until successful read) */
     s_lf_clone_btn = lv_btn_create(function_page);
@@ -58857,6 +59116,9 @@ static void show_cham_lf_read_screen(void)
     s_lf_result_ok    = false;
     s_lf_mode_ok      = false;
     s_lf_uid_len      = 0;
+    s_lf_t55_state    = LF_T55_IDLE;
+    s_lf_t55_expected_len = 0;
+    s_lf_t55_proto_idx = -1;
 
     /* Start scan: switch Chameleon to reader mode (cmd 1001, data=[1]),
      * then s_lf_on_mode_set fires scanEM410Xtag (cmd 3000) with 8 s timeout */

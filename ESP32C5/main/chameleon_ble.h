@@ -49,6 +49,22 @@ typedef struct {
 /* ── Async command result callback ───────────────────────────────────────── */
 typedef void (*cham_cmd_result_cb_t)(bool ok, const uint8_t *data, uint16_t dlen);
 
+typedef enum {
+    CHAM_CMD_OUTCOME_NONE = 0,
+    CHAM_CMD_OUTCOME_SUCCESS,
+    CHAM_CMD_OUTCOME_PROTOCOL_ERROR,
+    CHAM_CMD_OUTCOME_TIMEOUT,
+    CHAM_CMD_OUTCOME_DISCONNECTED,
+    CHAM_CMD_OUTCOME_BLE_WRITE_ERROR,
+    CHAM_CMD_OUTCOME_CANCELLED,
+} cham_cmd_outcome_t;
+
+typedef struct {
+    cham_cmd_outcome_t outcome;
+    uint16_t cmd;
+    uint16_t status;
+} cham_cmd_result_info_t;
+
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
 /* One-time module init — call from app_main before first use */
@@ -77,6 +93,7 @@ void cham_cancel_pending(void);
 cham_state_t              cham_get_state(void);
 const char               *cham_get_status_msg(void);
 const cham_device_info_t *cham_get_device_info(void);
+const cham_cmd_result_info_t *cham_get_last_cmd_result(void);
 int                       cham_scan_result_count(void);
 const cham_scan_result_t *cham_scan_result_get(int idx);
 

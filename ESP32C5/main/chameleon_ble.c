@@ -141,6 +141,12 @@ static uint16_t          s_pend_cmd  = 0xFFFF; /* 0xFFFF = none */
 static cham_cmd_result_cb_t s_pend_cb   = NULL;
 static int64_t           s_pend_deadline = 0; /* esp_timer_get_time() */
 static volatile bool     s_pend_write_ok = false; /* write response received */
+static bool              s_pend_cancelled = false;
+static cham_cmd_result_info_t s_last_result = {
+    .outcome = CHAM_CMD_OUTCOME_NONE,
+    .cmd = 0xFFFF,
+    .status = 0,
+};
 
 /* Device info */
 static cham_device_info_t s_dev_info;
@@ -334,6 +340,7 @@ static int s_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
         s_pend_write_ok = true;
     } else {
         ESP_LOGW(TAG, "Write failed: %d", error->status);
+        s_last_result.outcome = CHAM_CMD_OUTCOME_BLE_WRITE_ERROR;
         s_ev_error = true;
         strlcpy(s_status_msg, "BLE write error", sizeof(s_status_msg));
     }
@@ -487,8 +494,6 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
         s_rx_val_hdl   = 0;
         s_cccd_hdl     = 0;
         s_rx_wr        = s_rx_rd; /* flush ring buffer */
-        s_pend_cmd     = 0xFFFF;
-        s_pend_cb      = NULL;
         s_pend_write_ok = false;
         s_batt_retry_pending = false;
         s_await_enc     = false;
@@ -835,6 +840,10 @@ bool cham_connect(int idx)
     s_rx_wr = s_rx_rd = 0;
     s_pend_cmd     = 0xFFFF;
     s_pend_cb      = NULL;
+    s_pend_cancelled = false;
+    s_last_result.outcome = CHAM_CMD_OUTCOME_NONE;
+    s_last_result.cmd = 0xFFFF;
+    s_last_result.status = 0;
     s_ev_connected = false;
     s_ev_cccd_ok   = false;
     s_ev_error     = false;
@@ -892,17 +901,22 @@ void cham_disconnect(void)
         strlcpy(s_status_msg, "Tap Scan to find Chameleon", sizeof(s_status_msg));
         s_changed = true;
     }
-    s_pend_cmd = 0xFFFF;
-    s_pend_cb  = NULL;
+    if (s_pend_cmd != 0xFFFF) {
+        cham_cancel_pending();
+    }
 }
 
 /* Cancel any in-flight command without disconnecting BLE.
- * Call from sub-screen stop hooks to prevent stale callbacks firing
- * into freed LVGL objects after the sub-screen is torn down. */
+ * The command remains reserved until its response or timeout drains it, so a
+ * late frame can never satisfy a newer operation. */
 void cham_cancel_pending(void)
 {
-    s_pend_cmd = 0xFFFF;
-    s_pend_cb  = NULL;
+    if (s_pend_cmd == 0xFFFF) return;
+    s_pend_cb = NULL;
+    s_pend_cancelled = true;
+    s_last_result.outcome = CHAM_CMD_OUTCOME_CANCELLED;
+    s_last_result.cmd = s_pend_cmd;
+    s_last_result.status = 0;
 }
 
 cham_state_t cham_get_state(void) { return s_state; }
@@ -936,6 +950,11 @@ const cham_device_info_t *cham_get_device_info(void)
            ? &s_dev_info : NULL;
 }
 
+const cham_cmd_result_info_t *cham_get_last_cmd_result(void)
+{
+    return &s_last_result;
+}
+
 int cham_scan_result_count(void) { return s_scan_count; }
 
 const cham_scan_result_t *cham_scan_result_get(int idx)
@@ -958,12 +977,17 @@ bool cham_send_cmd_ex(uint16_t cmd, const uint8_t *data, uint16_t dlen,
     s_pend_cmd      = cmd;
     s_pend_cb       = cb;
     s_pend_write_ok = false;
+    s_pend_cancelled = false;
     s_pend_deadline = esp_timer_get_time() + timeout_us;
+    s_last_result.outcome = CHAM_CMD_OUTCOME_NONE;
+    s_last_result.cmd = cmd;
+    s_last_result.status = 0;
 
     int rc = ble_gattc_write_flat(s_conn_handle, s_rx_val_hdl,
                                    frame, flen, s_write_cb, NULL);
     if (rc != 0) {
         ESP_LOGE(TAG, "Write cmd 0x%04X failed: %d", cmd, rc);
+        s_last_result.outcome = CHAM_CMD_OUTCOME_BLE_WRITE_ERROR;
         s_pend_cmd = 0xFFFF;
         s_pend_cb  = NULL;
         if (cb) cb(false, NULL, 0);
@@ -988,11 +1012,15 @@ bool cham_poll(void)
     if (s_ev_error) {
         s_ev_error = false;
         s_state = CHAM_STATE_ERROR;
-        /* Cancel any pending command */
+        /* Complete any pending command with the write-layer failure. */
         if (s_pend_cmd != 0xFFFF) {
             cham_cmd_result_cb_t cb = s_pend_cb;
+            if (!s_pend_cancelled && s_last_result.outcome == CHAM_CMD_OUTCOME_NONE) {
+                s_last_result.outcome = CHAM_CMD_OUTCOME_BLE_WRITE_ERROR;
+            }
             s_pend_cmd = 0xFFFF;
             s_pend_cb  = NULL;
+            s_pend_cancelled = false;
             if (cb) cb(false, NULL, 0);
         }
         /* Terminate any lingering connection so Chameleon can advertise for next scan */
@@ -1008,8 +1036,18 @@ bool cham_poll(void)
             s_state = CHAM_STATE_DISCONNECTED;
             strlcpy(s_status_msg, "Disconnected", sizeof(s_status_msg));
         }
-        s_pend_cmd = 0xFFFF;
-        s_pend_cb  = NULL;
+        if (s_pend_cmd != 0xFFFF) {
+            cham_cmd_result_cb_t cb = s_pend_cb;
+            if (!s_pend_cancelled) {
+                s_last_result.outcome = CHAM_CMD_OUTCOME_DISCONNECTED;
+                s_last_result.cmd = s_pend_cmd;
+                s_last_result.status = 0;
+            }
+            s_pend_cmd = 0xFFFF;
+            s_pend_cb  = NULL;
+            s_pend_cancelled = false;
+            if (cb) cb(false, NULL, 0);
+        }
         changed = true;
     }
 
@@ -1110,9 +1148,16 @@ bool cham_poll(void)
                  * (command not supported by this firmware version). */
                 bool ok = (fstatus == 0 || fstatus == 0x0040 || fstatus == 0x0068);
                 cham_cmd_result_cb_t cb = s_pend_cb;
+                s_last_result.status = fstatus;
+                s_last_result.outcome = ok ? CHAM_CMD_OUTCOME_SUCCESS
+                                           : CHAM_CMD_OUTCOME_PROTOCOL_ERROR;
+                if (s_pend_cancelled) {
+                    s_last_result.outcome = CHAM_CMD_OUTCOME_CANCELLED;
+                }
                 s_pend_cmd = 0xFFFF;
                 s_pend_cb  = NULL;
                 s_pend_write_ok = false;
+                s_pend_cancelled = false;
                 changed = true;
                 if (cb) cb(ok, ok ? fdata : NULL, ok ? fdlen : 0);
             } else if (s_pend_cmd != 0xFFFF) {
@@ -1131,9 +1176,15 @@ bool cham_poll(void)
         if (esp_timer_get_time() >= s_pend_deadline) {
             ESP_LOGW(TAG, "Command 0x%04X timed out", s_pend_cmd);
             cham_cmd_result_cb_t cb = s_pend_cb;
+            if (!s_pend_cancelled) {
+                s_last_result.outcome = CHAM_CMD_OUTCOME_TIMEOUT;
+                s_last_result.cmd = s_pend_cmd;
+                s_last_result.status = 0;
+            }
             s_pend_cmd = 0xFFFF;
             s_pend_cb  = NULL;
             s_pend_write_ok = false;
+            s_pend_cancelled = false;
             changed = true;
             if (cb) cb(false, NULL, 0);
         }

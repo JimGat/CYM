@@ -26,6 +26,7 @@ idf_component_register(
         "${C5_MAIN}/ble_whisperpair.c"
         "${C5_MAIN}/sd_error_handler.c"
         "${C5_MAIN}/chameleon_ble.c"
+        "${C5_MAIN}/chameleon_t55xx.c"
     INCLUDE_DIRS
         "${C5_MAIN}"
     REQUIRES

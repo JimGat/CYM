@@ -2261,6 +2261,7 @@ CYM can pair with a **Chameleon Ultra** or **Chameleon Lite** over Bluetooth and
 - **Dump Card (full sector/page read)** — appears after any card is detected on HF Read; for MIFARE Classic 1K runs a key attack (8 built-in keys + `/sdcard/lab/rfid/keys/mf_keys.dic` dictionary) and reads all 64 blocks; for NTAG/Ultralight reads all pages via raw ISO 14443-A READ commands; output `.nfc` file includes full `Block N:` / `Page N:` data in Flipper format
 - **Slot Manager** — 8-slot view showing LF/HF type per slot; activate slot, clear slot
 - **Clone to Slot** — after an LF card read, tap "Clone to Slot", pick a target slot; 4-step BLE chain writes card to Chameleon flash (EM410X and HID H10301 supported)
+- **Clone T5577** — a separate, confirmed physical-tag workflow for EM410x and HID Prox. CYM writes through the existing Chameleon Ultra BLE transport, then rescans and requires an exact 5-byte or 13-byte read-back match before reporting verified success. See [Chameleon T5577/T55xx cloning](docs/chameleon-t55xx.md).
 - **Load from SD** — long-press any slot row to open the SD file browser; lists `.rfid` (LF) and `.nfc` (HF, NTAG/Ultralight) files; tap to load directly to that slot
 
 Protocol reference: [ChameleonUltraGUI by GameTec-live](https://github.com/GameTec-live/ChameleonUltraGUI).
