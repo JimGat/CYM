@@ -45,6 +45,14 @@ case "$BOARD" in
         SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.ws-c5-28"
         ;;
 
+    pancake-c5)
+        # C5Lab Pancake DIY beta (ESP32-C5, 3.5-inch capacitive touch)
+        SOC_DIR="$REPO_ROOT/ESP32C5"
+        TARGET="esp32c5"
+        BUILD_DIR="build_pancake-c5"
+        SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.pancake-c5"
+        ;;
+
     # ── ESP32 boards ─────────────────────────────────────────────────────────
 
     cyd-2432s028|cyd2usb)
@@ -87,7 +95,7 @@ case "$BOARD" in
         echo "ERROR: Unknown board: $BOARD"
         echo ""
         echo "Known boards:"
-        echo "  ESP32-C5: nm-cyd-c5  ws-c5-28"
+        echo "  ESP32-C5: nm-cyd-c5  ws-c5-28  pancake-c5"
         echo "  ESP32:    cyd-2432s028  (alias: cyd2usb)"
         echo "  ESP32-S3: hosyond-s3-28  hosyond-s3-35  hosyond-s3-40"
         echo ""

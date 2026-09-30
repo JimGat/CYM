@@ -99,6 +99,9 @@ LV_IMG_DECLARE(deedee_img);
 #if defined(CONFIG_BOARD_HOSYOND_S3_35)
 #include "hosyond_s3_35_port.h"
 #endif
+#if defined(CONFIG_BOARD_PANCAKE_C5)
+#include "pancake_c5_port.h"
+#endif
 
 // PSRAM_ATTR: place static symbol in external RAM when PSRAM is present.
 // On boards without PSRAM (e.g. CYD2USB / ESP32-WROOM-32), compiles to nothing
@@ -4274,7 +4277,11 @@ static void check_heap_integrity(const char* location) {
 
 static void init_display(void)
 {
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_PANCAKE_C5)
+    ESP_ERROR_CHECK(pancake_c5_display_init(&panel_handle, &lcd_io_handle));
+    ESP_LOGI(TAG, "Pancake-C5 display initialized through board adapter");
+    return;
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     ESP_ERROR_CHECK(hosyond_s3_35_display_init(&s_hosyond_display));
     panel_handle = s_hosyond_display.panel;
 #if BOARD_HAS_SD
@@ -5725,7 +5732,11 @@ static void run_touch_calibration(void)
 
 static void init_touch(void)
 {
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_PANCAKE_C5)
+    ESP_ERROR_CHECK(pancake_c5_touch_init());
+    touch_cal_loaded = true;
+    ESP_LOGI(TAG, "Pancake-C5 FT6336U touch initialized by board adapter");
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     ESP_ERROR_CHECK(hosyond_s3_35_touch_init());
     touch_cal_loaded = true;
     ESP_LOGI(TAG, "ES3C35P capacitive touch initialized by board adapter");
@@ -7781,6 +7792,9 @@ void app_main(void)
 #if defined(CONFIG_BOARD_TOUCH_XPT2046)
                 xpt2046_touch_point_t tp = {0};
                 touched = xpt2046_read_touch(&touch_handle, &tp) && tp.touched;
+#elif defined(CONFIG_BOARD_PANCAKE_C5)
+                uint16_t tp_x = 0, tp_y = 0;
+                pancake_c5_touch_read(&tp_x, &tp_y, &touched);
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)
                 uint16_t tp_x = 0, tp_y = 0;
                 hosyond_s3_35_touch_read(&tp_x, &tp_y, &touched);
@@ -9918,6 +9932,11 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         touched = true;
         touch_x = point.x;
         touch_y = point.y;
+        last_input_ms = now_ms;
+    }
+
+#elif defined(CONFIG_BOARD_PANCAKE_C5)
+    if (pancake_c5_touch_read(&touch_x, &touch_y, &touched) && touched) {
         last_input_ms = now_ms;
     }
 

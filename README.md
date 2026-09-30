@@ -5,11 +5,11 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.15.30</b>
+  <b>v2.15.43</b>
 </p>
 
 <p align="center">
-  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — four supported software targets across ESP32-C5, ESP32, and ESP32-S3
+  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — four released targets plus one opt-in beta across ESP32-C5, ESP32, and ESP32-S3
 </p>
 
 <p align="center">
@@ -55,7 +55,7 @@
 
 ## Cheap Yellow Monster — CYM-NM28C5
 
-**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It now builds four supported software targets from a single shared firmware source tree, including the Hosyond ESP32-S3 3.5-inch; the 2.8-inch and 4.0-inch variants remain experimental — see [Supported Hardware](#supported-hardware) below.
+**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It now builds four released targets plus the opt-in Pancake-C5 DIY beta from a single shared firmware source tree; the Hosyond 2.8-inch and 4.0-inch variants remain experimental — see [Supported Hardware](#supported-hardware) below.
 
 The **NM-CYD-C5 / MonsterC5-style ESP32-C5-WIFI6-KIT** hardware family remains the primary, preferred platform: it's the board CYM was originally built for, it's where new features land first, and — paired with the optional **NM-RF-HAT** expansion board — it has by far the widest RF hardware support (Sub-GHz, nRF24, NFC/RFID, IR, and more).
 
@@ -79,19 +79,20 @@ The NM-CYD-C5 can be purchased at [nmminer.com](https://www.nmminer.com/product/
 
 ## Supported Hardware
 
-CYM builds and packages four supported software targets from one shared firmware source tree. The Hosyond ES3C35P 3.5-inch joins the three established boards in v2.15.27; its display and touch are physically qualified, while shared-CYM peripheral acceptance is still pending. The Hosyond 2.8-inch and 4.0-inch variants remain experimental.
+CYM builds and packages four released software targets plus the opt-in **Pancake-C5 DIY beta** from one shared firmware source tree. Pancake uses C5Lab’s pinned display, touch transform, and pin map; remote physical qualification is still pending.[1] The Hosyond 2.8-inch and 4.0-inch variants remain experimental.
 
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
 | **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, wardriving (no GPS — GPIO conflict with SPI on this board). No 802.15.4, no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT reachable via an SD Card Shim adapter. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. |
+| **[C5Lab Pancake DIY](https://github.com/C5Lab/pancake)** (`pancake-c5`) | 🧪 **Beta; remote hardware qualification pending** | ESP32-C5 with a 3.5-inch 480×320 display, FT6336U capacitive touch, microSD, WS2812, battery sensing, and optional UART GPS wiring. Available only through the beta flasher; dedicated to D3h420, Janek, and OyczE. |
 | **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | 🚧 **Coming Soon; hardware ordered, not yet supported** | Planned dedicated ESP32-C5 target with ST7796 320×480 SPI display, FT6336 touch, AXP2101 PMIC, CH32V006 helper controller, TF card, audio, sensors, and an exposed UART intended for GPS. Jim's SKU 35419 includes the BF3901 camera and battery. No CYM binary or web-flasher option exists yet. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 | **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Released in v2.15.34; available in the web flasher** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi and BLE. The shared CYM application, display, orientation, colors, capacitive touch, Modern/Classic menus, and Deauth Harvest have been physically exercised. SD, RGB LED, battery voltage, external UART GPS, broader radio coverage, and bounded soak remain pending qualification. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
 | **[Hosyond/LCDWiki ESP32-S3 4.0-inch](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display)** (`hosyond-s3-40`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ST7796S 320×480 SPI display, FT6336U capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 
-See [Waveshare ESP32-C5-Touch-LCD-3.5 — Coming Soon](docs/hardware/waveshare-c5-touch-lcd-35.md) for the saved SKU 35419 hardware inventory, implementation plan, evidence gaps, and arrival checklist. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for that family's controller, bus, pin-map, and acceptance details. All four currently supported software targets are integrated with the shared [web-based flasher](https://jimgat.github.io/CYM/); the planned WS-C5-35 will not be added until its dedicated image is built and physically qualified.
+See [Waveshare ESP32-C5-Touch-LCD-3.5 — Coming Soon](docs/hardware/waveshare-c5-touch-lcd-35.md) for the saved SKU 35419 hardware inventory, implementation plan, evidence gaps, and arrival checklist. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for that family's controller, bus, pin-map, and acceptance details. All four released software targets are integrated with the normal [web-based flasher](https://jimgat.github.io/CYM/); Pancake-C5 appears only with `?beta=1` until physical qualification. The planned WS-C5-35 will not be added until its dedicated image is built and physically qualified.
 
 ---
 
@@ -3261,3 +3262,55 @@ Your help made this toolkit more robust, more reliable, and better for everyone.
 </p>
 
 <p align="center">KAL, I love your face!</p>
+
+
+---
+
+## Physical EM410X / HID Prox cloning to T5577
+
+The Chameleon Ultra LF reader now exposes **Clone T5577** after a supported **EM410X** or **HID Prox H10301** source is read. This is a physical target write and is intentionally separate from **Clone to Slot**, which changes only a Chameleon emulator slot.
+
+1. Read the source and confirm its displayed credential.
+2. Tap **Clone T5577**, then **remove the source** from the antenna.
+3. Place the blank or reusable T5577/T55xx target and acknowledge the destructive-write warning.
+4. Keep the target still while CYM writes and performs a separate read-back.
+
+CYM verifies all 5 EM410X bytes or all 13 meaningful HID Prox bytes before displaying `Verified - T5577 matches`. A write acknowledgement alone is not success: missing targets, protocol rejection, timeout, disconnect, cancellation, and verification mismatch remain distinct bounded outcomes. The EM410X and HID physical-clone paths were successfully tested on hardware with v2.15.42.
+
+## Universal Clock and off-grid FT4/FT8 time
+
+**Universal Clock** is available from both Classic and Modern navigation. Its three modes are:
+
+- **Display Only** — strictly offline; displays the best trusted GPS, RTC, or disciplined-system source and never initiates Wi-Fi.
+- **Client NTP** — performs a bounded public-NTP synchronization and preserves honest source lineage on failure.
+- **AP NTP** — creates a protected local Wi-Fi network and serves UDP/123 from the best trusted source; untrusted time is advertised as leap-alarm/stratum 16 rather than as synchronized.
+
+A practical use case is an **off-grid** or out-of-cell-range amateur-radio station running **FT4** or **FT8**. Attach a UART GPS receiver, wait for `GPS LOCK`, select AP NTP, and point the radio computer at the displayed CYM AP address (normally `192.168.4.1`). The WSJT-X User Guide says the computer clock should be synchronized within about one second of UTC.[3]
+
+CYM currently timestamps **UART RMC** data; it does not consume a GPS **PPS** signal and is not a Stratum-1 timing appliance. Sub-50-ms results may be possible in favorable conditions, but current hardware/firmware has not been characterized to that level and is **not a guaranteed sub-50-ms** source.
+
+| Source/state | Conservative allowance | Guidance |
+|---|---:|---|
+| Qualified UART GPS | ±500 ms base | Practical FT4/FT8 candidate while trusted; no PPS guarantee |
+| Fresh public NTP | ±250 ms base | Network path and Wi-Fi load affect real accuracy |
+| WS-C5-28 **PCF85063A** RTC holdover | 50 ppm, about **4.32 seconds/day** | Battery-backed continuity; periodically re-discipline for timing-sensitive work |
+| C5/S3 RTOS holdover | 100 ppm, about 8.64 seconds/day | Short outages only for tight timing |
+| Classic CYD RTOS holdover | 150 ppm, about 12.96 seconds/day | Conservative uncharacterized profile |
+
+The WS-C5-28 RTC uses an external 32.768-kHz quartz crystal.[2][4] Drift therefore depends on crystal tolerance, temperature, PCB loading/layout, aging, calibration, battery health, and elapsed holdover time. Its PCF85063A offset register supports calibration, but CYM does not yet characterize or automatically calibrate each board; the 50-ppm number is an honest engineering allowance, not a measured promise.
+
+Full operating details and accuracy grid: [`docs/hardware/universal-clock.md`](docs/hardware/universal-clock.md).
+
+## Pancake-C5 DIY beta
+
+CYM now has a dedicated fifth board profile for the [C5Lab Pancake DIY](https://github.com/C5Lab/pancake), using the pinned reference display/touch transform and pin map in one shared firmware source tree.[1] The target is hidden from the normal selector and appears with `?beta=1` until remote hardware validation is complete.
+
+This beta build is dedicated to **D3h420, Janek, and OyczE** in recognition of their inspiration, hardware work, and community contributions. The original Pancake concept also helped inspire CYM on the NM-CYD-C5.
+
+See [`docs/hardware/pancake-c5.md`](docs/hardware/pancake-c5.md) for pin assignments, flashing, and the remote qualification checklist.
+
+Sources:
+[1] https://github.com/C5Lab/pancake — C5Lab Pancake repository
+[2] https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf — NXP PCF85063A data sheet
+[3] https://wsjt.sourceforge.io/wsjtx-doc/wsjtx-main.html — WSJT-X User Guide
+[4] https://docs.waveshare.com/ESP32-C5-Touch-LCD-2.8 — Waveshare ESP32-C5-Touch-LCD-2.8 documentation

@@ -22,6 +22,13 @@ menu "CYM Board Selection"
                 ST7789 display, CH32V003 IO expander for backlight, ES8311 audio.
                 Note: LCD CS and SD CS are swapped vs NM-CYD-C5.
 
+        config BOARD_PANCAKE_C5
+            bool "C5Lab Pancake DIY (ESP32-C5, 3.5-inch capacitive) [BETA]"
+            help
+                C5Lab Pancake carrier using ESP32-C5-WIFI6-KIT, 480x320
+                ILI9341-compatible SPI panel, FT6336U capacitive touch, microSD,
+                WS2812, battery ADC, and UART GPS. Hardware qualification pending.
+
         config BOARD_CYD2USB
             bool "ESP32-2432S028R Classic CYD (CYD2USB) [Phase 3]"
             help
@@ -57,14 +64,14 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_PSRAM
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
             Board has PSRAM. Enables large buffer allocations, LVGL PSRAM draw
             buffers, and the 1 MB captive-portal HTML buffer.
 
     config BOARD_HAS_5GHZ
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5
         help
             WiFi 6 dual-band (2.4 + 5 GHz). Set band mode WIFI_BAND_MODE_AUTO.
             ESP32-C5 only. ESP32, ESP32-S3 are 2.4 GHz only (default n).
@@ -79,7 +86,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_802154
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5
         help
             Built-in 802.15.4 radio (Zigbee/Thread passive scanner).
             ESP32-C5 only. Not present on ESP32 (CYD2USB) or ESP32-S3 (Hosyond).
@@ -93,7 +100,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_RGB_LED
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_CYD2USB || BOARD_HOSYOND_S3_35
+        default y if BOARD_NM_CYD_C5 || BOARD_PANCAKE_C5 || BOARD_CYD2USB || BOARD_HOSYOND_S3_35
         help
             Addressable or discrete RGB LED. NM-CYD-C5 / Hosyond-S3-35: WS2812
             (NeoPixel) on BOARD_RGB_LED_GPIO. CYD2USB: common-anode RGB LED
@@ -228,6 +235,13 @@ menu "CYM Board Selection"
         help
             CST3530 capacitive I2C touch. Interrupt-driven via BOARD_TOUCH_INT.
             No calibration needed.
+
+    config BOARD_TOUCH_FT6336
+        bool
+        default y if BOARD_PANCAKE_C5
+        help
+            FT6336U capacitive I2C touch used by C5Lab Pancake-C5.
+            Uses the pinned C5Lab landscape coordinate transform.
 
     config BOARD_TOUCH_I2C
         bool

@@ -20,6 +20,8 @@
 #  include "boards/nm_cyd_c5.h"
 #elif defined(CONFIG_BOARD_WS_C5_28)
 #  include "boards/ws_c5_28.h"
+#elif defined(CONFIG_BOARD_PANCAKE_C5)
+#  include "boards/pancake_c5.h"
 #elif defined(CONFIG_BOARD_CYD2USB)
 #  include "boards/cyd2usb.h"
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)

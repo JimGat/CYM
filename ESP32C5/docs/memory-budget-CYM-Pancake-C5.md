@@ -1,4 +1,4 @@
-# CYM CYM-WS-C5-28 — Firmware Memory Budget
+# CYM CYM-Pancake-C5 — Firmware Memory Budget
 
 > Auto-updated by `ESP32C5/tools/update_memory_map.py` after every successful build.
 > Commit this file together with the firmware binary so the numbers always match.
@@ -12,11 +12,11 @@
 |--------|-------|
 | Version | v2.15.43 |
 | Build date | 2026-09-30 |
-| .iram0.text | 138,486 B (135.2 KB) |
-| .dram0.data | 24,025 B (23.5 KB) |
-| .dram0.bss  (internal) | 95,280 B (93.0 KB) |
+| .iram0.text | 139,092 B (135.8 KB) |
+| .dram0.data | 24,233 B (23.7 KB) |
+| .dram0.bss  (internal) | 95,552 B (93.3 KB) |
 | .ext_ram.bss  (PSRAM) | 218,168 B (213.1 KB) |
-| App binary size | 3,258,400 B (3182.0 KB) |
+| App binary size | 3,260,448 B (3184.0 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,7 +24,7 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 60,477 B (59.1 KB) |
+| `libmain.a` | 60,589 B (59.2 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |

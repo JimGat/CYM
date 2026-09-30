@@ -1,0 +1,20 @@
+{
+  "name": "Cheap Yellow Monster - Pancake-C5 Beta v2.15.43",
+  "version": "v2.15.43",
+  "build": "v2.15.43",
+  "chipFamily": "ESP32-C5",
+  "parts": [
+    {
+      "path": "../binaries-pancake-c5/bootloader.bin",
+      "offset": 8192
+    },
+    {
+      "path": "../binaries-pancake-c5/partition-table.bin",
+      "offset": 32768
+    },
+    {
+      "path": "../binaries-pancake-c5/CYM-Pancake-C5.bin",
+      "offset": 65536
+    }
+  ]
+}

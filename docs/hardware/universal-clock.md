@@ -100,3 +100,35 @@ All values in this table are deliberately conservative engineering allowances an
 - The Clock Settings UTC offset changes presentation only.
 - Clock brightness is independent of general screen brightness while Clock is active.
 - Display Only does not initiate recovery. Select Client NTP when an explicit network recovery is wanted.
+
+
+## off-grid FT4/FT8 GPS time service
+
+Time-synchronized amateur-radio modes such as FT4 and FT8 are a primary AP NTP use case. With a UART GPS receiver and qualified `GPS LOCK`, CYM can provide local UTC to an isolated radio computer without Internet or cellular coverage. Join the displayed `CYM-NTP-xxxxxx` network and configure the client to use the displayed address, normally `192.168.4.1`.
+
+The WSJT-X User Guide says the computer clock should be synchronized to UTC within about one second.[3] CYM's on-screen source, age, reliability, and conservative uncertainty are the operator's go/no-go indicators.
+
+The present implementation timestamps UART RMC data and has no GPS PPS input. It is not Stratum 1. Favorable receivers may produce sub-50-ms results, but the system is not characterized or calibrated to that level and is **not a guaranteed sub-50-ms** source.
+
+## Accuracy and suitability grid
+
+| Source/state | Base allowance | Growth allowance | Practical guidance |
+|---|---:|---:|---|
+| Qualified UART GPS lock | ±500 ms | Requalified by RMC | Expected to fit normal FT4/FT8 timing while trusted; no PPS guarantee |
+| Fresh public NTP | ±250 ms | Converts to NTP/RTOS holdover | Good recovery source where Internet exists; asymmetry matters |
+| WS-C5-28 PCF85063A RTC holdover | Last disciplined UTC | 50 ppm = about **4.32 seconds/day** | Battery-backed continuity; resynchronize after long outages |
+| C5/S3 RTOS holdover | Last disciplined UTC | 100 ppm = about 8.64 seconds/day | Short outages only for timing-sensitive modes |
+| Classic CYD RTOS holdover | Last disciplined UTC | 150 ppm = about 12.96 seconds/day | Least predictable profile; no supported GPS UART |
+| Validated GPS-module RTC | ±2 s | 100 ppm = about 8.64 seconds/day | Continuity only; never presented as GPS lock |
+| `UNSYNCED` | Unknown | Unknown | Do not use as a timing authority |
+
+## WS-C5-28 RTC reliability
+
+The WS-C5-28's PCF85063A can preserve UTC from its backup supply, but the IC depends on an **external 32.768 kHz crystal** rather than an atomic or temperature-compensated reference.[2][4] Real drift depends on the crystal's initial tolerance and temperature curve, PCB capacitance/layout, aging, offset calibration, battery health, and holdover duration.
+
+The PCF85063A has an offset-calibration register, but CYM does not currently characterize each board or automatically calibrate it. The firmware therefore uses a conservative 50-ppm allowance—about 4.32 seconds/day—and labels it uncharacterized. That does not assert every unit drifts by that amount; it avoids promising better before physical soak data exists.
+
+Sources:
+[2] https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf — NXP PCF85063A data sheet
+[3] https://wsjt.sourceforge.io/wsjtx-doc/wsjtx-main.html — WSJT-X User Guide
+[4] https://docs.waveshare.com/ESP32-C5-Touch-LCD-2.8 — Waveshare ESP32-C5-Touch-LCD-2.8 documentation
