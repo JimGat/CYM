@@ -156,7 +156,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-24.04
-    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     steps:
       - name: Resolve release tag
         id: meta
