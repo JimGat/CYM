@@ -136,6 +136,17 @@ class PancakePackagingContract(unittest.TestCase):
             self.assertIn(token, w)
 
 class DocumentationContract(unittest.TestCase):
+    def test_pancake_is_explicitly_dev_channel_not_stable(self):
+        manifest = text("ESP32C5/docs/manifest.pancake-c5.json")
+        flasher = text("ESP32C5/docs/index.html")
+        readme = text("README.md")
+        hardware = text("docs/hardware/pancake-c5.md")
+        self.assertIn("Development Channel", manifest)
+        self.assertIn("Development channel only; not stable", flasher)
+        self.assertIn("Development channel only; not stable", readme)
+        self.assertIn("Development channel only; not stable", hardware)
+        self.assertIn('urlParams.get("beta") === "1"', flasher)
+
     def test_readme_documents_physical_hid_clone(self):
         r = text("README.md")
         for token in ("Clone T5577", "HID Prox", "physical", "read-back", "remove the source"):

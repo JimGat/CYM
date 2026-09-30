@@ -1,6 +1,6 @@
-# C5Lab Pancake-C5 DIY Beta
+# C5Lab Pancake-C5 DIY — Development Channel (Not Stable)
 
-CYM's `pancake-c5` target is a narrow board-profile port of the shared application, based on C5Lab reference commit `02528ded8feb242a8400e575b14e489ada1f960b`.[1]
+**Development channel only; not stable.** CYM's `pancake-c5` target is a narrow board-profile port of the shared application, based on C5Lab reference commit `02528ded8feb242a8400e575b14e489ada1f960b`.[1]
 
 The build is dedicated to **D3h420, Janek, and OyczE**. C5Lab's Pancake concept also inspired the original CYM direction on NM-CYD-C5.
 
@@ -22,7 +22,7 @@ The board has no fitted RTC. Clock can use UART GPS, public NTP, validated GPS-m
 
 ## Flashing
 
-Use `https://jimgat.github.io/CYM/?beta=1` and select **Pancake-C5 DIY (Beta)**. The merged `CYM-Pancake-C5-full.bin` is flashed at offset `0x0000`.
+Use `https://jimgat.github.io/CYM/?beta=1` and select **Pancake-C5 DIY (Dev Only — Not Stable)**. The merged `CYM-Pancake-C5-full.bin` is flashed at offset `0x0000`.
 
 ## Remote qualification checklist
 

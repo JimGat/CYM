@@ -298,7 +298,7 @@
               </div>
 
               <div id="devWarning" class="dev-warn" style="display:none;"><strong>Development build</strong> &mdash; binaries fetched live from the <code>Jimgat_Dev</code> branch. May be unstable.</div>
-              <div id="betaBoardWarning" class="dev-warn" style="display:none;"><strong>Beta board support</strong> &mdash; we're still gathering field feedback on this board. Binaries are functional but less tested than NM-CYD-C5.</div>
+              <div id="betaBoardWarning" class="dev-warn" style="display:none;"><strong>Development-channel board — not stable</strong> &mdash; Development channel only; not stable. Hardware qualification and field feedback are still pending.</div>
 
               <div class="actions">
                 <button id="connectBtn">Connect</button>
@@ -473,10 +473,10 @@
           beta:    false, // promoted to fully supported in the v2.14.00 release
         },
         "pancake-c5": {
-          label:   "Pancake-C5 DIY (Beta)",
+          label:   "Pancake-C5 DIY",
           chip:    "ESP32-C5",
           soc:     "ESP32C5",
-          desc:    "C5Lab Pancake DIY (ESP32-C5, 3.5-inch 480x320 display, FT6336U capacitive touch, 8 MB flash/PSRAM). Remote hardware qualification pending. Dedicated to D3h420, Janek, and OyczE.",
+          desc:    "Development channel only; not stable. C5Lab Pancake DIY (ESP32-C5, 3.5-inch 480x320 display, FT6336U capacitive touch, 8 MB flash/PSRAM). Remote hardware qualification pending. Dedicated to D3h420, Janek, and OyczE.",
           binDir:  "binaries-pancake-c5",
           appBin:  "CYM-Pancake-C5.bin",
           fullBin: "CYM-Pancake-C5-full.bin",
@@ -1058,7 +1058,7 @@
 
       // Board buttons are generated (not hardcoded) so a visitor with ?beta=1
       // sees every board BOARDS defines, not just DEFAULT_BOARD_IDS — see the
-      // constants above. Beta-flagged boards get a "(Beta)" suffix regardless of
+      // constants above. Development-only boards get a "(Dev Only — Not Stable)" suffix regardless of
       // channel; updateBetaBoardWarning() shows the explanatory note above when
       // the currently-selected board carries that flag.
       const renderBoardButtons = () => {
@@ -1069,7 +1069,7 @@
           const btn = document.createElement("button");
           btn.className = "sel-btn" + (id === state.board ? " active" : "");
           btn.dataset.board = id;
-          btn.textContent = board.label + (board.beta ? " (Beta)" : "");
+          btn.textContent = board.label + (board.beta ? " (Dev Only — Not Stable)" : "");
           btn.addEventListener("click", () => switchBoard(id));
           ui.boardSelectorRow.appendChild(btn);
         });
