@@ -16,7 +16,9 @@ typedef enum {
     CYM_TIME_GPS_ACQUIRING,
     CYM_TIME_GPS_LOCKED,
     CYM_TIME_NETWORK_SYNC,
+    CYM_TIME_NTP_HOLDOVER,
     CYM_TIME_RTC_HOLDOVER,
+    CYM_TIME_GPS_RTC_HOLDOVER,
     CYM_TIME_RTOS_HOLDOVER,
 } cym_time_source_t;
 
@@ -39,6 +41,7 @@ typedef struct {
     bool rtc_valid;
     bool gps_present;
     bool gps_fix;
+    bool gps_rtc_trusted;
     bool pps_active;
     uint64_t source_age_ms;
     uint64_t last_gps_sync_epoch;
@@ -55,6 +58,11 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus);
 // rx_monotonic_us is esp_timer_get_time() at sentence completion.
 // The timekeeper qualifies samples internally before accepting them.
 esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us);
+
+// Feed UTC from a no-fix (RMC status V) GPS-module RTC stream. It becomes a
+// holdover source only after monotonic qualification and cross-validation by
+// public NTP or a real satellite lock; it never counts as GPS lock.
+esp_err_t cym_timekeeper_observe_gps_rtc_utc(time_t epoch, int64_t rx_monotonic_us);
 
 // Accept a bounded public-NTP UTC update when GPS is not locked. The system
 // clock is disciplined and the RTC is optionally repaired; qualified GPS wins.

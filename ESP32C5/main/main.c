@@ -911,6 +911,7 @@ static char s_ntp_ip_str[20] = "";
 static char s_ntp_ap_ssid[24] = "";
 #define NTP_AP_PASSWORD "cymtime28"
 #define NTP_PUBLIC_SYNC_TIMEOUT_MS 5000
+#define NTP_PUBLIC_REFRESH_INTERVAL_MS 60000
 #define NTP_RTC_REPAIR_THRESHOLD_SEC 5
 static bool s_ntp_mdns_ok = false;
 static bool s_ntp_udp_ok = false;
@@ -27952,9 +27953,10 @@ static void clock_try_public_sync(void)
         // Only rewrite the RTC when it is untrusted/unavailable or materially wrong.
         // The pool request is still useful when no GPS is fitted because it provides
         // the reference needed to decide whether the RTC is substantially off.
-        bool repair_needed = !have_before || !before.valid || !before.rtc_valid ||
-            llabs((long long)epoch - (long long)before.utc.tv_sec) >=
-                NTP_RTC_REPAIR_THRESHOLD_SEC;
+        bool repair_needed = BOARD_TIME_HAS_RTC &&
+            (!have_before || !before.valid || !before.rtc_valid ||
+             llabs((long long)epoch - (long long)before.utc.tv_sec) >=
+                 NTP_RTC_REPAIR_THRESHOLD_SEC);
         if (cym_timekeeper_observe_network_utc(epoch, esp_timer_get_time(),
                                                   repair_needed) == ESP_OK) {
             s_ntp_public_state = repair_needed ? NTP_PUBLIC_SUCCESS : NTP_PUBLIC_TIME_OK;
@@ -28074,6 +28076,24 @@ static void clock_wifi_task(void *arg)
     s_ntp_wifi_connected = true;
     clock_try_public_sync();
 
+    // Remain a bounded, periodic SNTP client only while the user-selected
+    // Client NTP screen is active. Between polls the disciplined local clock
+    // carries time; qualified GPS suppresses network polling until lock is lost.
+    int refresh_waited_ms = 0;
+    while (!s_ntp_stopping && s_clock_mode == CLOCK_MODE_CLIENT_NTP) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+        refresh_waited_ms += 100;
+        if (refresh_waited_ms < NTP_PUBLIC_REFRESH_INTERVAL_MS) continue;
+        refresh_waited_ms = 0;
+
+        cym_time_snapshot_t snap = {0};
+        if (cym_timekeeper_snapshot(&snap) && snap.source == CYM_TIME_GPS_LOCKED) {
+            s_ntp_public_state = NTP_PUBLIC_SKIPPED_GPS;
+            continue;
+        }
+        clock_try_public_sync();
+    }
+
     s_ntp_wifi_task = NULL;
     vTaskDelete(NULL);
 }
@@ -28124,8 +28144,10 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
             case CYM_TIME_GPS_LOCKED:    badge = "GPS LOCK"; break;
             case CYM_TIME_GPS_ACQUIRING: badge = "ACQUIRING"; break;
             case CYM_TIME_RTC_HOLDOVER:  badge = "RTC HOLDOVER"; break;
-            case CYM_TIME_NETWORK_SYNC:  badge = "PUBLIC NTP"; break;
-            case CYM_TIME_RTOS_HOLDOVER:  badge = "RTOS HOLDOVER"; break;
+            case CYM_TIME_NETWORK_SYNC:       badge = "PUBLIC NTP"; break;
+            case CYM_TIME_NTP_HOLDOVER:        badge = "NTP HOLDOVER"; break;
+            case CYM_TIME_GPS_RTC_HOLDOVER:    badge = "GPS RTC HOLDOVER"; break;
+            case CYM_TIME_RTOS_HOLDOVER:       badge = "RTOS HOLDOVER"; break;
             default: break;
             }
         }
@@ -28134,6 +28156,8 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         if (have_snap && snap.source == CYM_TIME_GPS_LOCKED) c = lv_color_hex(0x69F0AE);
         else if (have_snap && snap.source == CYM_TIME_RTC_HOLDOVER) c = lv_color_hex(0xFFD740);
         else if (have_snap && snap.source == CYM_TIME_NETWORK_SYNC) c = lv_color_hex(0x69F0AE);
+        else if (have_snap && (snap.source == CYM_TIME_NTP_HOLDOVER ||
+                               snap.source == CYM_TIME_GPS_RTC_HOLDOVER)) c = lv_color_hex(0xFFD740);
         else if (have_snap && snap.source == CYM_TIME_GPS_ACQUIRING) c = lv_color_hex(0x40C4FF);
         lv_obj_set_style_text_color(s_ntp_source_lbl, c, 0);
     }
@@ -28202,8 +28226,8 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
             const char *status = "Public NTP: idle";
             if (s_ntp_public_state == NTP_PUBLIC_SYNCING) status = "Public NTP: syncing (max 5s)";
             else if (s_ntp_public_state == NTP_PUBLIC_SUCCESS) status = "Public NTP: RTC updated";
-            else if (s_ntp_public_state == NTP_PUBLIC_TIME_OK) status = "Public NTP: RTC within 5s";
-            else if (s_ntp_public_state == NTP_PUBLIC_TIMEOUT) status = "Public NTP: unavailable; using RTC";
+            else if (s_ntp_public_state == NTP_PUBLIC_TIME_OK) status = "Public NTP: synchronized";
+            else if (s_ntp_public_state == NTP_PUBLIC_TIMEOUT) status = "Public NTP: retrying in 60s";
             else if (s_ntp_public_state == NTP_PUBLIC_SKIPPED_GPS) status = "Public NTP: skipped (GPS lock)";
             snprintf(nbuf, sizeof(nbuf), "%s", status);
         }
@@ -28234,10 +28258,11 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         lv_label_set_text(s_clock_reliability_lbl, rbuf);
     }
     if (s_clock_caps_lbl) {
-        char cbuf[96];
-        snprintf(cbuf, sizeof(cbuf), "%s | %s",
+        char cbuf[112];
+        snprintf(cbuf, sizeof(cbuf), "%s | %s | GPS RTC: %s",
                  BOARD_TIME_HAS_RTC ? "RTC: fitted" : "RTC: not fitted",
-                 BOARD_TIME_HAS_GPS_UART ? "GPS: UART available" : "GPS: not supported");
+                 BOARD_TIME_HAS_GPS_UART ? "GPS: UART available" : "GPS: not supported",
+                 (have_snap && snap.gps_rtc_trusted) ? "trusted" : "unqualified");
         lv_label_set_text(s_clock_caps_lbl, cbuf);
     }
     if (s_ntp_age_lbl && have_snap) {
@@ -28250,6 +28275,12 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
                      (unsigned long long)(snap.source_age_ms / 1000));
         } else if (snap.source == CYM_TIME_NETWORK_SYNC) {
             snprintf(abuf, sizeof(abuf), "Source age: %llus | Public NTP",
+                     (unsigned long long)(snap.source_age_ms / 1000));
+        } else if (snap.source == CYM_TIME_NTP_HOLDOVER) {
+            snprintf(abuf, sizeof(abuf), "Holdover: %llus | Public NTP",
+                     (unsigned long long)(snap.source_age_ms / 1000));
+        } else if (snap.source == CYM_TIME_GPS_RTC_HOLDOVER) {
+            snprintf(abuf, sizeof(abuf), "Holdover: %llus | GPS module RTC",
                      (unsigned long long)(snap.source_age_ms / 1000));
         } else if (snap.source == CYM_TIME_RTOS_HOLDOVER) {
             snprintf(abuf, sizeof(abuf), "Source age: %llus | RTOS holdover",
@@ -41514,37 +41545,46 @@ static bool parse_gps_nmea(const char *nmea_sentence)
 		strncpy(sentence, nmea_sentence, sizeof(sentence) - 1);
 		sentence[sizeof(sentence) - 1] = '\0';
 
-		char *sp = NULL;
-		char *token = strtok_r(sentence, ",", &sp);
-		int field = 0;
-		char status = 'V';
-		int hh = 0, mm = 0, ss = 0, day = 0, mon = 0, yr = 0;
-		float sog_ms = 0.0f; // speed over ground, m/s (field 7 = knots)
+        // Preserve empty RMC fields. strtok_r() collapses consecutive commas,
+        // which shifts the DDMMYY field in the void/no-fix sentences emitted by
+        // modules such as the ATGM336H.
+        char *cursor = sentence;
+        int field = 0;
+        char status = 'V';
+        int hh = 0, mm = 0, ss = 0, day = 0, mon = 0, yr = 0;
+        float sog_ms = 0.0f; // speed over ground, m/s (field 7 = knots)
 
-		while (token != NULL) {
-			switch (field) {
-				case 1: // HHMMSS.SS
-					if (strlen(token) >= 6) {
-						hh = (token[0]-'0')*10 + (token[1]-'0');
-						mm = (token[2]-'0')*10 + (token[3]-'0');
-						ss = (token[4]-'0')*10 + (token[5]-'0');
-					}
-					break;
-				case 2: status = token[0]; break; // A=active, V=void
-				case 7: // Speed over ground in knots -> m/s (adaptive wardrive)
-					sog_ms = (float)atof(token) * 0.514444f;
-					break;
-				case 9: // DDMMYY
-					if (strlen(token) >= 6) {
-						day = (token[0]-'0')*10 + (token[1]-'0');
-						mon = (token[2]-'0')*10 + (token[3]-'0');
-						yr  = (token[4]-'0')*10 + (token[5]-'0');
-					}
-					break;
-			}
-			token = strtok_r(NULL, ",", &sp);
-			field++;
-		}
+        while (cursor != NULL) {
+            char *token = cursor;
+            char *comma = strchr(cursor, ',');
+            if (comma) {
+                *comma = '\0';
+                cursor = comma + 1;
+            } else {
+                cursor = NULL;
+            }
+            switch (field) {
+                case 1: // HHMMSS.SS
+                    if (strlen(token) >= 6) {
+                        hh = (token[0]-'0')*10 + (token[1]-'0');
+                        mm = (token[2]-'0')*10 + (token[3]-'0');
+                        ss = (token[4]-'0')*10 + (token[5]-'0');
+                    }
+                    break;
+                case 2: status = token[0]; break; // A=active, V=void
+                case 7: // Speed over ground in knots -> m/s (adaptive wardrive)
+                    sog_ms = (float)atof(token) * 0.514444f;
+                    break;
+                case 9: // DDMMYY
+                    if (strlen(token) >= 6) {
+                        day = (token[0]-'0')*10 + (token[1]-'0');
+                        mon = (token[2]-'0')*10 + (token[3]-'0');
+                        yr  = (token[4]-'0')*10 + (token[5]-'0');
+                    }
+                    break;
+            }
+            field++;
+        }
 
 		// Ground speed for adaptive wardrive: valid only while the fix is active.
 		current_gps.speed = (status == 'A') ? sog_ms : 0.0f;
@@ -41554,7 +41594,10 @@ static bool parse_gps_nmea(const char *nmea_sentence)
 			g_gps_force_save_pending = true; // force NVS save of last-known on lock loss
 		}
 
-		if (status == 'A' && yr > 0) {
+        bool valid_calendar = yr > 0 && mon >= 1 && mon <= 12 &&
+                              day >= 1 && day <= 31 && hh >= 0 && hh <= 23 &&
+                              mm >= 0 && mm <= 59 && ss >= 0 && ss <= 60;
+        if ((status == 'A' || status == 'V') && valid_calendar) {
             struct tm t = {0};
             t.tm_year = 100 + yr;
             t.tm_mon = mon - 1;
@@ -41567,11 +41610,15 @@ static bool parse_gps_nmea(const char *nmea_sentence)
             if (epoch != (time_t)-1) {
 #if BOARD_TIME_HAS_GPS_UART
                 cym_timekeeper_note_gps_present(true);
-                cym_timekeeper_observe_gps_utc(epoch, esp_timer_get_time());
+                if (status == 'A') {
+                    cym_timekeeper_observe_gps_utc(epoch, esp_timer_get_time());
+                } else {
+                    cym_timekeeper_observe_gps_rtc_utc(epoch, esp_timer_get_time());
+                }
 #endif
             }
-			return true;
-		}
+            return true;
+        }
         if (status == 'V') {
 #if BOARD_TIME_HAS_GPS_UART
             cym_timekeeper_note_gps_present(true);

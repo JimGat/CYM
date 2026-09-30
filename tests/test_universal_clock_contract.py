@@ -22,15 +22,16 @@ def section(start, end):
 
 class BoardProfileContract(unittest.TestCase):
     expected = {
-        "ws_c5_28.h": (1, 1, 50, 100, 500000, 250000, 1),
-        "nm_cyd_c5.h": (0, 1, 0, 100, 500000, 250000, 1),
-        "cyd2usb.h": (0, 0, 0, 150, 0, 250000, 0),
-        "hosyond_s3_35.h": (0, 1, 0, 100, 500000, 250000, 1),
+        "ws_c5_28.h": (1, 1, 50, 100, 500000, 250000, 2000000, 100, 1),
+        "nm_cyd_c5.h": (0, 1, 0, 100, 500000, 250000, 2000000, 100, 1),
+        "cyd2usb.h": (0, 0, 0, 150, 0, 250000, 0, 0, 0),
+        "hosyond_s3_35.h": (0, 1, 0, 100, 500000, 250000, 2000000, 100, 1),
     }
     symbols = (
         "BOARD_TIME_HAS_RTC", "BOARD_TIME_HAS_GPS_UART",
         "BOARD_TIME_RTC_DRIFT_PPM", "BOARD_TIME_RTOS_DRIFT_PPM",
         "BOARD_TIME_GPS_UNCERTAINTY_US", "BOARD_TIME_NTP_UNCERTAINTY_US",
+        "BOARD_TIME_GPS_RTC_UNCERTAINTY_US", "BOARD_TIME_GPS_RTC_DRIFT_PPM",
         "BOARD_TIME_HAS_MDNS", "BOARD_TIME_ESTIMATE_CHARACTERIZED",
     )
 
@@ -66,6 +67,8 @@ class BoardProfileContract(unittest.TestCase):
 class TimekeeperContract(unittest.TestCase):
     def test_source_and_reliability_enums(self):
         self.assertIn("CYM_TIME_RTOS_HOLDOVER", TK_H)
+        self.assertIn("CYM_TIME_NTP_HOLDOVER", TK_H)
+        self.assertIn("CYM_TIME_GPS_RTC_HOLDOVER", TK_H)
         for value in ("UNTRUSTED", "DEGRADED", "HOLDOVER", "GOOD", "EXCELLENT"):
             self.assertIn("CYM_TIME_RELIABILITY_" + value, TK_H)
 
@@ -83,6 +86,31 @@ class TimekeeperContract(unittest.TestCase):
 
     def test_no_rtc_gps_loss_enters_rtos_holdover(self):
         self.assertRegex(TK_C, re.compile(r"GPS_LOSS_TIMEOUT.*?CYM_TIME_RTOS_HOLDOVER", re.S))
+
+    def test_no_fix_gps_rtc_has_separate_cross_validated_path(self):
+        self.assertIn("cym_timekeeper_observe_gps_rtc_utc", TK_H)
+        self.assertIn("CYM_TIME_GPS_RTC_HOLDOVER", TK_C)
+        self.assertIn("s_gps_rtc_trusted", TK_C)
+        self.assertIn("GPS_RTC_CROSSCHECK_MAX_ERROR_S", TK_C)
+        self.assertIn("BOARD_TIME_GPS_RTC_UNCERTAINTY_US", TK_C)
+        self.assertIn("BOARD_TIME_GPS_RTC_DRIFT_PPM", TK_C)
+        self.assertIn("GPS RTC moved backwards past its last trusted epoch", TK_C)
+        self.assertIn("revoke_gps_rtc_trust", TK_C)
+        self.assertRegex(TK_C, re.compile(
+            r"GPS RTC discontinuity.*?revoke_gps_rtc_trust", re.S))
+        self.assertRegex(TK_C, re.compile(
+            r"revoke_gps_rtc_trust.*?CYM_TIME_GPS_RTC_HOLDOVER.*?CYM_TIME_RTOS_HOLDOVER",
+            re.S))
+        observer = TK_C[TK_C.index("esp_err_t cym_timekeeper_observe_gps_rtc_utc"):TK_C.index("esp_err_t cym_timekeeper_observe_network_utc")]
+        self.assertRegex(observer, re.compile(
+            r"may_take_over.*?CYM_TIME_NTP_HOLDOVER.*?CYM_TIME_GPS_RTC_HOLDOVER",
+            re.S))
+
+    def test_network_expiry_preserves_ntp_lineage(self):
+        self.assertIn("CYM_TIME_NTP_HOLDOVER", TK_C)
+        self.assertRegex(TK_C, re.compile(
+            r"s_source == CYM_TIME_NETWORK_SYNC.*?CYM_TIME_GPS_RTC_HOLDOVER.*?CYM_TIME_NTP_HOLDOVER",
+            re.S))
 
     def test_reliability_boundaries_are_explicit(self):
         self.assertIn("1000000", TK_C)
@@ -132,6 +160,30 @@ class BuildIntegrationContract(unittest.TestCase):
         parser = MAIN[start:end]
         self.assertIn("BOARD_TIME_HAS_GPS_UART", parser)
         self.assertNotIn("CONFIG_BOARD_WS_C5_28", parser)
+
+    def test_void_rmc_time_is_offered_to_gps_rtc_holdover(self):
+        parser = section("static bool parse_gps_nmea(const char *nmea_sentence)\n{", "static void gps_task")
+        self.assertRegex(parser, re.compile(
+            r"status == 'A' \|\| status == 'V'.*?cym_timekeeper_observe_gps_rtc_utc",
+            re.S))
+        rmc = parser[parser.index("// Parse GPRMC/GNRMC"):]
+        self.assertIn("char *cursor = sentence", rmc)
+        self.assertIn("strchr(cursor, ',')", rmc)
+        self.assertNotIn('strtok_r(sentence, ",", &sp)', rmc)
+
+    def test_client_mode_refreshes_public_ntp_every_minute(self):
+        task = section("static void clock_wifi_task(void *arg)\n{", "static bool maidenhead6")
+        self.assertIn("NTP_PUBLIC_REFRESH_INTERVAL_MS", MAIN)
+        self.assertRegex(MAIN, r"#define\s+NTP_PUBLIC_REFRESH_INTERVAL_MS\s+60000")
+        self.assertGreaterEqual(task.count("clock_try_public_sync();"), 2)
+        self.assertIn("while (!s_ntp_stopping", task)
+
+    def test_clock_distinguishes_ntp_and_gps_rtc_holdover(self):
+        ui = section("static void clock_ui_timer_cb(lv_timer_t *timer)\n{", "static void clock_retry_cb")
+        self.assertIn('badge = "NTP HOLDOVER"', ui)
+        self.assertIn('badge = "GPS RTC HOLDOVER"', ui)
+        self.assertIn("0xFFD740", ui)
+        self.assertIn('"Public NTP: synchronized"', ui)
 
 
 class NavigationContract(unittest.TestCase):
@@ -244,16 +296,18 @@ class DocumentationContract(unittest.TestCase):
         self.assertTrue(p.exists())
         text = p.read_text()
         self.assertIn("Timing values are conservative uncharacterized engineering estimates, not measured accuracy.", text)
-        for value in ("Display Only", "Client NTP", "AP NTP", "Maidenhead", "WS-C5-28", "NM-CYD-C5", "CYD-2432S028", "Hosyond ES3C35P"):
+        for value in ("Display Only", "Client NTP", "AP NTP", "Maidenhead",
+                      "60 seconds", "GPS RTC Holdover", "cross-validated",
+                      "WS-C5-28", "NM-CYD-C5", "CYD-2432S028", "Hosyond ES3C35P"):
             self.assertIn(value, text)
 
 
 class ReleaseVersionContract(unittest.TestCase):
-    def test_all_release_versions_are_v21540(self):
+    def test_all_release_versions_are_v21541(self):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.40")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.41")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v2.15.40", (ROOT / rel).read_text(), rel)
+            self.assertIn("v2.15.41", (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

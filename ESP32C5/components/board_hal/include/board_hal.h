@@ -110,6 +110,12 @@
 #ifndef BOARD_TIME_NTP_UNCERTAINTY_US
 #define BOARD_TIME_NTP_UNCERTAINTY_US 250000
 #endif
+#ifndef BOARD_TIME_GPS_RTC_UNCERTAINTY_US
+#define BOARD_TIME_GPS_RTC_UNCERTAINTY_US 0
+#endif
+#ifndef BOARD_TIME_GPS_RTC_DRIFT_PPM
+#define BOARD_TIME_GPS_RTC_DRIFT_PPM 0
+#endif
 #ifndef BOARD_TIME_HAS_MDNS
 #define BOARD_TIME_HAS_MDNS 0
 #endif
@@ -123,8 +129,12 @@
 #if BOARD_TIME_HAS_GPS_UART && (BOARD_GPS_TX < 0 || BOARD_GPS_RX < 0)
 #error "Board timing profile declares GPS UART but GPS pins are unavailable"
 #endif
-#if BOARD_TIME_RTC_DRIFT_PPM < 0 || BOARD_TIME_RTOS_DRIFT_PPM < 0
+#if BOARD_TIME_RTC_DRIFT_PPM < 0 || BOARD_TIME_RTOS_DRIFT_PPM < 0 || \
+    BOARD_TIME_GPS_RTC_DRIFT_PPM < 0
 #error "Board timing drift estimates must be non-negative"
+#endif
+#if BOARD_TIME_HAS_GPS_UART && BOARD_TIME_GPS_RTC_UNCERTAINTY_US == 0
+#error "GPS-UART timing profile must define GPS-module RTC uncertainty"
 #endif
 #if BOARD_TIME_NTP_UNCERTAINTY_US == 0
 #error "Board timing profile must define public-NTP uncertainty"

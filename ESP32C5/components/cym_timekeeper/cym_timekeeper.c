@@ -27,6 +27,9 @@ static const char *TAG = "timekeeper";
 // scheduling delay, and parse overhead.
 #define GPS_UART_UNCERTAINTY_US BOARD_TIME_GPS_UNCERTAINTY_US
 #define NETWORK_UNCERTAINTY_US  BOARD_TIME_NTP_UNCERTAINTY_US
+#define GPS_RTC_UNCERTAINTY_US  BOARD_TIME_GPS_RTC_UNCERTAINTY_US
+#define GPS_RTC_CROSSCHECK_MAX_ERROR_S 5
+#define GPS_RTC_RECENT_WINDOW_US (10 * 1000000LL)
 #define MIN_REASONABLE_EPOCH    1704067200LL  // 2024-01-01 UTC
 #define MAX_REASONABLE_EPOCH    4102444800LL  // 2100-01-01 UTC
 
@@ -39,11 +42,15 @@ static const char *TAG = "timekeeper";
 // NVS keys for RTC trust persistence
 #define NVS_NAMESPACE           "cym_time"
 #define NVS_KEY_RTC_TRUSTED     "rtc_trust"
+#define NVS_KEY_GPS_RTC_TRUSTED "gpsrtc_ok"
 #define NVS_KEY_LAST_GPS_EPOCH  "last_gps"
 
 // GPS loss timeout: if no valid sample for this long, transition to holdover
 #define GPS_LOSS_TIMEOUT_US     (10 * 1000000LL)  // 10 seconds
-#define NETWORK_LIVE_WINDOW_US  (10 * 1000000LL)  // then RTOS/RTC holdover
+// Client mode polls every 60 seconds. Keep the NTP source live through one
+// bounded five-second poll plus scheduler margin; a failed refresh then falls
+// back with explicit NTP/GPS-RTC lineage rather than generic red RTOS state.
+#define NETWORK_LIVE_WINDOW_US  (75 * 1000000LL)
 
 // Maximum samples between GPS observations before reacquisition
 #define MAX_DISCONTINUITY_S     5
@@ -58,11 +65,20 @@ static bool s_gps_present = false;
 static bool s_gps_fix = false;
 static bool s_rtc_valid = false;
 static bool s_rtc_trusted = false;
+static bool s_gps_rtc_trusted = false;
 
 // GPS qualification
 static int s_consec_count = 0;
 static time_t s_prev_gps_epoch = 0;
 static int64_t s_prev_gps_mono_us = 0;
+
+// No-fix GPS-module RTC qualification. This is deliberately independent of
+// satellite-lock qualification so a void RMC sentence can never create lock.
+static int s_gps_rtc_consec_count = 0;
+static time_t s_prev_gps_rtc_epoch = 0;
+static int64_t s_prev_gps_rtc_mono_us = 0;
+static time_t s_latest_gps_rtc_epoch = 0;
+static int64_t s_latest_gps_rtc_mono_us = 0;
 
 // Discipline tracking
 static int64_t s_last_lock_mono_us = 0;
@@ -84,13 +100,17 @@ static bool s_persist_pending = false;
 
 // ── NVS helpers ─────────────────────────────────────────────────────────────
 
-static esp_err_t persist_trust_values(bool rtc_trusted, time_t last_sync_epoch)
+static esp_err_t persist_trust_values(bool rtc_trusted, bool gps_rtc_trusted,
+                                      time_t last_sync_epoch)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
 
     err = nvs_set_u8(h, NVS_KEY_RTC_TRUSTED, rtc_trusted ? 1 : 0);
+    if (err == ESP_OK) {
+        err = nvs_set_u8(h, NVS_KEY_GPS_RTC_TRUSTED, gps_rtc_trusted ? 1 : 0);
+    }
     if (err == ESP_OK) {
         err = nvs_set_i64(h, NVS_KEY_LAST_GPS_EPOCH, (int64_t)last_sync_epoch);
     }
@@ -106,6 +126,9 @@ static void load_trust(void)
         uint8_t trusted = 0;
         nvs_get_u8(h, NVS_KEY_RTC_TRUSTED, &trusted);
         s_rtc_trusted = (trusted != 0);
+        trusted = 0;
+        nvs_get_u8(h, NVS_KEY_GPS_RTC_TRUSTED, &trusted);
+        s_gps_rtc_trusted = (trusted != 0);
         int64_t epoch = 0;
         nvs_get_i64(h, NVS_KEY_LAST_GPS_EPOCH, &epoch);
         s_last_gps_sync_epoch = (time_t)epoch;
@@ -141,6 +164,26 @@ static uint32_t grow_uncertainty(uint32_t base_us,
     return uncertainty > UINT32_MAX ? UINT32_MAX : (uint32_t)uncertainty;
 }
 
+static void revoke_gps_rtc_trust(int64_t now_mono_us, const char *reason)
+{
+    if (!s_gps_rtc_trusted) return;
+
+    s_gps_rtc_trusted = false;
+    s_persist_pending = true;
+    if (s_source == CYM_TIME_GPS_RTC_HOLDOVER) {
+        uint64_t elapsed_us = now_mono_us > s_last_lock_mono_us ?
+                              (uint64_t)(now_mono_us - s_last_lock_mono_us) : 0;
+        s_holdover_base_age_ms += elapsed_us / 1000;
+        s_holdover_base_uncertainty_us = grow_uncertainty(
+            s_holdover_base_uncertainty_us, elapsed_us,
+            BOARD_TIME_GPS_RTC_DRIFT_PPM);
+        s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
+        s_last_lock_mono_us = now_mono_us;
+        s_source = CYM_TIME_RTOS_HOLDOVER;
+    }
+    ESP_LOGW(TAG, "GPS module RTC trust revoked: %s", reason);
+}
+
 static cym_time_reliability_t derive_reliability(cym_time_source_t source,
                                                   bool valid,
                                                   uint32_t uncertainty_us)
@@ -153,7 +196,11 @@ static cym_time_reliability_t derive_reliability(cym_time_source_t source,
         uncertainty_us <= 2000000) {
         return CYM_TIME_RELIABILITY_GOOD;
     }
-    if (source == CYM_TIME_RTC_HOLDOVER) return CYM_TIME_RELIABILITY_HOLDOVER;
+    if (source == CYM_TIME_RTC_HOLDOVER ||
+        source == CYM_TIME_GPS_RTC_HOLDOVER ||
+        source == CYM_TIME_NTP_HOLDOVER) {
+        return CYM_TIME_RELIABILITY_HOLDOVER;
+    }
     return CYM_TIME_RELIABILITY_DEGRADED;
 }
 
@@ -193,6 +240,9 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus)
     s_consec_count = 0;
     s_uncertainty_us = 0;
     s_has_rtc = false;
+    s_gps_rtc_consec_count = 0;
+    s_gps_rtc_trusted = false;
+    load_trust();
 
 #if BOARD_TIME_HAS_RTC
     // Initialize PCF85063A RTC
@@ -201,9 +251,6 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus)
         if (ret == ESP_OK) {
             s_has_rtc = true;
             ESP_LOGI(TAG, "PCF85063A RTC available");
-
-            // Load persisted trust state
-            load_trust();
 
             // Try to restore system clock from RTC at boot
             struct tm rtc_time;
@@ -303,6 +350,10 @@ esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us)
         s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
         s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
         s_last_gps_sync_epoch = epoch;
+        // A real satellite lock validates this module's no-fix RTC stream for
+        // future holdover. Persist later from main_task, never this GPS task.
+        s_gps_rtc_trusted = true;
+        s_persist_pending = true;
 
         // Discipline the system clock
         time_t now = time(NULL);
@@ -344,6 +395,99 @@ esp_err_t cym_timekeeper_observe_gps_utc(time_t epoch, int64_t rx_monotonic_us)
         if (s_source == CYM_TIME_UNSYNCED) {
             s_source = CYM_TIME_GPS_ACQUIRING;
         }
+    }
+
+    xSemaphoreGive(s_tk_mutex);
+    return ESP_OK;
+}
+
+esp_err_t cym_timekeeper_observe_gps_rtc_utc(time_t epoch, int64_t rx_monotonic_us)
+{
+    if (!s_tk_mutex) return ESP_ERR_INVALID_STATE;
+    if ((int64_t)epoch < MIN_REASONABLE_EPOCH || (int64_t)epoch >= MAX_REASONABLE_EPOCH) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(s_tk_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    s_gps_present = true;
+    s_gps_fix = false;
+    s_consec_count = 0;
+
+    if (s_gps_rtc_consec_count > 0 && s_prev_gps_rtc_epoch > 0) {
+        int64_t elapsed_s = (rx_monotonic_us - s_prev_gps_rtc_mono_us) / 1000000LL;
+        int64_t expected = (int64_t)s_prev_gps_rtc_epoch + elapsed_s;
+        int64_t jump_s = (int64_t)epoch - expected;
+        if (jump_s < -MAX_DISCONTINUITY_S || jump_s > MAX_DISCONTINUITY_S) {
+            ESP_LOGW(TAG, "GPS RTC discontinuity: expected ~%ld, got %ld",
+                     (long)expected, (long)epoch);
+            s_gps_rtc_consec_count = 0;
+            revoke_gps_rtc_trust(rx_monotonic_us, "stream discontinuity");
+        }
+    }
+    s_prev_gps_rtc_epoch = epoch;
+    s_prev_gps_rtc_mono_us = rx_monotonic_us;
+    s_latest_gps_rtc_epoch = epoch;
+    s_latest_gps_rtc_mono_us = rx_monotonic_us;
+    s_gps_rtc_consec_count++;
+
+    if (s_gps_rtc_consec_count < GPS_LOCK_SAMPLES) {
+        xSemaphoreGive(s_tk_mutex);
+        return ESP_OK;
+    }
+
+    // A battery-backed module clock cannot legitimately move behind its last
+    // cross-validation epoch. Revoke persisted trust and require fresh NTP or
+    // satellite validation instead of accepting a plausible but reset date.
+    if (s_gps_rtc_trusted && s_last_gps_sync_epoch > 0 &&
+        (int64_t)epoch + GPS_RTC_CROSSCHECK_MAX_ERROR_S <
+            (int64_t)s_last_gps_sync_epoch) {
+        ESP_LOGW(TAG, "GPS RTC moved backwards past its last trusted epoch");
+        revoke_gps_rtc_trust(rx_monotonic_us, "epoch rollback");
+    }
+
+    time_t now = time(NULL);
+    int64_t error_s = (int64_t)epoch - (int64_t)now;
+    bool trusted_reference = s_source == CYM_TIME_NETWORK_SYNC ||
+                             s_source == CYM_TIME_NTP_HOLDOVER ||
+                             s_source == CYM_TIME_GPS_LOCKED;
+    if (!s_gps_rtc_trusted && trusted_reference &&
+        llabs((long long)error_s) <= GPS_RTC_CROSSCHECK_MAX_ERROR_S) {
+        s_gps_rtc_trusted = true;
+        s_persist_pending = true;
+        ESP_LOGI(TAG, "GPS module RTC cross-validated (error=%lld s)",
+                 (long long)error_s);
+    }
+
+    // Fresh NTP, qualified GPS, and a physical board RTC remain preferred.
+    bool may_take_over = s_source == CYM_TIME_UNSYNCED ||
+                         s_source == CYM_TIME_GPS_ACQUIRING ||
+                         s_source == CYM_TIME_RTOS_HOLDOVER ||
+                         s_source == CYM_TIME_NTP_HOLDOVER ||
+                         s_source == CYM_TIME_GPS_RTC_HOLDOVER;
+    if (s_gps_rtc_trusted && may_take_over) {
+        int64_t diff_us = error_s * 1000000LL;
+        if (diff_us < -STEP_THRESHOLD_US || diff_us > STEP_THRESHOLD_US ||
+            (int64_t)now < MIN_REASONABLE_EPOCH) {
+            step_clock(epoch);
+        } else if (diff_us != 0) {
+            slew_clock((int32_t)diff_us);
+        }
+        s_last_correction_us = (int32_t)(diff_us > INT32_MAX ? INT32_MAX :
+                               diff_us < INT32_MIN ? INT32_MIN : diff_us);
+        s_source = CYM_TIME_GPS_RTC_HOLDOVER;
+        s_last_lock_mono_us = rx_monotonic_us;
+        uint64_t trusted_age_s = 0;
+        if (s_last_gps_sync_epoch > 0 && epoch > s_last_gps_sync_epoch) {
+            trusted_age_s = (uint64_t)(epoch - s_last_gps_sync_epoch);
+        }
+        s_holdover_base_age_ms = trusted_age_s * 1000ULL;
+        s_holdover_base_uncertainty_us = grow_uncertainty(
+            GPS_RTC_UNCERTAINTY_US, trusted_age_s * 1000000ULL,
+            BOARD_TIME_GPS_RTC_DRIFT_PPM);
+        s_holdover_drift_ppm = BOARD_TIME_GPS_RTC_DRIFT_PPM;
+        ESP_LOGI(TAG, "Using cross-validated GPS module RTC holdover");
     }
 
     xSemaphoreGive(s_tk_mutex);
@@ -400,6 +544,7 @@ esp_err_t cym_timekeeper_flush_pending_persistence(void)
     if (!s_tk_mutex) return ESP_ERR_INVALID_STATE;
 
     bool rtc_trusted;
+    bool gps_rtc_trusted;
     time_t last_sync_epoch;
     if (xSemaphoreTake(s_tk_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
         return ESP_ERR_TIMEOUT;
@@ -409,11 +554,13 @@ esp_err_t cym_timekeeper_flush_pending_persistence(void)
         return ESP_OK;
     }
     rtc_trusted = s_rtc_trusted;
+    gps_rtc_trusted = s_gps_rtc_trusted;
     last_sync_epoch = s_last_gps_sync_epoch;
     s_persist_pending = false;
     xSemaphoreGive(s_tk_mutex);
 
-    esp_err_t err = persist_trust_values(rtc_trusted, last_sync_epoch);
+    esp_err_t err = persist_trust_values(rtc_trusted, gps_rtc_trusted,
+                                             last_sync_epoch);
     if (err != ESP_OK) {
         if (xSemaphoreTake(s_tk_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
             s_persist_pending = true;
@@ -450,6 +597,7 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
     out->rtc_valid = s_rtc_valid;
     out->gps_present = s_gps_present;
     out->gps_fix = s_gps_fix;
+    out->gps_rtc_trusted = s_gps_rtc_trusted;
     out->pps_active = false;  // Version one: no PPS
     out->last_gps_sync_epoch = (uint64_t)s_last_gps_sync_epoch;
     out->last_correction_us = s_last_correction_us;
@@ -460,35 +608,52 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
     if (s_source == CYM_TIME_GPS_LOCKED) {
         int64_t since_last = now_mono - s_last_lock_mono_us;
         if (since_last > GPS_LOSS_TIMEOUT_US) {
-            // Transition to holdover
+            // Transition to the best qualified holdover source.
+            s_gps_fix = false;
+            s_holdover_base_age_ms = (uint64_t)(since_last / 1000);
             if (s_rtc_trusted && s_rtc_valid) {
                 s_source = CYM_TIME_RTC_HOLDOVER;
-                s_gps_fix = false;
-                s_holdover_base_age_ms = 0;
                 s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
                 s_holdover_drift_ppm = BOARD_TIME_RTC_DRIFT_PPM;
-                s_last_lock_mono_us = now_mono;
                 ESP_LOGW(TAG, "GPS lost — entering RTC holdover");
+            } else if (s_gps_rtc_trusted && s_latest_gps_rtc_mono_us > 0 &&
+                       now_mono - s_latest_gps_rtc_mono_us <= GPS_RTC_RECENT_WINDOW_US) {
+                s_source = CYM_TIME_GPS_RTC_HOLDOVER;
+                s_holdover_base_uncertainty_us = GPS_RTC_UNCERTAINTY_US;
+                s_holdover_drift_ppm = BOARD_TIME_GPS_RTC_DRIFT_PPM;
+                ESP_LOGW(TAG, "GPS fix lost — entering GPS module RTC holdover");
             } else {
                 s_source = CYM_TIME_RTOS_HOLDOVER;
-                s_gps_fix = false;
-                s_holdover_base_age_ms = 0;
                 s_holdover_base_uncertainty_us = GPS_UART_UNCERTAINTY_US;
                 s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
-                s_last_lock_mono_us = now_mono;
                 ESP_LOGW(TAG, "GPS lost — entering RTOS holdover");
             }
+            s_last_lock_mono_us = now_mono;
         }
     }
 
     if (s_source == CYM_TIME_NETWORK_SYNC &&
         now_mono - s_last_lock_mono_us > NETWORK_LIVE_WINDOW_US) {
-        s_source = (s_rtc_trusted && s_rtc_valid) ?
-                   CYM_TIME_RTC_HOLDOVER : CYM_TIME_RTOS_HOLDOVER;
-        s_holdover_base_age_ms = 0;
-        s_holdover_base_uncertainty_us = NETWORK_UNCERTAINTY_US;
-        s_holdover_drift_ppm = (s_source == CYM_TIME_RTC_HOLDOVER) ?
-                               BOARD_TIME_RTC_DRIFT_PPM : BOARD_TIME_RTOS_DRIFT_PPM;
+        int64_t network_age_us = now_mono - s_last_lock_mono_us;
+        s_holdover_base_age_ms = (uint64_t)(network_age_us / 1000);
+        if (s_rtc_trusted && s_rtc_valid) {
+            s_source = CYM_TIME_RTC_HOLDOVER;
+            s_holdover_base_uncertainty_us = NETWORK_UNCERTAINTY_US;
+            s_holdover_drift_ppm = BOARD_TIME_RTC_DRIFT_PPM;
+        } else if (s_gps_rtc_trusted && s_latest_gps_rtc_mono_us > 0 &&
+                   now_mono - s_latest_gps_rtc_mono_us <= GPS_RTC_RECENT_WINDOW_US) {
+            s_source = CYM_TIME_GPS_RTC_HOLDOVER;
+            s_holdover_base_uncertainty_us = grow_uncertainty(
+                GPS_RTC_UNCERTAINTY_US, (uint64_t)network_age_us,
+                BOARD_TIME_GPS_RTC_DRIFT_PPM);
+            s_holdover_drift_ppm = BOARD_TIME_GPS_RTC_DRIFT_PPM;
+        } else {
+            s_source = CYM_TIME_NTP_HOLDOVER;
+            s_holdover_base_uncertainty_us = grow_uncertainty(
+                NETWORK_UNCERTAINTY_US, (uint64_t)network_age_us,
+                BOARD_TIME_RTOS_DRIFT_PPM);
+            s_holdover_drift_ppm = BOARD_TIME_RTOS_DRIFT_PPM;
+        }
         s_last_lock_mono_us = now_mono;
     }
 
@@ -507,19 +672,14 @@ bool cym_timekeeper_snapshot(cym_time_snapshot_t *out)
         out->valid = true;
         break;
     }
-    case CYM_TIME_RTC_HOLDOVER: {
-        uint64_t holdover_us = (uint64_t)(now_mono - s_last_lock_mono_us);
-        out->source_age_ms = s_holdover_base_age_ms + holdover_us / 1000;
-        out->uncertainty_us = grow_uncertainty(
-            s_holdover_base_uncertainty_us, holdover_us, s_holdover_drift_ppm);
-        out->valid = true;
-        break;
-    }
+    case CYM_TIME_NTP_HOLDOVER:
+    case CYM_TIME_RTC_HOLDOVER:
+    case CYM_TIME_GPS_RTC_HOLDOVER:
     case CYM_TIME_RTOS_HOLDOVER: {
         uint64_t holdover_us = (uint64_t)(now_mono - s_last_lock_mono_us);
         out->source_age_ms = s_holdover_base_age_ms + holdover_us / 1000;
         out->uncertainty_us = grow_uncertainty(
-            s_holdover_base_uncertainty_us, holdover_us, BOARD_TIME_RTOS_DRIFT_PPM);
+            s_holdover_base_uncertainty_us, holdover_us, s_holdover_drift_ppm);
         out->valid = true;
         break;
     }
@@ -551,9 +711,11 @@ const char *cym_timekeeper_source_name(cym_time_source_t source)
     case CYM_TIME_UNSYNCED:       return "UNSYNCED";
     case CYM_TIME_GPS_ACQUIRING:  return "GPS ACQUIRING";
     case CYM_TIME_GPS_LOCKED:     return "GPS LOCK";
-    case CYM_TIME_NETWORK_SYNC:   return "PUBLIC NTP";
-    case CYM_TIME_RTC_HOLDOVER:   return "RTC HOLDOVER";
-    case CYM_TIME_RTOS_HOLDOVER:  return "RTOS HOLDOVER";
+    case CYM_TIME_NETWORK_SYNC:       return "PUBLIC NTP";
+    case CYM_TIME_NTP_HOLDOVER:        return "NTP HOLDOVER";
+    case CYM_TIME_RTC_HOLDOVER:        return "RTC HOLDOVER";
+    case CYM_TIME_GPS_RTC_HOLDOVER:    return "GPS RTC HOLDOVER";
+    case CYM_TIME_RTOS_HOLDOVER:       return "RTOS HOLDOVER";
     default:                      return "UNKNOWN";
     }
 }
