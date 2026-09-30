@@ -619,6 +619,41 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
 }
 
 /* ── Scan GAP event callback ─────────────────────────────────────────────── */
+static bool s_scan_legacy = false;
+static int s_scan_gap_cb(struct ble_gap_event *event, void *arg);
+
+/* Start the best discovery procedure supported by this controller. The original
+ * ESP32 in the Classic CYD is BLE 4.2 only: ble_gap_ext_disc() returns
+ * BLE_HS_ENOTSUP (8), so fall back to legacy discovery. Chameleon Ultra/Lite
+ * advertises with legacy-compatible PDUs, while BLE 5 boards retain extended
+ * discovery for maximum visibility. */
+static int s_cham_scan_begin(void)
+{
+    if (!s_scan_legacy) {
+        struct ble_gap_ext_disc_params ep = {
+            .itvl = 0x60, .window = 0x60, .passive = 0,
+        };
+        int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 500, 0,
+                                  0, BLE_HCI_SCAN_FILT_NO_WL, 0,
+                                  &ep, NULL, s_scan_gap_cb, NULL);
+        if (rc != BLE_HS_ENOTSUP) return rc;
+
+        s_scan_legacy = true;
+        ESP_LOGI(TAG, "Extended BLE discovery unsupported; using legacy scan");
+    }
+
+    struct ble_gap_disc_params scan_params = {
+        .itvl = 0x60,
+        .window = 0x60,
+        .filter_policy = BLE_HCI_SCAN_FILT_NO_WL,
+        .limited = 0,
+        .passive = 0,
+        .filter_duplicates = 0,
+    };
+    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, 5000, &scan_params,
+                        s_scan_gap_cb, NULL);
+}
+
 static int s_scan_gap_cb(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
@@ -647,14 +682,15 @@ static int s_scan_gap_cb(struct ble_gap_event *event, void *arg)
         addr     = d->addr;
         rssi     = d->rssi;
     } else if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
-        /* Restart if still scanning (fires on timeout or external cancel) */
+        /* Restart with the controller-compatible mode after each 5 s window. */
         if (s_state == CHAM_STATE_SCANNING) {
-            struct ble_gap_ext_disc_params ep = {
-                .itvl = 0x60, .window = 0x60, .passive = 0,
-            };
-            ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 500, 0,
-                             0, BLE_HCI_SCAN_FILT_NO_WL, 0,
-                             &ep, NULL, s_scan_gap_cb, NULL);
+            int rc = s_cham_scan_begin();
+            if (rc != 0 && rc != BLE_HS_EALREADY) {
+                ESP_LOGE(TAG, "scan restart rc=%d", rc);
+                s_state = CHAM_STATE_ERROR;
+                snprintf(s_status_msg, sizeof(s_status_msg), "Scan restart failed (%d)", rc);
+                s_changed = true;
+            }
         }
         return 0;
     } else {
@@ -790,18 +826,12 @@ void cham_scan_start(void)
     s_connect_idx = -1;
     memset(s_scan_results, 0, sizeof(s_scan_results));
 
-    /* Use extended discovery — catches both BLE 5 extended PDUs and legacy PDUs.
-     * ble_gap_disc() (legacy only) misses devices that advertise via extended PDUs. */
-    struct ble_gap_ext_disc_params ep = {
-        .itvl = 0x60, .window = 0x60, .passive = 0,
-    };
-
-    /* Cancel any ongoing scan before starting ours */
+    /* Cancel any ongoing scan before starting ours. s_cham_scan_begin() uses
+     * extended discovery where available and legacy BLE 4.2 discovery on the
+     * Classic CYD controller. */
     ble_gap_disc_cancel();
 
-    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 500, 0,
-                              0, BLE_HCI_SCAN_FILT_NO_WL, 0,
-                              &ep, NULL, s_scan_gap_cb, NULL);
+    int rc = s_cham_scan_begin();
     if (rc == 0 || rc == BLE_HS_EALREADY) {
         s_state = CHAM_STATE_SCANNING;
         strlcpy(s_status_msg, "Scanning...", sizeof(s_status_msg));
