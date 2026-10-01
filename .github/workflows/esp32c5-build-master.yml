@@ -194,7 +194,6 @@ jobs:
             release_artifacts/firmware/bootloader-esp32c5.bin
             release_artifacts/firmware/partition-table.bin
             release_artifacts/firmware/partition-table-esp32c5.bin
-            release_artifacts/firmware/CYM-NM28C5.bin
             release_artifacts/firmware/${{ env.FW_BASENAME }}.bin
             release_artifacts/firmware/${{ env.FW_BASENAME }}-${{ needs.package.outputs.fw_version }}.bin
             release_artifacts/firmware/${{ env.FW_BASENAME }}-full.bin
