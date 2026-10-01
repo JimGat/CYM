@@ -54,9 +54,9 @@ class BoardProfileContract(unittest.TestCase):
 
     def test_cyd_routes_gps_to_uart_expansion_jst(self):
         text = (BOARDS / "cyd2usb.h").read_text()
-        self.assertRegex(text, r"BOARD_GPS_UART_NUM\s+UART_NUM_1")
-        self.assertRegex(text, r"BOARD_GPS_TX_GPIO\s+1")
-        self.assertRegex(text, r"BOARD_GPS_RX_GPIO\s+3")
+        self.assertRegex(text, r"BOARD_GPS_UART_NUM\s+UART_NUM_2")
+        self.assertRegex(text, r"BOARD_GPS_TX_GPIO\s+3")
+        self.assertRegex(text, r"BOARD_GPS_RX_GPIO\s+1")
 
     def test_normalized_fallbacks_and_sanity_checks_exist(self):
         for symbol in self.symbols:
@@ -306,9 +306,9 @@ class DocumentationContract(unittest.TestCase):
 class ReleaseVersionContract(unittest.TestCase):
     def test_all_release_versions_are_v21542(self):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.50")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.51")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32C5/docs/manifest.pancake-c5.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v2.15.50", (ROOT / rel).read_text(), rel)
+            self.assertIn("v2.15.51", (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

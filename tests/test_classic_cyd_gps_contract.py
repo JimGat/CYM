@@ -16,12 +16,12 @@ DOC = GUIDE_PATH.read_text()
 class ClassicCydGpsBoardContract(unittest.TestCase):
     def test_uart_expansion_jst_is_the_gps_uart(self):
         self.assertRegex(BOARD, r"BOARD_HAS_GPS\s+1")
-        self.assertRegex(BOARD, r"BOARD_GPS_UART_NUM\s+UART_NUM_1")
-        self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+1")
-        self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+3")
+        self.assertRegex(BOARD, r"BOARD_GPS_UART_NUM\s+UART_NUM_2")
+        self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+3")
+        self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+1")
 
-    def test_classic_rx_pin_is_input_before_uart1_attach(self):
-        # GPIO3 is the reversed Classic UART1 RX path. Establish input mode
+    def test_classic_rx_pin_is_input_before_uart2_attach(self):
+        # GPIO1 is the Bruce/HaleHound Classic UART2 RX path. Establish input mode
         # explicitly before attaching the UART input matrix.
         self.assertRegex(
             MAIN,
@@ -54,6 +54,14 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
         self.assertIn("GPS TX", DOC)
         self.assertIn("GPIO1", DOC)
 
+    def test_setup_screen_uses_active_board_uart_and_pins(self):
+        self.assertIn(
+            '"UART%d  IO%d=RX  IO%d=TX\\n%d baud  ATGM336"',
+            MAIN,
+        )
+        self.assertIn("GPS_UART_NUM, GPS_RX_PIN, GPS_TX_PIN, g_wd_gps_baud", MAIN)
+        self.assertNotIn('"UART1  IO4=RX  IO5=TX\\n%d baud  ATGM336"', MAIN)
+
     def test_console_helper_honors_console_none_profiles(self):
         source = (ROOT / "ESP32C5/components/wifi_cli/wifi_cli.c").read_text()
         self.assertRegex(
@@ -83,8 +91,8 @@ class ClassicCydGpsDocumentationContract(unittest.TestCase):
                      "onboard voltage regulator", "accepts either supply",
                      "power-interchangeable"):
             self.assertIn(text, guide)
-        self.assertIn("GPS TX to P1 RX/GPIO3", guide)
-        self.assertIn("RX on GPIO3 and TX on GPIO1", guide)
+        self.assertIn("GPS TX to P1 TX/GPIO1", guide)
+        self.assertIn("UART2 RX on GPIO1 and TX on GPIO3", guide)
 
     def test_universal_clock_no_longer_claims_classic_has_no_gps(self):
         row = next(line for line in CLOCK.splitlines() if "Classic CYD RTOS holdover" in line)

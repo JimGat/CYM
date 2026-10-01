@@ -30953,7 +30953,8 @@ static void show_gps_info_screen(void)
     // UART config — baud reflects the configured GPS baud (Wardrive Options)
     lv_obj_t *uart_lbl = lv_label_create(card);
     char uart_info[64];
-    snprintf(uart_info, sizeof(uart_info), "UART1  IO4=RX  IO5=TX\n%d baud  ATGM336", g_wd_gps_baud);
+    snprintf(uart_info, sizeof(uart_info), "UART%d  IO%d=RX  IO%d=TX\n%d baud  ATGM336",
+             GPS_UART_NUM, GPS_RX_PIN, GPS_TX_PIN, g_wd_gps_baud);
     lv_label_set_text(uart_lbl, uart_info);
     lv_obj_set_style_text_font(uart_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(uart_lbl, ui_muted_color(), 0);
@@ -41500,9 +41501,9 @@ static esp_err_t init_gps_uart(void)
 	if ((err = uart_driver_install(GPS_UART_NUM, GPS_BUF_SIZE * 2, 0, 0, NULL, 0)) != ESP_OK) return err;
 	if ((err = uart_param_config(GPS_UART_NUM, &uart_config)) != ESP_OK) return err;
 #if defined(CONFIG_BOARD_CYD2USB)
-	// Classic explicitly establishes the selected A/B receive pin as an input
-	// before attaching UART1 through the GPIO matrix. In the reversed mapping
-	// this is P1 RX/GPIO3; GPS TX must be connected to that signal.
+	// Classic explicitly releases GPIO1 from its reset-time UART0 TX role before
+	// attaching the proven Bruce/HaleHound UART2 RX route through the GPIO matrix.
+	// GPS TX must be connected to P1 TX-labelled/GPIO1.
 	if ((err = gpio_set_direction((gpio_num_t)GPS_RX_PIN, GPIO_MODE_INPUT)) != ESP_OK) return err;
 #endif
 	if ((err = uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return err;
