@@ -108,7 +108,7 @@ Time-synchronized amateur-radio modes such as FT4 and FT8 are a primary AP NTP u
 
 The WSJT-X User Guide says the computer clock should be synchronized to UTC within about one second.[3] CYM's on-screen source, age, reliability, and conservative uncertainty are the operator's go/no-go indicators.
 
-The present implementation timestamps UART RMC data and has no GPS PPS input. It is not Stratum 1. Favorable receivers may produce sub-50-ms results, but the system is not characterized or calibrated to that level and is **not a guaranteed sub-50-ms** source.
+The present implementation timestamps UART RMC data and has no GPS PPS input. With qualified GPS lock, served NTP packets correctly advertise protocol **stratum 1** and reference ID `GPS`; public-NTP-disciplined packets advertise **stratum 2** and `SNTP`. This protocol classification does not make CYM a PPS-disciplined or calibrated timing appliance. Favorable receivers may produce sub-50-ms results, but the system is not characterized or calibrated to that level and is **not a guaranteed sub-50-ms** source.
 
 ## Accuracy and suitability grid
 
@@ -121,6 +121,16 @@ The present implementation timestamps UART RMC data and has no GPS PPS input. It
 | Classic CYD RTOS holdover | Last disciplined UTC | 150 ppm = about 12.96 seconds/day | Least predictable profile; no supported GPS UART |
 | Validated GPS-module RTC | ±2 s | 100 ppm = about 8.64 seconds/day | Continuity only; never presented as GPS lock |
 | `UNSYNCED` | Unknown | Unknown | Do not use as a timing authority |
+
+## Physical NTP validation — NM-CYD-C5 v2.15.46
+
+A live NM-CYD-C5 test at DHCP address `192.168.50.74` exercised the UDP/123 server from an NTP-synchronized JARVIS host:
+
+- Before GPS lock: **3/3** valid 48-byte NTPv4 server replies, leap indicator 0, **stratum 2**, reference ID `SNTP`, and matching origin timestamps.
+- After GPS lock: the server changed to **stratum 1** and reference ID `GPS` as designed; **14/15** requests returned valid replies across two batches.
+- The single loss was in a rapid 200-ms-spacing batch. A separate one-second-spacing confirmation returned **5/5** replies, with median RTT **121.889 ms** and median measured offset **+25.745 ms** against the synchronized test host.
+
+This validates source-state signaling and basic NTP-client interoperability on that board and LAN. It does not establish a general accuracy bound or PPS-grade performance. The test IP was DHCP-assigned and is not a fixed CYM address.
 
 ## WS-C5-28 RTC reliability
 

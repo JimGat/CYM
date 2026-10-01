@@ -3293,7 +3293,7 @@ CYM verifies all 5 EM410X bytes or all 13 meaningful HID Prox bytes before displ
 
 A practical use case is an **off-grid** or out-of-cell-range amateur-radio station running **FT4** or **FT8**. Attach a UART GPS receiver, wait for `GPS LOCK`, select AP NTP, and point the radio computer at the displayed CYM AP address (normally `192.168.4.1`). The WSJT-X User Guide says the computer clock should be synchronized within about one second of UTC.[3]
 
-CYM currently timestamps **UART RMC** data; it does not consume a GPS **PPS** signal and is not a Stratum-1 timing appliance. Sub-50-ms results may be possible in favorable conditions, but current hardware/firmware has not been characterized to that level and is **not a guaranteed sub-50-ms** source.
+CYM currently timestamps **UART RMC** data and does not consume a GPS **PPS** signal. With qualified GPS lock, its NTP replies correctly advertise protocol **stratum 1** with reference ID `GPS`; public-NTP-disciplined replies advertise **stratum 2** with reference ID `SNTP`. That protocol classification does not make CYM a PPS-disciplined or laboratory-grade timing appliance. Sub-50-ms results may be possible in favorable conditions, but current hardware/firmware has not been characterized to that level and is **not a guaranteed sub-50-ms** source.
 
 | Source/state | Conservative allowance | Guidance |
 |---|---:|---|
@@ -3304,6 +3304,12 @@ CYM currently timestamps **UART RMC** data; it does not consume a GPS **PPS** si
 | Classic CYD RTOS holdover | 150 ppm, about 12.96 seconds/day | Conservative uncharacterized profile |
 
 The WS-C5-28 RTC uses an external 32.768-kHz quartz crystal.[2][4] Drift therefore depends on crystal tolerance, temperature, PCB loading/layout, aging, calibration, battery health, and elapsed holdover time. Its PCF85063A offset register supports calibration, but CYM does not yet characterize or automatically calibrate each board; the 50-ppm number is an honest engineering allowance, not a measured promise.
+
+### Physical NTP validation — NM-CYD-C5 v2.15.46
+
+A live LAN test of an NM-CYD-C5 at test address `192.168.50.74` verified both source states. Before GPS lock, three of three requests returned valid 48-byte NTPv4 server replies with leap indicator 0, **stratum 2**, reference ID `SNTP`, and matching origin timestamps. After GPS lock, the server changed to **stratum 1** and reference ID `GPS` as designed. Fourteen of fifteen requests returned valid replies across two batches; the one loss occurred in a rapid 200-ms-spacing batch, while a one-second-spacing confirmation returned five of five. In that five-request confirmation, median round-trip time was **121.889 ms** and median measured offset was **+25.745 ms** against an NTP-synchronized JARVIS host.
+
+These results prove source-state signaling and basic NTP-client interoperability on the tested LAN. They are a point-in-time functional test, not a calibrated accuracy guarantee: Wi-Fi scheduling, path asymmetry, UART sentence timing, and the lack of PPS still apply. The displayed address was DHCP-assigned for that test and is not a fixed product address.
 
 Full operating details and accuracy grid: [`docs/hardware/universal-clock.md`](docs/hardware/universal-clock.md).
 
