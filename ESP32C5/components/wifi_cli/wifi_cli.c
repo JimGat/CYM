@@ -472,6 +472,9 @@ void wifi_cli_register_commands(void) {
 }
 
 esp_err_t wifi_cli_start_console(void) {
+#if CONFIG_ESP_CONSOLE_NONE
+    return ESP_ERR_NOT_SUPPORTED;
+#else
     esp_console_repl_t *repl = NULL;
     esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
     repl_config.prompt = ">";
@@ -490,5 +493,6 @@ esp_err_t wifi_cli_start_console(void) {
     ESP_ERROR_CHECK(esp_console_start_repl(repl));
     
     return ESP_OK;
+#endif
 }
 

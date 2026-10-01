@@ -118,7 +118,7 @@ The present implementation timestamps UART RMC data and has no GPS PPS input. Wi
 | Fresh public NTP | ±250 ms | Converts to NTP/RTOS holdover | Good recovery source where Internet exists; asymmetry matters |
 | WS-C5-28 PCF85063A RTC holdover | Last disciplined UTC | 50 ppm = about **4.32 seconds/day** | Battery-backed continuity; resynchronize after long outages |
 | C5/S3 RTOS holdover | Last disciplined UTC | 100 ppm = about 8.64 seconds/day | Short outages only for timing-sensitive modes |
-| Classic CYD RTOS holdover | Last disciplined UTC | 150 ppm = about 12.96 seconds/day | Least predictable profile; no supported GPS UART |
+| Classic CYD RTOS holdover | Last disciplined UTC | 150 ppm = about 12.96 seconds/day | external GPS supported through the P1 UART expansion JST; no onboard RTC |
 | Validated GPS-module RTC | ±2 s | 100 ppm = about 8.64 seconds/day | Continuity only; never presented as GPS lock |
 | `UNSYNCED` | Unknown | Unknown | Do not use as a timing authority |
 

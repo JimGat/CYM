@@ -285,7 +285,7 @@ Do not duplicate `init_i2c_bus()` on WS-C5-28. Other board-specific I2C/display 
 
 - [ ] **Step 3: Generalize GPS time observations using capability symbols**
 
-Replace `CONFIG_BOARD_WS_C5_28` guards around `cym_timekeeper_note_gps_present()` and `cym_timekeeper_observe_gps_utc()` with `#if BOARD_TIME_HAS_GPS_UART`. Keep the existing checksum validation and three-sample qualification. Ensure CYD2USB never opens or observes a GPS UART.
+Replace `CONFIG_BOARD_WS_C5_28` guards around `cym_timekeeper_note_gps_present()` and `cym_timekeeper_observe_gps_utc()` with `#if BOARD_TIME_HAS_GPS_UART`. Keep the existing checksum validation and three-sample qualification. CYD2USB originally disabled GPS; the v2.15.48 capability update supersedes that constraint and routes external GPS through its UART expansion JST.
 
 - [ ] **Step 4: Run integration contracts and compile one target per SoC**
 

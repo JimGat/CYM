@@ -24,7 +24,7 @@ class BoardProfileContract(unittest.TestCase):
     expected = {
         "ws_c5_28.h": (1, 1, 50, 100, 500000, 250000, 2000000, 100, 1),
         "nm_cyd_c5.h": (0, 1, 0, 100, 500000, 250000, 2000000, 100, 1),
-        "cyd2usb.h": (0, 0, 0, 150, 0, 250000, 0, 0, 0),
+        "cyd2usb.h": (0, 1, 0, 150, 500000, 250000, 2000000, 100, 0),
         "hosyond_s3_35.h": (0, 1, 0, 100, 500000, 250000, 2000000, 100, 1),
     }
     symbols = (
@@ -52,10 +52,11 @@ class BoardProfileContract(unittest.TestCase):
             text = (BOARDS / filename).read_text()
             self.assertEqual("BOARD_RTC_I2C_ADDR" in text, filename == "ws_c5_28.h")
 
-    def test_cyd_keeps_gps_disabled(self):
+    def test_cyd_routes_gps_to_uart_expansion_jst(self):
         text = (BOARDS / "cyd2usb.h").read_text()
-        self.assertRegex(text, r"BOARD_GPS_TX_GPIO\s+-1")
-        self.assertRegex(text, r"BOARD_GPS_RX_GPIO\s+-1")
+        self.assertRegex(text, r"BOARD_GPS_UART_NUM\s+UART_NUM_1")
+        self.assertRegex(text, r"BOARD_GPS_TX_GPIO\s+3")
+        self.assertRegex(text, r"BOARD_GPS_RX_GPIO\s+1")
 
     def test_normalized_fallbacks_and_sanity_checks_exist(self):
         for symbol in self.symbols:
@@ -305,9 +306,9 @@ class DocumentationContract(unittest.TestCase):
 class ReleaseVersionContract(unittest.TestCase):
     def test_all_release_versions_are_v21542(self):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.47")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.48")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32C5/docs/manifest.pancake-c5.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v2.15.47", (ROOT / rel).read_text(), rel)
+            self.assertIn("v2.15.48", (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

@@ -72,13 +72,21 @@
 #define BOARD_RFHAT_PIN_A       22    // GPIO22 — FPC2 Pin 7 via SD Card Shim
 #define BOARD_RFHAT_PIN_B       27    // GPIO27 — FPC2 Pin 9 via SD Card Shim
 
+// ── External GPS on the P1 UART expansion JST ──────────────────────────────────
+// Matches the working HaleHound/Bruce Classic CYD wiring:
+//   GPS TX -> P1 TX-labelled signal / ESP GPIO1 (UART1 RX)
+//   GPS RX <- P1 RX-labelled signal / ESP GPIO3 (UART1 TX; optional for NMEA-only)
+// The P1 UART and second Micro-USB/CH340 path are dedicated to GPS and must not
+// carry the CYM console. NM-RF-HAT remains on SPI plus GPIO22/GPIO27.
+#define BOARD_HAS_GPS           1
+#define BOARD_GPS_UART_NUM      UART_NUM_1
+#define BOARD_GPS_TX_GPIO       3
+#define BOARD_GPS_RX_GPIO       1
+
 // ── Not present on CYD2USB ───────────────────────────────────────────────────
 #define BOARD_VIBRATOR_GPIO     -1
 #define BOARD_RGB_LED_GPIO      -1    // no WS2812; has discrete RGB instead
 #define BOARD_RGB_LED_COUNT      0
-#define BOARD_GPS_UART_NUM      UART_NUM_1   // gated by BOARD_GPS_TX_GPIO == -1; never opened
-#define BOARD_GPS_TX_GPIO       -1
-#define BOARD_GPS_RX_GPIO       -1
 #define BOARD_I2C_SDA           -1
 #define BOARD_I2C_SCL           -1
 
@@ -86,13 +94,13 @@
 
 // Conservative, uncharacterized timing capability profile.
 #define BOARD_TIME_HAS_RTC                    0
-#define BOARD_TIME_HAS_GPS_UART               0
+#define BOARD_TIME_HAS_GPS_UART               1
 #define BOARD_TIME_RTC_DRIFT_PPM              0
 #define BOARD_TIME_RTOS_DRIFT_PPM             150
-#define BOARD_TIME_GPS_UNCERTAINTY_US         0
+#define BOARD_TIME_GPS_UNCERTAINTY_US         500000
 #define BOARD_TIME_NTP_UNCERTAINTY_US         250000
-#define BOARD_TIME_GPS_RTC_UNCERTAINTY_US     0
-#define BOARD_TIME_GPS_RTC_DRIFT_PPM           0
+#define BOARD_TIME_GPS_RTC_UNCERTAINTY_US     2000000
+#define BOARD_TIME_GPS_RTC_DRIFT_PPM           100
 #define BOARD_TIME_HAS_MDNS                   0
 #define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
 
