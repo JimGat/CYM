@@ -17,12 +17,12 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
     def test_uart_expansion_jst_is_the_gps_uart(self):
         self.assertRegex(BOARD, r"BOARD_HAS_GPS\s+1")
         self.assertRegex(BOARD, r"BOARD_GPS_UART_NUM\s+UART_NUM_1")
-        self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+3")
-        self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+1")
+        self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+1")
+        self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+3")
 
-    def test_classic_rx_pin_is_released_from_uart0_tx_before_uart1_input(self):
-        # GPIO1 resets as U0TXD. The Classic repurposes it as UART1 RX so the
-        # application must explicitly disable the old output driver first.
+    def test_classic_rx_pin_is_input_before_uart1_attach(self):
+        # GPIO3 is the reversed Classic UART1 RX path. Establish input mode
+        # explicitly before attaching the UART input matrix.
         self.assertRegex(
             MAIN,
             r"#if defined\(CONFIG_BOARD_CYD2USB\)\s+"
@@ -83,6 +83,8 @@ class ClassicCydGpsDocumentationContract(unittest.TestCase):
                      "onboard voltage regulator", "accepts either supply",
                      "power-interchangeable"):
             self.assertIn(text, guide)
+        self.assertIn("GPS TX to P1 RX/GPIO3", guide)
+        self.assertIn("RX on GPIO3 and TX on GPIO1", guide)
 
     def test_universal_clock_no_longer_claims_classic_has_no_gps(self):
         row = next(line for line in CLOCK.splitlines() if "Classic CYD RTOS holdover" in line)

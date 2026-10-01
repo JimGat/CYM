@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster - WS-C5-35 Experimental",
-  "version": "v2.15.49",
-  "build": "v2.15.49",
+  "version": "v2.15.50",
+  "build": "v2.15.50",
   "chipFamily": "ESP32-C5",
   "parts": [
     { "path": "../binaries-ws-c5-35/bootloader.bin",      "offset": 8192   },

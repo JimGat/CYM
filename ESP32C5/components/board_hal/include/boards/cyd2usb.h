@@ -73,17 +73,16 @@
 #define BOARD_RFHAT_PIN_B       27    // GPIO27 — FPC2 Pin 9 via SD Card Shim
 
 // ── External GPS on the P1 UART expansion JST ──────────────────────────────────
-// Matches the working HaleHound/Bruce Classic CYD wiring:
-//   GPS TX -> P1 TX-labelled signal / ESP GPIO1 (UART1 RX)
-//   GPS RX <- P1 RX-labelled signal / ESP GPIO3 (UART1 TX; optional for NMEA-only)
-// P1 TX/GPIO1 shares the CH340 RX input and is deliberately repurposed as the
-// ESP's GPS input. P1 RX/GPIO3 shares the CH340 TX output, so it must not be used
-// as the GPS receive path. The P1/second-Micro-USB path carries no CYM console.
-// NM-RF-HAT remains on SPI plus GPIO22/GPIO27.
+// Classic A/B mapping after physical v2.15.48-v2.15.49 tests received no NMEA:
+//   GPS TX -> P1 RX-labelled signal / ESP GPIO3 (UART1 RX)
+//   GPS RX <- P1 TX-labelled signal / ESP GPIO1 (UART1 TX; optional for NMEA-only)
+// This reverses the prior GPIO1-RX/GPIO3-TX interpretation. The P1/second-
+// Micro-USB path carries no CYM console. NM-RF-HAT remains on SPI plus
+// GPIO22/GPIO27.
 #define BOARD_HAS_GPS           1
 #define BOARD_GPS_UART_NUM      UART_NUM_1
-#define BOARD_GPS_TX_GPIO       3
-#define BOARD_GPS_RX_GPIO       1
+#define BOARD_GPS_TX_GPIO       1
+#define BOARD_GPS_RX_GPIO       3
 
 // ── Not present on CYD2USB ───────────────────────────────────────────────────
 #define BOARD_VIBRATOR_GPIO     -1
