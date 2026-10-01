@@ -1,0 +1,1 @@
+Placeholder for WS-C5-35 build artifacts (CYM-WS-C5-35.bin, bootloader.bin, partition-table.bin, CYM-WS-C5-35-full.bin). Populated by the CMake POST_BUILD hook after a successful `make ws-c5-35` build.

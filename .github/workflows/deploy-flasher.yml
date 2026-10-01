@@ -10,6 +10,7 @@ on:
       - "ESP32C5/binaries-esp32c5/*.bin"
       - "ESP32C5/binaries-ws-c5-28/*.bin"
       - "ESP32C5/binaries-pancake-c5/*.bin"
+      - "ESP32C5/binaries-ws-c5-35/*.bin"
       - "ESP32/docs/manifest.cyd-2432s028.json"
       - "ESP32/binaries-cyd-2432s028/*.bin"
       - "ESP32S3/docs/manifest.hosyond-s3-35.json"
@@ -41,16 +42,18 @@ jobs:
 
       - name: Build and verify site
         run: |
-          mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-pancake-c5 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35
+          mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-pancake-c5 _site/binaries-ws-c5-35 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35
           cp ESP32C5/docs/index.html _site/index.html
           sed 's|"\.\./binaries-esp32c5/|"binaries-esp32c5/|g' ESP32C5/docs/manifest.json > _site/manifest.json
           sed 's|"\.\./binaries-ws-c5-28/|"binaries-ws-c5-28/|g' ESP32C5/docs/manifest.ws-c5-28.json > _site/manifest.ws-c5-28.json
           sed 's|"\.\./binaries-pancake-c5/|"binaries-pancake-c5/|g' ESP32C5/docs/manifest.pancake-c5.json > _site/manifest.pancake-c5.json
+          sed 's|"\.\./binaries-ws-c5-35/|"binaries-ws-c5-35/|g' ESP32C5/docs/manifest.ws-c5-35.json > _site/manifest.ws-c5-35.json
           sed 's|"\.\./binaries-cyd-2432s028/|"binaries-cyd-2432s028/|g' ESP32/docs/manifest.cyd-2432s028.json > _site/manifest.cyd-2432s028.json
           sed 's|"\.\./binaries-hosyond-s3-35/|"binaries-hosyond-s3-35/|g' ESP32S3/docs/manifest.hosyond-s3-35.json > _site/manifest.hosyond-s3-35.json
           cp ESP32C5/binaries-esp32c5/*.bin _site/binaries-esp32c5/
           cp ESP32C5/binaries-ws-c5-28/*.bin _site/binaries-ws-c5-28/
           cp ESP32C5/binaries-pancake-c5/*.bin _site/binaries-pancake-c5/
+          cp ESP32C5/binaries-ws-c5-35/*.bin _site/binaries-ws-c5-35/
           cp ESP32/binaries-cyd-2432s028/*.bin _site/binaries-cyd-2432s028/
           cp ESP32S3/binaries-hosyond-s3-35/*.bin _site/binaries-hosyond-s3-35/
           for f in ESP32C5/docs/*.png ESP32C5/docs/*.jpg ESP32C5/docs/*.gif ESP32C5/docs/*.svg ESP32C5/docs/*.ico; do
@@ -60,9 +63,10 @@ jobs:
           test -s _site/manifest.json
           test -s _site/manifest.ws-c5-28.json
           test -s _site/manifest.pancake-c5.json
+          test -s _site/manifest.ws-c5-35.json
           test -s _site/manifest.cyd-2432s028.json
           test -s _site/manifest.hosyond-s3-35.json
-          for manifest in _site/manifest.json _site/manifest.ws-c5-28.json _site/manifest.pancake-c5.json _site/manifest.cyd-2432s028.json _site/manifest.hosyond-s3-35.json; do
+          for manifest in _site/manifest.json _site/manifest.ws-c5-28.json _site/manifest.pancake-c5.json _site/manifest.ws-c5-35.json _site/manifest.cyd-2432s028.json _site/manifest.hosyond-s3-35.json; do
             python3 -m json.tool "$manifest" >/dev/null
           done
           test -s _site/binaries-esp32c5/CYM-NM28C5.bin
@@ -71,6 +75,8 @@ jobs:
           test -s _site/binaries-ws-c5-28/CYM-WS-C5-28-full.bin
           test -s _site/binaries-pancake-c5/CYM-Pancake-C5.bin
           test -s _site/binaries-pancake-c5/CYM-Pancake-C5-full.bin
+          test -s _site/binaries-ws-c5-35/CYM-WS-C5-35.bin
+          test -s _site/binaries-ws-c5-35/CYM-WS-C5-35-full.bin
           test -s _site/binaries-cyd-2432s028/CYM-CYD-2432S028.bin
           test -s _site/binaries-cyd-2432s028/CYM-CYD-2432S028-full.bin
           test -s _site/binaries-hosyond-s3-35/CYM-hosyond-s3-35.bin

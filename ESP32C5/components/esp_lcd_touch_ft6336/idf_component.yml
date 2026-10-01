@@ -1,0 +1,7 @@
+dependencies:
+  esp_lcd_touch:
+    public: true
+    version: "^1.1.0"
+  idf: '>=5.3'
+description: "ESP LCD Touch FT6336 — adapted from Waveshare ESP32-C5-Touch-LCD-3.5 BSP"
+version: 1.0.0

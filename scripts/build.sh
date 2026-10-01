@@ -45,6 +45,14 @@ case "$BOARD" in
         SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.ws-c5-28"
         ;;
 
+    ws-c5-35)
+        # Waveshare ESP32-C5-Touch-LCD-3.5 (experimental)
+        SOC_DIR="$REPO_ROOT/ESP32C5"
+        TARGET="esp32c5"
+        BUILD_DIR="build_ws-c5-35"
+        SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.ws-c5-35"
+        ;;
+
     pancake-c5)
         # C5Lab Pancake DIY beta (ESP32-C5, 3.5-inch capacitive touch)
         SOC_DIR="$REPO_ROOT/ESP32C5"
@@ -95,7 +103,7 @@ case "$BOARD" in
         echo "ERROR: Unknown board: $BOARD"
         echo ""
         echo "Known boards:"
-        echo "  ESP32-C5: nm-cyd-c5  ws-c5-28  pancake-c5"
+        echo "  ESP32-C5: nm-cyd-c5  ws-c5-28  ws-c5-35  pancake-c5"
         echo "  ESP32:    cyd-2432s028  (alias: cyd2usb)"
         echo "  ESP32-S3: hosyond-s3-28  hosyond-s3-35  hosyond-s3-40"
         echo ""

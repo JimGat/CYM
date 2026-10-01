@@ -44,6 +44,14 @@ menu "CYM Board Selection"
                 display (320x480), custom I2C touch (0x55), SD on SPI3, WS2812
                 RGB LED on IO40. 8 MB OPI PSRAM, 16 MB flash, dual-core LX7 240 MHz.
 
+        config BOARD_WS_C5_35
+            bool "Waveshare ESP32-C5-Touch-LCD-3.5 [Experimental]"
+            help
+                Waveshare ESP32-C5 3.5\" board (SKU 35419). ST7796 320x480 SPI
+                display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101
+                PMIC, 32 MB flash, 8 MB PSRAM. Development/Experimental/Not Stable;
+                hardware validation pending on Jim's unit.
+
         config BOARD_HOSYOND_S3_28
             bool "Hosyond 2.8\" (ESP32-S3, ILI9341V + FT6336G) [Pending GPIO]"
             help
@@ -64,14 +72,14 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_PSRAM
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
             Board has PSRAM. Enables large buffer allocations, LVGL PSRAM draw
             buffers, and the 1 MB captive-portal HTML buffer.
 
     config BOARD_HAS_5GHZ
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35
         help
             WiFi 6 dual-band (2.4 + 5 GHz). Set band mode WIFI_BAND_MODE_AUTO.
             ESP32-C5 only. ESP32, ESP32-S3 are 2.4 GHz only (default n).
@@ -86,7 +94,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_802154
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5
+        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35
         help
             Built-in 802.15.4 radio (Zigbee/Thread passive scanner).
             ESP32-C5 only. Not present on ESP32 (CYD2USB) or ESP32-S3 (Hosyond).
@@ -238,10 +246,11 @@ menu "CYM Board Selection"
 
     config BOARD_TOUCH_FT6336
         bool
-        default y if BOARD_PANCAKE_C5
+        default y if BOARD_PANCAKE_C5 || BOARD_WS_C5_35
         help
-            FT6336U capacitive I2C touch used by C5Lab Pancake-C5.
-            Uses the pinned C5Lab landscape coordinate transform.
+            FT6336U capacitive I2C touch used by C5Lab Pancake-C5
+            and Waveshare WS-C5-35. Pancake uses the pinned C5Lab landscape
+            coordinate transform; WS-C5-35 uses vendor defaults (no transform).
 
     config BOARD_TOUCH_I2C
         bool

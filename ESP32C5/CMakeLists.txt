@@ -7,7 +7,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 # Update ONLY this line when bumping the version. It is automatically propagated
 # to both the IDF boot log (app_init: App version) and to the FW_VERSION macro
 # used throughout the firmware — no need to edit wifi_common.h separately.
-set(PROJECT_VER "v2.15.46")
+set(PROJECT_VER "v2.15.47")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -38,6 +38,10 @@ target_compile_definitions(${lwip_lib} PRIVATE IP_FORWARD_ALLOW_TX_ON_RX_NETIF=1
 if(CONFIG_BOARD_WS_C5_28)
     set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-ws-c5-28")
     set(OUTPUT_BIN_NAME "CYM-WS-C5-28")
+    set(FLASH_SIZE "32MB")
+elseif(CONFIG_BOARD_WS_C5_35)
+    set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-ws-c5-35")
+    set(OUTPUT_BIN_NAME "CYM-WS-C5-35")
     set(FLASH_SIZE "32MB")
 elseif(CONFIG_BOARD_PANCAKE_C5)
     set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-pancake-c5")

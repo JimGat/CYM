@@ -15,10 +15,10 @@
 #   . /home/dev/esp/esp-idf/export.sh
 
 .PHONY: all all-boards help \
-        nm-cyd-c5 ws-c5-28 pancake-c5 \
+        nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 \
         cyd-2432s028 cyd2usb \
         hosyond-s3-28 hosyond-s3-35 hosyond-s3-40 \
-        clean-nm-cyd-c5 clean-ws-c5-28 clean-pancake-c5 \
+        clean-nm-cyd-c5 clean-ws-c5-28 clean-ws-c5-35 clean-pancake-c5 \
         clean-cyd-2432s028 \
         clean-hosyond-s3-28 clean-hosyond-s3-35 clean-hosyond-s3-40
 
@@ -31,9 +31,9 @@ all: nm-cyd-c5
 # hosyond-s3-35 is the fourth release board and compiles canonical CYM sources
 # through a narrow ESP32-S3 board adapter.
 
-all-boards: nm-cyd-c5 ws-c5-28 pancake-c5 cyd-2432s028 hosyond-s3-35
+all-boards: nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 cyd-2432s028 hosyond-s3-35
 	@echo ""
-	@echo "=== all-boards complete: NM-CYD-C5, WS-C5-28, Pancake-C5, CYD-2432S028, hosyond-s3-35 all built ==="
+	@echo "=== all-boards complete: NM-CYD-C5, WS-C5-28, WS-C5-35, Pancake-C5, CYD-2432S028, hosyond-s3-35 all built ==="
 	@echo ""
 
 # ── ESP32-C5 boards ──────────────────────────────────────────────────────────
@@ -44,6 +44,9 @@ nm-cyd-c5:
 ws-c5-28:
 	@scripts/build.sh ws-c5-28
 
+ws-c5-35:
+	@scripts/build.sh ws-c5-35
+
 pancake-c5:
 	@scripts/build.sh pancake-c5
 
@@ -52,6 +55,9 @@ clean-nm-cyd-c5:
 
 clean-ws-c5-28:
 	@scripts/build.sh ws-c5-28 fullclean
+
+clean-ws-c5-35:
+	@scripts/build.sh ws-c5-35 fullclean
 
 clean-pancake-c5:
 	@scripts/build.sh pancake-c5 fullclean

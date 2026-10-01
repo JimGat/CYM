@@ -496,6 +496,18 @@
           bootOffset: "0x1000", // ESP32 (NOT 0x2000)
           beta:    false, // promoted to fully supported in the v2.14.00 release
         },
+        "ws-c5-35": {
+          label:   "WS-C5-35",
+          chip:    "ESP32-C5",
+          soc:     "ESP32C5",
+          desc:    "Development channel only; not stable. Waveshare ESP32-C5-Touch-LCD-3.5 Experimental (ESP32-C5, 32 MB flash, 8 MB PSRAM, ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander). Hardware validation pending.",
+          binDir:  "binaries-ws-c5-35",
+          appBin:  "CYM-WS-C5-35.bin",
+          fullBin: "CYM-WS-C5-35-full.bin",
+          manifest: "docs/manifest.ws-c5-35.json",
+          bootOffset: "0x2000", // ESP32-C5
+          beta:    true,
+        },
         "hosyond-s3-35": {
           label:   "Hosyond ES3C35P 3.5",
           chip:    "ESP32-S3",
@@ -542,7 +554,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.13.0"; // add supported Hosyond ES3C35P 3.5-inch ESP32-S3 target
+      const PAGE_VERSION    = "2.14.0"; // add experimental WS-C5-35 target
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

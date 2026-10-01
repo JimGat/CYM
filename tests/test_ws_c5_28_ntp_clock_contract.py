@@ -552,7 +552,7 @@ class NTPClockBehaviorContract(unittest.TestCase):
 
     def test_all_release_soc_versions_match_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.46")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.47")', (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

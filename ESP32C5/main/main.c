@@ -102,6 +102,9 @@ LV_IMG_DECLARE(deedee_img);
 #if defined(CONFIG_BOARD_PANCAKE_C5)
 #include "pancake_c5_port.h"
 #endif
+#if defined(CONFIG_BOARD_WS_C5_35)
+#include "ws_c5_35_port.h"
+#endif
 
 // PSRAM_ATTR: place static symbol in external RAM when PSRAM is present.
 // On boards without PSRAM (e.g. CYD2USB / ESP32-WROOM-32), compiles to nothing
@@ -579,6 +582,25 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 #define LCD_H_RES       BOARD_LCD_WIDTH
 #define LCD_V_RES       BOARD_LCD_HEIGHT
 #define LCD_HOST        BOARD_LCD_HOST
+
+#elif defined(CONFIG_BOARD_WS_C5_35)
+// WS-C5-35 (Waveshare ESP32-C5-Touch-LCD-3.5)
+// ST7796 + SD share SPI2_HOST. FT6336 touch is I2C on GPIO27/GPIO26.
+// Display and backlight managed by ws_c5_35_port.c adapter (CH32V006).
+#define LCD_MOSI        BOARD_SPI_MOSI       // GPIO7
+#define LCD_MISO        BOARD_SPI_MISO       // GPIO2 (SD only; ST7796 write-only)
+#define LCD_CLK         BOARD_SPI_SCK        // GPIO6
+#define LCD_CS          BOARD_LCD_CS         // GPIO8
+#define LCD_DC          BOARD_LCD_DC         // GPIO5
+#define LCD_RST         BOARD_LCD_RST        // -1 (CH32V006 EXIO1)
+#define TOUCH_CS        -1                   // FT6336 is I2C — no SPI CS
+#define LCD_BL_IO       BOARD_BACKLIGHT_GPIO // -1 (CH32V006 PWM via I2C 0x24)
+#define LCD_BL_ACTIVE_LEVEL 1
+#define BOOT_BTN_GPIO   BOARD_BOOT_BTN_GPIO  // GPIO28
+#define GO_DARK_DBL_CLICK_MS 800
+#define LCD_H_RES       BOARD_LCD_WIDTH      // 320
+#define LCD_V_RES       BOARD_LCD_HEIGHT     // 480
+#define LCD_HOST        BOARD_SPI_HOST       // SPI2_HOST (shared with SD)
 
 #elif defined(CONFIG_BOARD_WS_C5_28)
 // WS-C5-28 (Waveshare ESP32-C5-Touch-LCD-2.8)
@@ -4277,7 +4299,11 @@ static void check_heap_integrity(const char* location) {
 
 static void init_display(void)
 {
-#if defined(CONFIG_BOARD_PANCAKE_C5)
+#if defined(CONFIG_BOARD_WS_C5_35)
+    ESP_ERROR_CHECK(ws_c5_35_display_init(&panel_handle, &lcd_io_handle));
+    ESP_LOGI(TAG, "WS-C5-35 display initialized through board adapter");
+    return;
+#elif defined(CONFIG_BOARD_PANCAKE_C5)
     ESP_ERROR_CHECK(pancake_c5_display_init(&panel_handle, &lcd_io_handle));
     ESP_LOGI(TAG, "Pancake-C5 display initialized through board adapter");
     return;
@@ -4743,7 +4769,10 @@ static void nvs_settings_save_wifi_creds(const char *ssid, const char *pass)
 
 static void init_backlight(void)
 {
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_WS_C5_35)
+    ws_c5_35_backlight_set(255);
+    ESP_LOGI(TAG, "Backlight ON (CH32V006 PWM via WS-C5-35 adapter)");
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     // The ES3C35P adapter owns its direct active-high GPIO41 backlight.
     ESP_LOGI(TAG, "Backlight already initialized by ES3C35P board adapter");
 #elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
@@ -4858,7 +4887,9 @@ static void screen_set_dimmed(bool dimmed)
         // Turn the PHYSICAL backlight OFF too. disp_on_off() only blanks the panel
         // output; on NM-CYD-C5/CYD2USB (direct GPIO) the LED stays lit → a white screen.
         // Mirror go_dark_enable()'s board-conditional backlight kill.
-#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+#if defined(CONFIG_BOARD_WS_C5_35)
+        ws_c5_35_backlight_set(0);
+#elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
         if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 0);
 #else
         gpio_set_level(LCD_BL_IO, 0);
@@ -4868,7 +4899,9 @@ static void screen_set_dimmed(bool dimmed)
             esp_lcd_panel_disp_on_off(panel_handle, true);
         }
         // Restore the physical backlight (turned off above on dim).
-#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+#if defined(CONFIG_BOARD_WS_C5_35)
+        ws_c5_35_backlight_set(255);
+#elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
         if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 255);
 #else
         gpio_set_level(LCD_BL_IO, LCD_BL_ACTIVE_LEVEL);
@@ -4933,7 +4966,9 @@ void go_dark_enable(void)
     if (g_gps_last_known.valid)
         nvs_save_last_gps_force(&g_gps_last_known, true);
     led_set(0, 0, 0);
-#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+#if defined(CONFIG_BOARD_WS_C5_35)
+    ws_c5_35_backlight_set(0);
+#elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
     if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 0);
 #else
     gpio_set_level(LCD_BL_IO, 0);
@@ -4946,7 +4981,9 @@ void go_dark_disable(void)
     if (!go_dark_active) return;
     go_dark_active = false;
     if (panel_handle) esp_lcd_panel_disp_on_off(panel_handle, true);
-#if defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
+#if defined(CONFIG_BOARD_WS_C5_35)
+    ws_c5_35_backlight_set(255);
+#elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
     if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 255);
 #else
     gpio_set_level(LCD_BL_IO, LCD_BL_ACTIVE_LEVEL);
@@ -5715,7 +5752,11 @@ static void run_touch_calibration(void)
 
 static void init_touch(void)
 {
-#if defined(CONFIG_BOARD_PANCAKE_C5)
+#if defined(CONFIG_BOARD_WS_C5_35)
+    ESP_ERROR_CHECK(ws_c5_35_touch_init());
+    touch_cal_loaded = true;
+    ESP_LOGI(TAG, "WS-C5-35 FT6336 touch initialized by board adapter");
+#elif defined(CONFIG_BOARD_PANCAKE_C5)
     ESP_ERROR_CHECK(pancake_c5_touch_init());
     touch_cal_loaded = true;
     ESP_LOGI(TAG, "Pancake-C5 FT6336U touch initialized by board adapter");
@@ -9920,6 +9961,11 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 
 #elif defined(CONFIG_BOARD_PANCAKE_C5)
     if (pancake_c5_touch_read(&touch_x, &touch_y, &touched) && touched) {
+        last_input_ms = now_ms;
+    }
+
+#elif defined(CONFIG_BOARD_WS_C5_35)
+    if (ws_c5_35_touch_read(&touch_x, &touch_y, &touched) && touched) {
         last_input_ms = now_ms;
     }
 
