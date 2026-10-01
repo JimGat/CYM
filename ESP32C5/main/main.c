@@ -41499,6 +41499,14 @@ static esp_err_t init_gps_uart(void)
 	esp_err_t err;
 	if ((err = uart_driver_install(GPS_UART_NUM, GPS_BUF_SIZE * 2, 0, 0, NULL, 0)) != ESP_OK) return err;
 	if ((err = uart_param_config(GPS_UART_NUM, &uart_config)) != ESP_OK) return err;
+#if defined(CONFIG_BOARD_CYD2USB)
+	// GPIO1 resets as the UART0 TX output. Classic intentionally reuses that
+	// CH340-RX/P1-TX line as UART1 RX because the opposite P1 line is driven by
+	// the CH340 TX output. uart_set_pin() only connects the UART1 RX matrix; it
+	// does not disable an already-active output driver. Release GPIO1 first so
+	// the GPS and ESP32 do not contend and incoming NMEA can pull the line low.
+	if ((err = gpio_set_direction((gpio_num_t)GPS_RX_PIN, GPIO_MODE_INPUT)) != ESP_OK) return err;
+#endif
 	if ((err = uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) return err;
 
 	// Detect the module's real baud (battery-backed, may not match NVS) and sync.

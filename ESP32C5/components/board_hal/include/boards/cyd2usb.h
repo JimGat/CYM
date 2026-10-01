@@ -76,8 +76,10 @@
 // Matches the working HaleHound/Bruce Classic CYD wiring:
 //   GPS TX -> P1 TX-labelled signal / ESP GPIO1 (UART1 RX)
 //   GPS RX <- P1 RX-labelled signal / ESP GPIO3 (UART1 TX; optional for NMEA-only)
-// The P1 UART and second Micro-USB/CH340 path are dedicated to GPS and must not
-// carry the CYM console. NM-RF-HAT remains on SPI plus GPIO22/GPIO27.
+// P1 TX/GPIO1 shares the CH340 RX input and is deliberately repurposed as the
+// ESP's GPS input. P1 RX/GPIO3 shares the CH340 TX output, so it must not be used
+// as the GPS receive path. The P1/second-Micro-USB path carries no CYM console.
+// NM-RF-HAT remains on SPI plus GPIO22/GPIO27.
 #define BOARD_HAS_GPS           1
 #define BOARD_GPS_UART_NUM      UART_NUM_1
 #define BOARD_GPS_TX_GPIO       3

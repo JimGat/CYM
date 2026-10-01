@@ -20,6 +20,17 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
         self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+3")
         self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+1")
 
+    def test_classic_rx_pin_is_released_from_uart0_tx_before_uart1_input(self):
+        # GPIO1 resets as U0TXD. The Classic repurposes it as UART1 RX so the
+        # application must explicitly disable the old output driver first.
+        self.assertRegex(
+            MAIN,
+            r"#if defined\(CONFIG_BOARD_CYD2USB\)\s+"
+            r"(?:/\*.*?\*/|//[^\n]*\n|\s)*"
+            r"if \(\(err = gpio_set_direction\(\(gpio_num_t\)GPS_RX_PIN, GPIO_MODE_INPUT\)\) != ESP_OK\) return err;\s+"
+            r"#endif\s+if \(\(err = uart_set_pin",
+        )
+
     def test_gps_preserves_rf_hat_control_pins(self):
         def value(name):
             match = re.search(rf"#define\s+{name}\s+(\d+)", BOARD)
@@ -68,7 +79,9 @@ class ClassicCydGpsDocumentationContract(unittest.TestCase):
         self.assertTrue(GUIDE_PATH.exists(), "Classic CYD GPS wiring guide must exist")
         guide = GUIDE_PATH.read_text() if GUIDE_PATH.exists() else ""
         for text in ("primary USB-C", "second Micro-USB", "P1 UART expansion JST",
-                     "GPIO1", "GPIO3", "GPS TX", "GPS RX"):
+                     "GPIO1", "GPIO3", "GPS TX", "GPS RX", "ATGM336H",
+                     "onboard voltage regulator", "accepts either supply",
+                     "power-interchangeable"):
             self.assertIn(text, guide)
 
     def test_universal_clock_no_longer_claims_classic_has_no_gps(self):
