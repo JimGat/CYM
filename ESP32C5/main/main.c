@@ -7214,8 +7214,15 @@ void app_main(void)
 	// Initialize the board-profile UART and start the shared GPS monitor task.
 	if (init_gps_uart() == ESP_OK) {
 		ESP_LOGI(TAG, "GPS UART initialized on TX=%d RX=%d", GPS_TX_PIN, GPS_RX_PIN);
-		// Allocate GPS task stack from PSRAM
-		gps_task_stack = (StackType_t *)heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+		// Classic CYD has no PSRAM; without an internal-RAM fallback the
+		// allocation fails and the only task that reads GPS UART bytes never starts.
+#if CONFIG_BOARD_HAS_PSRAM
+		gps_task_stack = (StackType_t *)heap_caps_malloc(
+			4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+		gps_task_stack = (StackType_t *)heap_caps_malloc(
+			4096 * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
 		if (gps_task_stack != NULL) {
 			TaskHandle_t task_handle = xTaskCreateStatic(gps_task, "gps_task", 4096, NULL,
 				tskIDLE_PRIORITY + 1, gps_task_stack, &gps_task_buffer);
@@ -7224,10 +7231,10 @@ void app_main(void)
 				heap_caps_free(gps_task_stack);
 				gps_task_stack = NULL;
 			} else {
-				ESP_LOGI(TAG, "GPS monitor running in background (PSRAM) (log every few seconds)");
+				ESP_LOGI(TAG, "GPS monitor running in background");
 			}
 		} else {
-			ESP_LOGE(TAG, "Failed to allocate GPS task stack from PSRAM");
+			ESP_LOGE(TAG, "Failed to allocate GPS task stack");
 		}
 	} else {
 		ESP_LOGE(TAG, "GPS UART init failed");

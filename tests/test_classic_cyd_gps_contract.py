@@ -20,6 +20,18 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
         self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+3")
         self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+1")
 
+    def test_classic_gps_task_stack_falls_back_to_internal_ram(self):
+        # CYD2USB has no PSRAM. The UART can initialize correctly but no bytes
+        # are consumed unless the shared GPS task receives an internal-RAM stack.
+        self.assertRegex(
+            MAIN,
+            r"(?s)#if CONFIG_BOARD_HAS_PSRAM\s+"
+            r"gps_task_stack = .*MALLOC_CAP_SPIRAM.*?"
+            r"#else\s+"
+            r"gps_task_stack = .*MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT.*?"
+            r"#endif",
+        )
+
     def test_classic_rx_pin_is_input_before_uart2_attach(self):
         # GPIO1 is the Bruce/HaleHound Classic UART2 RX path. Establish input mode
         # explicitly before attaching the UART input matrix.
