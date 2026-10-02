@@ -34,8 +34,11 @@ class DetectDefendHarvesterContract(unittest.TestCase):
         self.assertIn('create_function_page_base("Deauth Harvest")', show)
         self.assertIn("g_screen_stop_fn = harvester_detector_stop;", show)
 
-    def test_modern_defend_exposes_harvester_directly(self):
-        defend = function_body("show_cat_defend")
+    def test_modern_defend_exposes_harvester_via_wifi_defense(self):
+        modern = function_body("show_cat_defend")
+        self.assertIn("WiFiDef", modern)
+        self.assertIn("show_dd_wifi_screen();", function_body("dd_menu_tile_cb"))
+        defend = function_body("show_dd_wifi_screen")
         self.assertIn('"Deauth\\nHarvest"', defend)
         self.assertIn('dd_menu_tile_cb, "Harvester"', defend)
 

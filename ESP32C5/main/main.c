@@ -2337,6 +2337,7 @@ static lv_obj_t       *s_targ_list_cont  = NULL;
 static lv_obj_t       *s_targ_hdr_lbl    = NULL;
 static volatile bool   s_targ_scanning   = false;
 static int             s_targ_tick       = 0;
+static bool            s_targ_finalized  = false;  // scan-end RSSI sort done once
 
 // Drone Detector state
 PSRAM_ATTR static drone_rec_t   g_drones[DRONE_MAX];
@@ -3065,6 +3066,7 @@ static volatile uint8_t disco_led_r = 0, disco_led_g = 0, disco_led_b = 0;
 static volatile bool  disco_led_needs_update = false;
 static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *text, lv_color_t bg_color, lv_event_cb_t callback, const char *user_data);
 static void show_main_tiles(void);
+static void go_home(void);               // layout-aware Home (Modern 4-cat vs Classic tiles)
 static void show_wifi_scan_attack_screen(void);
 static bool wifi_sas_merge_pass(void);
 static void wifi_sas_screen_stop(void);
@@ -3674,8 +3676,18 @@ static const char* deauth_monitor_find_ssid_by_bssid(const uint8_t *bssid);
 static void show_detect_defend_screen(void);
 static void show_pwnagotchi_detector_screen(void);
 static void show_harvester_detector_screen(void);   // deauth/handshake-harvester (behavioural)
+static void show_hidden_camera_screen(void);         // Wi-Fi: hidden-camera OUI/SSID detector + fox-hunt
 static void pwnagotchi_detector_stop(void);
 static void show_blespam_detector_screen(void);
+static void show_dd_wifi_screen(void);              // Detect & Defend → Wi-Fi Defense category
+static void show_dd_bt_screen(void);                // Detect & Defend → Bluetooth Defense category
+static void show_dd_rf_screen(void);                // Detect & Defend → RF-HAT Defense category
+static void show_dd_soon_screen(void);              // generic "Coming Soon" placeholder screen
+static void show_flipper_detector_screen(void);     // BT: Flipper Zero presence + fox-hunt
+static void show_antistalk_detector_screen(void);   // BT: Find My/SmartTag/DULT tracker sweep + fox-hunt
+static void show_meshtastic_detector_screen(void);  // BT: Meshtastic LoRa-mesh radio presence + fox-hunt
+static void show_skimmer_detector_screen(void);     // BT: BLE skimmer / serial-module presence + fox-hunt
+static void flipper_detector_stop(void);
 static void blespam_detector_stop(void);
 
 // AirTag Scanner functions
@@ -16633,7 +16645,7 @@ static void disco_post_pause_end(lv_timer_t *t)
         disco_screen_obj = NULL;
     }
     for (int i = 0; i < 4; i++) disco_layers[i] = NULL;
-    show_main_tiles();
+    go_home();
     lv_obj_clear_flag(title_bar, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -16789,6 +16801,9 @@ static const nav_show_entry_t NAV_SHOW_TABLE[] = {
     // Detectors submenu is a resolvable parent so ‹ Back from Pwn/BLE-Spam Detect
     // returns to it (not straight Home). Title distinct from the "Defend" category.
     { "Detect & Defend",      show_detect_defend_screen    },
+    { "Wi-Fi Defense",        show_dd_wifi_screen          },
+    { "Bluetooth Defense",    show_dd_bt_screen            },
+    { "RF-HAT Defense",       show_dd_rf_screen            },
 };
 
 static void (*nav_show_lookup(const char *name))(void)
@@ -16802,6 +16817,17 @@ static void (*nav_show_lookup(const char *name))(void)
 
 // Reset the path stack — called from show_main_tiles() (the home screen).
 static void nav_stack_reset(void) { nav_stack_depth = 0; }
+
+// Layout-aware "go Home": route to the Modern 4-category home or the Classic tile home per the
+// user's choice (g_home_layout_4cat, Jim's v2.15.24 Home Layout). Use this for EVERY return-to-home
+// after an action/exit; a bare show_main_tiles() lands Modern users on the Classic home (Birol HW-QA
+// 2026-10-01: NM-RF-HAT toggle dropped to Classic home in Modern mode). Both builders reset the
+// nav path stack, so this is nav-safe. (The home dispatch itself still inlines the same choice.)
+static void go_home(void)
+{
+    if (g_home_layout_4cat) show_category_home();
+    else                    show_main_tiles();
+}
 
 // Record entering screen `name`. If already on the stack, truncate back to it
 // (we navigated up/back); otherwise push it as a new level.
@@ -21442,7 +21468,17 @@ static void show_wifi_pcap_screen(void)
         lv_obj_set_style_text_color(hdr, lv_color_hex(0xAAAAAA), 0);
 
         int visible = (count > 32) ? 32 : (int)count;
-        for (int i = 0; i < visible; i++) {
+        // Sort by RSSI (strongest first) via an index array — never reorder the shared
+        // scanner buffer; the tap cb still receives each AP's ORIGINAL index. Birol 2026-09-27.
+        int order[32];
+        for (int a = 0; a < visible; a++) order[a] = a;
+        for (int a = 1; a < visible; a++) {
+            int key = order[a], b = a - 1;
+            while (b >= 0 && results[order[b]].rssi < results[key].rssi) { order[b+1] = order[b]; b--; }
+            order[b+1] = key;
+        }
+        for (int k = 0; k < visible; k++) {
+            int i = order[k];
             char buf[52];
             const char *ssid_str = results[i].ssid[0] ? (char *)results[i].ssid : "[hidden]";
             snprintf(buf, sizeof(buf), "%-16.16s CH%-3u %+4d",
@@ -27398,7 +27434,7 @@ static void rfhat_toggle_cb(lv_event_t *e)
             enable ? COLOR_MATERIAL_GREEN : lv_color_hex(0x9E9E9E), 0);
     }
     // Re-draw home tiles so IR/Radio/RFID tiles appear or disappear
-    show_main_tiles();
+    go_home();
 
     // Show development notice when enabling
     if (enable) {
@@ -31671,12 +31707,6 @@ static void lookout_editor_save_cb(lv_event_t *ev)
     show_bt_lookout_screen();
 }
 
-static void lookout_editor_back_cb(lv_event_t *ev)
-{
-    (void)ev;
-    show_bt_lookout_screen();
-}
-
 static void show_lookout_editor_screen(void)
 {
     s_editor_count = bt_lookout_count();
@@ -31694,10 +31724,13 @@ static void show_lookout_editor_screen(void)
     bt_lookout_oui_btn    = NULL;
 
     create_function_page_base("Edit Watchlist");
+    g_screen_back_fn = show_bt_lookout_screen;   // top-bar ‹ Back → Bluetooth Lookout
 
-    /* Scrollable list — leaves room for the bottom buttons */
+    /* Scrollable list — height DERIVED from screen so the bottom button row never
+       overlaps the last device (portrait AND landscape). Was a fixed 220 that overran
+       landscape's 240px and hid the last row under the buttons. Birol 2026-09-27. */
     lv_obj_t *scroll = lv_obj_create(function_page);
-    lv_obj_set_size(scroll, 228, 220);
+    lv_obj_set_size(scroll, 228, lv_disp_get_ver_res(NULL) - 36 - 48);
     lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, 36);
     lv_obj_set_style_bg_color(scroll, ui_bg_color(), 0);
     lv_obj_set_style_border_width(scroll, 0, 0);
@@ -31793,19 +31826,8 @@ static void show_lookout_editor_screen(void)
     lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Back button */
-    lv_obj_t *back_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(back_btn, 68, 32);
-    lv_obj_set_style_bg_color(back_btn, lv_color_make(60, 60, 60), LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(back_btn, lv_color_make(90, 90, 90), LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(back_btn, 0, 0);
-    lv_obj_set_style_radius(back_btn, 8, 0);
-    lv_obj_t *bk_lbl = lv_label_create(back_btn);
-    lv_label_set_text(bk_lbl, LV_SYMBOL_LEFT " Back");
-    lv_obj_set_style_text_font(bk_lbl, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(bk_lbl, ui_text_color(), 0);
-    lv_obj_center(bk_lbl);
-    lv_obj_add_event_cb(back_btn, lookout_editor_back_cb, LV_EVENT_CLICKED, NULL);
+    /* (Bottom "‹ Back" button removed — the top-bar ‹ Back returns to Bluetooth Lookout.
+       Birol 2026-09-28.) */
 
     /* Add OUI button */
     lv_obj_t *add_oui_btn = lv_btn_create(btn_row);
@@ -31855,13 +31877,13 @@ static void add_oui_ta_focus_cb(lv_event_t *e)
         lv_keyboard_set_textarea(add_oui_kb, ta);
 }
 
-static void add_oui_back_cb(lv_event_t *e)
+// Stop hook: NULL the text-area / keyboard pointers on teardown (top-bar ‹ Back).
+// Navigation is handled by g_screen_back_fn = show_lookout_editor_screen.
+static void add_oui_screen_stop(void)
 {
-    (void)e;
     add_oui_ta      = NULL;
     add_oui_name_ta = NULL;
     add_oui_kb      = NULL;
-    show_lookout_editor_screen();
 }
 
 static void add_oui_confirm_cb(lv_event_t *e)
@@ -31921,6 +31943,8 @@ static void show_add_oui_entry_screen(void)
     bt_lookout_oui_btn    = NULL;
 
     create_function_page_base("Add OUI Entry");
+    g_screen_stop_fn = add_oui_screen_stop;        // NULL text areas / keyboard on exit
+    g_screen_back_fn = show_lookout_editor_screen; // top-bar ‹ Back → Edit Watchlist (not Home)
 
     bool ls = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
 
@@ -31974,23 +31998,12 @@ static void show_add_oui_entry_screen(void)
     lv_obj_set_style_pad_all(btn_row, 0, 0);
     lv_obj_set_style_pad_column(btn_row, 8, 0);
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_SPACE_BETWEEN,
+    lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER,
                            LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *back_btn = lv_btn_create(btn_row);
-    lv_obj_set_size(back_btn, 104, ls ? 26 : 34);
-    lv_obj_set_style_bg_color(back_btn, lv_color_make(60, 60, 60), LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(back_btn, lv_color_make(90, 90, 90), LV_STATE_PRESSED);
-    lv_obj_set_style_border_width(back_btn, 0, 0);
-    lv_obj_set_style_radius(back_btn, 8, 0);
-    lv_obj_t *bk_lbl = lv_label_create(back_btn);
-    lv_label_set_text(bk_lbl, LV_SYMBOL_LEFT " Back");
-    lv_obj_set_style_text_font(bk_lbl, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(bk_lbl, ui_text_color(), 0);
-    lv_obj_center(bk_lbl);
-    lv_obj_add_event_cb(back_btn, add_oui_back_cb, LV_EVENT_CLICKED, NULL);
-
+    /* (Bottom "‹ Back" button removed — top-bar ‹ Back returns to Edit Watchlist.
+       Birol 2026-09-28.) */
     lv_obj_t *add_btn = lv_btn_create(btn_row);
     lv_obj_set_size(add_btn, 104, ls ? 26 : 34);
     lv_obj_set_style_bg_color(add_btn, lv_color_make(30, 100, 180), LV_STATE_DEFAULT);
@@ -32084,9 +32097,10 @@ static void show_oui_groups_screen(void)
 
     create_function_page_base("OUI Groups");
 
-    /* Scrollable group list */
+    /* Scrollable group list — full width + height derived to fill down to near the
+       bottom (was 228 wide with a ~48px dead band below). Birol 2026-09-28. */
     lv_obj_t *scroll = lv_obj_create(function_page);
-    lv_obj_set_size(scroll, 228, lv_disp_get_ver_res(NULL) - 30 - 6 - 38 - 6);
+    lv_obj_set_size(scroll, lv_pct(100), lv_disp_get_ver_res(NULL) - 32 - 6);
     lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, 32);
     lv_obj_set_style_bg_color(scroll, ui_bg_color(), 0);
     lv_obj_set_style_border_width(scroll, 0, 0);
@@ -32331,6 +32345,31 @@ static void ble_targ_item_tap_cb(lv_event_t *e)
     show_ble_pcap_screen();
 }
 
+// Build one BLE Targeted list row for device index i (into s_targ_devs[]).
+static void ble_targ_add_row(int i)
+{
+    if (!s_targ_list_cont) return;
+    char buf[52];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X %+4d %-12.12s",
+             s_targ_devs[i].addr[0], s_targ_devs[i].addr[1],
+             s_targ_devs[i].addr[2], s_targ_devs[i].addr[3],
+             s_targ_devs[i].addr[4], s_targ_devs[i].addr[5],
+             s_targ_devs[i].rssi,
+             s_targ_devs[i].name[0] ? s_targ_devs[i].name : "");
+    lv_obj_t *btn = lv_btn_create(s_targ_list_cont);
+    lv_obj_set_size(btn, lv_pct(100), 26);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(0x2244AA), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(btn, 3, 0);
+    lv_obj_set_style_pad_all(btn, 3, 0);
+    lv_obj_t *lbl = lv_label_create(btn);
+    lv_label_set_text(lbl, buf);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0x00E5FF), 0);
+    lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 2, 0);
+    lv_obj_add_event_cb(btn, ble_targ_item_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+}
+
 // 1-second timer: add newly discovered devices to list; update countdown header.
 static void ble_targ_timer_cb(lv_timer_t *tmr)
 {
@@ -32352,30 +32391,30 @@ static void ble_targ_timer_cb(lv_timer_t *tmr)
         }
     }
 
-    // Append only new devices — preserves scroll position and avoids full rebuild
+    // While scanning: append only NEW devices (preserves scroll, no full rebuild).
+    // When the scan ends: sort s_targ_devs[] by RSSI (strongest/nearest first) ONCE
+    // and rebuild the list so the closest target is at the top. Birol 2026-09-27.
     int n = s_targ_count;
-    for (int i = s_targ_displayed; i < n && s_targ_list_cont; i++) {
-        char buf[52];
-        snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X %+4d %-12.12s",
-                 s_targ_devs[i].addr[0], s_targ_devs[i].addr[1],
-                 s_targ_devs[i].addr[2], s_targ_devs[i].addr[3],
-                 s_targ_devs[i].addr[4], s_targ_devs[i].addr[5],
-                 s_targ_devs[i].rssi,
-                 s_targ_devs[i].name[0] ? s_targ_devs[i].name : "");
-        lv_obj_t *btn = lv_btn_create(s_targ_list_cont);
-        lv_obj_set_size(btn, lv_pct(100), 26);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A2E), 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(0x2244AA), LV_STATE_PRESSED);
-        lv_obj_set_style_radius(btn, 3, 0);
-        lv_obj_set_style_pad_all(btn, 3, 0);
-        lv_obj_t *lbl = lv_label_create(btn);
-        lv_label_set_text(lbl, buf);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(lbl, lv_color_hex(0x00E5FF), 0);
-        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 2, 0);
-        lv_obj_add_event_cb(btn, ble_targ_item_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+    if (s_targ_scanning) {
+        for (int i = s_targ_displayed; i < n && s_targ_list_cont; i++)
+            ble_targ_add_row(i);
+        s_targ_displayed = n;
+    } else if (!s_targ_finalized && s_targ_list_cont) {
+        for (int a = 1; a < n; a++) {            // insertion sort, private buffer → in place
+            ble_targ_dev_t key = s_targ_devs[a];
+            int b = a - 1;
+            while (b >= 0 && s_targ_devs[b].rssi < key.rssi) { s_targ_devs[b+1] = s_targ_devs[b]; b--; }
+            s_targ_devs[b+1] = key;
+        }
+        lv_obj_clean(s_targ_list_cont);          // drops the old header + rows
+        s_targ_hdr_lbl = lv_label_create(s_targ_list_cont);
+        lv_label_set_text(s_targ_hdr_lbl, "Tap device to start capture:");
+        lv_obj_set_style_text_font(s_targ_hdr_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(s_targ_hdr_lbl, lv_color_hex(0xAAAAAA), 0);
+        for (int i = 0; i < n; i++) ble_targ_add_row(i);
+        s_targ_displayed = n;
+        s_targ_finalized = true;
     }
-    s_targ_displayed = n;
 }
 
 static void ble_targ_screen_stop(void)
@@ -32401,6 +32440,7 @@ static void show_ble_targeted_pcap_screen(void)
     s_targ_displayed = 0;
     s_targ_tick      = 0;
     s_targ_scanning  = true;
+    s_targ_finalized = false;
     memset(s_targ_devs, 0, sizeof(s_targ_devs));
 
     create_function_page_base("BLE Targeted");
@@ -43355,13 +43395,28 @@ static void bt_locator_device_selected_cb(lv_event_t *e)
 /**
  * Update BT Locator list UI with clickable device items
  */
+// Strongest-first display order for the BT Locator list (indices into bt_devices[]).
+static int s_bt_loc_order[BT_MAX_DEVICES];
+
 static void bt_locator_update_list(void)
 {
     if (!bt_locator_list) return;
 
     lv_obj_clean(bt_locator_list);
 
-    for (int i = 0; i < bt_device_count; i++) {
+    // Order by RSSI (strongest/nearest first) via an index array — the shared bt_devices[]
+    // buffer is left intact and the row tap cb still gets each device's ORIGINAL index.
+    int n = bt_device_count;
+    for (int a = 0; a < n; a++) s_bt_loc_order[a] = a;
+    for (int a = 1; a < n; a++) {
+        int key = s_bt_loc_order[a], b = a - 1;
+        while (b >= 0 && bt_devices[s_bt_loc_order[b]].rssi < bt_devices[key].rssi) {
+            s_bt_loc_order[b+1] = s_bt_loc_order[b]; b--;
+        }
+        s_bt_loc_order[b+1] = key;
+    }
+    for (int k = 0; k < n; k++) {
+        int i = s_bt_loc_order[k];
         bt_device_info_t *dev = &bt_devices[i];
         char addr_str[18];
         bt_format_addr(dev->addr, addr_str);
@@ -43914,20 +43969,11 @@ static void show_deauth_monitor_screen(void)
 // ============================================================================
 
 // ── Detect & Defend sub-menu ──────────────────────────────────────────────────
-static void dd_menu_tile_cb(lv_event_t *e)
+// Built as a scrollable tile grid so a growing detector set stays landscape-safe
+// (scroll instead of clip). ORIGINAL CYM icons only (MY_SYMBOL_*/LV_SYMBOL_*) —
+// never another firmware's icon/mascot.
+static lv_obj_t *dd_tiles_container(void)
 {
-    const char *name = (const char *)lv_event_get_user_data(e);
-    if (!name) return;
-    if      (strcmp(name, "Pwnagotchi") == 0) show_pwnagotchi_detector_screen();
-    else if (strcmp(name, "BLE Spam")   == 0) show_blespam_detector_screen();
-    else if (strcmp(name, "Harvester")  == 0) show_harvester_detector_screen();
-}
-
-static void show_detect_defend_screen(void)
-{
-    create_function_page_base("Detect & Defend");
-    apply_menu_bg();
-
     lv_obj_t *tiles = lv_obj_create(function_page);
     lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 48);
     lv_obj_align(tiles, LV_ALIGN_TOP_MID, 0, 32);
@@ -43937,20 +43983,139 @@ static void show_detect_defend_screen(void)
     lv_obj_set_style_pad_gap(tiles, 4, 0);
     lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(tiles, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(tiles, LV_SCROLLBAR_MODE_AUTO);
+    return tiles;
+}
 
-    // Pwnagotchi Detector — WiFi: flag a handshake-harvesting Pwnagotchi nearby.
-    // Tile label MUST fit the fixed 68px tile width per line — "Pwnagotchi" (10ch)
-    // wraps mid-word, so the label is shortened (the ghost icon + this menu give the
-    // context). The dispatch key stays "Pwnagotchi".
-    create_tile(tiles, MY_SYMBOL_GHOST,       "Pwn\nDetect", lv_color_hex(0x1A237E), dd_menu_tile_cb, "Pwnagotchi");
-    // Deauth/Harvester Detector — WiFi: behavioural — flags a handshake harvester by
-    // its deauth/disassoc attack, so it catches a NON-advertising hunter (Ghostchi,
-    // a pwnagotchi with advertise off, a plain deauther) that the beacon detector can't.
-    // Placed next to Pwn Detect (both WiFi handshake-harvester detectors); BLE last.
-    create_tile(tiles, MY_SYMBOL_SKULL_CROSS, "Deauth\nHarvest",    lv_color_hex(0x7A1F1F), dd_menu_tile_cb, "Harvester");
-    // BLE Spam Detector — BT: flag the BLE advert-flood our own BLE Spam runs.
-    create_tile(tiles, MY_SYMBOL_BLUETOOTH_B, "BLE Spam\nDetect",   lv_color_hex(0x4A148C), dd_menu_tile_cb, "BLE Spam");
+// Title for the generic Coming-Soon placeholder — set to the tapped tile's name.
+static const char *s_dd_soon_title = "Coming Soon";
+
+static void dd_menu_tile_cb(lv_event_t *e)
+{
+    const char *name = (const char *)lv_event_get_user_data(e);
+    if (!name) return;
+    // Category tiles
+    if      (strcmp(name, "WiFiDef")    == 0) show_dd_wifi_screen();
+    else if (strcmp(name, "BTDef")      == 0) show_dd_bt_screen();
+    else if (strcmp(name, "RFHatDef")   == 0) show_dd_rf_screen();
+    // Implemented detector tiles
+    else if (strcmp(name, "Pwnagotchi") == 0) show_pwnagotchi_detector_screen();
+    else if (strcmp(name, "Harvester")  == 0) show_harvester_detector_screen();
+    else if (strcmp(name, "BLE Spam")   == 0) show_blespam_detector_screen();
+    else if (strcmp(name, "Flipper")    == 0) show_flipper_detector_screen();
+    else if (strcmp(name, "Anti-Stalk") == 0) show_antistalk_detector_screen();
+    else if (strcmp(name, "Skimmer")    == 0) show_skimmer_detector_screen();
+    else if (strcmp(name, "Meshtastic") == 0) show_meshtastic_detector_screen();
+    else if (strcmp(name, "Hidden Camera") == 0) show_hidden_camera_screen();
+    // Drone Detect — shared existing detector; back to this Detect & Defend root.
+    else if (strcmp(name, "Drone")      == 0) { show_drone_detector_screen(); g_screen_back_fn = show_detect_defend_screen; }
+    // Any other (planned) tile → Coming Soon, titled with its name (string literal, persists).
+    else { s_dd_soon_title = name; show_dd_soon_screen(); }
+}
+
+// Generic "Coming Soon" placeholder — centered, ver_res-derived + scrollable so it is
+// correct in BOTH portrait and landscape from the start (no fixed/portrait-only sizing).
+static void show_dd_soon_screen(void)
+{
+    create_function_page_base(s_dd_soon_title);
+    apply_menu_bg();
+    lv_obj_t *box = lv_obj_create(function_page);
+    lv_obj_set_size(box, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(box, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_opa(box, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(box, 0, 0);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(box, 10, 0);
+    lv_obj_set_scrollbar_mode(box, LV_SCROLLBAR_MODE_AUTO);
+
+    lv_obj_t *t = lv_label_create(box);
+    lv_label_set_text(t, s_dd_soon_title);
+    lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(t, lv_pct(90));
+    lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(t, ui_text_color(), 0);
+
+    lv_obj_t *s = lv_label_create(box);
+    lv_label_set_text(s, "Coming soon");
+    lv_obj_set_style_text_font(s, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s, COLOR_MATERIAL_TEAL, 0);
+
+    lv_obj_t *d = lv_label_create(box);
+    lv_label_set_text(d, "Detector in development.");
+    lv_obj_set_style_text_align(d, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(d, lv_pct(90));
+    lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(d, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(d, lv_color_make(150, 150, 150), 0);
+}
+
+// A PLANNED (not-yet-implemented) detector tile: dimmed (faded, grey) so it reads as
+// "not active yet" at a glance — the live detectors stay full-colour/opacity, so the
+// user is never in doubt whether a working tile works. Still tappable → a brief
+// Coming-Soon (which now reads as expected, since the tile is visibly faded).
+static void dd_soon_tile(lv_obj_t *parent, const char *icon, const char *text, const char *name)
+{
+    lv_obj_t *t = create_tile(parent, icon, text, lv_color_hex(0x2A2E33), dd_menu_tile_cb, name);
+    if (t) lv_obj_set_style_opa(t, LV_OPA_80, 0);   // slightly faded = coming soon (still clearly readable)
+}
+
+// Detect & Defend root: category tiles (one detector menu per radio domain).
+static void show_detect_defend_screen(void)
+{
+    create_function_page_base("Detect & Defend");
+    apply_menu_bg();
+    lv_obj_t *tiles = dd_tiles_container();
+    create_tile(tiles, LV_SYMBOL_WIFI,           "Wi-Fi\nDefense", lv_color_hex(0x0D47A1), dd_menu_tile_cb, "WiFiDef");
+    create_tile(tiles, MY_SYMBOL_BLUETOOTH_B,    "BT\nDefense",    lv_color_hex(0x4A148C), dd_menu_tile_cb, "BTDef");
+    // RF-HAT Defense: both its sub-tiles are still coming-soon, so fade the category too.
+    { lv_obj_t *rf = create_tile(tiles, MY_SYMBOL_SATELLITE_DISH, "RF-HAT\nDefense",lv_color_hex(0x1B5E20), dd_menu_tile_cb, "RFHatDef");
+      if (rf) lv_obj_set_style_opa(rf, LV_OPA_80, 0); }
+    // Shared quick-access detectors (identical in both Home layouts — see show_cat_defend).
+    create_tile(tiles, MY_SYMBOL_SATELLITE,      "Deauth\nMon.",   UI_ACCENT_AMBER,        main_tile_event_cb, "Deauth Monitor");
+    create_tile(tiles, MY_SYMBOL_JET_FIGHTER,    "Drone\nDetect",  lv_color_hex(0x1B5E20), dd_menu_tile_cb, "Drone");
+}
+
+// Wi-Fi Defense category — live detectors (full colour) + planned (faded, Coming Soon).
+static void show_dd_wifi_screen(void)
+{
+    create_function_page_base("Wi-Fi Defense");
+    apply_menu_bg();
+    lv_obj_t *tiles = dd_tiles_container();
+    create_tile(tiles, MY_SYMBOL_GHOST,       "Pwn\nDetect",     lv_color_hex(0x1A237E), dd_menu_tile_cb, "Pwnagotchi");
+    create_tile(tiles, MY_SYMBOL_SKULL_CROSS, "Deauth\nHarvest", lv_color_hex(0x7A1F1F), dd_menu_tile_cb, "Harvester");
+    dd_soon_tile(tiles, MY_SYMBOL_SITEMAP,   "Evil\nTwin",      "Evil Twin");
+    dd_soon_tile(tiles, MY_SYMBOL_WAVE,      "Beacon\nFlood",   "Beacon Flood");
+    dd_soon_tile(tiles, MY_SYMBOL_NET_WIRED, "Pine-\napple",    "Pineapple");
+    dd_soon_tile(tiles, MY_SYMBOL_TERMINAL,  "Rogue\nESP",      "Rogue ESP");
+    create_tile(tiles, MY_SYMBOL_EYE,        "Hidden\nCamera",  lv_color_hex(0x00695C), dd_menu_tile_cb, "Hidden Camera");
+    dd_soon_tile(tiles, MY_SYMBOL_TOWER,     "RF\nJamming",     "RF Jamming");
+}
+
+// Bluetooth Defense category — live detectors (full colour) + planned (faded, Coming Soon).
+static void show_dd_bt_screen(void)
+{
+    create_function_page_base("Bluetooth Defense");
+    apply_menu_bg();
+    lv_obj_t *tiles = dd_tiles_container();
+    create_tile(tiles, MY_SYMBOL_BLUETOOTH_B, "BLE Spam\nDetect", lv_color_hex(0x4A148C), dd_menu_tile_cb, "BLE Spam");
+    create_tile(tiles, MY_SYMBOL_MICROCHIP,   "Flipper\nDetect",  lv_color_hex(0xE65100), dd_menu_tile_cb, "Flipper");
+    create_tile(tiles, MY_SYMBOL_TAG,         "Anti-\nStalk",     lv_color_hex(0x00695C), dd_menu_tile_cb, "Anti-Stalk");
+    create_tile(tiles, MY_SYMBOL_ID_CARD,     "Skimmer\nDetect",  lv_color_hex(0x827717), dd_menu_tile_cb, "Skimmer");
+    create_tile(tiles, MY_SYMBOL_CIRCLE_NODES,"Mesh-\ntastic",    lv_color_hex(0x004D40), dd_menu_tile_cb, "Meshtastic");
+    dd_soon_tile(tiles, MY_SYMBOL_EYE_SLASH,   "Smart\nGlasses", "Smart Glasses");
+    dd_soon_tile(tiles, MY_SYMBOL_BINOCULARS,  "Camera\nBLE",    "Camera BLE");
+}
+
+// RF-HAT Defense category — needs the NM-RF-HAT; all planned (faded, Coming Soon) for now.
+static void show_dd_rf_screen(void)
+{
+    create_function_page_base("RF-HAT Defense");
+    apply_menu_bg();
+    lv_obj_t *tiles = dd_tiles_container();
+    dd_soon_tile(tiles, MY_SYMBOL_XRAY, "RF-Bug\nSweep", "RF-Bug Sweep");
+    dd_soon_tile(tiles, MY_SYMBOL_RSS,  "Sub-GHz\nJam",  "Sub-GHz Jam");
 }
 
 // ── 4-category Home router (runtime-selectable) ─────────────────────────────
@@ -44039,7 +44204,14 @@ static void show_category_home(void)
 static lv_obj_t *cat_sub_tiles(void)
 {
     lv_obj_t *tiles = lv_obj_create(function_page);
-    lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 48);
+    // Height = screen minus title bar (~30) and a small bottom margin (12). Category screens have
+    // NO bottom bar, so the old -48 reserve wasted ~46px at the bottom while leaving the grid frame
+    // a hair too short: Recon & Scan's 9 tiles are 3 cols x 3 rows (portrait 74px tiles, landscape
+    // 58px), so 3*74 + 2*4 gap + 2*4 pad = 238px vs the old ~242px frame -> the 3rd row (Zigbee)
+    // clipped at the bottom AND a spurious scrollbar showed on that thin margin (Birol HW-QA
+    // 2026-10-01). Reclaiming the free bottom space lets 3 rows fit cleanly in BOTH orientations
+    // (portrait inner ~270 >= 230; landscape inner ~190 >= 182). Scrollbar AUTO stays as the safety net.
+    lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 12);
     lv_obj_align(tiles, LV_ALIGN_TOP_MID, 0, 32);
     lv_obj_set_style_bg_opa(tiles, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tiles, 0, 0);
@@ -44088,8 +44260,13 @@ static void show_cat_defend(void)
     create_function_page_base("Defend");
     apply_menu_bg();
     lv_obj_t *tiles = cat_sub_tiles();
-    create_tile(tiles, MY_SYMBOL_SHIELD,      "Detectors",       lv_color_hex(0x1B5E20), main_tile_event_cb, "Detect & Defend");
-    create_tile(tiles, MY_SYMBOL_SKULL_CROSS, "Deauth\nHarvest", lv_color_hex(0x7A1F1F), dd_menu_tile_cb, "Harvester");
+    // Same Detect & Defend structure as the classic Home (show_detect_defend_screen),
+    // so both layouts reach the detectors by the identical path.
+    create_tile(tiles, LV_SYMBOL_WIFI,           "Wi-Fi\nDefense", lv_color_hex(0x0D47A1), dd_menu_tile_cb, "WiFiDef");
+    create_tile(tiles, MY_SYMBOL_BLUETOOTH_B,    "BT\nDefense",    lv_color_hex(0x4A148C), dd_menu_tile_cb, "BTDef");
+    // RF-HAT Defense: both its sub-tiles are still coming-soon, so fade the category too.
+    { lv_obj_t *rf = create_tile(tiles, MY_SYMBOL_SATELLITE_DISH, "RF-HAT\nDefense",lv_color_hex(0x1B5E20), dd_menu_tile_cb, "RFHatDef");
+      if (rf) lv_obj_set_style_opa(rf, LV_OPA_80, 0); }
     create_tile(tiles, MY_SYMBOL_SATELLITE,   "Deauth\nMon.",    UI_ACCENT_AMBER,        main_tile_event_cb, "Deauth Monitor");
     create_tile(tiles, MY_SYMBOL_JET_FIGHTER, "Drone\nDetect",   lv_color_hex(0x1B5E20), cat_go_drone_detect, "dd");
 }
@@ -44315,6 +44492,15 @@ static void pwn_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
         // Diagnostic per-hit log throttle: at most ~1/s per unit (captured here,
         // emitted below OUTSIDE the critical section).
         if (is_new || (now_ms - s_pwn[idx].last_log_ms) >= 5000) {
+            s_pwn[idx].last_log_ms = now_ms;
+            do_log    = true;
+            hits_snap = s_pwn[idx].hits;
+            chan_snap = s_pwn[idx].chan_seen;
+            pwnd_snap = s_pwn[idx].pwnd_tot;
+        }
+        // Diagnostic per-hit log throttle: at most ~1/s per unit (captured here,
+        // emitted below OUTSIDE the critical section).
+        if (is_new || (now_ms - s_pwn[idx].last_log_ms) >= 1000) {
             s_pwn[idx].last_log_ms = now_ms;
             do_log    = true;
             hits_snap = s_pwn[idx].hits;
@@ -45177,6 +45363,789 @@ static void show_harvester_detector_screen(void)
     }
 }
 
+// ── Hidden-Camera Detector (Wi-Fi Defense) ────────────────────────────────────
+// Passive layer (no network join): sniff MGMT+DATA frames, pull each non-AP station
+// MAC (and AP-mode BSSID), resolve its OUI vendor via ouilist.bin, and match a curated
+// camera-vendor table with an honest HIGH/MED confidence grade. AP-mode cameras also
+// matched by SSID heuristic. Cloud-only cams (Xiaomi/Ring/Nest/Wyze) expose no local
+// service, so OUI/passive is the ONLY way to see them (a later Layer-2 mDNS/ONVIF sweep
+// catches local-RTSP cams). Randomized (locally-administered) MACs are skipped — their
+// OUI is meaningless. List is modern-styled + RSSI-sorted (strongest first); tap a row
+// to fox-hunt THAT device by its live RSSI. Mirrors the harvester scaffolding.
+#define CAM_MAX 40
+#define CAM_AGE_MS 60000
+enum { CAM_CONF_LOW = 0, CAM_CONF_MED = 1, CAM_CONF_HIGH = 2 };
+typedef struct {
+    uint8_t  mac[6];
+    char     label[24];   // vendor name, or SSID hint for AP-mode / SSID-only matches
+    uint8_t  conf;        // CAM_CONF_*
+    bool     is_ap;       // matched as an AP (beacon/probe-resp) vs a station
+    int8_t   rssi;
+    uint8_t  channel;
+    uint32_t hits;
+    uint32_t first_ms;
+    uint32_t last_ms;
+} cam_rec_t;
+
+// Curated camera-vendor table: matched as a case-insensitive SUBSTRING of the ouilist.bin
+// vendor name, so every OUI block a vendor owns is covered without hardcoding prefixes.
+// HIGH = camera-only makers; MED = makes cameras AND lots else (phone/router/plug), so an
+// OUI hit only proves "a <vendor> device", not a camera — the honest-scope grade we owe.
+typedef struct { const char *needle; uint8_t conf; } cam_vendor_t;
+static const cam_vendor_t CAM_VENDORS[] = {
+    { "Hikvision", CAM_CONF_HIGH }, { "Dahua",    CAM_CONF_HIGH },
+    { "Axis Comm", CAM_CONF_HIGH }, { "Wyze",     CAM_CONF_HIGH },
+    { "Ring LLC",  CAM_CONF_HIGH }, { "Arlo",     CAM_CONF_HIGH },
+    { "Reolink",   CAM_CONF_HIGH }, { "Amcrest",  CAM_CONF_HIGH },
+    { "Verkada",   CAM_CONF_HIGH }, { "Avigilon", CAM_CONF_HIGH },
+    { "Ubiquiti",  CAM_CONF_HIGH }, { "Hanwha",   CAM_CONF_HIGH },
+    { "Vivotek",   CAM_CONF_HIGH }, { "Foscam",   CAM_CONF_HIGH },
+    { "Ezviz",     CAM_CONF_HIGH }, { "Lorex",    CAM_CONF_HIGH },
+    { "Xiaomi",    CAM_CONF_MED  }, { "TP-LINK",  CAM_CONF_MED  },
+    { "Tuya",      CAM_CONF_MED  }, { "Amazon",   CAM_CONF_MED  },
+    { "Google",    CAM_CONF_MED  }, { "Sonoff",   CAM_CONF_MED  },
+    { "Espressif", CAM_CONF_LOW  },
+};
+static const int CAM_VENDORS_N = (int)(sizeof(CAM_VENDORS) / sizeof(CAM_VENDORS[0]));
+
+// SSID substrings that read like a camera in AP/setup mode (or a cam-named AP).
+static const char *CAM_SSIDS[] = { "IPCAM", "IP-CAM", "ONVIF", "ESP32-CAM", "ESP-CAM",
+    "DVR", "NVR", "HD-CAM", "CAMERA", "Tapo_", "Wyze", "Reolink", "MiCam", "Yi-", "webcam" };
+static const int CAM_SSIDS_N = (int)(sizeof(CAM_SSIDS) / sizeof(CAM_SSIDS[0]));
+
+// Embedded camera-vendor OUI prefixes (works with NO ouilist.bin on SD -> detector works
+// out of the box). Camera-FOCUSED brands only = HIGH; multi-product vendors (Xiaomi/TP-Link/
+// Amazon/Google/Ubiquiti) are left to the SD list to avoid false "camera" flags on phones/APs.
+// 154 prefixes, generated+verified from docs/support_files/oui.csv (IEEE, same source as ouilist.bin).
+static const char *CAM_OUI_NAMES[] = { "Hikvision", "Dahua", "Axis", "Wyze", "Ring", "Arlo", "Reolink", "Amcrest", "Verkada", "Avigilon", "Hanwha", "Vivotek", "Foscam" };
+typedef struct { uint8_t oui[3]; uint8_t vidx; } cam_oui_embed_t;
+static const cam_oui_embed_t CAM_OUI_EMBED[] = {
+    {{0x00,0x02,0xD1},11}, {{0x00,0x40,0x8C},2}, {{0x00,0x65,0x1E},7}, {{0x00,0xB4,0x63},4}, {{0x00,0xBC,0x99},0},
+    {{0x04,0x03,0x12},0}, {{0x04,0xEE,0xCD},0}, {{0x08,0x3B,0xC1},0}, {{0x08,0x54,0x11},0}, {{0x08,0xA1,0x89},0},
+    {{0x08,0xCC,0x81},0}, {{0x08,0xED,0xED},1}, {{0x0C,0x75,0xD2},0}, {{0x10,0x12,0xFB},0}, {{0x14,0xA7,0x8B},1},
+    {{0x18,0x68,0xCB},0}, {{0x18,0x7F,0x88},4}, {{0x18,0x80,0x25},0}, {{0x20,0x2C,0x05},1}, {{0x24,0x0F,0x9B},0},
+    {{0x24,0x28,0xFD},0}, {{0x24,0x2B,0xD6},4}, {{0x24,0x32,0xAE},0}, {{0x24,0x48,0x45},0}, {{0x24,0x52,0x6A},1},
+    {{0x24,0xB1,0x05},0}, {{0x28,0x57,0xBE},0}, {{0x2C,0xA5,0x9C},0}, {{0x2C,0xAA,0x8E},3}, {{0x30,0xDD,0xAA},1},
+    {{0x34,0x09,0x62},0}, {{0x34,0x3E,0xA4},4}, {{0x38,0xAF,0x29},1}, {{0x3C,0x1B,0xF8},0}, {{0x3C,0xE3,0x6B},1},
+    {{0x3C,0xEF,0x8C},1}, {{0x40,0x7A,0xA4},1}, {{0x40,0xAC,0xBF},0}, {{0x40,0xB5,0x70},0}, {{0x44,0x19,0xB6},0},
+    {{0x44,0x47,0xCC},0}, {{0x44,0xA6,0x42},0}, {{0x44,0xB4,0x23},10}, {{0x48,0x62,0x64},5}, {{0x48,0x78,0x5B},0},
+    {{0x4C,0x11,0xBF},1}, {{0x4C,0x1F,0x86},0}, {{0x4C,0x62,0xDF},0}, {{0x4C,0x99,0xE8},1}, {{0x4C,0xBD,0x8F},0},
+    {{0x4C,0xF5,0xDC},0}, {{0x50,0xE4,0x67},4}, {{0x50,0xE5,0x38},0}, {{0x54,0x8C,0x81},0}, {{0x54,0xC4,0x15},0},
+    {{0x54,0xE0,0x19},4}, {{0x58,0x03,0xFB},0}, {{0x58,0x50,0xED},0}, {{0x5C,0x34,0x5B},0}, {{0x5C,0x47,0x5E},4},
+    {{0x5C,0xF5,0x1A},1}, {{0x64,0x9A,0x63},4}, {{0x64,0xDB,0x8B},0}, {{0x64,0xFD,0x29},1}, {{0x68,0x6D,0xBC},0},
+    {{0x6C,0x1C,0x71},1}, {{0x70,0x1A,0xD5},9}, {{0x74,0x3F,0xC2},0}, {{0x74,0xC9,0x29},1}, {{0x7C,0x78,0xB2},3},
+    {{0x80,0x48,0x2C},3}, {{0x80,0x48,0x9F},0}, {{0x80,0x7C,0x62},0}, {{0x80,0xBE,0xAF},0}, {{0x80,0xF5,0xAE},0},
+    {{0x84,0x94,0x59},0}, {{0x84,0x9A,0x40},0}, {{0x88,0xDE,0x39},0}, {{0x8C,0x1D,0x55},10}, {{0x8C,0x22,0xD2},0},
+    {{0x8C,0xE7,0x48},0}, {{0x8C,0xE9,0xB4},1}, {{0x90,0x02,0xA9},1}, {{0x90,0x48,0x6C},4}, {{0x94,0xE1,0xAC},0},
+    {{0x98,0x8B,0x0A},0}, {{0x98,0x9D,0xE5},0}, {{0x98,0xDF,0x82},0}, {{0x98,0xF1,0x12},0}, {{0x98,0xF9,0xCC},1},
+    {{0x9C,0x14,0x63},1}, {{0x9C,0x76,0x13},4}, {{0x9C,0x8E,0xCD},7}, {{0xA0,0x60,0x32},7}, {{0xA0,0xBD,0x1D},1},
+    {{0xA0,0xFF,0x0C},0}, {{0xA4,0x11,0x62},5}, {{0xA4,0x14,0x37},0}, {{0xA4,0x29,0x02},0}, {{0xA4,0x4B,0xD9},0},
+    {{0xA4,0xA4,0x59},0}, {{0xA4,0xD5,0xC2},0}, {{0xA8,0xCA,0x87},1}, {{0xAC,0x9F,0xC3},4}, {{0xAC,0xB9,0x2F},0},
+    {{0xAC,0xCB,0x51},0}, {{0xAC,0xCC,0x8E},2}, {{0xB0,0xFF,0x0D},0}, {{0xB4,0x4C,0x3B},1}, {{0xB4,0xA3,0x82},0},
+    {{0xB8,0xA4,0x4F},2}, {{0xBC,0x29,0x78},0}, {{0xBC,0x32,0x5F},1}, {{0xBC,0x5E,0x33},0}, {{0xBC,0x9B,0x5E},0},
+    {{0xBC,0xAD,0x28},0}, {{0xBC,0xBA,0xC2},0}, {{0xC0,0x39,0x5A},1}, {{0xC0,0x51,0x7E},0}, {{0xC0,0x56,0xE3},0},
+    {{0xC0,0x6D,0xED},0}, {{0xC4,0x2F,0x90},0}, {{0xC4,0xAA,0xC4},1}, {{0xC4,0xDB,0xAD},4}, {{0xC8,0xA7,0x02},0},
+    {{0xCC,0x13,0xF3},0}, {{0xCC,0x3B,0xFB},4}, {{0xD0,0x3F,0x27},3}, {{0xD4,0x43,0x0E},1}, {{0xD4,0xE8,0x53},0},
+    {{0xDC,0x07,0xF8},0}, {{0xDC,0xD2,0x6A},0}, {{0xE0,0x2E,0xFE},1}, {{0xE0,0x50,0x8B},1}, {{0xE0,0xA7,0x00},8},
+    {{0xE0,0xBA,0xAD},0}, {{0xE0,0xCA,0x3C},0}, {{0xE0,0xDF,0x13},0}, {{0xE4,0x24,0x6C},1}, {{0xE4,0x30,0x22},10},
+    {{0xE4,0xD5,0x8B},0}, {{0xE8,0x27,0x25},2}, {{0xE8,0xA0,0xED},0}, {{0xEC,0x71,0xDB},6}, {{0xEC,0xA9,0x71},0},
+    {{0xEC,0xC8,0x9C},0}, {{0xF0,0xC8,0x8B},3}, {{0xF4,0xB1,0xC2},1}, {{0xF8,0x4D,0xFC},0}, {{0xF8,0xCE,0x07},1},
+    {{0xFC,0x5F,0x49},1}, {{0xFC,0x9C,0x98},5}, {{0xFC,0x9F,0xFD},0}, {{0xFC,0xB6,0x9D},1},
+};
+static const int CAM_OUI_EMBED_N = (int)(sizeof(CAM_OUI_EMBED)/sizeof(CAM_OUI_EMBED[0]));
+
+static cam_rec_t   *s_cam = NULL;
+static cam_rec_t   *s_cam_snap = NULL;   // sorted (RSSI desc) snapshot for rendering + tap
+static volatile int s_cam_count = 0;
+static int          s_cam_snap_n = 0;
+static portMUX_TYPE s_cam_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool s_cam_active = false;
+static TaskHandle_t s_cam_task = NULL;
+static StaticTask_t s_cam_taskbuf;
+static StackType_t *s_cam_stack = NULL;
+static int          s_cam_ch_idx = 0;
+static int          s_cam_channel = 1;
+static int64_t      s_cam_last_hop = 0;
+static lv_obj_t    *s_cam_status = NULL;
+static lv_obj_t    *s_cam_alert  = NULL;
+static lv_obj_t    *s_cam_list   = NULL;
+static lv_timer_t  *s_cam_ui_timer = NULL;
+static int          s_cam_page = 0;           // paged list (modern nav bar, no scrollbar)
+static int          s_cam_built_n    = -1;     // last-rendered device count (rebuild rows only on change)
+static int          s_cam_built_page = -1;     // last-rendered page (so a 4 Hz timer never recreates the
+                                               // row under the user's finger -> tap needed many tries)
+static lv_obj_t    *s_cam_nav_bar  = NULL;
+static lv_obj_t    *s_cam_nav_prev = NULL;
+static lv_obj_t    *s_cam_nav_lbl  = NULL;
+static lv_obj_t    *s_cam_nav_next = NULL;
+// Fox-hunt (per device): tap a row -> lock that MAC, home in on its live RSSI.
+static volatile bool     s_cam_locate = false;
+static uint8_t           s_cam_loc_mac[6];
+static char              s_cam_loc_label[24];
+static volatile int8_t   s_cam_loc_rssi = -128;
+static volatile bool     s_cam_loc_found = false;
+static volatile uint32_t s_cam_loc_seen = 0;
+static volatile int      s_cam_loc_ch = 0;   // target's channel; while locating we PARK here
+static lv_obj_t *s_cam_loc_cont = NULL;
+static lv_obj_t *s_cam_loc_title = NULL;
+static lv_obj_t *s_cam_loc_val = NULL;
+static lv_obj_t *s_cam_loc_bar = NULL;
+static lv_obj_t *s_cam_loc_hint = NULL;
+
+// Case-insensitive substring test (strcasestr is a GNU extension that may be hidden
+// without _GNU_SOURCE, so we roll our own — needle/haystack are short).
+static bool cam_ci_contains(const char *hay, const char *needle)
+{
+    if (!hay || !needle || !needle[0]) return false;
+    size_t nl = strlen(needle);
+    for (const char *p = hay; *p; p++)
+        if (strncasecmp(p, needle, nl) == 0) return true;
+    return false;
+}
+
+// Classify a candidate MAC (+ optional SSID). Returns conf and fills label, or -1 if no match.
+static int cam_classify(const uint8_t mac[6], const char *ssid, char *label, size_t label_sz)
+{
+    int best = -1;
+    // SSID heuristic first (AP-mode cameras) — independent of vendor.
+    if (ssid && ssid[0]) {
+        for (int i = 0; i < CAM_SSIDS_N; i++) {
+            if (cam_ci_contains(ssid, CAM_SSIDS[i])) {
+                snprintf(label, label_sz, "%.20s", ssid);
+                best = CAM_CONF_MED;
+                break;
+            }
+        }
+    }
+    // Vendor OUI match (station or AP). oui_lookup wants standard order {AA,BB,CC}.
+    uint8_t oui[3] = { mac[0], mac[1], mac[2] };
+    const char *vendor = oui_lookup(oui);
+    if (vendor) {
+        for (int i = 0; i < CAM_VENDORS_N; i++) {
+            if (cam_ci_contains(vendor, CAM_VENDORS[i].needle)) {
+                if ((int)CAM_VENDORS[i].conf > best) {
+                    best = CAM_VENDORS[i].conf;
+                    snprintf(label, label_sz, "%.22s", vendor);
+                } else if (best >= 0 && label[0] == '\0') {
+                    snprintf(label, label_sz, "%.22s", vendor);
+                }
+                // a vendor + SSID both matching = strong; bump to HIGH
+                if (best == CAM_CONF_MED && ssid && ssid[0]) {
+                    for (int j = 0; j < CAM_SSIDS_N; j++)
+                        if (cam_ci_contains(ssid, CAM_SSIDS[j])) { best = CAM_CONF_HIGH; break; }
+                }
+                break;
+            }
+        }
+    }
+    // Embedded camera-OUI fallback: catches the common camera brands even when ouilist.bin is
+    // NOT on the SD card, so the detector works out of the box. These are camera-focused brands
+    // (HIGH). Only run if the SD list did not already grade this HIGH, to keep its richer label.
+    if (best < CAM_CONF_HIGH) {
+        for (int i = 0; i < CAM_OUI_EMBED_N; i++) {
+            if (mac[0] == CAM_OUI_EMBED[i].oui[0] &&
+                mac[1] == CAM_OUI_EMBED[i].oui[1] &&
+                mac[2] == CAM_OUI_EMBED[i].oui[2]) {
+                best = CAM_CONF_HIGH;
+                snprintf(label, label_sz, "%s", CAM_OUI_NAMES[CAM_OUI_EMBED[i].vidx]);
+                break;
+            }
+        }
+    }
+    return best;
+}
+
+static void cam_record(const uint8_t mac[6], const char *label, uint8_t conf, bool is_ap,
+                       int8_t rssi, uint8_t channel)
+{
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    portENTER_CRITICAL(&s_cam_mux);
+    int idx = -1;
+    for (int i = 0; i < s_cam_count; i++)
+        if (memcmp(s_cam[i].mac, mac, 6) == 0) { idx = i; break; }
+    if (idx < 0 && s_cam_count < CAM_MAX) {
+        idx = s_cam_count++;
+        memset(&s_cam[idx], 0, sizeof(s_cam[idx]));
+        memcpy(s_cam[idx].mac, mac, 6);
+        s_cam[idx].first_ms = now;
+    }
+    if (idx >= 0) {
+        if (conf >= s_cam[idx].conf) {   // keep the strongest evidence + freshest label
+            s_cam[idx].conf = conf;
+            snprintf(s_cam[idx].label, sizeof(s_cam[idx].label), "%.22s", label[0] ? label : "camera");
+        }
+        s_cam[idx].is_ap   = is_ap;
+        s_cam[idx].rssi    = rssi;
+        s_cam[idx].channel = channel;
+        s_cam[idx].hits++;
+        s_cam[idx].last_ms = now;
+    }
+    portEXIT_CRITICAL(&s_cam_mux);
+}
+
+static void cam_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type)
+{
+    if (!s_cam_active || !s_cam) return;
+    const wifi_promiscuous_pkt_t *pkt = (const wifi_promiscuous_pkt_t *)buf;
+    const uint8_t *f = pkt->payload;
+    int len = pkt->rx_ctrl.sig_len;
+    if (len < 16) return;
+    int8_t rssi = pkt->rx_ctrl.rssi;
+
+    uint8_t ftype   = (f[0] >> 2) & 0x03;   // 0=mgmt 1=ctrl 2=data
+    uint8_t subtype = (f[0] >> 4) & 0x0F;
+    uint8_t fc1     = f[1];
+    bool tods = fc1 & 0x01, fromds = fc1 & 0x02;
+
+    uint8_t cand[6];        // candidate MAC to classify
+    bool have_cand = false, is_ap = false;
+    bool cand_is_tx = false;   // true if cand actually TRANSMITTED this frame -> rssi is ITS signal
+    char ssid[33] = {0};
+
+    if (ftype == 0) {                       // management
+        if (subtype == 0x04) {              // probe request: SA = station (it transmits)
+            if (len < 16) return;
+            memcpy(cand, &f[10], 6); have_cand = true; cand_is_tx = true;
+        } else if (subtype == 0x08 || subtype == 0x05) {  // beacon / probe-resp: BSSID = AP (it transmits)
+            memcpy(cand, &f[16], 6); have_cand = true; is_ap = true; cand_is_tx = true;
+            // Tagged params start at offset 36 (24 hdr + 12 fixed). First = SSID (id 0).
+            if (len >= 38 && f[36] == 0) {
+                int sl = f[37];
+                if (sl > 32) sl = 32;
+                if (36 + 2 + sl <= len) { memcpy(ssid, &f[38], sl); ssid[sl] = '\0'; }
+            }
+        } else return;
+    } else if (ftype == 2) {                // data: pull the STATION side
+        if (len < 24) return;
+        if (tods && !fromds)      { memcpy(cand, &f[10], 6); cand_is_tx = true;  }  // Addr2=SA: station TX
+        else if (!tods && fromds) { memcpy(cand, &f[4],  6); cand_is_tx = false; }  // Addr1=DA: AP TX, station RX
+        else return;
+        have_cand = true;
+    } else return;
+
+    if (!have_cand) return;
+    // Skip broadcast/multicast, all-zero, and locally-administered (randomized) MACs.
+    if ((cand[0] & 0x01) || (cand[0] & 0x02)) return;
+    if ((cand[0] | cand[1] | cand[2] | cand[3] | cand[4] | cand[5]) == 0) return;
+
+    char label[24] = {0};
+    int conf = cam_classify(cand, ssid[0] ? ssid : NULL, label, sizeof(label));
+    if (conf < 0) return;
+
+    // Fox-hunt: feed the meter ONLY from frames the target TRANSMITTED (uplink) -> its real
+    // signal. Downlink (AP->cam) frames carry the AP's RSSI, which would pollute the locate.
+    if (s_cam_locate && cand_is_tx && memcmp(cand, s_cam_loc_mac, 6) == 0) {
+        if (!s_cam_loc_found) s_cam_loc_rssi = rssi;
+        else s_cam_loc_rssi = (int8_t)(((int)s_cam_loc_rssi + rssi) / 2);
+        s_cam_loc_found = true;
+        s_cam_loc_seen  = (uint32_t)(esp_timer_get_time() / 1000);
+    }
+
+    cam_record(cand, label, (uint8_t)conf, is_ap, rssi, (uint8_t)s_cam_channel);
+}
+
+// Camera scan hop set: 2.4 GHz (1-13) + 5 GHz non-DFS on dual-band boards (many
+// dual-band cams sit on 5 GHz — a 2.4-only sweep misses them). 5 GHz listen is passive
+// (no TX), so it needs only WIFI_BAND_MODE_AUTO set at start.
+static const int CAM_CH[] = {
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+#if CONFIG_BOARD_HAS_5GHZ
+    36, 40, 44, 48, 149, 153, 157, 161, 165,
+#endif
+};
+static const int CAM_CH_N = (int)(sizeof(CAM_CH) / sizeof(CAM_CH[0]));
+
+static void cam_task(void *arg)
+{
+    (void)arg;
+    while (s_cam_active) {
+        vTaskDelay(pdMS_TO_TICKS(60));
+        if (!s_cam_active) break;
+        int64_t now = esp_timer_get_time() / 1000;
+        // While fox-hunting, PARK on the target's channel so we hear its frames
+        // continuously -> live RSSI meter (hopping = ~1/13 duty = laggy/dead meter).
+        if (s_cam_locate && s_cam_loc_ch >= 1) {
+            if (s_cam_channel != s_cam_loc_ch) {
+                s_cam_channel = s_cam_loc_ch;
+                esp_wifi_set_channel(s_cam_channel, WIFI_SECOND_CHAN_NONE);
+            }
+            continue;
+        }
+        if (now - s_cam_last_hop >= 280) {
+            s_cam_channel = CAM_CH[s_cam_ch_idx];
+            s_cam_ch_idx  = (s_cam_ch_idx + 1) % CAM_CH_N;
+            esp_wifi_set_channel(s_cam_channel, WIFI_SECOND_CHAN_NONE);
+            s_cam_last_hop = now;
+        }
+    }
+    s_cam_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static const char *cam_conf_badge(uint8_t conf, lv_color_t *col)
+{
+    if (conf >= CAM_CONF_HIGH) { *col = COLOR_MATERIAL_RED;  return "HI"; }
+    if (conf == CAM_CONF_MED)  { *col = UI_ACCENT_AMBER;     return "MED"; }
+    *col = lv_color_make(140, 140, 140);                     return "LOW";
+}
+
+static void cam_row_geom(int lw, int *bx, int *bw, int *nx, int *nw,
+                         int *mx, int *mw, int *rx, int *rw)
+{
+    int iw = lw - 8;
+    *bw = 34; *rw = 30; *mw = 58;
+    *bx = 1;
+    *rx = iw - *rw;
+    *mx = *rx - 4 - *mw;
+    *nx = *bx + *bw + 5;
+    *nw = *mx - *nx - 4;
+    if (*nw < 40) *nw = 40;
+}
+
+static void cam_row_tap_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= s_cam_snap_n) return;
+    memcpy(s_cam_loc_mac, s_cam_snap[idx].mac, 6);
+    snprintf(s_cam_loc_label, sizeof(s_cam_loc_label), "%.22s", s_cam_snap[idx].label);
+    s_cam_loc_ch = s_cam_snap[idx].channel ? s_cam_snap[idx].channel : 0;  // park here (0 = keep hopping)
+    s_cam_loc_rssi = -128; s_cam_loc_found = false; s_cam_loc_seen = 0;
+    s_cam_locate = true;
+
+    if (s_cam_list)   lv_obj_add_flag(s_cam_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_status) lv_obj_add_flag(s_cam_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_alert)  lv_obj_add_flag(s_cam_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_nav_bar) lv_obj_add_flag(s_cam_nav_bar, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_loc_cont) lv_obj_clear_flag(s_cam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void cam_loc_back_cb(lv_event_t *e)
+{
+    (void)e;
+    s_cam_locate = false;
+    if (s_cam_loc_cont) lv_obj_add_flag(s_cam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_status)   lv_obj_clear_flag(s_cam_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_alert)    lv_obj_clear_flag(s_cam_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_list)     lv_obj_clear_flag(s_cam_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_cam_nav_bar)  lv_obj_clear_flag(s_cam_nav_bar, LV_OBJ_FLAG_HIDDEN);
+    s_cam_built_n = -1;   // force the list to repopulate now that we're back from fox-hunt
+}
+
+// Rows per page = list interior / row pitch, so a page fills the list with no scrollbar
+// (which was overlapping the right-aligned RSSI). Portrait ~5, landscape ~3.
+static int cam_page_size(void)
+{
+    int h = lv_disp_get_ver_res(NULL) - 126;
+    int rows = h / 36;
+    return rows < 1 ? 1 : rows;
+}
+
+// Render the current page of the sorted snapshot + update the nav bar. Called from the
+// UI timer (fresh data) and directly from the Prev/Next callbacks (instant response).
+static void cam_render_list(void)
+{
+    if (!s_cam_list || !lv_obj_is_valid(s_cam_list)) return;
+    int n = s_cam_snap_n;
+    int ps = cam_page_size();
+    int pages = (n + ps - 1) / ps; if (pages < 1) pages = 1;
+    if (s_cam_page < 0) s_cam_page = 0;
+    if (s_cam_page >= pages) s_cam_page = pages - 1;
+    int start = s_cam_page * ps;
+    int end   = start + ps; if (end > n) end = n;
+
+    lv_obj_clean(s_cam_list);
+    int bx, bw, nx, nw, mx, mw, rx, rw;
+    cam_row_geom(lv_disp_get_hor_res(NULL), &bx, &bw, &nx, &nw, &mx, &mw, &rx, &rw);
+    for (int i = start; i < end; i++) {
+        cam_rec_t *d = &s_cam_snap[i];
+        lv_color_t bcol; const char *btxt = cam_conf_badge(d->conf, &bcol);
+
+        lv_obj_t *row = lv_btn_create(s_cam_list);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, 34);
+        lv_obj_set_style_pad_all(row, 0, 0);
+        lv_obj_set_style_radius(row, 4, 0);
+        lv_obj_set_style_bg_color(row, ui_card_color(), LV_STATE_DEFAULT);
+        lv_obj_set_style_bg_color(row, lv_color_make(60, 60, 60), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(row, lv_color_make(45, 45, 55), 0);
+        lv_obj_set_style_border_width(row, 1, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_event_cb(row, cam_row_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+
+        lv_obj_t *badge = lv_label_create(row);
+        lv_label_set_text(badge, btxt);
+        lv_obj_set_style_text_font(badge, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(badge, lv_color_black(), 0);
+        lv_obj_set_style_bg_color(badge, bcol, 0);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(badge, 4, 0);
+        lv_obj_set_style_pad_all(badge, 0, 0);
+        lv_obj_set_style_text_align(badge, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(badge, bw, 16);
+        lv_obj_set_pos(badge, bx, 9);
+
+        lv_obj_t *name = lv_label_create(row);
+        char nbuf[40];
+        snprintf(nbuf, sizeof(nbuf), "%s%.28s", d->is_ap ? "AP:" : "", d->label);
+        lv_label_set_text(name, nbuf);
+        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_font(name, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(name, lv_color_white(), 0);
+        lv_obj_add_flag(name, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(name, nw, 16);
+        lv_obj_set_pos(name, nx, 9);
+
+        lv_obj_t *mac = lv_label_create(row);
+        char mbuf[10];
+        snprintf(mbuf, sizeof(mbuf), "%02X:%02X:%02X", d->mac[3], d->mac[4], d->mac[5]);
+        lv_label_set_text(mac, mbuf);
+        lv_label_set_long_mode(mac, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_font(mac, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(mac, lv_color_hex(0x999999), 0);
+        lv_obj_set_style_text_align(mac, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_add_flag(mac, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(mac, mw, 16);
+        lv_obj_set_pos(mac, mx, 9);
+
+        lv_obj_t *rssi_lbl = lv_label_create(row);
+        char rbuf[8];
+        snprintf(rbuf, sizeof(rbuf), "%d", d->rssi);
+        lv_label_set_text(rssi_lbl, rbuf);
+        lv_label_set_long_mode(rssi_lbl, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_font(rssi_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(rssi_lbl, lv_color_hex(0x999999), 0);
+        lv_obj_set_style_text_align(rssi_lbl, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_add_flag(rssi_lbl, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_set_size(rssi_lbl, rw, 16);
+        lv_obj_set_pos(rssi_lbl, rx, 9);
+    }
+
+    if (s_cam_nav_lbl && lv_obj_is_valid(s_cam_nav_lbl)) {
+        char pb[36];
+        if (n == 0) snprintf(pb, sizeof(pb), "0 devices");
+        else        snprintf(pb, sizeof(pb), "Pg %d/%d  (%d)", s_cam_page + 1, pages, n);
+        lv_label_set_text(s_cam_nav_lbl, pb);
+    }
+    if (s_cam_nav_prev && lv_obj_is_valid(s_cam_nav_prev)) {
+        if (s_cam_page == 0) lv_obj_add_flag(s_cam_nav_prev, LV_OBJ_FLAG_HIDDEN);
+        else                 lv_obj_clear_flag(s_cam_nav_prev, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_cam_nav_next && lv_obj_is_valid(s_cam_nav_next)) {
+        if (s_cam_page >= pages - 1) lv_obj_add_flag(s_cam_nav_next, LV_OBJ_FLAG_HIDDEN);
+        else                         lv_obj_clear_flag(s_cam_nav_next, LV_OBJ_FLAG_HIDDEN);
+    }
+    // Mark what is now on screen so the UI timer won't needlessly rebuild (and eat taps).
+    s_cam_built_n    = s_cam_snap_n;
+    s_cam_built_page = s_cam_page;
+}
+
+static void cam_prev_page_cb(lv_event_t *e) { (void)e; if (s_cam_page > 0) { s_cam_page--; cam_render_list(); } }
+static void cam_next_page_cb(lv_event_t *e) { (void)e; s_cam_page++; cam_render_list(); }  // clamped in render
+
+static void cam_ui_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_cam_active || !s_cam || !s_cam_snap) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    // Fox-hunt overlay: drive the meter for the locked device.
+    if (s_cam_locate) {
+        uint32_t age = s_cam_loc_found ? (now - s_cam_loc_seen) : 0xFFFFFFFFu;
+        bool fresh = s_cam_loc_found && age < 6000;   // target went quiet -> drop after 6s
+        int rssi = s_cam_loc_rssi;
+        int pct  = !fresh ? 0 : rssi <= -90 ? 0 : rssi >= -30 ? 100 : (rssi + 90) * 100 / 60;
+        if (s_cam_loc_title && lv_obj_is_valid(s_cam_loc_title)) {
+            char tb[64];
+            snprintf(tb, sizeof(tb), "%.22s\n%02X:%02X:%02X:%02X:%02X:%02X",
+                     s_cam_loc_label, s_cam_loc_mac[0], s_cam_loc_mac[1], s_cam_loc_mac[2],
+                     s_cam_loc_mac[3], s_cam_loc_mac[4], s_cam_loc_mac[5]);
+            lv_label_set_text(s_cam_loc_title, tb);
+        }
+        if (s_cam_loc_bar) lv_bar_set_value(s_cam_loc_bar, pct, LV_ANIM_ON);
+        if (s_cam_loc_val && lv_obj_is_valid(s_cam_loc_val)) {
+            char vb[16];
+            if (fresh) snprintf(vb, sizeof(vb), "%d dBm", rssi);
+            else       snprintf(vb, sizeof(vb), "-- dBm");
+            lv_label_set_text(s_cam_loc_val, vb);
+        }
+        if (s_cam_loc_hint && lv_obj_is_valid(s_cam_loc_hint)) {
+            const char *prox = pct >= 75 ? "VERY CLOSE" : pct >= 55 ? "CLOSE" :
+                               pct >= 30 ? "NEARBY" : fresh ? "FAR" : "Searching...";
+            char hb[28];
+            // The target transmits in bursts; show seconds-since-last so a quiet gap reads
+            // as "waiting", not "frozen". (Passive RX can't force it to transmit.)
+            if (fresh && age > 900) snprintf(hb, sizeof(hb), "%s  %lus", prox, (unsigned long)((age + 500) / 1000));
+            else                    snprintf(hb, sizeof(hb), "%s", prox);
+            lv_label_set_text(s_cam_loc_hint, hb);
+        }
+        return;
+    }
+
+    // Age out + count every tick (cheap). REBUILD the row list only when the device COUNT or
+    // the PAGE changes: cam_render_list() does lv_obj_clean()+recreate, and doing that at 4 Hz
+    // destroyed the row under the user's finger, so a tap needed many tries. Mirror the harvester
+    // fix -- re-sort the snapshot the tap reads + rebuild rows only on change, while status/alert
+    // counts still refresh in place every tick. Freezing the snapshot between rebuilds also keeps
+    // the tapped index aligned with what is on screen.
+    int n = 0, high = 0, med = 0;
+    bool cam_changed;
+    portENTER_CRITICAL(&s_cam_mux);
+    {
+        int w = 0;
+        for (int i = 0; i < s_cam_count; i++)
+            if (now - s_cam[i].last_ms <= CAM_AGE_MS) { if (w != i) s_cam[w] = s_cam[i]; w++; }
+        s_cam_count = w;
+        n = w;
+        for (int i = 0; i < n; i++) {
+            if (s_cam[i].conf >= CAM_CONF_HIGH) high++;
+            else if (s_cam[i].conf == CAM_CONF_MED) med++;
+        }
+        cam_changed = (n != s_cam_built_n) || (s_cam_page != s_cam_built_page);
+        if (cam_changed) {
+            memcpy(s_cam_snap, s_cam, (size_t)n * sizeof(cam_rec_t));
+            s_cam_snap_n = n;
+        }
+    }
+    portEXIT_CRITICAL(&s_cam_mux);
+    if (cam_changed) {
+        // insertion sort by rssi desc (n is small)
+        for (int i = 1; i < s_cam_snap_n; i++) {
+            cam_rec_t key = s_cam_snap[i]; int j = i - 1;
+            while (j >= 0 && s_cam_snap[j].rssi < key.rssi) { s_cam_snap[j + 1] = s_cam_snap[j]; j--; }
+            s_cam_snap[j + 1] = key;
+        }
+        cam_render_list();
+    }
+
+    if (s_cam_status && lv_obj_is_valid(s_cam_status)) {
+        char sb[56];
+        snprintf(sb, sizeof(sb), LV_SYMBOL_WIFI "  Scanning... ch %d   (%d seen)", s_cam_channel, n);
+        lv_label_set_text(s_cam_status, sb);
+    }
+    if (s_cam_alert && lv_obj_is_valid(s_cam_alert)) {
+        char ab[72];
+        if (high > 0) {
+            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " %d likely camera(s), %d possible", high, med);
+            lv_obj_set_style_text_color(s_cam_alert, COLOR_MATERIAL_RED, 0);
+        } else if (med > 0) {
+            snprintf(ab, sizeof(ab), "%d possible camera(s) - tap to locate", med);
+            lv_obj_set_style_text_color(s_cam_alert, lv_color_make(0xE0, 0x90, 0x20), 0);
+        } else {
+            snprintf(ab, sizeof(ab), "No camera signatures yet");
+            lv_obj_set_style_text_color(s_cam_alert, lv_color_make(150, 150, 150), 0);
+        }
+        lv_label_set_text(s_cam_alert, ab);
+    }
+}
+
+static void hidden_camera_stop(void)
+{
+    s_cam_active = false;
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+    if (s_cam_ui_timer) { lv_timer_del(s_cam_ui_timer); s_cam_ui_timer = NULL; }
+    for (int i = 0; s_cam_task && i < 50; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (s_cam_task) {
+        ESP_LOGE(TAG, "Hidden-camera detector task did not stop; preserving stack");
+    } else if (s_cam_stack) {
+        heap_caps_free(s_cam_stack); s_cam_stack = NULL;
+    }
+    s_cam_locate = false;
+    s_cam_status = NULL; s_cam_alert = NULL; s_cam_list = NULL;
+    s_cam_nav_bar = NULL; s_cam_nav_prev = NULL; s_cam_nav_lbl = NULL; s_cam_nav_next = NULL;
+    s_cam_loc_cont = NULL; s_cam_loc_title = NULL; s_cam_loc_val = NULL;
+    s_cam_loc_bar = NULL; s_cam_loc_hint = NULL;
+    portENTER_CRITICAL(&s_cam_mux);
+    s_cam_count = 0;
+    portEXIT_CRITICAL(&s_cam_mux);
+    s_cam_snap_n = 0;
+    if (s_cam)      { heap_caps_free(s_cam);      s_cam = NULL; }
+    if (s_cam_snap) { heap_caps_free(s_cam_snap); s_cam_snap = NULL; }
+    s_cam_ch_idx = 0; s_cam_channel = 1;
+}
+
+static void show_hidden_camera_screen(void)
+{
+    if (!ensure_wifi_mode()) {
+        ESP_LOGE(TAG, "Hidden-camera detector: WiFi mode failed");
+        return;
+    }
+    create_function_page_base("Hidden Camera");
+    g_screen_stop_fn = hidden_camera_stop;
+    apply_menu_bg();
+
+    // The vendor match needs the OUI DB; load it if some other screen hasn't already
+    // (mirrors bt_sas). Without it oui_lookup() returns NULL and nothing matches.
+    if (!oui_lookup_is_loaded()) oui_lookup_init(OUI_DEFAULT_PATH);
+    ESP_LOGI(TAG, "[CAM] screen open: oui_loaded=%d count=%lu",
+             (int)oui_lookup_is_loaded(), (unsigned long)oui_lookup_count());
+
+    portENTER_CRITICAL(&s_cam_mux);
+    s_cam_count = 0;
+    portEXIT_CRITICAL(&s_cam_mux);
+    s_cam_snap_n = 0;
+    s_cam_locate = false;
+
+    s_cam_status = lv_label_create(function_page);
+    lv_label_set_text(s_cam_status, LV_SYMBOL_WIFI "  Scanning...");
+    lv_obj_set_style_text_align(s_cam_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_cam_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_cam_status, ui_text_color(), 0);
+    lv_obj_set_width(s_cam_status, lv_pct(96));
+    lv_label_set_long_mode(s_cam_status, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_cam_status, LV_ALIGN_TOP_MID, 0, 34);
+
+    s_cam_alert = lv_label_create(function_page);
+    lv_label_set_text(s_cam_alert, "No camera signatures yet");
+    lv_obj_set_style_text_align(s_cam_alert, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_cam_alert, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_cam_alert, lv_color_make(150, 150, 150), 0);
+    lv_obj_set_width(s_cam_alert, lv_pct(96));
+    lv_label_set_long_mode(s_cam_alert, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_cam_alert, LV_ALIGN_BOTTOM_MID, 0, -6);
+
+    s_cam_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_cam_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 126);
+    lv_obj_align(s_cam_list, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_set_style_bg_color(s_cam_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_cam_list, 0, 0);
+    lv_obj_set_flex_flow(s_cam_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_cam_list, 4, 0);
+    lv_obj_set_style_pad_all(s_cam_list, 4, 0);
+    lv_obj_clear_flag(s_cam_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(s_cam_list, LV_SCROLLBAR_MODE_OFF);
+
+    // Paged nav bar (Prev / "Pg x/y (N)" / Next). Paging = one page fits, no scrollbar,
+    // so the right-aligned RSSI is never hidden behind a scrollbar. Mirrors bt_sas.
+    s_cam_page = 0;
+    s_cam_built_n = -1; s_cam_built_page = -1;  // fresh screen -> force first list build
+    s_cam_nav_bar = lv_obj_create(function_page);
+    lv_obj_set_size(s_cam_nav_bar, lv_pct(100), 28);
+    lv_obj_align(s_cam_nav_bar, LV_ALIGN_BOTTOM_MID, 0, -30);
+    lv_obj_set_style_bg_color(s_cam_nav_bar, lv_color_make(28, 28, 36), 0);
+    lv_obj_set_style_bg_opa(s_cam_nav_bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_cam_nav_bar, 0, 0);
+    lv_obj_set_style_radius(s_cam_nav_bar, 4, 0);
+    lv_obj_set_style_pad_hor(s_cam_nav_bar, 4, 0);
+    lv_obj_set_style_pad_ver(s_cam_nav_bar, 2, 0);
+    lv_obj_clear_flag(s_cam_nav_bar, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_cam_nav_prev = lv_btn_create(s_cam_nav_bar);
+    lv_obj_set_size(s_cam_nav_prev, 62, 24);
+    lv_obj_align(s_cam_nav_prev, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_cam_nav_prev, lv_color_make(55, 55, 100), 0);
+    lv_obj_set_style_bg_color(s_cam_nav_prev, lv_color_make(80, 80, 140), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(s_cam_nav_prev, 4, 0);
+    lv_obj_set_style_pad_all(s_cam_nav_prev, 0, 0);
+    { lv_obj_t *pl = lv_label_create(s_cam_nav_prev); lv_label_set_text(pl, LV_SYMBOL_LEFT " Prev");
+      lv_obj_set_style_text_font(pl, &lv_font_montserrat_12, 0); lv_obj_center(pl); }
+    lv_obj_add_event_cb(s_cam_nav_prev, cam_prev_page_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_cam_nav_prev, LV_OBJ_FLAG_HIDDEN);
+
+    s_cam_nav_lbl = lv_label_create(s_cam_nav_bar);
+    lv_obj_align(s_cam_nav_lbl, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_text_font(s_cam_nav_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_cam_nav_lbl, lv_color_make(255, 230, 0), 0);
+    lv_label_set_text(s_cam_nav_lbl, "");
+
+    s_cam_nav_next = lv_btn_create(s_cam_nav_bar);
+    lv_obj_set_size(s_cam_nav_next, 62, 24);
+    lv_obj_align(s_cam_nav_next, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_set_style_bg_color(s_cam_nav_next, lv_color_make(55, 55, 100), 0);
+    lv_obj_set_style_bg_color(s_cam_nav_next, lv_color_make(80, 80, 140), LV_STATE_PRESSED);
+    lv_obj_set_style_radius(s_cam_nav_next, 4, 0);
+    lv_obj_set_style_pad_all(s_cam_nav_next, 0, 0);
+    { lv_obj_t *nl = lv_label_create(s_cam_nav_next); lv_label_set_text(nl, "Next " LV_SYMBOL_RIGHT);
+      lv_obj_set_style_text_font(nl, &lv_font_montserrat_12, 0); lv_obj_center(nl); }
+    lv_obj_add_event_cb(s_cam_nav_next, cam_next_page_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_flag(s_cam_nav_next, LV_OBJ_FLAG_HIDDEN);
+
+    // Fox-hunt overlay (hidden until a row is tapped).
+    s_cam_loc_cont = lv_obj_create(function_page);
+    lv_obj_set_size(s_cam_loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_cam_loc_cont, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_cam_loc_cont, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_cam_loc_cont, 0, 0);
+    lv_obj_set_flex_flow(s_cam_loc_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_cam_loc_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_cam_loc_cont, 12, 0);
+    lv_obj_clear_flag(s_cam_loc_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_cam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+
+    s_cam_loc_title = lv_label_create(s_cam_loc_cont);
+    lv_label_set_text(s_cam_loc_title, "");
+    lv_obj_set_style_text_align(s_cam_loc_title, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_cam_loc_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_cam_loc_title, ui_text_color(), 0);
+    lv_obj_set_width(s_cam_loc_title, lv_pct(92));
+    lv_label_set_long_mode(s_cam_loc_title, LV_LABEL_LONG_WRAP);
+
+    s_cam_loc_val = lv_label_create(s_cam_loc_cont);
+    lv_label_set_text(s_cam_loc_val, "-- dBm");
+    lv_obj_set_style_text_font(s_cam_loc_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_cam_loc_val, COLOR_MATERIAL_RED, 0);
+
+    s_cam_loc_bar = lv_bar_create(s_cam_loc_cont);
+    lv_obj_set_size(s_cam_loc_bar, lv_pct(80), 18);
+    lv_bar_set_range(s_cam_loc_bar, 0, 100);
+    lv_bar_set_value(s_cam_loc_bar, 0, LV_ANIM_OFF);
+
+    s_cam_loc_hint = lv_label_create(s_cam_loc_cont);
+    lv_label_set_text(s_cam_loc_hint, "Searching...");
+    lv_obj_set_style_text_font(s_cam_loc_hint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_cam_loc_hint, ui_text_color(), 0);
+
+    lv_obj_t *cam_loc_back = lv_btn_create(s_cam_loc_cont);
+    lv_obj_set_size(cam_loc_back, 130, 42);
+    lv_obj_set_style_bg_color(cam_loc_back, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(cam_loc_back, 8, 0);
+    lv_obj_t *clb = lv_label_create(cam_loc_back);
+    lv_label_set_text(clb, LV_SYMBOL_LEFT "  List");
+    lv_obj_set_style_text_color(clb, ui_text_color(), 0);
+    lv_obj_center(clb);
+    lv_obj_add_event_cb(cam_loc_back, cam_loc_back_cb, LV_EVENT_CLICKED, NULL);
+
+    s_cam      = (cam_rec_t *)dd_alloc(sizeof(cam_rec_t) * CAM_MAX);
+    s_cam_snap = (cam_rec_t *)dd_alloc(sizeof(cam_rec_t) * CAM_MAX);
+    if (!s_cam || !s_cam_snap) {
+        lv_label_set_text(s_cam_status, LV_SYMBOL_WARNING "  Out of memory");
+        if (s_cam)      { heap_caps_free(s_cam);      s_cam = NULL; }
+        if (s_cam_snap) { heap_caps_free(s_cam_snap); s_cam_snap = NULL; }
+        return;
+    }
+
+    s_cam_active = true;
+    s_cam_ch_idx = 0; s_cam_last_hop = 0;
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);   // allow hopping onto 5 GHz channels
+#endif
+    wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
+    esp_wifi_set_promiscuous_filter(&filt);
+    esp_wifi_set_promiscuous_rx_cb(cam_promiscuous_cb);
+    esp_wifi_set_promiscuous(true);
+
+    if (s_cam_stack && !s_cam_task) { heap_caps_free(s_cam_stack); s_cam_stack = NULL; }
+    s_cam_stack = (StackType_t *)dd_alloc(3072 * sizeof(StackType_t));
+    if (s_cam_stack) {
+        s_cam_task = xTaskCreateStatic(cam_task, "cam_det", 3072, NULL, 5,
+                                       s_cam_stack, &s_cam_taskbuf);
+    }
+    if (!s_cam_stack || !s_cam_task) {
+        ESP_LOGE(TAG, "Hidden-camera detector: task creation failed");
+        s_cam_active = false;
+        esp_wifi_set_promiscuous(false);
+        esp_wifi_set_promiscuous_rx_cb(NULL);
+        if (s_cam_stack) { heap_caps_free(s_cam_stack); s_cam_stack = NULL; }
+        lv_label_set_text(s_cam_status, LV_SYMBOL_WARNING "  Task memory unavailable");
+        return;
+    }
+    s_cam_ui_timer = lv_timer_create(cam_ui_timer_cb, 250, NULL);
+}
+
 // ── BLE Spam Detector (BLE scan, passive-classify) ────────────────────────────
 // The BLE spam tools (Flipper BLE Spam, Ghost, ESP32 spammers) flood the air with
 // pairing-popup adverts from many rotating random addresses. Any single popup
@@ -45576,6 +46545,854 @@ static void show_blespam_detector_screen(void)
     }
     s_bspam_ui_timer = lv_timer_create(bspam_ui_timer_cb, 500, NULL);
 }
+
+// ============================================================================
+// FLIPPER DETECTOR (Detect & Defend / Bluetooth) — passive BLE presence + fox-hunt
+// A Flipper Zero advertises 16-bit service UUID 0x3081/0x3082/0x3083, which shows in
+// the raw advert as the little-endian byte pair (0x81|0x82|0x83) 0x30. We scan every
+// advert's raw payload for that pair. Receive-only. Signature is a public fact (BT-SIG
+// service-UUID scheme); code + icon are CYM-original — nothing copied from other firmware.
+// ============================================================================
+#define FLIPDET_TBL     32
+#define FLIPDET_AGE_MS  60000   // drop a Flipper not re-heard for 60 s (it left range)
+
+typedef struct { uint8_t mac[6]; char name[24]; int8_t rssi; uint32_t first_ms; uint32_t last_ms; uint32_t hits; } flipdet_dev_t;
+static flipdet_dev_t   *s_flip = NULL;        // [FLIPDET_TBL]
+static flipdet_dev_t   *s_flip_snap = NULL;   // [FLIPDET_TBL] UI-timer snapshot
+static volatile int      s_flip_n = 0;
+static portMUX_TYPE      s_flip_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool     s_flip_active = false;
+static volatile uint32_t s_flip_callbacks = 0;
+static lv_timer_t       *s_flip_ui_timer = NULL;
+static lv_obj_t         *s_flip_status = NULL;
+static lv_obj_t         *s_flip_list   = NULL;
+static lv_obj_t         *s_flip_alert  = NULL;
+// Fox-hunt overlay: home in on the RSSI of any Flipper advert.
+static volatile bool     s_flip_locate    = false;
+static volatile int8_t   s_flip_loc_rssi  = -128;
+static volatile bool     s_flip_loc_found = false;
+static volatile uint32_t s_flip_loc_seen  = 0;
+static lv_obj_t *s_flip_loc_cont = NULL, *s_flip_loc_val = NULL, *s_flip_loc_bar = NULL, *s_flip_loc_hint = NULL;
+
+// Precise Flipper match via an AD-structure walk: a 16-bit Service UUID 0x3081/0x3082/
+// 0x3083 (Flipper's advertised UUIDs) OR the Flipper manufacturer ID (0x0E29 / 0x0FBA).
+// This replaces a loose whole-payload byte scan that false-matched unrelated adverts.
+// Also extracts the Complete/Short Local Name, so the table can be keyed by NAME: a
+// Flipper rotates its BLE address, so MAC-keying showed one unit as several rows.
+static bool flipdet_parse(const uint8_t *adv, uint8_t len, char *name_out, size_t name_sz)
+{
+    if (name_out && name_sz) name_out[0] = '\0';
+    if (!adv) return false;
+    bool is_flip = false;
+    int i = 0;
+    while (i + 1 < len) {
+        uint8_t l = adv[i];
+        if (l == 0) break;
+        if (i + 1 + l > len) break;                 // malformed / truncated AD
+        uint8_t type = adv[i + 1];
+        const uint8_t *data = &adv[i + 2];
+        uint8_t dlen = (uint8_t)(l - 1);
+        if (type == 0x02 || type == 0x03) {         // 16-bit service UUID list
+            for (int j = 0; j + 1 < dlen; j += 2) {
+                uint16_t u = (uint16_t)(data[j] | (data[j + 1] << 8));
+                if (u == 0x3081 || u == 0x3082 || u == 0x3083) is_flip = true;
+            }
+        } else if (type == 0xFF && dlen >= 2) {     // manufacturer specific
+            uint16_t cid = (uint16_t)(data[0] | (data[1] << 8));
+            if (cid == 0x0E29 || cid == 0x0FBA) is_flip = true;
+        } else if ((type == 0x09 || type == 0x08) && dlen > 0 && name_out && name_sz) {
+            size_t n = dlen < (name_sz - 1) ? dlen : (name_sz - 1);
+            memcpy(name_out, data, n);
+            name_out[n] = '\0';
+        }
+        i += 1 + l;
+    }
+    return is_flip;
+}
+
+static int flipdet_gap_cb(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+    __atomic_add_fetch(&s_flip_callbacks, 1, __ATOMIC_ACQ_REL);
+    if (!s_flip_active || !s_flip) goto done;
+
+    const uint8_t *adv; uint8_t adv_len; const uint8_t *addr; int8_t rssi;
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    if (event->type == BLE_GAP_EVENT_EXT_DISC) {
+        struct ble_gap_ext_disc_desc *d = &event->ext_disc;
+        adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
+    } else
+#endif
+    if (event->type == BLE_GAP_EVENT_DISC) {
+        struct ble_gap_disc_desc *d = &event->disc;
+        adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
+    } else goto done;
+
+    char nm[24];
+    bool is_flip = flipdet_parse(adv, adv_len, nm, sizeof(nm));
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    // LOCATE: keep the meter continuous by updating on ANY advert from a Flipper we've
+    // catalogued (a Flipper emits several advert types and hops 3 channels, so matching
+    // only the UUID-bearing packets left 2-3 s gaps → the "-- dBm" flicker). Match the
+    // raw source MAC against the table too, not just the signature-bearing adverts.
+    if (s_flip_locate) {
+        bool from_flip = is_flip;
+        if (!from_flip) {
+            portENTER_CRITICAL(&s_flip_mux);
+            for (int i = 0; i < s_flip_n; i++)
+                if (memcmp(s_flip[i].mac, addr, 6) == 0) { from_flip = true; break; }
+            portEXIT_CRITICAL(&s_flip_mux);
+        }
+        if (from_flip) {
+            if (!s_flip_loc_found) s_flip_loc_rssi = rssi;
+            else s_flip_loc_rssi = (int8_t)(((int)s_flip_loc_rssi * 2 + rssi) / 3);  // smooth EMA
+            s_flip_loc_found = true; s_flip_loc_seen = now;
+        }
+    }
+
+    if (!is_flip) goto done;
+
+    portENTER_CRITICAL(&s_flip_mux);
+    int idx = -1;
+    for (int i = 0; i < s_flip_n; i++) {
+        bool same = nm[0] ? (strcmp(s_flip[i].name, nm) == 0)     // dedupe rotating MAC by name
+                          : (memcmp(s_flip[i].mac, addr, 6) == 0);
+        if (same) { idx = i; break; }
+    }
+    if (idx < 0) {
+        if (s_flip_n < FLIPDET_TBL) idx = s_flip_n++;
+        else { int o = 0; for (int i = 1; i < s_flip_n; i++) if (s_flip[i].last_ms < s_flip[o].last_ms) o = i; idx = o; }
+        s_flip[idx].first_ms = now; s_flip[idx].hits = 0;
+        strncpy(s_flip[idx].name, nm, sizeof(s_flip[idx].name) - 1);
+        s_flip[idx].name[sizeof(s_flip[idx].name) - 1] = '\0';
+    } else if (nm[0] && s_flip[idx].name[0] == '\0') {
+        strncpy(s_flip[idx].name, nm, sizeof(s_flip[idx].name) - 1);
+        s_flip[idx].name[sizeof(s_flip[idx].name) - 1] = '\0';
+    }
+    memcpy(s_flip[idx].mac, addr, 6);            // track latest (rotating) address
+    s_flip[idx].rssi = rssi; s_flip[idx].last_ms = now; s_flip[idx].hits++;
+    portEXIT_CRITICAL(&s_flip_mux);
+done:
+    __atomic_sub_fetch(&s_flip_callbacks, 1, __ATOMIC_ACQ_REL);
+    return 0;
+}
+
+static int flipdet_start_scan(void)
+{
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    struct ble_gap_ext_disc_params pcoded = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 0, 0, 0,
+                            BLE_HCI_SCAN_FILT_NO_WL, 0, &p1m, &pcoded, flipdet_gap_cb, NULL);
+    if (rc != BLE_HS_ENOTSUP) return rc;
+#endif
+    struct ble_gap_disc_params sp = {
+        .itvl = 0x60, .window = 0x60, .filter_policy = BLE_HCI_SCAN_FILT_NO_WL,
+        .limited = 0, .passive = 1, .filter_duplicates = 0,
+    };
+    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &sp, flipdet_gap_cb, NULL);
+
+}
+
+static void flipdet_locate_enter_cb(lv_event_t *e)
+{
+    (void)e;
+    s_flip_loc_rssi = -128; s_flip_loc_found = false; s_flip_loc_seen = 0;
+    s_flip_locate = true;
+    if (s_flip_status) lv_obj_add_flag(s_flip_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_flip_list)   lv_obj_add_flag(s_flip_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_flip_alert)  lv_obj_add_flag(s_flip_alert, LV_OBJ_FLAG_HIDDEN);
+    if (s_flip_loc_cont) lv_obj_clear_flag(s_flip_loc_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void flipdet_locate_back_cb(lv_event_t *e)
+{
+    (void)e;
+    s_flip_locate = false;
+    if (s_flip_loc_cont) lv_obj_add_flag(s_flip_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (s_flip_status) lv_obj_clear_flag(s_flip_status, LV_OBJ_FLAG_HIDDEN);
+    if (s_flip_list)   lv_obj_clear_flag(s_flip_list, LV_OBJ_FLAG_HIDDEN);
+    if (s_flip_alert)  lv_obj_clear_flag(s_flip_alert, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void flipdet_ui_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (!s_flip_active || !s_flip || !s_flip_snap) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    if (s_flip_locate) {
+        // Short hold (~2.5 s): responsive for walking the hunt (a longer hold would show a
+        // stale reading while you move). The any-MAC update above already fills most gaps,
+        // so this only bridges a brief channel-hop miss before "-- dBm / Searching".
+        bool fresh = s_flip_loc_found && (now - s_flip_loc_seen < 2500);
+        int rssi = s_flip_loc_rssi;
+        int pct  = !fresh ? 0 : rssi <= -90 ? 0 : rssi >= -30 ? 100 : (rssi + 90) * 100 / 60;
+        if (s_flip_loc_bar) lv_bar_set_value(s_flip_loc_bar, pct, LV_ANIM_ON);
+        if (s_flip_loc_val && lv_obj_is_valid(s_flip_loc_val)) {
+            char vb[24];
+            if (fresh) snprintf(vb, sizeof(vb), "%d dBm", rssi);
+            else       snprintf(vb, sizeof(vb), "-- dBm");
+            lv_label_set_text(s_flip_loc_val, vb);
+        }
+        if (s_flip_loc_hint && lv_obj_is_valid(s_flip_loc_hint)) {
+            const char *h = !fresh ? "Searching..." :
+                            pct >= 80 ? "VERY CLOSE" : pct >= 55 ? "CLOSE" :
+                            pct >= 30 ? "NEARBY"     : "FAR";
+            lv_label_set_text(s_flip_loc_hint, h);
+            lv_obj_set_style_text_color(s_flip_loc_hint, pct >= 55 ? COLOR_MATERIAL_RED : ui_text_color(), 0);
+        }
+        return;
+    }
+
+    flipdet_dev_t *snap = s_flip_snap;
+    int n;
+    portENTER_CRITICAL(&s_flip_mux);
+    for (int i = 0; i < s_flip_n; ) {                  // age out Flippers that have left
+        if (now - s_flip[i].last_ms > FLIPDET_AGE_MS) s_flip[i] = s_flip[--s_flip_n];
+        else i++;
+    }
+    n = s_flip_n;
+    memcpy(snap, s_flip, (size_t)n * sizeof(flipdet_dev_t));
+    portEXIT_CRITICAL(&s_flip_mux);
+
+    if (s_flip_status && lv_obj_is_valid(s_flip_status)) {
+        char sb[64];
+        snprintf(sb, sizeof(sb), LV_SYMBOL_BLUETOOTH "  Scanning BLE... %d seen", n);
+        lv_label_set_text(s_flip_status, sb);
+    }
+    if (s_flip_alert && lv_obj_is_valid(s_flip_alert)) {
+        char ab[80];
+        if (n > 0) {
+            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " %d Flipper%s - tap to locate", n, n > 1 ? "s" : "");
+            lv_obj_set_style_text_color(s_flip_alert, COLOR_MATERIAL_RED, 0);
+        } else {
+            snprintf(ab, sizeof(ab), "No Flipper - tap to hunt");
+            lv_obj_set_style_text_color(s_flip_alert, lv_color_make(150, 150, 150), 0);
+        }
+        lv_label_set_text(s_flip_alert, ab);
+    }
+    if (s_flip_list && lv_obj_is_valid(s_flip_list)) {
+        lv_obj_clean(s_flip_list);
+        for (int i = 0; i < n; i++) {
+            char rb[64];
+            if (snap[i].name[0])
+                snprintf(rb, sizeof(rb), "%-16s %ddBm x%lu",
+                         snap[i].name, snap[i].rssi, (unsigned long)snap[i].hits);
+            else
+                snprintf(rb, sizeof(rb), "%02X:%02X:%02X:%02X:%02X:%02X %ddBm x%lu",
+                         snap[i].mac[0], snap[i].mac[1], snap[i].mac[2],
+                         snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
+                         snap[i].rssi, (unsigned long)snap[i].hits);
+            lv_obj_t *row = lv_label_create(s_flip_list);
+            lv_label_set_text(row, rb);
+            lv_obj_set_width(row, lv_pct(100));
+            lv_label_set_long_mode(row, LV_LABEL_LONG_CLIP);
+            lv_obj_set_style_text_font(row, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(row, COLOR_MATERIAL_RED, 0);
+        }
+    }
+}
+
+static void flipper_detector_stop(void)
+{
+    s_flip_active = false;
+    s_flip_locate = false;
+    if (s_flip_ui_timer) { lv_timer_del(s_flip_ui_timer); s_flip_ui_timer = NULL; }
+    ble_gap_disc_cancel();
+    if (current_radio_mode == RADIO_MODE_BLE) {
+        bt_nimble_deinit();
+        current_radio_mode = RADIO_MODE_NONE;
+    }
+    for (int i = 0; __atomic_load_n(&s_flip_callbacks, __ATOMIC_ACQUIRE) && i < 100; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    s_flip_status = NULL; s_flip_list = NULL; s_flip_alert = NULL;
+    s_flip_loc_cont = NULL; s_flip_loc_val = NULL; s_flip_loc_bar = NULL; s_flip_loc_hint = NULL;
+    portENTER_CRITICAL(&s_flip_mux);
+    s_flip_n = 0;
+    portEXIT_CRITICAL(&s_flip_mux);
+    if (__atomic_load_n(&s_flip_callbacks, __ATOMIC_ACQUIRE) == 0) {
+        if (s_flip)      { heap_caps_free(s_flip);      s_flip = NULL; }
+        if (s_flip_snap) { heap_caps_free(s_flip_snap); s_flip_snap = NULL; }
+    } else {
+        ESP_LOGE(TAG, "Flipper detector callback did not stop; preserving buffers");
+    }
+}
+
+static void show_flipper_detector_screen(void)
+{
+    create_function_page_base("Flipper Detect");
+    g_screen_stop_fn = flipper_detector_stop;
+    apply_menu_bg();
+
+    if (__atomic_load_n(&s_flip_callbacks, __ATOMIC_ACQUIRE) == 0) {
+        if (s_flip)      { heap_caps_free(s_flip);      s_flip = NULL; }
+        if (s_flip_snap) { heap_caps_free(s_flip_snap); s_flip_snap = NULL; }
+    }
+    portENTER_CRITICAL(&s_flip_mux);
+    s_flip_n = 0;
+    portEXIT_CRITICAL(&s_flip_mux);
+    s_flip_locate = false;
+
+    // Top: always-on scanning line.
+    s_flip_status = lv_label_create(function_page);
+    lv_label_set_text(s_flip_status, LV_SYMBOL_BLUETOOTH "  Initializing BLE...");
+    lv_obj_set_style_text_align(s_flip_status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_flip_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_flip_status, ui_text_color(), 0);
+    lv_obj_set_width(s_flip_status, lv_pct(96));
+    lv_label_set_long_mode(s_flip_status, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_flip_status, LV_ALIGN_TOP_MID, 0, 34);
+
+    // Bottom: verdict + tap-to-locate (fox-hunt).
+    s_flip_alert = lv_label_create(function_page);
+    lv_label_set_text(s_flip_alert, "No Flipper - tap to hunt");
+    lv_obj_set_style_text_align(s_flip_alert, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_flip_alert, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(s_flip_alert, lv_color_make(150, 150, 150), 0);
+    lv_obj_set_width(s_flip_alert, lv_pct(96));
+    lv_label_set_long_mode(s_flip_alert, LV_LABEL_LONG_WRAP);
+    lv_obj_align(s_flip_alert, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_add_flag(s_flip_alert, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_flip_alert, flipdet_locate_enter_cb, LV_EVENT_CLICKED, NULL);
+
+    // Middle: per-Flipper list (MAC / RSSI / hits).
+    s_flip_list = lv_obj_create(function_page);
+    lv_obj_set_size(s_flip_list, lv_pct(100), lv_disp_get_ver_res(NULL) - 60 - 34);
+    lv_obj_align(s_flip_list, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_set_style_bg_color(s_flip_list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_flip_list, 0, 0);
+    lv_obj_set_flex_flow(s_flip_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(s_flip_list, 6, 0);
+    lv_obj_set_style_pad_all(s_flip_list, 6, 0);
+    lv_obj_set_scrollbar_mode(s_flip_list, LV_SCROLLBAR_MODE_AUTO);
+
+    // Locate overlay (hidden until the alert is tapped) — Flipper RSSI fox-hunt.
+    s_flip_loc_cont = lv_obj_create(function_page);
+    lv_obj_set_size(s_flip_loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(s_flip_loc_cont, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(s_flip_loc_cont, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(s_flip_loc_cont, 0, 0);
+    lv_obj_set_flex_flow(s_flip_loc_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_flip_loc_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(s_flip_loc_cont, 12, 0);
+    lv_obj_clear_flag(s_flip_loc_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_flip_loc_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *lt = lv_label_create(s_flip_loc_cont);
+    lv_label_set_text(lt, "Flipper Zero");
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lt, ui_text_color(), 0);
+
+    s_flip_loc_val = lv_label_create(s_flip_loc_cont);
+    lv_label_set_text(s_flip_loc_val, "-- dBm");
+    lv_obj_set_style_text_font(s_flip_loc_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(s_flip_loc_val, COLOR_MATERIAL_RED, 0);
+
+    s_flip_loc_bar = lv_bar_create(s_flip_loc_cont);
+    lv_obj_set_size(s_flip_loc_bar, lv_pct(80), 18);
+    lv_bar_set_range(s_flip_loc_bar, 0, 100);
+    lv_bar_set_value(s_flip_loc_bar, 0, LV_ANIM_OFF);
+
+    s_flip_loc_hint = lv_label_create(s_flip_loc_cont);
+    lv_label_set_text(s_flip_loc_hint, "Searching...");
+    lv_obj_set_style_text_font(s_flip_loc_hint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(s_flip_loc_hint, ui_text_color(), 0);
+
+    lv_obj_t *lb = lv_btn_create(s_flip_loc_cont);
+    lv_obj_set_size(lb, 130, 42);
+    lv_obj_set_style_bg_color(lb, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(lb, 8, 0);
+    lv_obj_t *lblb = lv_label_create(lb);
+    lv_label_set_text(lblb, LV_SYMBOL_LEFT "  Back");
+    lv_obj_set_style_text_color(lblb, ui_text_color(), 0);
+    lv_obj_center(lblb);
+    lv_obj_add_event_cb(lb, flipdet_locate_back_cb, LV_EVENT_CLICKED, NULL);
+
+    // Heap-allocate the table + snapshot (PSRAM-first, internal fallback for no-PSRAM CYD).
+    s_flip      = (flipdet_dev_t *)dd_alloc(sizeof(flipdet_dev_t) * FLIPDET_TBL);
+    s_flip_snap = (flipdet_dev_t *)dd_alloc(sizeof(flipdet_dev_t) * FLIPDET_TBL);
+    if (!s_flip || !s_flip_snap) {
+        lv_label_set_text(s_flip_status, LV_SYMBOL_WARNING "  Out of memory");
+        if (s_flip)      { heap_caps_free(s_flip);      s_flip = NULL; }
+        if (s_flip_snap) { heap_caps_free(s_flip_snap); s_flip_snap = NULL; }
+        return;
+    }
+    if (!ensure_ble_mode()) {
+        lv_label_set_text(s_flip_status, LV_SYMBOL_WARNING "  BLE init failed");
+        return;
+    }
+    s_flip_active = true;
+    if (flipdet_start_scan() != 0) {
+        s_flip_active = false;
+        lv_label_set_text(s_flip_status, LV_SYMBOL_WARNING "  BLE scan start failed");
+        return;
+    }
+    s_flip_ui_timer = lv_timer_create(flipdet_ui_timer_cb, 500, NULL);
+}
+
+// ============================================================================
+// GENERIC BLE-SIGNATURE DETECTORS — Anti-Stalk (Find My/SmartTag/DULT), Meshtastic,
+// and BLE-Skimmer. One reusable passive-scan engine (mirrors the Flipper detector)
+// parameterised by a per-detector classify() over an advert's AD structures. Only one
+// Detect & Defend screen is open at a time, so a single active context is safe.
+// Signatures are public facts (BT-SIG service UUIDs / mfg IDs); code + icons are
+// CYM-original. Receive-only. Each detector inherits the Flipper fox-hunt locator.
+// ============================================================================
+#define BSIG_TBL     32
+#define BSIG_AGE_MS  60000   // drop an entry not re-heard for 60 s (it left range)
+
+typedef struct { uint8_t mac[6]; char name[24]; int8_t rssi; uint32_t first_ms, last_ms, hits; } bsig_dev_t;
+// classify: return true if this advert matches; may fill name_out (used to dedupe rows).
+typedef bool (*bsig_classify_fn)(const uint8_t *adv, uint8_t len, char *name_out, size_t name_sz);
+
+typedef struct {
+    const char       *title;      // screen + tile title
+    const char       *noun;       // verdict noun, e.g. "Tracker" -> "2 Trackers"
+    const char       *loc_label;  // locate-overlay heading
+    bsig_classify_fn  classify;
+    bsig_dev_t       *tbl, *snap;
+    volatile int      n;
+    portMUX_TYPE      mux;
+    volatile bool     active;
+    volatile uint32_t cbs;
+    lv_timer_t       *ui_timer;
+    lv_obj_t         *status, *list, *alert;
+    volatile bool     locate;
+    volatile int8_t   loc_rssi;
+    volatile bool     loc_found;
+    volatile uint32_t loc_seen;
+    lv_obj_t         *loc_cont, *loc_val, *loc_bar, *loc_hint;
+} bsig_ctx_t;
+
+static bsig_ctx_t *s_bsig_active = NULL;   // the one open detector (screens are modal)
+
+static inline char bsig_lc(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+static bool bsig_ci_contains(const char *hay, const char *needle)
+{
+    if (!hay[0] || !needle[0]) return false;
+    for (const char *p = hay; *p; p++) {
+        const char *a = p, *b = needle;
+        while (*a && *b && bsig_lc(*a) == bsig_lc(*b)) { a++; b++; }
+        if (!*b) return true;
+    }
+    return false;
+}
+static void bsig_extract_name(const uint8_t *adv, uint8_t len, char *out, size_t sz)
+{
+    if (out && sz) out[0] = '\0';
+    if (!adv) return;
+    int i = 0;
+    while (i + 1 < len) {
+        uint8_t l = adv[i]; if (l == 0) break; if (i + 1 + l > len) break;
+        uint8_t type = adv[i + 1]; const uint8_t *d = &adv[i + 2]; uint8_t dl = (uint8_t)(l - 1);
+        if ((type == 0x09 || type == 0x08) && dl && out && sz) {   // complete/short local name
+            size_t n = dl < (sz - 1) ? dl : (sz - 1); memcpy(out, d, n); out[n] = '\0';
+        }
+        i += 1 + l;
+    }
+}
+
+// B4 — BLE skimmer / serial modules. NOTE: a classic HC-05/HC-06 is BR/EDR only and the
+// ESP32-C5 has no classic-BT radio, so those are invisible here; this catches BLE-
+// advertising serial modules (HM-10 clones, AT-09, JDY, MLT-BT05) and any unit that
+// advertises an HC-0x local name. Matched by advertised Local Name.
+static bool bsig_classify_skimmer(const uint8_t *adv, uint8_t len, char *name_out, size_t name_sz)
+{
+    char nm[24]; bsig_extract_name(adv, len, nm, sizeof(nm));
+    if (!nm[0]) return false;
+    static const char *toks[] = { "HC-03","HC-05","HC-06","HM-10","HM-11","AT-09","JDY-","MLT-BT05","BT05","SPP-CA","BT-05" };
+    for (size_t k = 0; k < sizeof(toks) / sizeof(toks[0]); k++)
+        if (bsig_ci_contains(nm, toks[k])) {
+            if (name_out && name_sz) { strncpy(name_out, nm, name_sz - 1); name_out[name_sz - 1] = '\0'; }
+            return true;
+        }
+    return false;
+}
+
+// B3 — Find My / unwanted-tracker sweep: Apple FMNA svc 0xFD44, DULT svc 0xFD5A, Apple
+// Find My mfg 0x004C type 0x12, Samsung SmartTag mfg 0x0075. Trackers rotate their MAC and
+// carry no stable name, so rows are bucketed by vendor label (individual rotating tags
+// cannot be counted — honest limit; the RSSI fox-hunt still homes on the strongest).
+static bool bsig_classify_tracker(const uint8_t *adv, uint8_t len, char *name_out, size_t name_sz)
+{
+    const char *bucket = NULL;
+    int i = 0;
+    while (i + 1 < len) {
+        uint8_t l = adv[i]; if (l == 0) break; if (i + 1 + l > len) break;
+        uint8_t type = adv[i + 1]; const uint8_t *d = &adv[i + 2]; uint8_t dl = (uint8_t)(l - 1);
+        if (type == 0x02 || type == 0x03) {                 // 16-bit service UUID list
+            for (int j = 0; j + 1 < dl; j += 2) {
+                uint16_t u = (uint16_t)(d[j] | (d[j + 1] << 8));
+                if (u == 0xFD44) bucket = "Apple Find My";
+                else if (u == 0xFD5A) bucket = "DULT Tracker";
+            }
+        } else if (type == 0x16 && dl >= 2) {               // 16-bit service data
+            uint16_t u = (uint16_t)(d[0] | (d[1] << 8));
+            if (u == 0xFD44) bucket = "Apple Find My";
+            else if (u == 0xFD5A) bucket = "DULT Tracker";
+        } else if (type == 0xFF && dl >= 3) {               // manufacturer specific
+            uint16_t cid = (uint16_t)(d[0] | (d[1] << 8));
+            if (cid == 0x004C && d[2] == 0x12) bucket = "Apple Find My";
+            else if (cid == 0x0075) bucket = "Samsung Tag";
+        }
+        i += 1 + l;
+    }
+    if (!bucket) return false;
+    if (name_out && name_sz) { strncpy(name_out, bucket, name_sz - 1); name_out[name_sz - 1] = '\0'; }
+    return true;
+}
+
+// B7 — Meshtastic LoRa-mesh radio: advertises the 128-bit service UUID
+// 6ba1b218-15a8-461f-9fa8-5dcae273eafd (little-endian on air).
+static bool bsig_classify_meshtastic(const uint8_t *adv, uint8_t len, char *name_out, size_t name_sz)
+{
+    static const uint8_t MESH_LE[16] = { 0xfd,0xea,0x73,0xe2,0xca,0x5d,0xa8,0x9f,0x1f,0x46,0xa8,0x15,0x18,0xb2,0xa1,0x6b };
+    bool hit = false; char nm[24]; bsig_extract_name(adv, len, nm, sizeof(nm));
+    int i = 0;
+    while (i + 1 < len) {
+        uint8_t l = adv[i]; if (l == 0) break; if (i + 1 + l > len) break;
+        uint8_t type = adv[i + 1]; const uint8_t *d = &adv[i + 2]; uint8_t dl = (uint8_t)(l - 1);
+        if (type == 0x06 || type == 0x07) {                 // 128-bit service UUID list
+            for (int j = 0; j + 16 <= dl; j += 16)
+                if (memcmp(&d[j], MESH_LE, 16) == 0) hit = true;
+        } else if (type == 0x21 && dl >= 16) {              // 128-bit service data
+            if (memcmp(d, MESH_LE, 16) == 0) hit = true;
+        }
+        i += 1 + l;
+    }
+    if (!hit) return false;
+    if (name_out && name_sz) {
+        strncpy(name_out, nm[0] ? nm : "Meshtastic", name_sz - 1);
+        name_out[name_sz - 1] = '\0';
+    }
+    return true;
+}
+
+static int bsig_gap_cb(struct ble_gap_event *event, void *arg)
+{
+    (void)arg;
+    bsig_ctx_t *c = s_bsig_active;
+    if (!c) return 0;
+    __atomic_add_fetch(&c->cbs, 1, __ATOMIC_ACQ_REL);
+    if (!c->active || !c->tbl) goto done;
+
+    const uint8_t *adv; uint8_t adv_len; const uint8_t *addr; int8_t rssi;
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    if (event->type == BLE_GAP_EVENT_EXT_DISC) {
+        struct ble_gap_ext_disc_desc *d = &event->ext_disc;
+        adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
+    } else
+#endif
+    if (event->type == BLE_GAP_EVENT_DISC) {
+        struct ble_gap_disc_desc *d = &event->disc;
+        adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
+    } else goto done;
+
+    char nm[24];
+    bool match = c->classify(adv, adv_len, nm, sizeof(nm));
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    // LOCATE: keep the meter continuous by updating on ANY advert from a device already
+    // in the table (matched by MAC), not only the signature-bearing packets.
+    if (c->locate) {
+        bool from = match;
+        if (!from) {
+            portENTER_CRITICAL(&c->mux);
+            for (int i = 0; i < c->n; i++)
+                if (memcmp(c->tbl[i].mac, addr, 6) == 0) { from = true; break; }
+            portEXIT_CRITICAL(&c->mux);
+        }
+        if (from) {
+            if (!c->loc_found) c->loc_rssi = rssi;
+            else c->loc_rssi = (int8_t)(((int)c->loc_rssi * 2 + rssi) / 3);   // smooth EMA
+            c->loc_found = true; c->loc_seen = now;
+        }
+    }
+
+    if (!match) goto done;
+
+    portENTER_CRITICAL(&c->mux);
+    int idx = -1;
+    for (int i = 0; i < c->n; i++) {
+        bool same = nm[0] ? (strcmp(c->tbl[i].name, nm) == 0)
+                          : (memcmp(c->tbl[i].mac, addr, 6) == 0);
+        if (same) { idx = i; break; }
+    }
+    if (idx < 0) {
+        if (c->n < BSIG_TBL) idx = c->n++;
+        else { int o = 0; for (int i = 1; i < c->n; i++) if (c->tbl[i].last_ms < c->tbl[o].last_ms) o = i; idx = o; }
+        c->tbl[idx].first_ms = now; c->tbl[idx].hits = 0;
+        strncpy(c->tbl[idx].name, nm, sizeof(c->tbl[idx].name) - 1);
+        c->tbl[idx].name[sizeof(c->tbl[idx].name) - 1] = '\0';
+    } else if (nm[0] && c->tbl[idx].name[0] == '\0') {
+        strncpy(c->tbl[idx].name, nm, sizeof(c->tbl[idx].name) - 1);
+        c->tbl[idx].name[sizeof(c->tbl[idx].name) - 1] = '\0';
+    }
+    memcpy(c->tbl[idx].mac, addr, 6);
+    c->tbl[idx].rssi = rssi; c->tbl[idx].last_ms = now; c->tbl[idx].hits++;
+    portEXIT_CRITICAL(&c->mux);
+done:
+    __atomic_sub_fetch(&c->cbs, 1, __ATOMIC_ACQ_REL);
+    return 0;
+}
+
+static int bsig_start_scan(void)
+{
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    struct ble_gap_ext_disc_params pcoded = { .itvl = 0x60, .window = 0x60, .passive = 1 };
+    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 0, 0, 0,
+                            BLE_HCI_SCAN_FILT_NO_WL, 0, &p1m, &pcoded, bsig_gap_cb, NULL);
+    if (rc != BLE_HS_ENOTSUP) return rc;
+#endif
+    struct ble_gap_disc_params sp = {
+        .itvl = 0x60, .window = 0x60, .filter_policy = BLE_HCI_SCAN_FILT_NO_WL,
+        .limited = 0, .passive = 1, .filter_duplicates = 0,
+    };
+    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &sp, bsig_gap_cb, NULL);
+
+}
+
+static void bsig_locate_enter_cb(lv_event_t *e)
+{
+    (void)e; bsig_ctx_t *c = s_bsig_active; if (!c) return;
+    c->loc_rssi = -128; c->loc_found = false; c->loc_seen = 0; c->locate = true;
+    if (c->status)   lv_obj_add_flag(c->status, LV_OBJ_FLAG_HIDDEN);
+    if (c->list)     lv_obj_add_flag(c->list, LV_OBJ_FLAG_HIDDEN);
+    if (c->alert)    lv_obj_add_flag(c->alert, LV_OBJ_FLAG_HIDDEN);
+    if (c->loc_cont) lv_obj_clear_flag(c->loc_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void bsig_locate_back_cb(lv_event_t *e)
+{
+    (void)e; bsig_ctx_t *c = s_bsig_active; if (!c) return;
+    c->locate = false;
+    if (c->loc_cont) lv_obj_add_flag(c->loc_cont, LV_OBJ_FLAG_HIDDEN);
+    if (c->status)   lv_obj_clear_flag(c->status, LV_OBJ_FLAG_HIDDEN);
+    if (c->list)     lv_obj_clear_flag(c->list, LV_OBJ_FLAG_HIDDEN);
+    if (c->alert)    lv_obj_clear_flag(c->alert, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void bsig_ui_timer_cb(lv_timer_t *t)
+{
+    (void)t; bsig_ctx_t *c = s_bsig_active;
+    if (!c || !c->active || !c->tbl || !c->snap) return;
+    uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+
+    if (c->locate) {
+        bool fresh = c->loc_found && (now - c->loc_seen < 2500);   // short hold: responsive hunt
+        int rssi = c->loc_rssi;
+        int pct  = !fresh ? 0 : rssi <= -90 ? 0 : rssi >= -30 ? 100 : (rssi + 90) * 100 / 60;
+        if (c->loc_bar) lv_bar_set_value(c->loc_bar, pct, LV_ANIM_ON);
+        if (c->loc_val && lv_obj_is_valid(c->loc_val)) {
+            char vb[24];
+            if (fresh) snprintf(vb, sizeof(vb), "%d dBm", rssi);
+            else       snprintf(vb, sizeof(vb), "-- dBm");
+            lv_label_set_text(c->loc_val, vb);
+        }
+        if (c->loc_hint && lv_obj_is_valid(c->loc_hint)) {
+            const char *h = !fresh ? "Searching..." :
+                            pct >= 80 ? "VERY CLOSE" : pct >= 55 ? "CLOSE" :
+                            pct >= 30 ? "NEARBY"     : "FAR";
+            lv_label_set_text(c->loc_hint, h);
+            lv_obj_set_style_text_color(c->loc_hint, pct >= 55 ? COLOR_MATERIAL_RED : ui_text_color(), 0);
+        }
+        return;
+    }
+
+    bsig_dev_t *snap = c->snap;
+    int n;
+    portENTER_CRITICAL(&c->mux);
+    for (int i = 0; i < c->n; ) {                    // age out entries that have left range
+        if (now - c->tbl[i].last_ms > BSIG_AGE_MS) c->tbl[i] = c->tbl[--c->n];
+        else i++;
+    }
+    n = c->n;
+    memcpy(snap, c->tbl, (size_t)n * sizeof(bsig_dev_t));
+    portEXIT_CRITICAL(&c->mux);
+
+    if (c->status && lv_obj_is_valid(c->status)) {
+        char sb[64];
+        snprintf(sb, sizeof(sb), LV_SYMBOL_BLUETOOTH "  Scanning BLE... %d seen", n);
+        lv_label_set_text(c->status, sb);
+    }
+    if (c->alert && lv_obj_is_valid(c->alert)) {
+        char ab[96];
+        if (n > 0) {
+            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " %d %s%s - tap to locate", n, c->noun, n > 1 ? "s" : "");
+            lv_obj_set_style_text_color(c->alert, COLOR_MATERIAL_RED, 0);
+        } else {
+            snprintf(ab, sizeof(ab), "No %s - tap to hunt", c->noun);
+            lv_obj_set_style_text_color(c->alert, lv_color_make(150, 150, 150), 0);
+        }
+        lv_label_set_text(c->alert, ab);
+    }
+    if (c->list && lv_obj_is_valid(c->list)) {
+        lv_obj_clean(c->list);
+        for (int i = 0; i < n; i++) {
+            char rb[64];
+            if (snap[i].name[0])
+                snprintf(rb, sizeof(rb), "%-16s %ddBm x%lu",
+                         snap[i].name, snap[i].rssi, (unsigned long)snap[i].hits);
+            else
+                snprintf(rb, sizeof(rb), "%02X:%02X:%02X:%02X:%02X:%02X %ddBm x%lu",
+                         snap[i].mac[0], snap[i].mac[1], snap[i].mac[2],
+                         snap[i].mac[3], snap[i].mac[4], snap[i].mac[5],
+                         snap[i].rssi, (unsigned long)snap[i].hits);
+            lv_obj_t *row = lv_label_create(c->list);
+            lv_label_set_text(row, rb);
+            lv_obj_set_width(row, lv_pct(100));
+            lv_label_set_long_mode(row, LV_LABEL_LONG_CLIP);
+            lv_obj_set_style_text_font(row, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(row, COLOR_MATERIAL_RED, 0);
+        }
+    }
+}
+
+static void bsig_stop(void)
+{
+    bsig_ctx_t *c = s_bsig_active; if (!c) return;
+    c->active = false; c->locate = false;
+    if (c->ui_timer) { lv_timer_del(c->ui_timer); c->ui_timer = NULL; }
+    ble_gap_disc_cancel();
+    if (current_radio_mode == RADIO_MODE_BLE) {
+        bt_nimble_deinit();
+        current_radio_mode = RADIO_MODE_NONE;
+    }
+    for (int i = 0; __atomic_load_n(&c->cbs, __ATOMIC_ACQUIRE) && i < 100; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    c->status = NULL; c->list = NULL; c->alert = NULL;
+    c->loc_cont = NULL; c->loc_val = NULL; c->loc_bar = NULL; c->loc_hint = NULL;
+    portENTER_CRITICAL(&c->mux);
+    c->n = 0;
+    portEXIT_CRITICAL(&c->mux);
+    if (__atomic_load_n(&c->cbs, __ATOMIC_ACQUIRE) == 0) {
+        if (c->tbl)  { heap_caps_free(c->tbl);  c->tbl = NULL; }
+        if (c->snap) { heap_caps_free(c->snap); c->snap = NULL; }
+    } else {
+        ESP_LOGE(TAG, "BLE-sig detector callback did not stop; preserving buffers");
+    }
+    s_bsig_active = NULL;
+}
+
+static void bsig_show(bsig_ctx_t *c)
+{
+    create_function_page_base(c->title);
+    g_screen_stop_fn = bsig_stop;
+    apply_menu_bg();
+    s_bsig_active = c;
+
+    if (__atomic_load_n(&c->cbs, __ATOMIC_ACQUIRE) == 0) {
+        if (c->tbl)  { heap_caps_free(c->tbl);  c->tbl = NULL; }
+        if (c->snap) { heap_caps_free(c->snap); c->snap = NULL; }
+    }
+    portENTER_CRITICAL(&c->mux);
+    c->n = 0;
+    portEXIT_CRITICAL(&c->mux);
+    c->locate = false;
+
+    c->status = lv_label_create(function_page);
+    lv_label_set_text(c->status, LV_SYMBOL_BLUETOOTH "  Initializing BLE...");
+    lv_obj_set_style_text_align(c->status, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(c->status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(c->status, ui_text_color(), 0);
+    lv_obj_set_width(c->status, lv_pct(96));
+    lv_label_set_long_mode(c->status, LV_LABEL_LONG_WRAP);
+    lv_obj_align(c->status, LV_ALIGN_TOP_MID, 0, 34);
+
+    c->alert = lv_label_create(function_page);
+    char nb[48]; snprintf(nb, sizeof(nb), "No %s - tap to hunt", c->noun);
+    lv_label_set_text(c->alert, nb);
+    lv_obj_set_style_text_align(c->alert, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(c->alert, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(c->alert, lv_color_make(150, 150, 150), 0);
+    lv_obj_set_width(c->alert, lv_pct(96));
+    lv_label_set_long_mode(c->alert, LV_LABEL_LONG_WRAP);
+    lv_obj_align(c->alert, LV_ALIGN_BOTTOM_MID, 0, -6);
+    lv_obj_add_flag(c->alert, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(c->alert, bsig_locate_enter_cb, LV_EVENT_CLICKED, NULL);
+
+    c->list = lv_obj_create(function_page);
+    lv_obj_set_size(c->list, lv_pct(100), lv_disp_get_ver_res(NULL) - 60 - 34);
+    lv_obj_align(c->list, LV_ALIGN_TOP_MID, 0, 60);
+    lv_obj_set_style_bg_color(c->list, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(c->list, 0, 0);
+    lv_obj_set_flex_flow(c->list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(c->list, 6, 0);
+    lv_obj_set_style_pad_all(c->list, 6, 0);
+    lv_obj_set_scrollbar_mode(c->list, LV_SCROLLBAR_MODE_AUTO);
+
+    c->loc_cont = lv_obj_create(function_page);
+    lv_obj_set_size(c->loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
+    lv_obj_align(c->loc_cont, LV_ALIGN_TOP_MID, 0, 34);
+    lv_obj_set_style_bg_color(c->loc_cont, ui_bg_color(), 0);
+    lv_obj_set_style_border_width(c->loc_cont, 0, 0);
+    lv_obj_set_flex_flow(c->loc_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(c->loc_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(c->loc_cont, 12, 0);
+    lv_obj_clear_flag(c->loc_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(c->loc_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *lt = lv_label_create(c->loc_cont);
+    lv_label_set_text(lt, c->loc_label);
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lt, ui_text_color(), 0);
+
+    c->loc_val = lv_label_create(c->loc_cont);
+    lv_label_set_text(c->loc_val, "-- dBm");
+    lv_obj_set_style_text_font(c->loc_val, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(c->loc_val, COLOR_MATERIAL_RED, 0);
+
+    c->loc_bar = lv_bar_create(c->loc_cont);
+    lv_obj_set_size(c->loc_bar, lv_pct(80), 18);
+    lv_bar_set_range(c->loc_bar, 0, 100);
+    lv_bar_set_value(c->loc_bar, 0, LV_ANIM_OFF);
+
+    c->loc_hint = lv_label_create(c->loc_cont);
+    lv_label_set_text(c->loc_hint, "Searching...");
+    lv_obj_set_style_text_font(c->loc_hint, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(c->loc_hint, ui_text_color(), 0);
+
+    lv_obj_t *lb = lv_btn_create(c->loc_cont);
+    lv_obj_set_size(lb, 130, 42);
+    lv_obj_set_style_bg_color(lb, COLOR_MATERIAL_TEAL, 0);
+    lv_obj_set_style_radius(lb, 8, 0);
+    lv_obj_t *lblb = lv_label_create(lb);
+    lv_label_set_text(lblb, LV_SYMBOL_LEFT "  Back");
+    lv_obj_set_style_text_color(lblb, ui_text_color(), 0);
+    lv_obj_center(lblb);
+    lv_obj_add_event_cb(lb, bsig_locate_back_cb, LV_EVENT_CLICKED, NULL);
+
+    c->tbl  = (bsig_dev_t *)dd_alloc(sizeof(bsig_dev_t) * BSIG_TBL);
+    c->snap = (bsig_dev_t *)dd_alloc(sizeof(bsig_dev_t) * BSIG_TBL);
+    if (!c->tbl || !c->snap) {
+        lv_label_set_text(c->status, LV_SYMBOL_WARNING "  Out of memory");
+        if (c->tbl)  { heap_caps_free(c->tbl);  c->tbl = NULL; }
+        if (c->snap) { heap_caps_free(c->snap); c->snap = NULL; }
+        return;
+    }
+    if (!ensure_ble_mode()) {
+        lv_label_set_text(c->status, LV_SYMBOL_WARNING "  BLE init failed");
+        return;
+    }
+    c->active = true;
+    if (bsig_start_scan() != 0) {
+        c->active = false;
+        lv_label_set_text(c->status, LV_SYMBOL_WARNING "  BLE scan start failed");
+        return;
+    }
+    c->ui_timer = lv_timer_create(bsig_ui_timer_cb, 500, NULL);
+}
+
+static bsig_ctx_t s_bsig_tracker = { .title = "Anti-Stalk", .noun = "Tracker",   .loc_label = "Tracker",     .classify = bsig_classify_tracker,    .mux = portMUX_INITIALIZER_UNLOCKED };
+static bsig_ctx_t s_bsig_mesh    = { .title = "Meshtastic", .noun = "Mesh node", .loc_label = "Meshtastic",  .classify = bsig_classify_meshtastic, .mux = portMUX_INITIALIZER_UNLOCKED };
+static bsig_ctx_t s_bsig_skimmer = { .title = "BLE Skimmer",.noun = "Module",    .loc_label = "BLE Module",  .classify = bsig_classify_skimmer,    .mux = portMUX_INITIALIZER_UNLOCKED };
+
+static void show_antistalk_detector_screen(void)  { bsig_show(&s_bsig_tracker); }
+static void show_meshtastic_detector_screen(void) { bsig_show(&s_bsig_mesh); }
+static void show_skimmer_detector_screen(void)    { bsig_show(&s_bsig_skimmer); }
 
 // ============================================================================
 // DRONE DETECTOR — Remote ID (ASTM F3411-22a) via BLE + WiFi NAN/Beacon
@@ -47246,20 +49063,9 @@ static void wana_redraw(void) {
 
 // ── Common panel helpers ──────────────────────────────────────────────────────
 
-static void wana_exit_cb(lv_event_t *e) {
-    (void)e;
-    wana_active        = false;
-    wana_scanning      = false;
-    wana_scroll_paused = false;
-    if (wana_scroll_timer) { lv_timer_del(wana_scroll_timer); wana_scroll_timer = NULL; }
-    if (wana_ui_timer)     { lv_timer_del(wana_ui_timer);     wana_ui_timer     = NULL; }
-    wana_chart_obj  = NULL;
-    wana_status_lbl = NULL;
-    wana_panel      = NULL;
-    wana_clear_ssid_labels();
-    if (wana_buf) { heap_caps_free(wana_buf); wana_buf = NULL; }
-    show_wifi_menu_screen();
-}
+// (wana_exit_cb removed 2026-09-27 — its two bottom-bar buttons used a WiFi glyph that
+//  read as a WiFi toggle; top-bar ‹ Back already tears down via wana_screen_stop(), which
+//  performs the identical cleanup, so no exit button is needed.)
 
 static lv_obj_t *wana_make_panel(void) {
     lv_obj_t *p = lv_obj_create(function_page);
@@ -47336,6 +49142,7 @@ static void show_wana_select_screen(void) {
     if (!function_page || !lv_obj_is_valid(function_page)) return;
     wana_swap_panel();
     wana_panel = wana_make_panel();
+    g_screen_back_fn = NULL;   // list view: top-bar ‹ Back exits to the WiFi menu
 
     // Landscape panel dims (portrait: pw=240, ph=290 -> branches below are identical).
     bool ls = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
@@ -47361,9 +49168,10 @@ static void show_wana_select_screen(void) {
     lv_obj_set_style_bg_opa(status, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(status, 0, 0);
 
-    // Scrollable list (h=210 → ~5.8 rows of 36px)
+    // Scrollable list — height DERIVED from the panel in BOTH orientations so it fills
+    // down to the button row (portrait no longer leaves a dead band at the bottom).
     lv_obj_t *list = lv_obj_create(wana_panel);
-    lv_obj_set_size(list, ls ? pw - 4 : 236, ls ? (ph - 22 - 34) : 212);
+    lv_obj_set_size(list, ls ? pw - 4 : 236, ph - 22 - 34);
     lv_obj_set_pos(list, 2, 22);
     lv_obj_set_style_bg_color(list, lv_color_make(8, 8, 22), 0);
     lv_obj_set_style_border_color(list, lv_color_make(40, 40, 70), 0);
@@ -47461,10 +49269,11 @@ static void show_wana_select_screen(void) {
         lv_obj_clear_flag(cnt_lbl, LV_OBJ_FLAG_CLICKABLE);
     }
 
-    // Button row (y=238 within panel)
+    // Button row — bottom-anchored in BOTH orientations (ph-30), so the list can grow
+    // to meet it and no empty band is left below (portrait fix). Birol 2026-09-28.
     lv_obj_t *btns = lv_obj_create(wana_panel);
     lv_obj_set_size(btns, ls ? pw : 240, 30);
-    lv_obj_set_pos(btns, 0, ls ? (ph - 30) : 238);
+    lv_obj_set_pos(btns, 0, ph - 30);
     lv_obj_set_style_bg_opa(btns, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(btns, 0, 0);
     lv_obj_set_style_radius(btns, 0, 0);
@@ -47496,17 +49305,8 @@ static void show_wana_select_screen(void) {
     lv_label_set_text(sl, "Show Chart " LV_SYMBOL_RIGHT);
     lv_obj_set_style_text_font(sl, &lv_font_montserrat_12, 0);
     lv_obj_center(sl);
-
-    lv_obj_t *xb = lv_btn_create(btns);
-    lv_obj_set_size(xb, 28, 26);
-    lv_obj_set_style_bg_color(xb, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_radius(xb, 4, 0);
-    lv_obj_set_style_shadow_width(xb, 0, 0);
-    lv_obj_add_event_cb(xb, wana_exit_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *xl = lv_label_create(xb);
-    lv_label_set_text(xl, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_font(xl, &lv_font_montserrat_12, 0);
-    lv_obj_center(xl);
+    // (Removed the redundant bottom-right exit button — it used a WiFi glyph, which read
+    //  as a WiFi toggle; the top-bar ‹ Back already exits the analyzer. Birol 2026-09-27.)
 }
 
 // ── Chart view ────────────────────────────────────────────────────────────────
@@ -47678,17 +49478,12 @@ static void show_wana_chart_screen(void) {
     lv_obj_set_style_text_font(rl, &lv_font_montserrat_12, 0);
     lv_obj_center(rl);
 
-    lv_obj_t *xb = lv_btn_create(btns);
-    lv_obj_set_size(xb, 28, 24);
-    lv_obj_set_style_bg_color(xb, lv_color_hex(0x333333), 0);
-    lv_obj_set_style_radius(xb, 4, 0);
-    lv_obj_set_style_shadow_width(xb, 0, 0);
-    lv_obj_add_event_cb(xb, wana_exit_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *xl = lv_label_create(xb);
-    lv_label_set_text(xl, LV_SYMBOL_WIFI);
-    lv_obj_set_style_text_font(xl, &lv_font_montserrat_12, 0);
-    lv_obj_center(xl);
-
+    // (Removed the redundant WiFi-glyph exit button — "‹ Select" returns to the list.)
+    // Chart view: top-bar ‹ Back returns to the Chanalizer list (re-enters the screen)
+    // instead of exiting to the WiFi menu. Full re-entry is the safe path — the stop hook
+    // frees wana_buf before the deferred back-fn runs, so a panel-swap back to the list
+    // would leave wana_buf NULL and crash the next Show Chart. Birol 2026-09-27.
+    g_screen_back_fn = show_wifi_analyzer_screen;
     wana_redraw();
 }
 
@@ -49432,7 +51227,7 @@ static void cc1101_hat_claim(void)
 static void show_main_tiles_from_ir(void)
 {
     if (ir_hat_is_init()) ir_hat_deinit();
-    show_main_tiles();
+    go_home();
 }
 
 static void show_radio_menu_screen_from_rf433(void)
@@ -62147,7 +63942,7 @@ static void rfid_exit_to_home(void)
 {
     rfid_manager_stop_poll();
     rfid_manager_deinit();
-    show_main_tiles();
+    go_home();
 }
 
 // ── Helper: make a menu tile button ──────────────────────────────────────────
@@ -67209,7 +69004,7 @@ static void s_zgwd_flood_back_cb(lv_event_t *e)
         if (s_zgwd_fld->tmr) { lv_timer_del(s_zgwd_fld->tmr); s_zgwd_fld->tmr = NULL; }
         if (!s_zgwd_fld->task) { heap_caps_free(s_zgwd_fld); s_zgwd_fld = NULL; }
     }
-    show_main_tiles();
+    go_home();
 }
 
 static void zgwd_flood_stop(void)
