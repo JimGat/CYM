@@ -7146,12 +7146,12 @@ void app_main(void)
     board_hal_log_info();
 
     // Initialize NVS (required for settings, touch calibration, etc)
-    // MUST come before the GPS init below: init_gps_uart() reads the saved GPS baud
+    // Must precede the deferred GPS startup: init_gps_uart() reads the saved GPS baud
     // (gps_load_baud_setting) so that gps_autodetect_and_sync() aims at the rate the
     // user actually chose. With GPS first, nvs_open() failed silently, the autodetect
     // fell back to the 9600 default, and a module holding 115200 in its battery-backed
     // RAM got commanded back DOWN to 9600 — while the UI, loaded later, still claimed
-    // 115200. NVS init is a few ms, so GPS still starts essentially at boot.
+    // 115200. GPS startup is deferred until the critical boot allocations complete.
     esp_err_t nvs_ret = nvs_flash_init();
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -7209,37 +7209,6 @@ void app_main(void)
         else
             ESP_LOGW(TAG, "survey_flush_tmr create failed — flush disabled");
     }
-
-#if BOARD_HAS_GPS
-	// Initialize the board-profile UART and start the shared GPS monitor task.
-	if (init_gps_uart() == ESP_OK) {
-		ESP_LOGI(TAG, "GPS UART initialized on TX=%d RX=%d", GPS_TX_PIN, GPS_RX_PIN);
-		// Classic CYD has no PSRAM; without an internal-RAM fallback the
-		// allocation fails and the only task that reads GPS UART bytes never starts.
-#if CONFIG_BOARD_HAS_PSRAM
-		gps_task_stack = (StackType_t *)heap_caps_malloc(
-			4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-#else
-		gps_task_stack = (StackType_t *)heap_caps_malloc(
-			4096 * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-#endif
-		if (gps_task_stack != NULL) {
-			TaskHandle_t task_handle = xTaskCreateStatic(gps_task, "gps_task", 4096, NULL,
-				tskIDLE_PRIORITY + 1, gps_task_stack, &gps_task_buffer);
-			if (task_handle == NULL) {
-				ESP_LOGE(TAG, "Failed to start GPS task");
-				heap_caps_free(gps_task_stack);
-				gps_task_stack = NULL;
-			} else {
-				ESP_LOGI(TAG, "GPS monitor running in background");
-			}
-		} else {
-			ESP_LOGE(TAG, "Failed to allocate GPS task stack");
-		}
-	} else {
-		ESP_LOGE(TAG, "GPS UART init failed");
-	}
-#endif
 
     // Initialize the board-profile WS2812 transport when present.
     if (init_led() != ESP_OK) {
@@ -7732,6 +7701,43 @@ void app_main(void)
     lv_refr_now(NULL);
 
     ESP_LOGI(TAG, "System ready!");
+
+#if BOARD_HAS_GPS
+    // Classic deferred GPS startup: its no-PSRAM boot path is now complete.
+    // Use the normal FreeRTOS allocator on Classic instead of manually owning an
+    // internal static stack. PSRAM boards retain the established external stack.
+    if (init_gps_uart() == ESP_OK) {
+        ESP_LOGI(TAG, "GPS UART initialized on TX=%d RX=%d", GPS_TX_PIN, GPS_RX_PIN);
+#if defined(CONFIG_BOARD_CYD2USB)
+        BaseType_t gps_created = xTaskCreate(gps_task, "gps_task", 4096, NULL,
+                                             tskIDLE_PRIORITY + 1, NULL);
+        if (gps_created != pdPASS) {
+            ESP_LOGE(TAG, "Failed to start GPS task on Classic");
+        } else {
+            ESP_LOGI(TAG, "GPS monitor running in background (internal task stack)");
+        }
+#else
+        gps_task_stack = (StackType_t *)heap_caps_malloc(
+            4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (gps_task_stack != NULL) {
+            TaskHandle_t task_handle = xTaskCreateStatic(gps_task, "gps_task", 4096, NULL,
+                tskIDLE_PRIORITY + 1, gps_task_stack, &gps_task_buffer);
+            if (task_handle == NULL) {
+                ESP_LOGE(TAG, "Failed to start GPS task");
+                heap_caps_free(gps_task_stack);
+                gps_task_stack = NULL;
+            } else {
+                ESP_LOGI(TAG, "GPS monitor running in background (PSRAM stack)");
+            }
+        } else {
+            ESP_LOGE(TAG, "Failed to allocate GPS task stack from PSRAM");
+        }
+#endif
+    } else {
+        ESP_LOGE(TAG, "GPS UART init failed");
+    }
+#endif
+
     ESP_LOGI(TAG, "[DIAG] System ready - final memory state");
     check_heap_integrity("Before main loop");
     print_memory_stats();
@@ -41476,9 +41482,8 @@ static bool gps_apply_baud_live(int target)
 	return true;
 }
 
-// Load ONLY the saved GPS baud from NVS. init_gps_uart() runs at the very top of
-// app_main(), long before nvs_settings_load(), so g_wd_gps_baud is still the 9600
-// compile-time default when the autodetect below picks its target. Without this,
+// Load ONLY the saved GPS baud from NVS before autodetect chooses a target.
+// This keeps the UART/module rate aligned even before the full settings load. Without this,
 // a saved 115200 was ignored at boot — and worse, a module that had kept 115200 in
 // its battery-backed RAM got commanded back DOWN to 9600, while nvs_settings_load()
 // later set g_wd_gps_baud=115200 so the UI claimed 115200 with the hardware at 9600.

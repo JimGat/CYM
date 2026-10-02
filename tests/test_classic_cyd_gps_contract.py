@@ -20,17 +20,18 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
         self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+3")
         self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+1")
 
-    def test_classic_gps_task_stack_falls_back_to_internal_ram(self):
-        # CYD2USB has no PSRAM. The UART can initialize correctly but no bytes
-        # are consumed unless the shared GPS task receives an internal-RAM stack.
-        self.assertRegex(
-            MAIN,
-            r"(?s)#if CONFIG_BOARD_HAS_PSRAM\s+"
-            r"gps_task_stack = .*MALLOC_CAP_SPIRAM.*?"
-            r"#else\s+"
-            r"gps_task_stack = .*MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT.*?"
-            r"#endif",
-        )
+    def test_classic_gps_task_starts_after_critical_boot_allocations(self):
+        # The no-PSRAM Classic must reach a complete UI/display boot before adding
+        # the GPS reader task to its tight internal heap. Use the normal dynamic
+        # task API rather than a manually managed internal static-stack buffer.
+        ready = MAIN.index('ESP_LOGI(TAG, "System ready!")')
+        marker = "// Classic deferred GPS startup"
+        self.assertIn(marker, MAIN[ready:])
+        classic_start = MAIN.index(marker, ready)
+        self.assertGreater(classic_start, ready)
+        block = MAIN[classic_start : classic_start + 900]
+        self.assertIn("xTaskCreate(gps_task", block)
+        self.assertNotIn("MALLOC_CAP_INTERNAL", block)
 
     def test_classic_rx_pin_is_input_before_uart2_attach(self):
         # GPIO1 is the Bruce/HaleHound Classic UART2 RX path. Establish input mode
