@@ -1,7 +1,7 @@
 {
-  "name": "CYM Hosyond ES3C35P 3.5 v2.15.55",
-  "version": "v2.15.55",
-  "build": "v2.15.55",
+  "name": "CYM Hosyond ES3C35P 3.5 v2.15.51",
+  "version": "v2.15.51",
+  "build": "v2.15.51",
   "chipFamily": "ESP32-S3",
   "parts": [
     { "path": "../binaries-hosyond-s3-35/bootloader.bin",          "offset": 0      },
