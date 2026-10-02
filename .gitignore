@@ -1,2 +1,8 @@
 CLAUDE.md
 HERMES.md
+
+# ClassicCYDgpsTest diagnostic tool build artifacts
+/tools/ClassicCYDgpsTest/build/
+/tools/ClassicCYDgpsTest/sdkconfig
+/tools/ClassicCYDgpsTest/dependencies.lock
+/tools/ClassicCYDgpsTest/managed_components/
