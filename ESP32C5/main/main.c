@@ -1179,6 +1179,7 @@ static StackType_t *gps_task_stack = NULL;
 
 static esp_err_t init_gps_uart(void);
 static bool parse_gps_nmea(const char *nmea_sentence);
+static bool gps_poll_once(TickType_t wait_ticks);
 static void gps_task(void *arg);
 static void gps_set_update_rate_hz(int hz);  // defined near GPS impl; used earlier in wardrive task
 static bool gps_apply_baud_live(int target); // defined near GPS impl; used by the Options screen
@@ -7704,18 +7705,14 @@ void app_main(void)
 
 #if BOARD_HAS_GPS
     // Classic deferred GPS startup: its no-PSRAM boot path is now complete.
-    // Use the normal FreeRTOS allocator on Classic instead of manually owning an
-    // internal static stack. PSRAM boards retain the established external stack.
+    // Classic reuses the main task; PSRAM boards retain the external task stack.
     if (init_gps_uart() == ESP_OK) {
         ESP_LOGI(TAG, "GPS UART initialized on TX=%d RX=%d", GPS_TX_PIN, GPS_RX_PIN);
 #if defined(CONFIG_BOARD_CYD2USB)
-        BaseType_t gps_created = xTaskCreate(gps_task, "gps_task", 4096, NULL,
-                                             tskIDLE_PRIORITY + 1, NULL);
-        if (gps_created != pdPASS) {
-            ESP_LOGE(TAG, "Failed to start GPS task on Classic");
-        } else {
-            ESP_LOGI(TAG, "GPS monitor running in background (internal task stack)");
-        }
+        // The no-PSRAM Classic resets when the dedicated reader task is activated,
+        // regardless of startup timing or GPS input. Reuse the established main
+        // task instead; its loop polls UART2 without allocating another stack.
+        ESP_LOGI(TAG, "Classic GPS will be polled from the main loop");
 #else
         gps_task_stack = (StackType_t *)heap_caps_malloc(
             4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -9793,6 +9790,11 @@ void app_main(void)
         } else {
             ESP_LOGD(TAG, "[MAIN_LOOP] sd_spi_mutex timeout (10ms) at %llu us", sd_spi_try_us);
         }
+
+#if defined(CONFIG_BOARD_CYD2USB) && BOARD_HAS_GPS
+        // Classic has no dedicated GPS task: drain UART2 from the established main task.
+        gps_poll_once(0);
+#endif
 
         // Flush GPS position to NVS from main-task context (throttled inside the function).
         // nvs_commit() briefly disables the flash cache; calling it from a background task
@@ -41696,49 +41698,60 @@ static bool parse_gps_nmea(const char *nmea_sentence)
 	return false;
 }
 
+static bool gps_poll_once(TickType_t wait_ticks)
+{
+	static int64_t  s_dbg_last_us = 0;
+	static uint32_t s_dbg_bytes   = 0;
+	static uint16_t s_dbg_gga     = 0;
+	static uint16_t s_dbg_rmc     = 0;
+	static char     s_dbg_line[80] = "";
+	// Reuse the existing receive buffer for partial frames; no new task/heap buffer.
+	static size_t used = 0;
+	uint8_t chunk[128];
+	int len = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), wait_ticks);
+	if (len > 0) {
+		g_gps_uart_data_seen = true;
+		s_dbg_bytes += (uint32_t)len;
+		for (int i = 0; i < len; ++i) {
+			char c = (char)chunk[i];
+			if (c == 0x24) { used = 0; gps_rx_buffer[used++] = c; }
+			else if (c == 0x0d || c == 0x0a) {
+				if (used > 0) {
+					gps_rx_buffer[used] = 0;
+					strncpy(s_dbg_line, gps_rx_buffer, sizeof(s_dbg_line) - 1);
+					s_dbg_line[sizeof(s_dbg_line) - 1] = 0;
+					if (strstr(gps_rx_buffer, "GGA")) s_dbg_gga++;
+					else if (strstr(gps_rx_buffer, "RMC")) s_dbg_rmc++;
+					parse_gps_nmea(gps_rx_buffer);
+					used = 0;
+				}
+			} else if (used > 0) {
+				if (used < sizeof(gps_rx_buffer) - 1) gps_rx_buffer[used++] = c;
+				else used = 0;
+			}
+		}
+	}
+	int64_t now = esp_timer_get_time();
+	if (now - s_dbg_last_us >= 5000000) {
+		s_dbg_last_us = now;
+		uint32_t fixes = g_gga_parses; g_gga_parses = 0;
+		if (g_gps_debug_serial)
+			ESP_LOGI(TAG, "[GPSDBG] baud=%d hz=%d bytes5s=%lu task_gga=%u rmc=%u FIX/5s=%lu sats=%d valid=%d fix=%.5f,%.5f last=[%s]",
+			         s_gps_applied_baud, s_gps_applied_hz, (unsigned long)s_dbg_bytes,
+			         (unsigned)s_dbg_gga, (unsigned)s_dbg_rmc, (unsigned long)fixes,
+			         current_gps.satellites, (int)current_gps.valid,
+			         (double)current_gps.latitude, (double)current_gps.longitude, s_dbg_line);
+		s_dbg_bytes = 0; s_dbg_gga = 0; s_dbg_rmc = 0;
+		s_dbg_line[0] = '\0';
+	}
+	return len > 0;
+}
+
 static void gps_task(void *arg)
 {
 	(void)arg;
-	static int64_t  s_dbg_last_us = 0;
-	static uint32_t s_dbg_bytes   = 0;
-	static uint16_t s_dbg_gga     = 0;   // [GPSDBG] GGA (position) sentences per window
-	static uint16_t s_dbg_rmc     = 0;   // [GPSDBG] RMC (time/speed) sentences per window
-	static char     s_dbg_line[80] = "";
 	for (;;) {
-		int len = uart_read_bytes(GPS_UART_NUM, (uint8_t *)gps_rx_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
-		if (len > 0) {
-			g_gps_uart_data_seen = true;   // at least one byte received — module is wired up
-			s_dbg_bytes += (uint32_t)len;  // [GPSDBG] throughput accounting
-			gps_rx_buffer[len] = '\0';
-			char *line = strtok(gps_rx_buffer, "\r\n");
-			while (line != NULL) {
-				if (line[0] == '$') {       // remember last well-formed sentence for the debug line
-					strncpy(s_dbg_line, line, sizeof(s_dbg_line) - 1);
-					s_dbg_line[sizeof(s_dbg_line) - 1] = '\0';
-					if (strstr(line, "GGA")) s_dbg_gga++;        // position-fix cadence
-					else if (strstr(line, "RMC")) s_dbg_rmc++;   // time/speed cadence
-				}
-				parse_gps_nmea(line);
-				line = strtok(NULL, "\r\n");
-			}
-		}
-		// GPS status heartbeat (every 5 s). bytes/s>0 with last=[] (no valid $G
-		// sentence) means our UART baud does not match the module — the auto-detect
-		// at boot should prevent this, but it is logged for field diagnosis.
-		// gga/rmc = sentences in the window; divide by 5 for effective Hz.
-		int64_t now = esp_timer_get_time();
-		if (now - s_dbg_last_us >= 5000000) {
-			s_dbg_last_us = now;
-			uint32_t fixes = g_gga_parses; g_gga_parses = 0;   // TRUE fix cadence (both readers)
-			if (g_gps_debug_serial)
-				ESP_LOGI(TAG, "[GPSDBG] baud=%d hz=%d bytes5s=%lu task_gga=%u rmc=%u FIX/5s=%lu sats=%d valid=%d fix=%.5f,%.5f last=[%s]",
-				         s_gps_applied_baud, s_gps_applied_hz, (unsigned long)s_dbg_bytes,
-				         (unsigned)s_dbg_gga, (unsigned)s_dbg_rmc, (unsigned long)fixes,
-				         current_gps.satellites, (int)current_gps.valid,
-				         (double)current_gps.latitude, (double)current_gps.longitude, s_dbg_line);
-			s_dbg_bytes = 0; s_dbg_gga = 0; s_dbg_rmc = 0;
-			s_dbg_line[0] = '\0';
-		}
+		gps_poll_once(pdMS_TO_TICKS(200));
 		vTaskDelay(pdMS_TO_TICKS(100));
 	}
 }

@@ -20,18 +20,17 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
         self.assertRegex(BOARD, r"BOARD_GPS_TX_GPIO\s+3")
         self.assertRegex(BOARD, r"BOARD_GPS_RX_GPIO\s+1")
 
-    def test_classic_gps_task_starts_after_critical_boot_allocations(self):
-        # The no-PSRAM Classic must reach a complete UI/display boot before adding
-        # the GPS reader task to its tight internal heap. Use the normal dynamic
-        # task API rather than a manually managed internal static-stack buffer.
+    def test_classic_gps_uses_main_loop_polling_without_a_reader_task(self):
+        # Activating a dedicated GPS task resets the no-PSRAM Classic even when
+        # GPS is disconnected. Classic must poll UART2 from the established main
+        # loop; PSRAM boards retain the shared background task.
         ready = MAIN.index('ESP_LOGI(TAG, "System ready!")')
-        marker = "// Classic deferred GPS startup"
-        self.assertIn(marker, MAIN[ready:])
-        classic_start = MAIN.index(marker, ready)
-        self.assertGreater(classic_start, ready)
-        block = MAIN[classic_start : classic_start + 900]
-        self.assertIn("xTaskCreate(gps_task", block)
-        self.assertNotIn("MALLOC_CAP_INTERNAL", block)
+        main_loop = MAIN.index("while (1) {", ready)
+        classic = MAIN.index("#if defined(CONFIG_BOARD_CYD2USB)", ready)
+        block = MAIN[classic : classic + 900]
+        self.assertNotIn("xTaskCreate(gps_task", block)
+        self.assertIn("Classic GPS will be polled from the main loop", block)
+        self.assertIn("gps_poll_once(0);", MAIN[main_loop:])
 
     def test_classic_rx_pin_is_input_before_uart2_attach(self):
         # GPIO1 is the Bruce/HaleHound Classic UART2 RX path. Establish input mode
