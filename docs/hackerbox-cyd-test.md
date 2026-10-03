@@ -19,3 +19,5 @@ User explicitly clarified physical top = ESP antenna, bottom = USB-C; 180-degree
 Beta: `https://jimgat.github.io/CYM/beta/?beta=1&board=hackerbox-cyd` (deployment pending). Existing root UI requires deployment before it understands new parameters/boards. Registered IDs only; unknown or unavailable IDs fall back to NM-CYD-C5. Selecting a board never connects/flashes automatically.
 
 Physical feedback: v2.15.59 looks OK after extended power-off. Keep LCD clock at 40MHz; no further display tuning planned without recurring symptoms. Unplug all power for about 10 seconds after panel configuration updates before evaluating ghosting. Calibration success remains to be confirmed.
+
+Jim confirms calibration completed and touch alignment is good on v2.15.59. Reboot persistence has not been explicitly confirmed.

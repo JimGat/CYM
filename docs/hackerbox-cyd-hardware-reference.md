@@ -35,3 +35,7 @@ Jim reports ESPConnect flash ID `0x1660C4`, flash manufacturer `0xC4`, 4MB flash
 ## v2.15.59 physical display feedback
 
 Jim reports the display looks good on v2.15.59. Slight raster/ghosting was initially observed, but after an extended complete power-off he reports it looks OK. Keep the existing 40MHz LCD SPI clock and initialization unchanged; no timing/VCOM fix is established or required from this observation. Recommend complete power removal for about 10 seconds after panel-setting changes. This is a reported recovery, not proof of its mechanism. Touch calibration completion/persistence remain unconfirmed.
+
+## Touch calibration acceptance
+
+Jim confirms calibration/alignment completed successfully and touch is good on v2.15.59. Display mapping and calibrated touch alignment are physically accepted for this sample. Calibration persistence across reboot and other peripherals remain unconfirmed; do not imply full-board qualification.
