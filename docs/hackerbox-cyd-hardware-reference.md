@@ -31,3 +31,7 @@ Jim reports ESPConnect identified this sample as `ESP32-D0WD-V3 (revision 3)`. T
 ## Additional physical report
 
 Jim reports ESPConnect flash ID `0x1660C4`, flash manufacturer `0xC4`, 4MB flash, and no PSRAM detected. Preserve these as reported readouts without inferring a vendor name. v2.15.57 physical test: rotation and colors look correct, remaining orientation/mirror issue. v2.15.58 candidate changes only HackerBox X mirror, from ON/ON to OFF/ON; physical confirmation pending.
+
+## v2.15.59 physical display feedback
+
+Jim reports the display looks good on v2.15.59. Slight raster/ghosting was initially observed, but after an extended complete power-off he reports it looks OK. Keep the existing 40MHz LCD SPI clock and initialization unchanged; no timing/VCOM fix is established or required from this observation. Recommend complete power removal for about 10 seconds after panel-setting changes. This is a reported recovery, not proof of its mechanism. Touch calibration completion/persistence remain unconfirmed.
