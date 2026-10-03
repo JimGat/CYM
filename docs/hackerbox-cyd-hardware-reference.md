@@ -6,7 +6,7 @@ Hardware supplied in HackerBox #0131 AMBERJACK, identified by Jim Gatwood. Hacke
 
 ![Guition CYD rear detail, photographed by Jim Gatwood](https://raw.githubusercontent.com/JimGat/CYM/Jimgat_Dev/docs/assets/hackerbox-cyd/guition-v1.4-back.jpg)
 
-Original photograph: Jim Gatwood; supplied for project documentation and board-reference contribution. Close-up shows `Guition`, `V1.4`, `TF`, and a dotted `2026` marking. User initially transcribed the numeric marking as `2626`; photo reads `2026`. Meaning of that marking is unverified; do not assert manufacture date.
+Original photograph: Jim Gatwood; supplied for project documentation and board-reference contribution. Board markings are `Guition`, `V1.4`, `TF`, and `2626`, confirmed by Jim inspecting the physical board. An earlier photographic reading of `2026` was incorrect. The meaning of `2626` is unverified; do not assert a manufacture date.
 
 Visible connector silk: P3 has GND/IO35/IO22/IO21 labels; CN1 has GND/IO22/IO27/3.3V labels. These are photographed labels, NOT electrically verified pinout measurements. The photo shows an ESP-32S-labelled module, antenna connector, LED1, and TF-card socket. LCD controller is not visible or identified.
 
