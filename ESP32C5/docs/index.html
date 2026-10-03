@@ -545,10 +545,16 @@
       const urlParams  = new URLSearchParams(window.location.search);
       const betaUnlock = urlParams.get("beta") === "1";
 
+      // Accept only registered, visible board IDs; never URL-derived paths.
+      const requestedBoard = urlParams.get("board");
+      const initialBoard = Object.prototype.hasOwnProperty.call(BOARDS, requestedBoard)
+        && (betaUnlock || DEFAULT_BOARD_IDS.includes(requestedBoard))
+        ? requestedBoard : "nm-cyd-c5";
+
       const state = {
         manifest:          null,
         channel:           betaUnlock ? "dev" : "stable",
-        board:             "nm-cyd-c5",
+        board:             initialBoard,
         port:             null,
         onDisconnect:     null,
         esploader:        null,
