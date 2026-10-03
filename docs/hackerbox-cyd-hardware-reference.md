@@ -23,3 +23,7 @@ All seven profiles built; 313 host tests and sanitizer calibration tests passed.
 Proposed ValleyTech entry: Guition / ESP32 / ESP32 2432S028 / V1.4, distributed in HackerBox 0131 AMBERJACK. Include rear photograph and distinguish sample observations from established pinout/controller facts. Do not identify this as ST7789 or assert equivalence to JC2432W328 without exact-board documentation or hardware proof.
 
 Source: https://hackerboxes.com/products/hackerbox-0131-amberjack
+
+## Silicon identification
+
+Jim reports ESPConnect identified this sample as `ESP32-D0WD-V3 (revision 3)`. This is a user-provided tool readout, not independently captured here. Silicon revision 3 and PCB V1.4 are separate identifiers. This readout does not identify the LCD controller, flash capacity, or PSRAM.
