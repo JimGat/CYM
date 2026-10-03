@@ -1,0 +1,2 @@
+# Inherits Classic hardware capabilities; experimental panel only.
+CONFIG_BOARD_HACKERBOX_CYD=y

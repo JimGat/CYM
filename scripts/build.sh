@@ -63,6 +63,13 @@ case "$BOARD" in
 
     # ── ESP32 boards ─────────────────────────────────────────────────────────
 
+    hackerbox-cyd)
+        SOC_DIR="$REPO_ROOT/ESP32"
+        TARGET="esp32"
+        BUILD_DIR="build_hackerbox-cyd"
+        SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cyd2usb;sdkconfig.defaults.hackerbox-cyd"
+        ;;
+
     cyd-2432s028|cyd2usb)
         # ESP32-2432S028 classic CYD — output: CYM-CYD-2432S028.bin
         # "cyd2usb" is an alias kept for backwards compatibility.

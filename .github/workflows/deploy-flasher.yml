@@ -40,7 +40,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Checkout stable assets
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: stable-site
+
       - name: Build and verify site
+        working-directory: stable-site
         run: |
           mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-pancake-c5 _site/binaries-ws-c5-35 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35
           cp ESP32C5/docs/index.html _site/index.html
@@ -83,6 +90,23 @@ jobs:
           test -s _site/binaries-hosyond-s3-35/CYM-hosyond-s3-35-full.bin
           echo "--- site contents ---"
           find _site -type f | sort
+
+      - name: Add isolated Beta flasher UI
+        run: |
+          cp -a stable-site/_site _site
+          mkdir -p _site/beta
+          cp -a stable-site/_site/. _site/beta/
+          cp ESP32C5/docs/index.html _site/beta/index.html
+          test -s _site/beta/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          page = Path('_site/beta/index.html')
+          text = page.read_text()
+          text = text.replace('const betaUnlock = urlParams.get("beta") === "1";',
+                              'const betaUnlock = true; // isolated Beta deployment')
+          assert '"hackerbox-cyd"' in text
+          page.write_text(text)
+          PY
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

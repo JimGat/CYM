@@ -1,0 +1,20 @@
+{
+  "name": "Cheap Yellow Monster - HackerBox CYD (experimental)",
+  "version": "v2.15.57",
+  "build": "v2.15.57",
+  "chipFamily": "ESP32",
+  "parts": [
+    {
+      "path": "../binaries-hackerbox-cyd/bootloader.bin",
+      "offset": 4096
+    },
+    {
+      "path": "../binaries-hackerbox-cyd/partition-table.bin",
+      "offset": 32768
+    },
+    {
+      "path": "../binaries-hackerbox-cyd/CYM-HackerBox-CYD.bin",
+      "offset": 65536
+    }
+  ]
+}

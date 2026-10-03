@@ -9,7 +9,7 @@ set(EXTRA_COMPONENT_DIRS "../ESP32C5/components")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 
 # ── Single source of truth for firmware version ──────────────────────────────
-set(PROJECT_VER "v2.15.56")
+set(PROJECT_VER "v2.15.57")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -39,7 +39,13 @@ target_compile_definitions(${lwip_lib} PRIVATE IP_FORWARD_ALLOW_TX_ON_RX_NETIF=1
 # The internal build artifact is always CYM-CYD2USB.bin (project name).
 # It is copied to the export dir under the proper user-facing OUTPUT_BIN_NAME.
 # CONFIG_* variables are available after project() in ESP-IDF CMake.
-if(CONFIG_BOARD_CYD2USB)
+if(CONFIG_BOARD_HACKERBOX_CYD)
+    set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-hackerbox-cyd")
+    set(OUTPUT_BIN_NAME "CYM-HackerBox-CYD")
+    set(FLASH_SIZE "4MB")
+    set(FLASH_FREQ "40m")
+    set(BOOTLOADER_OFFSET "0x1000")
+elseif(CONFIG_BOARD_CYD2USB)
     set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-cyd-2432s028")
     set(OUTPUT_BIN_NAME "CYM-CYD-2432S028")
     set(FLASH_SIZE "4MB")

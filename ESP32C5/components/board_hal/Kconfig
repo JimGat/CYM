@@ -70,6 +70,11 @@ menu "CYM Board Selection"
     # These control #ifdef blocks throughout the firmware for board-specific
     # behaviour. Do not set them directly; they follow BOARD_SELECT.
 
+    config BOARD_HACKERBOX_CYD
+        bool "HackerBox CYD experimental panel mapping"
+        depends on BOARD_CYD2USB
+        default n
+
     config BOARD_HAS_PSRAM
         bool
         default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40

@@ -988,7 +988,11 @@ typedef enum { WD_RADIO_WIFI_ONLY = 0, WD_RADIO_BLE_ONLY } wd_radio_mode_t;
 #define RID_MSG_PACK         0xF
 
 // Touch calibration NVS
+#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+#define TOUCH_CAL_NVS_NS "touch_hb"
+#else
 #define TOUCH_CAL_NVS_NS      "touch_cal"
+#endif
 #define TOUCH_CAL_MAGIC       ((uint16_t)0xCA15)  // bump: Z1+4095-Z2 compensated pressure replaces Z1-only
 #define TOUCH_CAL_NULL_RADIUS 250   // raw ADC units — reject within this radius of null point
 
@@ -4395,7 +4399,11 @@ static void init_display(void)
 
     const esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = LCD_RST,
+#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+        .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,
+#else
         .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+#endif
         .bits_per_pixel = 16,
     };
 
@@ -4454,7 +4462,12 @@ static void init_display(void)
     // to the PCB portrait orientation. swap_xy (MADCTL MV=1) rotates 90 CW into
     // portrait. Both mirrors flip the resulting portrait 180 degrees so USB is at
     // the bottom (MADCTL MV=1, MX=1, MY=1).
+#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+    // Explicit hardware-test candidate, not controller identification.
+    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, false));
+#else
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
+#endif
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
 #endif
 }
@@ -5516,9 +5529,9 @@ static void cal_wait_release(int nx, int ny)
 // L-shaped bracket indicators are drawn at each corner so the target is unambiguous.
 static const int16_t CAL_PTS[4][2] = {
     {  0,   0},   // 0: Top-Left
-    {239,   0},   // 1: Top-Right
-    {  0, 319},   // 2: Bottom-Left
-    {239, 319},   // 3: Bottom-Right
+    {LCD_H_RES - 1, 0},   // 1: Top-Right
+    {0, LCD_V_RES - 1},   // 2: Bottom-Left
+    {LCD_H_RES - 1, LCD_V_RES - 1},   // 3: Bottom-Right
 };
 
 static void run_touch_calibration(void)
@@ -5634,6 +5647,34 @@ static void run_touch_calibration(void)
             return;
         }
 
+#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+        int dx_x = ((int)raw_x[1] + raw_x[3] - raw_x[0] - raw_x[2]) / 2;
+        int dx_y = ((int)raw_y[1] + raw_y[3] - raw_y[0] - raw_y[2]) / 2;
+        int dy_x = ((int)raw_x[2] + raw_x[3] - raw_x[0] - raw_x[1]) / 2;
+        int dy_y = ((int)raw_y[2] + raw_y[3] - raw_y[0] - raw_y[1]) / 2;
+        bool swapped = abs(dx_y) > abs(dx_x) && abs(dy_x) > abs(dy_y);
+        bool straight = abs(dx_x) > abs(dx_y) && abs(dy_y) > abs(dy_x);
+        int horizontal = swapped ? dx_y : dx_x;
+        int vertical = swapped ? dy_x : dy_y;
+        if ((!swapped && !straight) || abs(horizontal) < 500 || abs(vertical) < 500) {
+            lv_label_set_text(lbl, "Invalid corner samples.\nRelease and retry.");
+            for (int wait = 0; wait < 150; wait++) cal_tick();
+            continue;
+        }
+        int x_lo_edge = swapped ? ((int)raw_x[0] + raw_x[1]) / 2 : ((int)raw_x[0] + raw_x[2]) / 2;
+        int x_hi_edge = swapped ? ((int)raw_x[2] + raw_x[3]) / 2 : ((int)raw_x[1] + raw_x[3]) / 2;
+        int y_lo_edge = swapped ? ((int)raw_y[0] + raw_y[2]) / 2 : ((int)raw_y[0] + raw_y[1]) / 2;
+        int y_hi_edge = swapped ? ((int)raw_y[1] + raw_y[3]) / 2 : ((int)raw_y[2] + raw_y[3]) / 2;
+        // Bounds remain raw-axis ordered; inversion is screen-axis ordered.
+        touch_cal_t cal = {
+            .x_min = x_lo_edge < x_hi_edge ? x_lo_edge : x_hi_edge,
+            .x_max = x_lo_edge > x_hi_edge ? x_lo_edge : x_hi_edge,
+            .y_min = y_lo_edge < y_hi_edge ? y_lo_edge : y_hi_edge,
+            .y_max = y_lo_edge > y_hi_edge ? y_lo_edge : y_hi_edge,
+            .invert_x = horizontal < 0, .invert_y = vertical < 0,
+            .swap_xy = swapped, .null_x = 0, .null_y = 0,
+        };
+#else
         // Compute calibration using column/row averages — no extrapolation.
         int x_left  = ((int)raw_x[0] + (int)raw_x[2]) / 2;
         int x_right = ((int)raw_x[1] + (int)raw_x[3]) / 2;
@@ -5650,6 +5691,8 @@ static void run_touch_calibration(void)
         cal.swap_xy  = 0;
         cal.null_x   = (int32_t)null_x;
         cal.null_y   = (int32_t)null_y;
+
+#endif
 
         ESP_LOGI(TAG, "Cal: X%ld-%ld(inv=%d) Y%ld-%ld(inv=%d)",
                  cal.x_min, cal.x_max, cal.invert_x,
