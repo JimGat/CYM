@@ -27,3 +27,7 @@ Source: https://hackerboxes.com/products/hackerbox-0131-amberjack
 ## Silicon identification
 
 Jim reports ESPConnect identified this sample as `ESP32-D0WD-V3 (revision 3)`. This is a user-provided tool readout, not independently captured here. Silicon revision 3 and PCB V1.4 are separate identifiers. This readout does not identify the LCD controller, flash capacity, or PSRAM.
+
+## Additional physical report
+
+Jim reports ESPConnect flash ID `0x1660C4`, flash manufacturer `0xC4`, 4MB flash, and no PSRAM detected. Preserve these as reported readouts without inferring a vendor name. v2.15.57 physical test: rotation and colors look correct, remaining orientation/mirror issue. v2.15.58 candidate changes only HackerBox X mirror, from ON/ON to OFF/ON; physical confirmation pending.

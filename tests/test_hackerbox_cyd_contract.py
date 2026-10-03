@@ -14,3 +14,7 @@ class HackerBoxContract(unittest.TestCase):
         s=(ROOT / 'ESP32C5/main/main.c').read_text()
         self.assertIn('{LCD_H_RES - 1, LCD_V_RES - 1}',s)
         self.assertIn('touch_hb',s)
+
+    def test_hackerbox_mirror_candidate(self):
+        s=(ROOT / 'ESP32C5/main/main.c').read_text()
+        self.assertTrue('esp_lcd_panel_mirror(panel_handle, true, false)' in s)

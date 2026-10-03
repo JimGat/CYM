@@ -4468,7 +4468,12 @@ static void init_display(void)
 #else
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
 #endif
+#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+    // Physical tester: antenna at top, USB-C bottom; correct reflection + 180 degrees.
+    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
+#else
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
+#endif
 #endif
 }
 
