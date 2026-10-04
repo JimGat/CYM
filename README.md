@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/Cheep%20Yellow%20Monster.jpg" alt="Cheap Yellow Monster" width="50%"/>
+  <img src="docs/screenshots/Cheap%20Yellow%20Monster.jpg" alt="Cheap Yellow Monster" width="50%"/>
 </p>
 
 ---
