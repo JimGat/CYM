@@ -83,6 +83,10 @@ clean-cyd-2432s028:
 hosyond-s3-28:
 	@scripts/build.sh hosyond-s3-28
 
+.PHONY: ws-s3-5b
+ws-s3-5b:
+	@scripts/build.sh ws-s3-5b
+
 hosyond-s3-35:
 	@scripts/build.sh hosyond-s3-35
 

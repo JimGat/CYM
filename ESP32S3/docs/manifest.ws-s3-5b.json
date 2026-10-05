@@ -1,0 +1,20 @@
+{
+  "name": "CYM Waveshare ESP32-S3-Touch-LCD-5B beta v2.15.62",
+  "version": "v2.15.62",
+  "build": "v2.15.62",
+  "chipFamily": "ESP32-S3",
+  "parts": [
+    {
+      "path": "../binaries-ws-s3-5b/ws-s3-5b-bootloader.bin",
+      "offset": 0
+    },
+    {
+      "path": "../binaries-ws-s3-5b/ws-s3-5b-partition-table.bin",
+      "offset": 32768
+    },
+    {
+      "path": "../binaries-ws-s3-5b/CYM-WS-S3-5B.bin",
+      "offset": 65536
+    }
+  ]
+}

@@ -13,6 +13,7 @@
 #pragma once
 
 #include "sdkconfig.h"
+#include <stdbool.h>
 
 // ── Board header dispatch ────────────────────────────────────────────────────
 
@@ -26,6 +27,8 @@
 #  include "boards/pancake_c5.h"
 #elif defined(CONFIG_BOARD_CYD2USB)
 #  include "boards/cyd2usb.h"
+#elif defined(CONFIG_BOARD_WS_S3_5B)
+#  include "boards/ws_s3_5b.h"
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)
 #  include "boards/hosyond_s3_35.h"
 #elif defined(CONFIG_BOARD_HOSYOND_S3_28)
@@ -153,6 +156,12 @@
 // ── API ───────────────────────────────────────────────────────────────────────
 #ifdef __cplusplus
 extern "C" {
+#endif
+
+#if defined(CONFIG_BOARD_WS_S3_5B)
+#include "esp_err.h"
+// Expander CS on the dedicated SD bus; implementation in the S3 adapter.
+esp_err_t board_sd_set_selected(bool selected);
 #endif
 
 // Log board identification and capability summary to ESP_LOGI at startup.

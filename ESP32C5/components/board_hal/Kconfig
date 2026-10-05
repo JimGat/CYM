@@ -37,6 +37,13 @@ menu "CYM Board Selection"
                 Display+touch share VSPI (SPI3_HOST); SD card on separate HSPI
                 (SPI2_HOST). RGB LED active-LOW common-anode on GPIO 4/16/17.
 
+        config BOARD_WS_S3_5B
+            bool "Waveshare ESP32-S3-Touch-LCD-5B (1024x600 RGB) [BETA]"
+            depends on IDF_TARGET_ESP32S3
+            help
+                GT911 touch, CH422G, PCF85063 RTC, 16MB flash, 8MB OPI PSRAM.
+                GPIO0 is RGB data, no application BOOT button or verified GPS UART.
+
         config BOARD_HOSYOND_S3_35
             bool "Hosyond 3.5\" ES3C35P (ESP32-S3, ST77922 QSPI) [Phase 4]"
             help
@@ -77,7 +84,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_PSRAM
         bool
-        default y if BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
+        default y if BOARD_WS_S3_5B || BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
             Board has PSRAM. Enables large buffer allocations, LVGL PSRAM draw
             buffers, and the 1 MB captive-portal HTML buffer.
@@ -91,7 +98,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_DUAL_CORE
         bool
-        default y if BOARD_CYD2USB || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
+        default y if BOARD_WS_S3_5B || BOARD_CYD2USB || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40
         help
             Dual-core SoC (ESP32 / ESP32-S3). When set, the nRF24 jammer task
             should be pinned to Core 1 via xTaskCreatePinnedToCore to isolate it
@@ -185,7 +192,7 @@ menu "CYM Board Selection"
 
     config BOARD_HAS_RTC
         bool
-        default y if BOARD_WS_C5_28
+        default y if BOARD_WS_S3_5B || BOARD_WS_C5_28
         help
             PCF85063A real-time clock (Waveshare only).
 
@@ -218,6 +225,10 @@ menu "CYM Board Selection"
             Display uses 4-data-line QSPI (ST77922) instead of standard SPI.
             No DC pin — command bytes are embedded in the QSPI protocol.
             BOARD_LCD_D0..D3 carry the data lines; BOARD_LCD_DC is -1.
+
+    config BOARD_LCD_IS_RGB
+        bool
+        default y if BOARD_WS_S3_5B
 
     # ── Touch driver selection ─────────────────────────────────────────────────
 

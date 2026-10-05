@@ -107,7 +107,7 @@ class PancakePackagingContract(unittest.TestCase):
         self.assertIn("pancake-c5)", text("scripts/build.sh"))
         self.assertIn("all-boards: nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 cyd-2432s028 hosyond-s3-35", text("Makefile"))
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.59")', text(rel), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.62")', text(rel), rel)
 
     def test_cmake_exports_pancake_package(self):
         c = text("ESP32C5/CMakeLists.txt")
@@ -121,7 +121,7 @@ class PancakePackagingContract(unittest.TestCase):
     def test_manifest_and_beta_flasher(self):
         manifest = json.loads(text("ESP32C5/docs/manifest.pancake-c5.json"))
         self.assertIn("Pancake-C5", manifest["name"])
-        self.assertIn("v2.15.59", manifest["name"])
+        self.assertIn("v2.15.62", manifest["name"])
         parts = manifest.get("parts") or manifest["builds"][0]["parts"]
         self.assertEqual({p["offset"] for p in parts}, {0x2000, 0x8000, 0x10000})
         f = text("ESP32C5/docs/index.html")

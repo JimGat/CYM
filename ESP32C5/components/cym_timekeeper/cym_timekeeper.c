@@ -3,6 +3,7 @@
 // Uses monotonic time for intervals, wall clock for calendar/NTP.
 
 #include "cym_timekeeper.h"
+#include "cym_rtc_validity.h"
 #include "pcf85063.h"
 #include "board_hal.h"
 #include "esp_log.h"
@@ -260,9 +261,10 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus)
                 s_rtc_valid = true;
 
                 if (s_rtc_trusted) {
-                    // RTC was previously GPS-disciplined — restore clock
+                    // RTC was previously GPS/NTP-disciplined: restore only continuous UTC.
                     time_t rtc_epoch = timegm(&rtc_time);
-                    if (rtc_epoch != (time_t)-1) {
+                    if (pcf85063_startup_epoch_valid((int64_t)rtc_epoch,
+                                                      (int64_t)s_last_gps_sync_epoch)) {
                         // Check if system clock is clearly wrong
                         time_t now = time(NULL);
                         struct tm now_tm;
@@ -285,12 +287,19 @@ esp_err_t cym_timekeeper_init(i2c_master_bus_handle_t bus)
                         s_uncertainty_us = s_holdover_base_uncertainty_us;
                         ESP_LOGI(TAG, "Clock restored from trusted RTC (holdover %llu s)",
                                  (unsigned long long)elapsed_s);
+                    } else {
+                        s_rtc_valid = false;
+                        s_rtc_trusted = false;
+                        s_persist_pending = true;
+                        ESP_LOGW(TAG, "RTC startup UTC unreasonable or behind trusted discipline");
                     }
                 } else {
-                    ESP_LOGI(TAG, "RTC valid but not GPS-trusted — staying UNSYNCED");
+                    ESP_LOGI(TAG, "RTC valid but not discipline-trusted - staying UNSYNCED");
                 }
             } else {
                 s_rtc_valid = false;
+                s_rtc_trusted = false;
+                s_persist_pending = true;
                 if (os_flag) {
                     ESP_LOGW(TAG, "RTC oscillator stopped — time invalid");
                 } else if (ret != ESP_OK) {

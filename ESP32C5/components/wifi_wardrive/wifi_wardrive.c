@@ -19,6 +19,20 @@
 #include <stdlib.h>
 
 static const char *TAG = "wifi_wardrive";
+#if defined(CONFIG_BOARD_WS_S3_5B)
+// Dedicated bus: expander CS spans the entire host command/data transaction.
+// SDSPI has no GPIO CS; its internal CS toggles are intentionally no-ops.
+static SemaphoreHandle_t ws_s3_sd_command_lock;
+static esp_err_t ws_s3_sd_transaction(int slot, sdmmc_command_t *cmd) {
+    if (!ws_s3_sd_command_lock || xSemaphoreTake(ws_s3_sd_command_lock, pdMS_TO_TICKS(2500)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    esp_err_t err = board_sd_set_selected(true);
+    if (err != ESP_OK) {xSemaphoreGive(ws_s3_sd_command_lock);return err;}
+    err = sdspi_host_do_transaction(slot, cmd);
+    esp_err_t release = board_sd_set_selected(false);
+    xSemaphoreGive(ws_s3_sd_command_lock);
+    return err == ESP_OK ? release : err;
+}
+#endif
 
 // ✅ Mutex for shared SPI bus (SD card and display)
 extern SemaphoreHandle_t sd_spi_mutex;
@@ -266,8 +280,12 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
      * block) — and send 10 bytes of 0xFF = 80 clock pulses. The SPI master driver
      * arbitrates the bus correctly with any other device sharing it.
      * On failure (bus not yet init'd on very early calls) the step is skipped. */
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ESP_ERROR_CHECK_WITHOUT_ABORT(board_sd_set_selected(false));
+#else
     gpio_set_direction(SD_CS_PIN, GPIO_MODE_OUTPUT);
     gpio_set_level(SD_CS_PIN, 1);   // CS HIGH before we start clocking
+#endif
     {
         spi_device_handle_t hclk;
         spi_device_interface_config_t clk_cfg = {
@@ -309,6 +327,11 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
      * skips the CMD59 step and lets those cards initialise. Gated to CYD2USB only - the
      * ESP32-C5 boards keep CRC enabled on their proven-good SD path. */
     host.flags |= SDMMC_HOST_FLAG_SPI_IGNORE_DATA_CRC;
+#endif
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    if (!ws_s3_sd_command_lock) ws_s3_sd_command_lock = xSemaphoreCreateMutex();
+    if (!ws_s3_sd_command_lock) return ESP_ERR_NO_MEM;
+    host.do_transaction = ws_s3_sd_transaction;
 #endif
     host.command_timeout_ms = 2000; /* allow slow/fresh cards up to 2 s for CMD0 response */
     ESP_LOGI(TAG, "[SD]   SPI Host: %d, Frequency: %lu kHz, Flags: 0x%x", host.slot, (unsigned long)host.max_freq_khz, host.flags);

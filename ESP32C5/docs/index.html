@@ -518,6 +518,18 @@
           bootOffset: "0x2000", // ESP32-C5
           beta:    true,
         },
+        "ws-s3-5b": {
+          label: "Waveshare S3 Touch LCD 5B",
+          chip: "ESP32-S3", soc: "ESP32S3",
+          desc: "Dev beta only. Waveshare ESP32-S3-Touch-LCD-5B, 1024x600 RGB, capacitive touch, PCF85063 RTC (coin cell required). 16 MB flash / 8 MB OPI PSRAM. No verified GPS UART. Hardware validation pending.",
+          binDir: "binaries-ws-s3-5b",
+          appBin: "CYM-WS-S3-5B.bin",
+          fullBin: "CYM-WS-S3-5B-full.bin",
+          bootBin: "ws-s3-5b-bootloader.bin",
+          partBin: "ws-s3-5b-partition-table.bin",
+          manifest: "docs/manifest.ws-s3-5b.json",
+          bootOffset: "0x0000", beta: true,
+        },
         "hosyond-s3-35": {
           label:   "Hosyond ES3C35P 3.5",
           chip:    "ESP32-S3",
@@ -570,7 +582,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.14.0"; // add experimental WS-C5-35 target
+      const PAGE_VERSION    = "2.14.1"; // add experimental WS-S3-5B target
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -625,8 +637,10 @@
         ui.dlFullName.textContent = bd.fullBin;
         ui.dlApp.href            = `${binUrl}/${bd.appBin}`;
         ui.dlAppName.textContent  = bd.appBin;
-        ui.dlBoot.href           = `${binUrl}/bootloader.bin`;
-        ui.dlPart.href           = `${binUrl}/partition-table.bin`;
+        ui.dlBoot.href           = `${binUrl}/${bd.bootBin || "bootloader.bin"}`;
+        ui.dlBoot.querySelector("code").textContent = bd.bootBin || "bootloader.bin";
+        ui.dlPart.href           = `${binUrl}/${bd.partBin || "partition-table.bin"}`;
+        ui.dlPart.querySelector("code").textContent = bd.partBin || "partition-table.bin";
         ui.dlManifest.href       = raw(branch, bd.soc, bd.manifest);
         ui.dlManifestName.textContent = bd.manifest.replace("docs/", "");
       };
@@ -1063,6 +1077,7 @@
 
       // ── Channel / Board switching ─────────────────────────────────────────────
       const switchChannel = (ch) => {
+        if (BOARDS[state.board]?.beta) ch = "dev";
         if (ch === state.channel) return;
         state.channel  = ch;
         state.manifest = null;
@@ -1078,6 +1093,11 @@
       const switchBoard = (board) => {
         if (board === state.board) return;
         state.board    = board;
+        if (BOARDS[board]?.beta) {
+          state.channel = "dev";
+          document.querySelectorAll("[data-ch]").forEach(b => b.classList.toggle("active", b.dataset.ch === "dev"));
+          ui.devWarning.style.display = "";
+        }
         state.manifest = null;
         document.querySelectorAll("[data-board]").forEach(b => b.classList.toggle("active", b.dataset.board === board));
         updateBetaBoardWarning();

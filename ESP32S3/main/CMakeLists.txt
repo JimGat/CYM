@@ -2,6 +2,11 @@
 # narrow ES3C35P display/touch transport adapter. No S3 application fork.
 set(C5_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/../../ESP32C5/main")
 
+set(S3_BOARD_PORT "hosyond_s3_35_port.c")
+if(CONFIG_BOARD_WS_S3_5B)
+    set(S3_BOARD_PORT "ws_s3_5b_port.c")
+endif()
+
 idf_component_register(
     SRCS
         "${C5_MAIN}/attack_handshake.c"
@@ -21,12 +26,12 @@ idf_component_register(
         "${C5_MAIN}/sd_error_handler.c"
         "${C5_MAIN}/chameleon_ble.c"
         "${C5_MAIN}/chameleon_t55xx.c"
-        "hosyond_s3_35_port.c"
+        "${S3_BOARD_PORT}"
     INCLUDE_DIRS
         "${C5_MAIN}"
         "."
     REQUIRES
-        heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi
+        esp_mm heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi
         board_hal esp_lcd_st77922 esp_lcd esp_timer freertos log nvs_flash fatfs
         sdmmc lvgl led_strip
         cym_timekeeper

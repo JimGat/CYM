@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.16)
 #     build
 # ─────────────────────────────────────────────────────────────────────────────
 
-set(PROJECT_VER "v2.15.59")
+set(PROJECT_VER "v2.15.62")
 
 # S3-specific components first (esp_lcd_st77922), then shared C5 components.
 # Ordering matters: ESP-IDF uses the first occurrence when two directories
@@ -46,7 +46,11 @@ project(CYM-S3)
 
 # ===== POST-BUILD: board-specific export directory and binary name =====
 # Each board gets its own output directory so binaries never overwrite each other.
-if(CONFIG_BOARD_HOSYOND_S3_28)
+if(CONFIG_BOARD_WS_S3_5B)
+    set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-ws-s3-5b")
+    set(OUTPUT_BIN_NAME "CYM-WS-S3-5B")
+    set(FLASH_SIZE "16MB")
+elseif(CONFIG_BOARD_HOSYOND_S3_28)
     set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-hosyond-s3-28")
     set(OUTPUT_BIN_NAME "CYM-hosyond-s3-28")
     set(FLASH_SIZE "16MB")
@@ -60,6 +64,12 @@ else()
     set(OUTPUT_BIN_NAME "CYM-hosyond-s3-35")
     set(FLASH_SIZE "16MB")
 endif()
+set(BOOT_BIN_NAME "bootloader.bin")
+set(PART_BIN_NAME "partition-table.bin")
+if(CONFIG_BOARD_WS_S3_5B)
+    set(BOOT_BIN_NAME "ws-s3-5b-bootloader.bin")
+    set(PART_BIN_NAME "ws-s3-5b-partition-table.bin")
+endif()
 file(MAKE_DIRECTORY "${EXPORT_DIR}")
 
 add_custom_command(
@@ -69,10 +79,10 @@ add_custom_command(
             "${EXPORT_DIR}/${OUTPUT_BIN_NAME}.bin"
     COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin"
-            "${EXPORT_DIR}/bootloader.bin"
+            "${EXPORT_DIR}/${BOOT_BIN_NAME}"
     COMMAND ${CMAKE_COMMAND} -E copy
             "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin"
-            "${EXPORT_DIR}/partition-table.bin"
+            "${EXPORT_DIR}/${PART_BIN_NAME}"
     # Merged flat image — flash at 0x0000 with any single-binary flasher.
     COMMAND python -m esptool --chip esp32s3 merge-bin
             -o "${EXPORT_DIR}/${OUTPUT_BIN_NAME}-full.bin"

@@ -96,6 +96,9 @@ LV_IMG_DECLARE(deedee_img);
 #include "driver/i2c_master.h"
 #endif
 #include "board_hal.h"
+#if defined(CONFIG_BOARD_WS_S3_5B)
+#include "ws_s3_5b_port.h"
+#endif
 #if defined(CONFIG_BOARD_HOSYOND_S3_35)
 #include "hosyond_s3_35_port.h"
 #endif
@@ -565,6 +568,23 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 #define LCD_H_RES       BOARD_LCD_WIDTH      // 240
 #define LCD_V_RES       BOARD_LCD_HEIGHT     // 320
 #define LCD_HOST        BOARD_SPI_HOST       // SPI3_HOST (VSPI)
+
+#elif defined(CONFIG_BOARD_WS_S3_5B)
+// RGB owns its own PSRAM buffers. SPI aliases exist only for shared compile-time helpers.
+#define LCD_MOSI BOARD_SD_MOSI
+#define LCD_MISO BOARD_SD_MISO
+#define LCD_CLK BOARD_SD_SCK
+#define LCD_CS -1
+#define LCD_DC -1
+#define LCD_RST -1
+#define TOUCH_CS -1
+#define LCD_BL_IO -1
+#define LCD_BL_ACTIVE_LEVEL 1
+#define BOOT_BTN_GPIO BOARD_BOOT_BTN_GPIO
+#define GO_DARK_DBL_CLICK_MS 800
+#define LCD_H_RES BOARD_LCD_WIDTH
+#define LCD_V_RES BOARD_LCD_HEIGHT
+#define LCD_HOST BOARD_LCD_HOST
 
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)
 // Hosyond ES3C35P: ST77922 QSPI display is initialized by the S3 port adapter.
@@ -1046,8 +1066,10 @@ static esp_lcd_panel_io_handle_t lcd_io_handle;
 static xpt2046_handle_t touch_handle;
 #elif defined(CONFIG_BOARD_TOUCH_CST3530)
 static esp_lcd_touch_handle_t touch_handle;
-static i2c_master_bus_handle_t s_i2c_bus;
 static esp_io_expander_handle_t s_io_expander;
+#endif
+#if BOARD_TIME_HAS_RTC
+static i2c_master_bus_handle_t s_i2c_bus;
 #endif
 static lv_obj_t *touch_dot;  // DEBUG: visual touch indicator
 static lv_obj_t *title_bar;
@@ -4315,7 +4337,10 @@ static void check_heap_integrity(const char* location) {
 
 static void init_display(void)
 {
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ESP_ERROR_CHECK(ws_s3_5b_display_init(&panel_handle));
+    return;
+#elif defined(CONFIG_BOARD_WS_C5_35)
     ESP_ERROR_CHECK(ws_c5_35_display_init(&panel_handle, &lcd_io_handle));
     ESP_LOGI(TAG, "WS-C5-35 display initialized through board adapter");
     return;
@@ -4799,7 +4824,9 @@ static void nvs_settings_save_wifi_creds(const char *ssid, const char *pass)
 
 static void init_backlight(void)
 {
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ESP_ERROR_CHECK(ws_s3_5b_backlight(true));
+#elif defined(CONFIG_BOARD_WS_C5_35)
     ws_c5_35_backlight_set(255);
     ESP_LOGI(TAG, "Backlight ON (CH32V006 PWM via WS-C5-35 adapter)");
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)
@@ -4917,7 +4944,9 @@ static void screen_set_dimmed(bool dimmed)
         // Turn the PHYSICAL backlight OFF too. disp_on_off() only blanks the panel
         // output; on NM-CYD-C5/CYD2USB (direct GPIO) the LED stays lit → a white screen.
         // Mirror go_dark_enable()'s board-conditional backlight kill.
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+        ws_s3_5b_backlight(false);
+#elif defined(CONFIG_BOARD_WS_C5_35)
         ws_c5_35_backlight_set(0);
 #elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
         if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 0);
@@ -4929,7 +4958,9 @@ static void screen_set_dimmed(bool dimmed)
             esp_lcd_panel_disp_on_off(panel_handle, true);
         }
         // Restore the physical backlight (turned off above on dim).
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+        ws_s3_5b_backlight(true);
+#elif defined(CONFIG_BOARD_WS_C5_35)
         ws_c5_35_backlight_set(255);
 #elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
         if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 255);
@@ -4967,6 +4998,7 @@ static void screen_idle_timer_cb(lv_timer_t *timer)
 
 static void init_boot_button(void)
 {
+#if BOOT_BTN_GPIO >= 0
     gpio_config_t cfg = {
         .pin_bit_mask = (1ULL << BOOT_BTN_GPIO),
         .mode         = GPIO_MODE_INPUT,
@@ -4981,13 +5013,17 @@ static void init_boot_button(void)
     // gpio_hold_dis() releases the latch so gpio_get_level() reads the real pad.
     gpio_hold_dis(BOOT_BTN_GPIO);
     gpio_sleep_sel_dis(BOOT_BTN_GPIO);
+#endif
 }
 
 void go_dark_enable(void)
 {
     if (go_dark_active) return;
     go_dark_active         = true;
-    boot_btn_prev_pressed  = (gpio_get_level(BOOT_BTN_GPIO) == 0);
+    boot_btn_prev_pressed  = false;
+#if BOOT_BTN_GPIO >= 0
+    boot_btn_prev_pressed = (gpio_get_level(BOOT_BTN_GPIO) == 0);
+#endif
     boot_btn_click_count   = 0;
     boot_btn_last_release_ms = 0;
     boot_btn_hold_start_ms = 0;
@@ -4996,7 +5032,9 @@ void go_dark_enable(void)
     if (g_gps_last_known.valid)
         nvs_save_last_gps_force(&g_gps_last_known, true);
     led_set(0, 0, 0);
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ws_s3_5b_backlight(false);
+#elif defined(CONFIG_BOARD_WS_C5_35)
     ws_c5_35_backlight_set(0);
 #elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
     if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 0);
@@ -5011,7 +5049,9 @@ void go_dark_disable(void)
     if (!go_dark_active) return;
     go_dark_active = false;
     if (panel_handle) esp_lcd_panel_disp_on_off(panel_handle, true);
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ws_s3_5b_backlight(true);
+#elif defined(CONFIG_BOARD_WS_C5_35)
     ws_c5_35_backlight_set(255);
 #elif defined(CONFIG_BOARD_HAS_BACKLIGHT_EXPANDER)
     if (s_io_expander) custom_io_expander_set_pwm(s_io_expander, 255);
@@ -5812,7 +5852,10 @@ static void run_touch_calibration(void)
 
 static void init_touch(void)
 {
-#if defined(CONFIG_BOARD_WS_C5_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ESP_ERROR_CHECK(ws_s3_5b_touch_init());
+    touch_cal_loaded = true;
+#elif defined(CONFIG_BOARD_WS_C5_35)
     ESP_ERROR_CHECK(ws_c5_35_touch_init());
     touch_cal_loaded = true;
     ESP_LOGI(TAG, "WS-C5-35 FT6336 touch initialized by board adapter");
@@ -5907,7 +5950,18 @@ static void init_touch(void)
 #endif
 }
 
-#if defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+static void init_i2c_bus(void)
+{
+    i2c_master_bus_config_t cfg = {
+        .i2c_port = I2C_NUM_0, .sda_io_num = BOARD_I2C_SDA, .scl_io_num = BOARD_I2C_SCL,
+        .clk_source = I2C_CLK_SRC_DEFAULT, .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&cfg, &s_i2c_bus));
+    ESP_ERROR_CHECK(ws_s3_5b_bus_init(s_i2c_bus));
+}
+#elif defined(CONFIG_BOARD_WS_C5_28)
 // Initialize the shared I2C bus (GPIO0/GPIO1) and bring up the CH32V003 IO expander.
 // Must be called before init_touch() and init_backlight() on WS-C5-28.
 static void init_i2c_bus(void)
@@ -7424,7 +7478,12 @@ void app_main(void)
     ESP_LOGI(TAG, "Screenshot worker not started (no PSRAM on this board)");
 #endif
 
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    // Full logical frames in PSRAM, never oversized internal SPI DMA buffers.
+    const size_t buf_size = LCD_H_RES * LCD_V_RES * sizeof(lv_color_t);
+    buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    buf2 = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     // The ST77922 QSPI adapter needs four-pixel-aligned DMA chunks in internal SRAM.
     const size_t buf_size = BOARD_LCD_BUF_SIZE;
     buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -7444,7 +7503,9 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Display buffers allocated: buf1=%p, buf2=%p (size: %zu bytes each)", buf1, buf2, buf_size);
 
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_H_RES * LCD_V_RES);
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_H_RES * BOARD_LCD_BUF_LINES);
 #else
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LCD_H_RES * 15);
@@ -7455,7 +7516,9 @@ void app_main(void)
     disp_drv.ver_res = LCD_V_RES;
     disp_drv.flush_cb = lvgl_flush_cb;
     disp_drv.draw_buf = &draw_buf;
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    disp_drv.full_refresh = 1;
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     disp_drv.user_data = &s_hosyond_display;
     disp_drv.rounder_cb = hosyond_s3_35_round_area;
 #else
@@ -7478,7 +7541,10 @@ void app_main(void)
     blueduck_init(sd_spi_mutex, gps_best);
     wp_init(sd_spi_mutex);
 
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    // RGB adapter cleared both persistent framebuffers before panel init.
+    // No SPI panel IO callbacks or completion semaphore on RGB.
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     // The adapter owns the QSPI ISR semaphore and completion callback.
     memset(buf1, 0, buf_size);
     for (int y = 0; y < LCD_V_RES; y += BOARD_LCD_BUF_LINES) {
@@ -7831,7 +7897,10 @@ void app_main(void)
         // Double-click (window starts at first RELEASE, not first press) or 2s hold.
         if (go_dark_active) {
             uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
-            bool btn_pressed = (gpio_get_level(BOOT_BTN_GPIO) == 0);
+            bool btn_pressed = false;
+#if BOOT_BTN_GPIO >= 0
+            btn_pressed = (gpio_get_level(BOOT_BTN_GPIO) == 0);
+#endif
 
             // Falling edge: start hold timer
             if (btn_pressed && !boot_btn_prev_pressed) {
@@ -7879,6 +7948,9 @@ void app_main(void)
 #elif defined(CONFIG_BOARD_PANCAKE_C5)
                 uint16_t tp_x = 0, tp_y = 0;
                 pancake_c5_touch_read(&tp_x, &tp_y, &touched);
+#elif defined(CONFIG_BOARD_WS_S3_5B)
+                uint16_t tp_x = 0, tp_y = 0;
+                ws_s3_5b_touch_read(&tp_x, &tp_y, &touched);
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)
                 uint16_t tp_x = 0, tp_y = 0;
                 hosyond_s3_35_touch_read(&tp_x, &tp_y, &touched);
@@ -9923,7 +9995,10 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
         return;
     }
     
-#if defined(CONFIG_BOARD_HOSYOND_S3_35)
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    ws_s3_5b_flush(drv, area, color_p);
+    return;
+#elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     esp_err_t s3_draw_err = hosyond_s3_35_draw(
         (hosyond_s3_35_display_t *)drv->user_data,
         area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_p);
@@ -10029,6 +10104,10 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         last_input_ms = now_ms;
     }
 
+#elif defined(CONFIG_BOARD_WS_S3_5B)
+    if (ws_s3_5b_touch_read(&touch_x, &touch_y, &touched) && touched) {
+        last_input_ms = now_ms;
+    }
 #elif defined(CONFIG_BOARD_HOSYOND_S3_35)
     if (hosyond_s3_35_touch_read(&touch_x, &touch_y, &touched) && touched) {
         last_input_ms = now_ms;

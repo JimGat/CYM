@@ -97,6 +97,17 @@ jobs:
           mkdir -p _site/beta
           cp -a stable-site/_site/. _site/beta/
           cp ESP32C5/docs/index.html _site/beta/index.html
+          mkdir -p _site/beta/binaries-ws-s3-5b
+          cp ESP32S3/binaries-ws-s3-5b/*.bin _site/beta/binaries-ws-s3-5b/
+          python3 - <<"PY"
+          import json
+          from pathlib import Path
+          m = json.loads(Path("ESP32S3/docs/manifest.ws-s3-5b.json").read_text())
+          for part in m["parts"]:
+              part["path"] = part["path"].removeprefix("../")
+              assert Path("_site/beta", part["path"]).is_file()
+          Path("_site/beta/manifest.ws-s3-5b.json").write_text(json.dumps(m, indent=2) + "\n")
+          PY
           test -s _site/beta/index.html
           python3 - <<'PY'
           from pathlib import Path

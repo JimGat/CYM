@@ -89,6 +89,13 @@ case "$BOARD" in
         SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.hosyond-s3-28"
         ;;
 
+    ws-s3-5b)
+        SOC_DIR="$REPO_ROOT/ESP32S3"
+        TARGET="esp32s3"
+        BUILD_DIR="build_ws-s3-5b"
+        SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.ws-s3-5b"
+        ;;
+
     hosyond-s3-35)
         # Hosyond ESP32-S3 3.5" 320x480 ST77922 QSPI/TDDI (experimental)
         SOC_DIR="$REPO_ROOT/ESP32S3"
