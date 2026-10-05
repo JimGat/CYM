@@ -137,7 +137,7 @@ class WsC535PackagingContract(unittest.TestCase):
             self.assertIn(token, board)
         defaults = re.search(r"const DEFAULT_BOARD_IDS = \[(.*?)\]", f).group(1)
         self.assertNotIn("ws-c5-35", defaults)
-        self.assertIn('const PAGE_VERSION    = "2.14.1"', f)
+        self.assertIn('const PAGE_VERSION    = "2.14.2"', f)
         w = text(".github/workflows/deploy-flasher.yml")
         for token in ("manifest.ws-c5-35.json", "binaries-ws-c5-35", "CYM-WS-C5-35-full.bin"):
             self.assertIn(token, w)

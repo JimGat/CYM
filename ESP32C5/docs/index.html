@@ -582,7 +582,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.14.1"; // add experimental WS-S3-5B target
+      const PAGE_VERSION    = "2.14.2"; // add experimental WS-S3-5B target
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -639,6 +639,7 @@
         ui.dlAppName.textContent  = bd.appBin;
         ui.dlBoot.href           = `${binUrl}/${bd.bootBin || "bootloader.bin"}`;
         ui.dlBoot.querySelector("code").textContent = bd.bootBin || "bootloader.bin";
+        ui.dlBoot.querySelector("span").textContent = `Bootloader (${bd.bootOffset})`;
         ui.dlPart.href           = `${binUrl}/${bd.partBin || "partition-table.bin"}`;
         ui.dlPart.querySelector("code").textContent = bd.partBin || "partition-table.bin";
         ui.dlManifest.href       = raw(branch, bd.soc, bd.manifest);

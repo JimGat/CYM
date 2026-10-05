@@ -35,3 +35,7 @@ class Waveshare5B(unittest.TestCase):
  def test_rtc_startup_gate(self):
   tk=(ROOT/"ESP32C5/components/cym_timekeeper/cym_timekeeper.c").read_text()
   self.assertIn("pcf85063_startup_epoch_valid",tk);self.assertIn("!os_flag",tk)
+
+ def test_download_boot_offset(self):
+  page=(ROOT/"ESP32C5/docs/index.html").read_text()
+  self.assertIn('ui.dlBoot.querySelector("span").textContent = `Bootloader (${bd.bootOffset})`;',page)
