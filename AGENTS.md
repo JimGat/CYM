@@ -12,6 +12,12 @@ branch/release authorization, authorship & contributor credit, AI attribution, h
 evidence, releases & SD assets, model routing, and memory. If any other document disagrees with it,
 the canonical workflow wins.
 
+## Owner direction and project boundary
+
+Read **`.claude/rules/cym-project-direction.md`** before planning or implementing integrations.
+CYM remains independent of ESM; Biscuit and MonsterRF are requested added CYM tools, not a
+replacement firmware or an automatic ESM/source merge. `BACKLOG.md` remains the feature index.
+
 ## Supporting rules (`.claude/rules/`)
 
 - `cym-release-workflow.md` — exact multi-board build/version/release commands and SD-asset refresh.

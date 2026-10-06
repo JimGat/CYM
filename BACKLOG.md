@@ -49,6 +49,9 @@ Last updated: 2026-09-23.
 
 ## Satellite / external-device integration
 
+Owner direction: these are added CYM tools; ESM is a separate independently developed product.
+Read `.claude/rules/cym-project-direction.md` for scope, current protocol references and evidence limits.
+
 Detailed protocol/phasing plan exists (Biscuit GATT UUIDs, JANOS command set, coexistence
 rules). Start ONE track at a time; do not run all simultaneously.
 
@@ -73,8 +76,11 @@ rules). Start ONE track at a time; do not run all simultaneously.
   command interface may differ from JANOS — confirm before reusing the MonsterC5 UART plan.
   *(new 2026-09-23)*
 
-- **JANOS-RF relay** — IDEA. Relay MonsterRF's 72 RF protocol families (KeeLoq, Somfy, etc.)
-  through CYM UI. RF command set not public yet — get from the C5Lab developer.
+- **JANOS-RF / MonsterRF tool** — IDEA (owner-requested, not implemented). CYM is the control
+  head through the accessory's confirmed UART or SPI host interface. Reference:
+  https://janosrf.neocities.org/ — binary-only, hardware-specific; advertises 72 registry entries
+  with unimplemented/RX-only exceptions. A complete command contract, wiring and license remain
+  unqualified. Do not mistake the module's internal RF-chip SPI for a CYM-facing SPI protocol.
 
 ---
 
