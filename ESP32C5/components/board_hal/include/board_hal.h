@@ -94,6 +94,9 @@
 #ifndef BOARD_BATTERY_CAL_SCALE
 #define BOARD_BATTERY_CAL_SCALE 1.0f
 #endif
+#if BOARD_HAS_BATTERY_ADC && BOARD_BATTERY_DIVIDER_DEN <= 0
+#error "Battery divider denominator must be positive"
+#endif
 #ifndef BOARD_RGB_PIN
 #ifdef BOARD_RGB_LED_GPIO
 #define BOARD_RGB_PIN BOARD_RGB_LED_GPIO

@@ -704,12 +704,13 @@ static int g_vibtest_strength_pct = 100;
 #define BATTERY_PCT_LOW           25     // <= this: red (low zone)
 #define BATTERY_PCT_MID           65     // <= this: amber (mid zone); above: green
 #define BATTERY_BLINK_PERIOD_MS   500    // blink half-period when critical
+#define BATTERY_TIMER_INIT_RETRIES  5      // bounded startup attempts; later samples retry lazily
+#define BATTERY_TIMER_RETRY_DELAY_MS 200
 
 // Battery indicator colours (explicit hex so this block is palette-independent).
 #define BATTERY_COLOR_FULL        lv_color_hex(0x4CAF50)  // green
 #define BATTERY_COLOR_MID         lv_color_hex(0xFFB300)  // amber
 #define BATTERY_COLOR_LOW         lv_color_hex(0xFF5252)  // red
-#define BATTERY_COLOR_CHARGE      lv_color_hex(0x52B6FF)  // blue
 
 // ============================================================================
 // Dark / Light dual palette (LAB5 theme)
@@ -1229,6 +1230,7 @@ static void screenshot_btn_event_cb(lv_event_t *e);
 static esp_err_t init_battery_adc(void);
 static float read_battery_voltage(void);
 static void battery_monitor_task(void *arg);
+static void battery_label_delete_cb(lv_event_t *e);
 static esp_err_t save_snapshot_bmp(lv_img_dsc_t *shot, const char *filepath);
 static int find_next_screenshot_index(void);
 static esp_err_t ensure_screenshot_dir(void);
@@ -2800,14 +2802,13 @@ static bool bt_tracking_mode = false;
 // Battery voltage monitor state (DISABLED - using regular C5 chip)
 static lv_obj_t *battery_label = NULL;  // Keep for UI layout
 static char last_voltage_str[32] = "";  // Empty = no valid reading, hide label
-// Level/colour/blink state shared between the 30s monitor task (computes) and the
-// 500ms blink timer (renders colour + critical blink on battery_label).
-static lv_color_t last_batt_color;              // colour for current level
-static volatile bool batt_color_valid = false;  // last_batt_color has been set
-static volatile bool batt_is_critical = false;   // blink when true
-static volatile bool batt_is_charging = false;   // steady blue, no blink
-static bool          batt_blink_phase = false;    // toggled by blink timer
-static lv_timer_t   *s_batt_blink_timer = NULL;   // 500ms, created once
+// UI state below is owned by the LVGL context. The monitor acquires voltage before
+// taking lvgl_mutex, then publishes one coherent voltage-estimate snapshot while locked.
+static lv_color_t last_batt_color;
+static bool       batt_color_valid = false;
+static bool       batt_is_critical = false;
+static bool       batt_blink_phase = false;
+static lv_timer_t *s_batt_blink_timer = NULL;
 static adc_oneshot_unit_handle_t battery_adc_handle = NULL;
 static adc_cali_handle_t battery_adc_cali_handle = NULL;
 static adc_unit_t battery_adc_unit = ADC_UNIT_1;
@@ -7118,8 +7119,10 @@ static void create_home_ui(void)
     lv_obj_center(home_dark_lbl);
 
     battery_label = lv_label_create(title_bar);
+    lv_obj_add_event_cb(battery_label, battery_label_delete_cb, LV_EVENT_DELETE, NULL);
     lv_label_set_text(battery_label, last_voltage_str);
-    lv_obj_set_style_text_color(battery_label, ui_muted_color(), 0);
+    lv_obj_set_style_text_color(battery_label,
+                                batt_color_valid ? last_batt_color : ui_muted_color(), 0);
     lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
     // Battery voltage sits left of the GPS icon (only shown when a board reports voltage).
     lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -58, 0);
@@ -17250,8 +17253,10 @@ static void create_function_page_base(const char *name)
     lv_obj_add_event_cb(page_title_label, screenshot_btn_event_cb, LV_EVENT_CLICKED, NULL);
 
     battery_label = lv_label_create(page_title_bar);
+    lv_obj_add_event_cb(battery_label, battery_label_delete_cb, LV_EVENT_DELETE, NULL);
     lv_label_set_text(battery_label, last_voltage_str);
-    lv_obj_set_style_text_color(battery_label, ui_muted_color(), 0);
+    lv_obj_set_style_text_color(battery_label,
+                                batt_color_valid ? last_batt_color : ui_muted_color(), 0);
     lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
     // Battery sits LEFT of the GPS icon (which is at -34), not on top of it. The original
     // -32 overlapped the GPS slot -- fine when the battery was hidden (NM-CYD-C5 has no
@@ -42166,7 +42171,13 @@ static float read_battery_voltage(void)
         return 0.0f;
     }
     uint16_t adc_raw = 0;
-    if (custom_io_expander_get_adc(s_io_expander, &adc_raw) != ESP_OK) {
+    esp_err_t ret = custom_io_expander_get_adc(s_io_expander, &adc_raw);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Battery ADC read failed: %s", esp_err_to_name(ret));
+        return 0.0f;
+    }
+    if (adc_raw > 1023) {
+        ESP_LOGW(TAG, "Battery ADC sample out of range: %u", (unsigned)adc_raw);
         return 0.0f;
     }
     float voltage_mv = ((float)adc_raw / 1023.0f) * 3300.0f;
@@ -42248,83 +42259,79 @@ static int battery_pct_from_voltage(float v)
 // battery_label and, when critical, blinks it. Always re-fetches the global
 // battery_label and NULL/valid-guards, so it survives per-screen top-bar rebuilds
 // without a dangling pointer (no per-screen stop hook needed).
+static void battery_label_delete_cb(lv_event_t *e)
+{
+    if (lv_event_get_target(e) == battery_label) battery_label = NULL;
+}
+
 static void battery_blink_timer_cb(lv_timer_t *t)
 {
     (void)t;
-    if (battery_label == NULL || !lv_obj_is_valid(battery_label)) {
-        return;
-    }
-    if (last_voltage_str[0] == '\0') {          // no reading -> stay hidden
+    if (battery_label == NULL || !lv_obj_is_valid(battery_label)) return;
+    if (last_voltage_str[0] == '\0') {
         lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
         return;
     }
-    if (batt_is_critical && !batt_is_charging) {
+    if (batt_is_critical) {
         batt_blink_phase = !batt_blink_phase;
-        if (batt_blink_phase) {
-            lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_style_text_color(battery_label, BATTERY_COLOR_LOW, 0);
-        } else {
-            lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);  // blink off-phase
+        if (!batt_blink_phase) {
+            lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+            return;
         }
     } else {
-        lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
-        if (batt_color_valid) {
-            lv_obj_set_style_text_color(battery_label, last_batt_color, 0);
-        }
+        batt_blink_phase = false;
     }
+    lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+    if (batt_color_valid) lv_obj_set_style_text_color(battery_label, last_batt_color, 0);
+}
+
+// Caller owns lvgl_mutex. A failed startup is retried a bounded number of times,
+// and a later sample retries lazily so one transient mutex/timer failure is not permanent.
+static bool battery_ensure_blink_timer_locked(void)
+{
+    if (s_batt_blink_timer != NULL) return true;
+    s_batt_blink_timer = lv_timer_create(battery_blink_timer_cb,
+                                         BATTERY_BLINK_PERIOD_MS, NULL);
+    if (s_batt_blink_timer == NULL) ESP_LOGW(TAG, "Battery blink timer creation failed");
+    return s_batt_blink_timer != NULL;
 }
 
 static void battery_monitor_task(void *arg)
 {
     (void)arg;
     char voltage_str[32];
-
-    // Initial delay to let UI stabilize
     vTaskDelay(pdMS_TO_TICKS(2000));
 
-    // Create the 500ms blink/colour timer once (LVGL context via mutex). It renders
-    // the level colour and the critical blink; this task only computes state.
-    if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        if (s_batt_blink_timer == NULL) {
-            s_batt_blink_timer = lv_timer_create(battery_blink_timer_cb,
-                                                 BATTERY_BLINK_PERIOD_MS, NULL);
+    for (int attempt = 0; attempt < BATTERY_TIMER_INIT_RETRIES; attempt++) {
+        if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            bool ready = battery_ensure_blink_timer_locked();
+            xSemaphoreGive(lvgl_mutex);
+            if (ready) break;
         }
-        xSemaphoreGive(lvgl_mutex);
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_TIMER_RETRY_DELAY_MS));
     }
 
     for (;;) {
+        // Sensor/I2C acquisition must never block while the LVGL mutex is held.
         float voltage = read_battery_voltage();
-
-        // Compute level and colour from the reading. Charging-vs-full cannot be told
-        // from VBAT alone and this board exposes no charge-status line to firmware (see
-        // schematic trace: ETA6098 STAT drives only a HW LED, no VBUS sense pin), so we
-        // show a reliable voltage-based FULL badge instead of a charging state.
         lv_color_t color = BATTERY_COLOR_FULL;
         bool critical = false;
 
         if (voltage < BATTERY_VOLTAGE_CRITICAL) {
-            voltage_str[0] = '\0';  // No valid reading -> hide label
+            voltage_str[0] = '\0';
         } else {
             int pct = battery_pct_from_voltage(voltage);
-            if (pct < 0)   pct = 0;
+            if (pct < 0) pct = 0;
             if (pct > 100) pct = 100;
-
-            // Symbol by fill level (5 LVGL battery glyphs).
-            const char *sym;
-            if (pct <= 10)      sym = LV_SYMBOL_BATTERY_EMPTY;
-            else if (pct <= 35) sym = LV_SYMBOL_BATTERY_1;
-            else if (pct <= 65) sym = LV_SYMBOL_BATTERY_2;
-            else if (pct <= 90) sym = LV_SYMBOL_BATTERY_3;
-            else                sym = LV_SYMBOL_BATTERY_FULL;
-
-            // Colour by zone: low=red, mid=amber, full=green. Blink when critical.
-            if (pct <= BATTERY_PCT_LOW)      color = BATTERY_COLOR_LOW;
-            else if (pct <= BATTERY_PCT_MID) color = BATTERY_COLOR_MID;
-            else                             color = BATTERY_COLOR_FULL;
-            critical = (pct <= BATTERY_PCT_CRITICAL);
-
+            const char *sym = pct <= 10 ? LV_SYMBOL_BATTERY_EMPTY :
+                              pct <= 35 ? LV_SYMBOL_BATTERY_1 :
+                              pct <= 65 ? LV_SYMBOL_BATTERY_2 :
+                              pct <= 90 ? LV_SYMBOL_BATTERY_3 : LV_SYMBOL_BATTERY_FULL;
+            color = pct <= BATTERY_PCT_LOW ? BATTERY_COLOR_LOW :
+                    pct <= BATTERY_PCT_MID ? BATTERY_COLOR_MID : BATTERY_COLOR_FULL;
+            critical = pct <= BATTERY_PCT_CRITICAL;
             if (voltage >= BATTERY_VOLTAGE_FULL) {
-                // Reliably full (from voltage) -> distinct green FULL badge, never blinks.
+                // FULL is a voltage estimate threshold, not charger-complete evidence.
                 color = BATTERY_COLOR_FULL;
                 critical = false;
                 snprintf(voltage_str, sizeof(voltage_str), LV_SYMBOL_BATTERY_FULL " FULL");
@@ -42333,28 +42340,25 @@ static void battery_monitor_task(void *arg)
             }
         }
 
-        // Publish state for the blink timer, then push the text under the mutex.
-        last_batt_color  = color;
-        batt_color_valid = (voltage_str[0] != '\0');
-        batt_is_charging = false;   // charging state not detectable on this hardware
-        batt_is_critical = critical;
-
-        strncpy(last_voltage_str, voltage_str, sizeof(last_voltage_str) - 1);
-        last_voltage_str[sizeof(last_voltage_str) - 1] = '\0';
-
         if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            battery_ensure_blink_timer_locked();
+            last_batt_color = color;
+            batt_color_valid = voltage_str[0] != '\0';
+            batt_is_critical = critical;
+            strncpy(last_voltage_str, voltage_str, sizeof(last_voltage_str) - 1);
+            last_voltage_str[sizeof(last_voltage_str) - 1] = '\0';
             if (battery_label != NULL && lv_obj_is_valid(battery_label)) {
-                if (voltage_str[0] == '\0') {
+                if (!batt_color_valid) {
                     lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
                 } else {
+                    batt_blink_phase = false;
                     lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
-                    lv_label_set_text(battery_label, voltage_str);
-                    lv_obj_set_style_text_color(battery_label, color, 0);
+                    lv_label_set_text(battery_label, last_voltage_str);
+                    lv_obj_set_style_text_color(battery_label, last_batt_color, 0);
                 }
             }
             xSemaphoreGive(lvgl_mutex);
         }
-
         vTaskDelay(pdMS_TO_TICKS(BATTERY_UPDATE_INTERVAL_MS));
     }
 }
@@ -45774,8 +45778,10 @@ static lv_obj_t    *s_cam_list   = NULL;
 static lv_timer_t  *s_cam_ui_timer = NULL;
 static int          s_cam_page = 0;           // paged list (modern nav bar, no scrollbar)
 static int          s_cam_built_n    = -1;     // last-rendered device count (rebuild rows only on change)
-static int          s_cam_built_page = -1;     // last-rendered page (so a 4 Hz timer never recreates the
-                                               // row under the user's finger -> tap needed many tries)
+static int          s_cam_built_page = -1;     // last-rendered page
+static bool         s_cam_gesture_active = false; // LVGL PRESSED through CLICKED/PRESS_LOST
+static int          s_cam_gesture_index = -1;
+static lv_obj_t    *s_cam_row_rssi[CAM_MAX];      // live text only; row identity stays stable
 static lv_obj_t    *s_cam_nav_bar  = NULL;
 static lv_obj_t    *s_cam_nav_prev = NULL;
 static lv_obj_t    *s_cam_nav_lbl  = NULL;
@@ -46006,19 +46012,37 @@ static void cam_row_geom(int lw, int *bx, int *bw, int *nx, int *nw,
 
 static void cam_row_tap_cb(lv_event_t *e)
 {
+    lv_event_code_t code = lv_event_get_code(e);
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    if (idx < 0 || idx >= s_cam_snap_n) return;
-    memcpy(s_cam_loc_mac, s_cam_snap[idx].mac, 6);
-    snprintf(s_cam_loc_label, sizeof(s_cam_loc_label), "%.22s", s_cam_snap[idx].label);
-    s_cam_loc_ch = s_cam_snap[idx].channel ? s_cam_snap[idx].channel : 0;  // park here (0 = keep hopping)
-    s_cam_loc_rssi = -128; s_cam_loc_found = false; s_cam_loc_seen = 0;
-    s_cam_locate = true;
+    if (code == LV_EVENT_PRESSED) {
+        s_cam_gesture_active = true;
+        s_cam_gesture_index = idx;
+        return;
+    }
+    if (code == LV_EVENT_PRESS_LOST) {
+        s_cam_gesture_active = false;
+        s_cam_gesture_index = -1;
+        return;
+    }
+    if (code != LV_EVENT_CLICKED) return;
 
-    if (s_cam_list)   lv_obj_add_flag(s_cam_list, LV_OBJ_FLAG_HIDDEN);
-    if (s_cam_status) lv_obj_add_flag(s_cam_status, LV_OBJ_FLAG_HIDDEN);
-    if (s_cam_alert)  lv_obj_add_flag(s_cam_alert, LV_OBJ_FLAG_HIDDEN);
-    if (s_cam_nav_bar) lv_obj_add_flag(s_cam_nav_bar, LV_OBJ_FLAG_HIDDEN);
-    if (s_cam_loc_cont) lv_obj_clear_flag(s_cam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    // RELEASED and CLICKED are dispatched synchronously by LVGL. Keep the latch set
+    // through CLICKED rather than trusting the raw hardware flag, which is already false.
+    if (s_cam_gesture_index >= 0) idx = s_cam_gesture_index;
+    if (idx >= 0 && idx < s_cam_snap_n) {
+        memcpy(s_cam_loc_mac, s_cam_snap[idx].mac, 6);
+        snprintf(s_cam_loc_label, sizeof(s_cam_loc_label), "%.22s", s_cam_snap[idx].label);
+        s_cam_loc_ch = s_cam_snap[idx].channel ? s_cam_snap[idx].channel : 0;
+        s_cam_loc_rssi = -128; s_cam_loc_found = false; s_cam_loc_seen = 0;
+        s_cam_locate = true;
+        if (s_cam_list) lv_obj_add_flag(s_cam_list, LV_OBJ_FLAG_HIDDEN);
+        if (s_cam_status) lv_obj_add_flag(s_cam_status, LV_OBJ_FLAG_HIDDEN);
+        if (s_cam_alert) lv_obj_add_flag(s_cam_alert, LV_OBJ_FLAG_HIDDEN);
+        if (s_cam_nav_bar) lv_obj_add_flag(s_cam_nav_bar, LV_OBJ_FLAG_HIDDEN);
+        if (s_cam_loc_cont) lv_obj_clear_flag(s_cam_loc_cont, LV_OBJ_FLAG_HIDDEN);
+    }
+    s_cam_gesture_active = false;
+    s_cam_gesture_index = -1;
 }
 
 static void cam_loc_back_cb(lv_event_t *e)
@@ -46042,6 +46066,22 @@ static int cam_page_size(void)
     return rows < 1 ? 1 : rows;
 }
 
+static void cam_clear_row_refs(void)
+{
+    for (int i = 0; i < CAM_MAX; i++) s_cam_row_rssi[i] = NULL;
+}
+
+static void cam_refresh_rssi_labels(void)
+{
+    for (int i = 0; i < s_cam_snap_n && i < CAM_MAX; i++) {
+        if (s_cam_row_rssi[i] && lv_obj_is_valid(s_cam_row_rssi[i])) {
+            char rbuf[8];
+            snprintf(rbuf, sizeof(rbuf), "%d", s_cam_snap[i].rssi);
+            lv_label_set_text(s_cam_row_rssi[i], rbuf);
+        }
+    }
+}
+
 // Render the current page of the sorted snapshot + update the nav bar. Called from the
 // UI timer (fresh data) and directly from the Prev/Next callbacks (instant response).
 static void cam_render_list(void)
@@ -46055,6 +46095,7 @@ static void cam_render_list(void)
     int start = s_cam_page * ps;
     int end   = start + ps; if (end > n) end = n;
 
+    cam_clear_row_refs();
     lv_obj_clean(s_cam_list);
     int bx, bw, nx, nw, mx, mw, rx, rw;
     cam_row_geom(lv_disp_get_hor_res(NULL), &bx, &bw, &nx, &nw, &mx, &mw, &rx, &rw);
@@ -46072,7 +46113,7 @@ static void cam_render_list(void)
         lv_obj_set_style_border_color(row, lv_color_make(45, 45, 55), 0);
         lv_obj_set_style_border_width(row, 1, 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_add_event_cb(row, cam_row_tap_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        lv_obj_add_event_cb(row, cam_row_tap_cb, LV_EVENT_ALL, (void *)(intptr_t)i);
 
         lv_obj_t *badge = lv_label_create(row);
         lv_label_set_text(badge, btxt);
@@ -46121,6 +46162,7 @@ static void cam_render_list(void)
         lv_obj_add_flag(rssi_lbl, LV_OBJ_FLAG_IGNORE_LAYOUT);
         lv_obj_set_size(rssi_lbl, rw, 16);
         lv_obj_set_pos(rssi_lbl, rx, 9);
+        s_cam_row_rssi[i] = rssi_lbl;
     }
 
     if (s_cam_nav_lbl && lv_obj_is_valid(s_cam_nav_lbl)) {
@@ -46204,25 +46246,33 @@ static void cam_ui_timer_cb(lv_timer_t *t)
             else if (s_cam[i].conf == CAM_CONF_MED) med++;
         }
         cam_changed = (n != s_cam_built_n) || (s_cam_page != s_cam_built_page);
-        // Never rebuild while the screen is being touched: a flapping device count would otherwise
-        // lv_obj_clean()+recreate the row under the user's finger mid-tap, so the CLICKED (press+release
-        // on the SAME obj) kept getting cancelled -> "tap needs many tries" (Birol HW-QA 2026-10-01).
-        // touch_pressed_flag is the live, hardware-driven touch state (stuck-proof); freezing the
-        // snapshot during the gesture also keeps the tapped index consistent with what's on screen.
-        if (cam_changed && !touch_pressed_flag) {
+        bool rebuild_allowed = !s_cam_gesture_active;
+        if (cam_changed && rebuild_allowed) {
             memcpy(s_cam_snap, s_cam, (size_t)n * sizeof(cam_rec_t));
             s_cam_snap_n = n;
+        } else {
+            // Preserve row identity/index during the gesture, but keep visible RSSI live.
+            for (int si = 0; si < s_cam_snap_n; si++)
+                for (int ci = 0; ci < n; ci++)
+                    if (memcmp(s_cam_snap[si].mac, s_cam[ci].mac, 6) == 0) {
+                        s_cam_snap[si].rssi = s_cam[ci].rssi;
+                        break;
+                    }
+        }
+        if (cam_changed && rebuild_allowed) {
+            for (int i = 1; i < s_cam_snap_n; i++) {
+                cam_rec_t key = s_cam_snap[i]; int j = i - 1;
+                while (j >= 0 && s_cam_snap[j].rssi < key.rssi) { s_cam_snap[j + 1] = s_cam_snap[j]; j--; }
+                s_cam_snap[j + 1] = key;
+            }
         }
     }
     portEXIT_CRITICAL(&s_cam_mux);
-    if (cam_changed) {
-        // insertion sort by rssi desc (n is small)
-        for (int i = 1; i < s_cam_snap_n; i++) {
-            cam_rec_t key = s_cam_snap[i]; int j = i - 1;
-            while (j >= 0 && s_cam_snap[j].rssi < key.rssi) { s_cam_snap[j + 1] = s_cam_snap[j]; j--; }
-            s_cam_snap[j + 1] = key;
-        }
+    bool rebuild_allowed = !s_cam_gesture_active;
+    if (cam_changed && rebuild_allowed) {
         cam_render_list();
+    } else {
+        cam_refresh_rssi_labels();
     }
 
     if (s_cam_status && lv_obj_is_valid(s_cam_status)) {
@@ -46262,6 +46312,8 @@ static void hidden_camera_stop(void)
         heap_caps_free(s_cam_stack); s_cam_stack = NULL;
     }
     s_cam_locate = false;
+    s_cam_gesture_active = false; s_cam_gesture_index = -1;
+    cam_clear_row_refs();
     s_cam_status = NULL; s_cam_alert = NULL; s_cam_list = NULL;
     s_cam_nav_bar = NULL; s_cam_nav_prev = NULL; s_cam_nav_lbl = NULL; s_cam_nav_next = NULL;
     s_cam_loc_cont = NULL; s_cam_loc_title = NULL; s_cam_loc_val = NULL;
@@ -46296,6 +46348,8 @@ static void show_hidden_camera_screen(void)
     portEXIT_CRITICAL(&s_cam_mux);
     s_cam_snap_n = 0;
     s_cam_locate = false;
+    s_cam_gesture_active = false; s_cam_gesture_index = -1;
+    cam_clear_row_refs();
 
     s_cam_status = lv_label_create(function_page);
     lv_label_set_text(s_cam_status, LV_SYMBOL_WIFI "  Scanning...");
