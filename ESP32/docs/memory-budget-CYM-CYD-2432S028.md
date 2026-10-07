@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.63 |
+| Version | v2.15.64 |
 | Build date | 2026-10-07 |
-| .iram0.text | 105,259 B (102.8 KB) |
+| .iram0.text | 105,199 B (102.7 KB) |
 | .dram0.data | 26,675 B (26.0 KB) |
-| .dram0.bss  (internal) | 97,752 B (95.5 KB) |
+| .dram0.bss  (internal) | 96,584 B (94.3 KB) |
 | .ext_ram.bss  (PSRAM) | 0 B |
-| App binary size | 2,778,752 B (2713.6 KB) |
+| App binary size | 2,777,616 B (2712.5 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,7 +24,7 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 64,131 B (62.6 KB) |
+| `libmain.a` | 62,960 B (61.5 KB) |
 | `libnet80211.a` | 9,857 B (9.6 KB) |
 | `liblwip.a` | 4,147 B (4.0 KB) |
 | `libwifi_scanner.a` | 3,949 B (3.9 KB) |
@@ -36,7 +36,7 @@
 | `libwpa_supplicant.a` | 1,931 B (1.9 KB) |
 | `liblvgl__lvgl.a` | 1,137 B (1.1 KB) |
 | `libfreertos.a` | 748 B |
-| `libbt.a` | 607 B |
+| `libbt.a` | 603 B |
 | `libesp_libc.a` | 540 B |
 | `libtfpsacrypto.a` | 381 B |
 <!-- BSS_TABLE_END -->

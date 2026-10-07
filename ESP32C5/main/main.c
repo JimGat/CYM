@@ -193,6 +193,8 @@ LV_IMG_DECLARE(deedee_img);
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
+#include "host/ble_hs_stop.h"
+#include "nimble/nimble_npl.h"
 // BLE controller TX power API — controller-level, works with NimBLE host
 #include "esp_bt.h"
 #include "dexter_img.h"
@@ -261,7 +263,16 @@ static bool wifi_initialized = false;
 // BLE scan state
 static volatile bool bt_scan_active = false;
 static TaskHandle_t bt_scan_task_handle = NULL;
-static volatile bool nimble_initialized  = false;
+static volatile bool nimble_initialized  = false; // sync, NOT allocation ownership
+// Port lifetime is independent of sync. Never free an active event loop.
+static bool nimble_port_initialized = false;
+static bool nimble_stop_requested = false;
+static bool nimble_stop_complete = false;
+static bool nimble_host_exited = true;
+static bool nimble_cleanup_busy = false;
+static bool nimble_deinit_failed = false; // partial SDK deinit cannot safely be retried
+static struct ble_hs_stop_listener nimble_stop_listener;
+static TaskHandle_t nimble_host_handle = NULL;
 static bool          s_ble_for_blueduck  = false; /* selects GATT table at bt_nimble_init time */
 
 // BLE device tracking for deduplication
@@ -1218,6 +1229,14 @@ static char gps_rx_buffer[GPS_BUF_SIZE];
 static StaticTask_t gps_task_buffer;
 static StackType_t *gps_task_stack = NULL;
 
+#if defined(CONFIG_BOARD_CYD2USB)
+static int g_gps_rx_pin = GPS_RX_PIN;
+static int g_gps_listen_baud = 9600; // actual UART baud, separate from saved preference
+static bool g_gps_uart_ready = false;
+static bool g_gps_nmea_found = false;
+static void gps_classic_poll(void);
+#endif
+static bool nmea_checksum_valid(const char *sentence);
 static esp_err_t init_gps_uart(void);
 static bool parse_gps_nmea(const char *nmea_sentence);
 static void gps_task(void *arg);
@@ -1934,7 +1953,12 @@ typedef struct {
     char    first_seen[24];   // UTC "YYYY-MM-DD HH:MM:SS" captured when first detected (with the position)
     bool    written;
 } wdp_ble_device_t;
+#define WDP_BLE_NOPSRAM_DEVICES 128
 static wdp_ble_device_t *wdp_ble_devices = NULL;
+static uint32_t wdp_ble_capacity = 0;
+static bool wdp_ble_full_logged = false;
+static bool wdp_ble_accepting = false;
+static unsigned wdp_ble_inflight = 0;
 static volatile int      wdp_ble_count   = 0;
 static bool              g_wd_ble        = true;   // always on — coex handles RF sharing
 
@@ -1994,6 +2018,28 @@ static TaskHandle_t wardrive_task_handle = NULL;
 static StaticTask_t wardrive_task_buffer;
 static StackType_t *wardrive_task_stack = NULL;
 static volatile bool wardrive_active = false;
+static bool wardrive_task_done = false;
+
+static void wardrive_task_finish(void)
+{
+    wardrive_active = false;
+    ESP_LOGI(TAG, "Wardrive stack high-water: %u bytes (physical validation required)",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    __atomic_store_n(&wardrive_task_done, true, __ATOMIC_SEQ_CST);
+    vTaskSuspend(NULL);
+}
+
+static bool wardrive_reap_task(void)
+{
+    if (wardrive_task_handle) {
+        if (!__atomic_load_n(&wardrive_task_done, __ATOMIC_SEQ_CST) ||
+            eTaskGetState(wardrive_task_handle) != eSuspended) return false;
+        vTaskDelete(wardrive_task_handle);
+        wardrive_task_handle = NULL;
+    }
+    if (wardrive_task_stack) { heap_caps_free(wardrive_task_stack); wardrive_task_stack = NULL; }
+    return true;
+}
 static int wardrive_file_counter = 1;
 
 // Wardrive buffers (static to avoid stack overflow)
@@ -3606,6 +3652,7 @@ static void radio_reset_to_idle(void);
 // NimBLE BLE scanner functions
 static esp_err_t bt_nimble_init(void);
 static void bt_nimble_deinit(void);
+static bool bt_nimble_cleanup_bounded(void);
 static void apply_ble_power_settings(void);
 static void bt_scan_stop(void);
 static void bt_scan_task(void *pvParameters);
@@ -7366,7 +7413,7 @@ void app_main(void)
             ESP_LOGW(TAG, "survey_flush_tmr create failed — flush disabled");
     }
 
-#if BOARD_HAS_GPS
+#if BOARD_HAS_GPS && !defined(CONFIG_BOARD_CYD2USB)
 	// Initialize the board-profile UART and start the shared GPS monitor task.
 	if (init_gps_uart() == ESP_OK) {
 		ESP_LOGI(TAG, "GPS UART initialized on TX=%d RX=%d", GPS_TX_PIN, GPS_RX_PIN);
@@ -7893,6 +7940,12 @@ void app_main(void)
     lv_refr_now(NULL);
 
     ESP_LOGI(TAG, "System ready!");
+#if defined(CONFIG_BOARD_CYD2USB) && BOARD_HAS_GPS
+    // Classic: critical boot allocations are complete. No extra reader task/stack.
+    // Earlier deferred-task and main-loop experiments were reverted (4c8e248).
+    // This bounded single-reader design is NOT a claim of hardware boot qualification.
+    if (init_gps_uart() != ESP_OK) ESP_LOGE(TAG, "Classic GPS init failed; UART absent");
+#endif
     ESP_LOGI(TAG, "[DIAG] System ready - final memory state");
     check_heap_integrity("Before main loop");
     print_memory_stats();
@@ -9693,7 +9746,7 @@ void app_main(void)
                     char ble_buf[24];
                     // Flag saturation so a full dedup buffer (dropping new devices) is
                     // visible instead of the count silently plateauing at the cap.
-                    if (wdp_ble_count >= WDP_BLE_MAX_DEVICES)
+                    if (wdp_ble_capacity && (uint32_t)wdp_ble_count >= wdp_ble_capacity)
                         snprintf(ble_buf, sizeof(ble_buf), "%d FULL", wdp_ble_count);
                     else
                         snprintf(ble_buf, sizeof(ble_buf), "%d", wdp_ble_count);
@@ -9955,6 +10008,9 @@ void app_main(void)
             ESP_LOGD(TAG, "[MAIN_LOOP] sd_spi_mutex timeout (10ms) at %llu us", sd_spi_try_us);
         }
 
+#if defined(CONFIG_BOARD_CYD2USB) && BOARD_HAS_GPS
+        gps_classic_poll(); // nonblocking; shared parser, never a second UART reader
+#endif
         // Flush GPS position to NVS from main-task context (throttled inside the function).
         // nvs_commit() briefly disables the flash cache; calling it from a background task
         // (gps_task) while the panic handler is in flash causes CPU_LOCKUP — do it here instead.
@@ -13051,7 +13107,15 @@ static void wd_mark_tap_cb(lv_event_t *e)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // BLE GAP callback used during wardrive BLE time-slice passes
-static int wdp_ble_gap_cb(struct ble_gap_event *event, void *arg)
+// Capacity bounds cover callback, flush and UI sites, including NULL/zero state.
+static int wdp_ble_bounded_count(void)
+{
+    int count = wdp_ble_count;
+    if (!wdp_ble_devices || count < 0) return 0;
+    return (uint32_t)count > wdp_ble_capacity ? (int)wdp_ble_capacity : count;
+}
+
+static int wdp_ble_gap_body(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
     if (!wdp_ble_devices) return 0;
@@ -13083,7 +13147,7 @@ static int wdp_ble_gap_cb(struct ble_gap_event *event, void *arg)
     // Dedup by MAC — but let a later report (e.g. an active-scan SCAN_RSP) backfill
     // a name when the first report (ADV) didn't carry one. Many privacy devices put
     // their name only in the scan response, so passive scanning shows mostly "-".
-    int cnt = wdp_ble_count;
+    int cnt = wdp_ble_bounded_count();
     for (int i = 0; i < cnt; i++) {
         if (memcmp(wdp_ble_devices[i].mac, addr_val, 6) == 0) {
             if (wdp_ble_devices[i].name[0] == '\0') {
@@ -13099,13 +13163,12 @@ static int wdp_ble_gap_cb(struct ble_gap_event *event, void *arg)
         }
     }
 
-    if (cnt >= WDP_BLE_MAX_DEVICES) {
-        static bool wdp_ble_full_logged = false;
-        if (!wdp_ble_full_logged) {
+    if (wdp_ble_capacity == 0 || (uint32_t)cnt >= wdp_ble_capacity) {
+        if (wdp_ble_capacity && !wdp_ble_full_logged) {
             wdp_ble_full_logged = true;
             ESP_LOGW(TAG, "[WD] BLE dedup buffer FULL at %d devices — further BLE devices "
                           "this session are dropped. Stop/restart the wardrive to continue.",
-                     WDP_BLE_MAX_DEVICES);
+                     (int)wdp_ble_capacity);
         }
         return 0;
     }
@@ -13142,6 +13205,63 @@ static int wdp_ble_gap_cb(struct ble_gap_event *event, void *arg)
                  dev->mac[2], dev->mac[1], dev->mac[0], dev->rssi);
     }
     return 0;
+}
+
+// Increment BEFORE testing the close gate: teardown cannot miss an admitted reader.
+static int wdp_ble_gap_cb(struct ble_gap_event *event, void *arg)
+{
+    __atomic_add_fetch(&wdp_ble_inflight, 1, __ATOMIC_SEQ_CST);
+    int rc = 0;
+    if (__atomic_load_n(&wdp_ble_accepting, __ATOMIC_SEQ_CST) && wardrive_active)
+        rc = wdp_ble_gap_body(event, arg);
+    __atomic_sub_fetch(&wdp_ble_inflight, 1, __ATOMIC_SEQ_CST);
+    return rc;
+}
+
+static bool wdp_ble_session_end(void)
+{
+    __atomic_store_n(&wdp_ble_accepting, false, __ATOMIC_SEQ_CST);
+    if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return false;
+    for (int i = 0; i < 30 && __atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST); ++i)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (__atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST)) return false;
+    // Dashboard readers hold the existing LVGL mutex. Never free beneath them.
+    if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+    if (wdp_ble_devices) heap_caps_free(wdp_ble_devices);
+    wdp_ble_devices = NULL;
+    wdp_ble_capacity = 0;
+    wdp_ble_count = 0;
+    wdp_ble_full_logged = false;
+    if (lvgl_mutex) xSemaphoreGive(lvgl_mutex);
+    return true;
+}
+
+static bool wdp_ble_session_begin(void)
+{
+    if (!wdp_ble_session_end()) return false;
+    wdp_ble_capacity = 0;
+    wdp_ble_count = 0;
+    wdp_ble_full_logged = false;
+    // WiFi-only does not use BLE: no speculative table allocation in that mode.
+    if (!g_wd_ble || g_wd_radio_mode != WD_RADIO_BLE_ONLY) return true;
+    wdp_ble_devices = heap_caps_calloc(WDP_BLE_MAX_DEVICES, sizeof(wdp_ble_device_t),
+                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (wdp_ble_devices) wdp_ble_capacity = WDP_BLE_MAX_DEVICES;
+#if !CONFIG_BOARD_HAS_PSRAM
+    else {
+        wdp_ble_devices = heap_caps_calloc(WDP_BLE_NOPSRAM_DEVICES, sizeof(wdp_ble_device_t),
+                                           MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (wdp_ble_devices) wdp_ble_capacity = WDP_BLE_NOPSRAM_DEVICES;
+    }
+#endif
+    if (!wdp_ble_devices) {
+        ESP_LOGE(TAG, "Wardrive stopped: BLE dedup allocation failed");
+        return false;
+    }
+    ESP_LOGI(TAG, "[WD] BLE dedup capacity=%u; allocation=%u bytes",
+             (unsigned)wdp_ble_capacity, (unsigned)(wdp_ble_capacity * sizeof(wdp_ble_device_t)));
+    __atomic_store_n(&wdp_ble_accepting, true, __ATOMIC_SEQ_CST);
+    return true;
 }
 
 static void wdp_promiscuous_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
@@ -14415,12 +14535,14 @@ static void wardrive_promisc_task(void *pvParameters) {
         } else {
             ESP_LOGI(TAG, "Waiting for GPS fix...");
             while (wardrive_active && !current_gps.valid) {
+#if !defined(CONFIG_BOARD_CYD2USB)
                 int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
                 if (len > 0) {
                     wardrive_gps_buffer[len] = '\0';
                     char *line = strtok(wardrive_gps_buffer, "\r\n");
                     while (line != NULL) { parse_gps_nmea(line); line = strtok(NULL, "\r\n"); }
                 }
+#endif
                 wd_ui_update_flag = true;
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
@@ -14432,8 +14554,7 @@ static void wardrive_promisc_task(void *pvParameters) {
                     wifi_initialized = true;
                     current_radio_mode = RADIO_MODE_WIFI;
                 }
-                wardrive_task_handle = NULL;
-                vTaskDelete(NULL);
+                wardrive_task_finish();
                 return;
             }
         }
@@ -14469,8 +14590,7 @@ static void wardrive_promisc_task(void *pvParameters) {
             current_radio_mode = RADIO_MODE_WIFI;
         }
         wardrive_active = false;
-        wardrive_task_handle = NULL;
-        vTaskDelete(NULL);
+        wardrive_task_finish();
         return;
     }
     wd_write_csv_header(file);
@@ -14496,18 +14616,7 @@ static void wardrive_promisc_task(void *pvParameters) {
 
     wdp_ducb_init();
 
-    // Allocate BLE device table in PSRAM (used only if g_wd_ble enabled)
-    if (g_wd_ble && !wdp_ble_devices) {
-        wdp_ble_devices = heap_caps_calloc(WDP_BLE_MAX_DEVICES, sizeof(wdp_ble_device_t),
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!wdp_ble_devices) {
-            // ~835 KB PSRAM alloc failed (fragmentation). BLE collects nothing this run;
-            // the gap cb NULL-guards, so this is degraded-not-crashed. Make it visible.
-            ESP_LOGW(TAG, "[WD] BLE device table alloc FAILED (%d entries) — BLE capture disabled this run",
-                     WDP_BLE_MAX_DEVICES);
-        }
-    }
-    wdp_ble_count = 0;
+    if (!wdp_ble_session_begin()) wardrive_active = false;
 
     // ========== DMA TRACKING: Before promisc ==========
     size_t dma_before = heap_caps_get_free_size(MALLOC_CAP_DMA);
@@ -14516,7 +14625,7 @@ static void wardrive_promisc_task(void *pvParameters) {
 
     wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
     // Start WiFi promiscuous only if not BLE-only mode
-    if (g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
+    if (wardrive_active && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
         esp_wifi_set_promiscuous_filter(&filt);
         esp_wifi_set_promiscuous_rx_cb(wdp_promiscuous_cb);
         esp_wifi_set_promiscuous(true);
@@ -14538,7 +14647,7 @@ static void wardrive_promisc_task(void *pvParameters) {
     // Start BLE scan only if BLE-only mode (WiFi-only doesn't use BLE).
     // BLE-only uses 100% duty cycle (no WiFi to share radio time with).
     // 0x0040 = 64 units × 0.625ms = 40ms (window = interval = 100% duty).
-    if (g_wd_radio_mode == WD_RADIO_BLE_ONLY && wdp_ble_devices) {
+    if (wardrive_active && g_wd_radio_mode == WD_RADIO_BLE_ONLY && wdp_ble_devices) {
         size_t dma_before_nimble = heap_caps_get_free_size(MALLOC_CAP_DMA);
         ESP_LOGI(TAG, "[BLE_INSTRUMENTATION] Before bt_nimble_init: DMA=%u bytes", (unsigned)dma_before_nimble);
 
@@ -14577,10 +14686,13 @@ static void wardrive_promisc_task(void *pvParameters) {
                 ESP_LOGI(TAG, "[WDP] BLE scan running (100%% duty, continuous)");
             }
 #endif
-            if (!ble_continuous)
+            if (!ble_continuous) {
                 ESP_LOGW(TAG, "[WDP] BLE coex scan start failed");
+                wardrive_active = false;
+            }
         } else {
             ESP_LOGE(TAG, "[BLE_INSTRUMENTATION] bt_nimble_init() FAILED");
+            wardrive_active = false;
         }
     }
 
@@ -14719,6 +14831,7 @@ static void wardrive_promisc_task(void *pvParameters) {
             // Coex path: WiFi promiscuous kept running — continue as-is.
         }
 
+#if !defined(CONFIG_BOARD_CYD2USB)
         int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(50));
         if (len > 0) {
             wardrive_gps_buffer[len] = '\0';
@@ -14726,6 +14839,7 @@ static void wardrive_promisc_task(void *pvParameters) {
             while (line != NULL) { parse_gps_nmea(line); line = strtok(NULL, "\r\n"); }
         }
 
+#endif
         if (!current_gps.valid) {
             if (g_gps_last_known.valid) {
                 // Hold last-known position — continue scanning without pausing
@@ -14737,12 +14851,14 @@ static void wardrive_promisc_task(void *pvParameters) {
                 ESP_LOGI(TAG, "[WDP] GPS fix lost (no last-known), pausing promisc...");
                 esp_wifi_set_promiscuous(false);
                 while (wardrive_active && !current_gps.valid) {
-                    len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
+#if !defined(CONFIG_BOARD_CYD2USB)
+                    int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
                     if (len > 0) {
                         wardrive_gps_buffer[len] = '\0';
                         char *l = strtok(wardrive_gps_buffer, "\r\n");
                         while (l) { parse_gps_nmea(l); l = strtok(NULL, "\r\n"); }
                     }
+#endif
                     vTaskDelay(pdMS_TO_TICKS(500));
                 }
                 if (!wardrive_active) break;
@@ -14812,7 +14928,7 @@ static void wardrive_promisc_task(void *pvParameters) {
         // In BLE-only mode, skip writing during scan to avoid SD DMA exhaustion
         // BLE devices will be flushed to CSV after wardrive stops
         if (g_wd_ble && wdp_ble_devices && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
-            int ble_cnt = wdp_ble_count;
+            int ble_cnt = wdp_ble_bounded_count();
             int ble_written = 0;
             for (int i = 0; i < ble_cnt; i++) {
                 if (wdp_ble_devices[i].written) continue;
@@ -14933,15 +15049,20 @@ static void wardrive_promisc_task(void *pvParameters) {
         ESP_LOGI(TAG, "[WDP] BLE coex scan stopped");
     }
 
+    __atomic_store_n(&wdp_ble_accepting, false, __ATOMIC_SEQ_CST);
+    if (nimble_port_initialized) bt_nimble_cleanup_bounded();
+    for (int i = 0; i < 30 && __atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST); ++i)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    bool ble_quiet = !__atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST);
     esp_wifi_set_promiscuous(false);
 
     if (sd_spi_mutex) xSemaphoreTake(sd_spi_mutex, portMAX_DELAY);
 
     // In BLE-only mode, flush all buffered BLE devices to CSV after scan stops
-    if (file && g_wd_radio_mode == WD_RADIO_BLE_ONLY && wdp_ble_devices) {
+    if (ble_quiet && file && g_wd_radio_mode == WD_RADIO_BLE_ONLY && wdp_ble_devices) {
         // Each device carries its own first-seen timestamp (captured at detection), so no
         // single flush-time stamp here.
-        int ble_cnt = wdp_ble_count;
+        int ble_cnt = wdp_ble_bounded_count();
         int ble_flushed = 0;
         for (int i = 0; i < ble_cnt; i++) {
             if (wdp_ble_devices[i].written) continue;
@@ -14977,16 +15098,8 @@ static void wardrive_promisc_task(void *pvParameters) {
     if (file) { fflush(file); fclose(file); }
     if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
 
-    if (wdp_ble_devices) {
-        heap_caps_free(wdp_ble_devices);
-        wdp_ble_devices = NULL;
-    }
-    wdp_ble_count = 0;
-
-    // If BLE was initialized via coex (WiFi never stopped), clean it up now.
-    if (wd_used_coex_ble && nimble_initialized) {
-        bt_nimble_deinit();
-    }
+    if (!wdp_ble_session_end())
+        ESP_LOGW(TAG, "Wardrive BLE cleanup pending; table/port retained safely");
 
     wardrive_active = false;
 
@@ -15005,21 +15118,19 @@ static void wardrive_promisc_task(void *pvParameters) {
         ensure_wifi_mode();  // driver was esp_wifi_deinit()'d, needs full wifi_cli_init()
     }
 
-    // Publish task-done LAST. The stop hook polls wardrive_task_handle==NULL as the
-    // "fully finished" signal; setting it only after the WiFi reinit above guarantees
-    // the stop hook's own restore then sees wifi_initialized==true and skips it — no
-    // double esp_wifi_init() -> 0x103 -> esp_restart race on top-Back teardown.
-    wardrive_task_handle = NULL;
-    vTaskDelete(NULL);
+    // Publish completion LAST and suspend: the observer deletes this static task
+    // and frees its stack only after eTaskGetState confirms suspension.
+    wardrive_task_finish();
 }
 
 // Timer callback for wardrive dashboard UI (every 1s)
 static void wd_ui_timer_cb(lv_timer_t *timer) {
     (void)timer;
     if (!wardrive_ui_active) return;
+    if (!wardrive_active && wd_ui_channel_label) lv_label_set_text(wd_ui_channel_label, "STOPPED");
 
     // In BLE-only mode the box shows a static "SCAN" (no D-UCB channel hopping) — don't overwrite it.
-    if (wd_ui_channel_label && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
+    if (wardrive_active && wd_ui_channel_label && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
         char wd_ch_buf[16];
         if (wdp_current_channel < 0)
             snprintf(wd_ch_buf, sizeof(wd_ch_buf), "BLE");
@@ -15060,7 +15171,7 @@ static void wd_ui_timer_cb(lv_timer_t *timer) {
     // (both sites write this label; a cap hit must be visible from either).
     if (wd_ui_ble_label) {
         char ble_buf[24];
-        if (wdp_ble_count >= WDP_BLE_MAX_DEVICES)
+        if (wdp_ble_capacity && (uint32_t)wdp_ble_count >= wdp_ble_capacity)
             snprintf(ble_buf, sizeof(ble_buf), "%d FULL", wdp_ble_count);
         else
             snprintf(ble_buf, sizeof(ble_buf), "%d", wdp_ble_count);
@@ -15074,7 +15185,7 @@ static void wd_ui_timer_cb(lv_timer_t *timer) {
         if (g_wd_radio_mode == WD_RADIO_BLE_ONLY) {
             // BLE dashboard: B | MAC | Name/Type | RSSI (4 cols, matches the header)
             lv_table_set_col_cnt(wd_ui_table, 4);
-            total = wdp_ble_count;
+            total = wdp_ble_bounded_count();
             show = (total > 50) ? 50 : total;
             start = total - show;
             lv_table_set_row_cnt(wd_ui_table, show > 0 ? show : 1);
@@ -15709,17 +15820,27 @@ static void wardrive_start_btn_cb(lv_event_t *e)
 
     wardrive_enable_log_capture();
 
+    wardrive_reap_task();
     if (wardrive_active || wardrive_task_handle != NULL) {
-        ESP_LOGI(TAG, "Wardrive already running");
+        ESP_LOGI(TAG, "Wardrive already running or cleanup pending");
         return;
     }
 
     ESP_LOGI(TAG, "Starting Wardrive (promisc+D-UCB)...");
     wardrive_active = true;
-
-    wardrive_task_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+    __atomic_store_n(&wardrive_task_done, false, __ATOMIC_SEQ_CST);
+    // ESP-IDF StackType_t is uint8_t; depth and allocation are BYTES on both SoCs.
+    // 4096-byte internal fallback remains pending physical high-water qualification.
+    uint32_t wd_stack_bytes = 8192;
+    wardrive_task_stack = (StackType_t *)heap_caps_malloc(wd_stack_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#if !CONFIG_BOARD_HAS_PSRAM
+    if (!wardrive_task_stack) {
+        wd_stack_bytes = 4096;
+        wardrive_task_stack = (StackType_t *)heap_caps_malloc(wd_stack_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+#endif
     if (wardrive_task_stack != NULL) {
-        wardrive_task_handle = xTaskCreateStatic(wardrive_task, "wardrive_task", 8192, NULL,
+        wardrive_task_handle = xTaskCreateStatic(wardrive_task, "wardrive_task", wd_stack_bytes, NULL,
             5, wardrive_task_stack, &wardrive_task_buffer);
         if (wardrive_task_handle == NULL) {
             ESP_LOGE(TAG, "Failed to create wardrive task");
@@ -15727,7 +15848,14 @@ static void wardrive_start_btn_cb(lv_event_t *e)
             wardrive_task_stack = NULL;
         }
     } else {
-        ESP_LOGE(TAG, "Failed to allocate wardrive task stack from PSRAM");
+        ESP_LOGE(TAG, "Failed to allocate wardrive task stack");
+    }
+    if (!wardrive_task_handle) {
+        wardrive_active = false;
+        wd_ui_update_flag = true;
+        ESP_LOGE(TAG, "Wardrive stopped: task allocation failed");
+        if (wd_ui_channel_label) lv_label_set_text(wd_ui_channel_label, "STOPPED");
+        return;
     }
 
     show_touch_dot = false;
@@ -15742,30 +15870,20 @@ static void wardrive_screen_stop(void)
         ESP_LOGI(TAG, "Stopping Wardrive...");
         wardrive_active = false;
 
-        // Wait up to 3 s: the task now publishes wardrive_task_handle=NULL only after
-        // its own WiFi reinit (~700 ms wifi_cli_init on a BLE-only exit), so 1 s could
-        // time out mid-reinit and force-delete the task inside esp_wifi_init(). Once the
-        // task clears the handle it has already restored WiFi (wifi_initialized==true),
-        // so the restore below is skipped and there is no double-init reset.
-        for (int i = 0; i < 60 && wardrive_task_handle != NULL; i++) {
+        // Bounded cooperative wait. The worker finishes radio/file cleanup, publishes
+        // done and suspends. Never force-delete it inside a driver or SD mutex call.
+        for (int i = 0; i < 60 && !__atomic_load_n(&wardrive_task_done, __ATOMIC_SEQ_CST); i++) {
             vTaskDelay(pdMS_TO_TICKS(50));
         }
         
-        if (wardrive_task_handle != NULL) {
-            vTaskDelete(wardrive_task_handle);
-            wardrive_task_handle = NULL;
-            // Free PSRAM stack
-            if (wardrive_task_stack != NULL) {
-                heap_caps_free(wardrive_task_stack);
-                wardrive_task_stack = NULL;
-            }
-        }
-        
+        if (!wardrive_reap_task())
+            ESP_LOGW(TAG, "Wardrive cleanup pending; running task/stack retained");
+
         ESP_LOGI(TAG, "Wardrive stopped");
     }
 
     // Restore WiFi if we stopped it for BLE-only mode
-    if (g_wd_radio_mode == WD_RADIO_BLE_ONLY && !wifi_initialized) {
+    if (!wardrive_task_handle && g_wd_radio_mode == WD_RADIO_BLE_ONLY && !wifi_initialized) {
         ESP_LOGI(TAG, "Wardrive BLE-only done: full WiFi reinit");
         ensure_wifi_mode();  // driver was esp_wifi_deinit()'d, needs full wifi_cli_init()
     }
@@ -17525,7 +17643,11 @@ static void home_btn_event_cb(lv_event_t *e)
     (void)e;
     // Send "reboot" command via UART (GPS UART port)
     const char *reboot_cmd = "reboot\n";
+#if !defined(CONFIG_BOARD_CYD2USB)
     uart_write_bytes(GPS_UART_NUM, reboot_cmd, strlen(reboot_cmd));
+#else
+    (void)reboot_cmd; // Classic GPS is RX-only; do not drive CH340/RF-HAT nets.
+#endif
     ESP_LOGI(TAG, "UART reboot command sent");
     
     // Navigate back to main tiles (radio_reset_to_idle called from show_menu)
@@ -24188,7 +24310,11 @@ static void wd_opts_gbaud_dd_cb(lv_event_t *e)
 static void wd_opts_save_cb(lv_event_t *e)
 {
     (void)e;
+#if defined(CONFIG_BOARD_HAS_5GHZ) && CONFIG_BOARD_HAS_5GHZ
     if (wd_opts_band_dd) g_wd_band = (wd_band_t)lv_dropdown_get_selected(wd_opts_band_dd);
+#else
+    g_wd_band = WD_BAND_24G;   /* single-option dropdown on 2.4 GHz-only boards */
+#endif
     if (wd_opts_pcap_sw) g_wd_pcap = lv_obj_has_state(wd_opts_pcap_sw, LV_STATE_CHECKED);
     if (wd_opts_radio_dd) g_wd_radio_mode = (wd_radio_mode_t)lv_dropdown_get_selected(wd_opts_radio_dd);
     if (wd_opts_adapt_sw) g_wd_adaptive = lv_obj_has_state(wd_opts_adapt_sw, LV_STATE_CHECKED);
@@ -24246,8 +24372,17 @@ static void show_wardrive_options_screen(void)
 
     // Band dropdown
     wd_opts_band_dd = lv_dropdown_create(content);
+#if defined(CONFIG_BOARD_HAS_5GHZ) && CONFIG_BOARD_HAS_5GHZ
     lv_dropdown_set_options(wd_opts_band_dd, "Both (2.4G + 5G)\n2.4 GHz only\n5 GHz only");
     lv_dropdown_set_selected(wd_opts_band_dd, (uint16_t)g_wd_band);
+#else
+    /* 2.4 GHz-only SoC (Classic CYD / Hosyond S3): no 5 GHz radio, so offer only
+       the 2.4 GHz choice. Single option = index 0, which would otherwise map to
+       WD_BAND_BOTH, so force the enum to WD_BAND_24G here and in the save cb. */
+    g_wd_band = WD_BAND_24G;
+    lv_dropdown_set_options(wd_opts_band_dd, "2.4 GHz only");
+    lv_dropdown_set_selected(wd_opts_band_dd, 0);
+#endif
     lv_obj_set_width(wd_opts_band_dd, lv_disp_get_hor_res(NULL) - 32);
     lv_obj_set_style_text_font(wd_opts_band_dd, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(wd_opts_band_dd, ui_text_color(), 0);
@@ -24272,7 +24407,11 @@ static void show_wardrive_options_screen(void)
 
     // Radio mode dropdown
     wd_opts_radio_dd = lv_dropdown_create(content);
+#if defined(CONFIG_BOARD_HAS_5GHZ) && CONFIG_BOARD_HAS_5GHZ
     lv_dropdown_set_options(wd_opts_radio_dd, "WiFi (2.4+5) only\nBLE only");
+#else
+    lv_dropdown_set_options(wd_opts_radio_dd, "WiFi 2.4\nBLE only");
+#endif
     lv_dropdown_set_selected(wd_opts_radio_dd, (uint16_t)g_wd_radio_mode);
     lv_obj_set_width(wd_opts_radio_dd, lv_disp_get_hor_res(NULL) - 32);
     lv_obj_set_style_text_font(wd_opts_radio_dd, &lv_font_montserrat_12, 0);
@@ -30670,12 +30809,24 @@ static lv_obj_t   *gps_info_lat_lbl  = NULL;
 static lv_obj_t   *gps_info_lon_lbl  = NULL;
 static lv_obj_t   *gps_info_alt_lbl  = NULL;
 static lv_obj_t   *gps_info_acc_lbl  = NULL;
+#if defined(CONFIG_BOARD_CYD2USB)
+static lv_obj_t *gps_info_uart_lbl = NULL;
+#endif
 
 static void gps_info_refresh_cb(lv_timer_t *t)
 {
     (void)t;
     if (!gps_info_fix_lbl || !lv_obj_is_valid(gps_info_fix_lbl)) return;
 
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (gps_info_uart_lbl && lv_obj_is_valid(gps_info_uart_lbl)) {
+        char info[96];
+        snprintf(info, sizeof(info), "UART%d %s IO%d=RX  RX-only\n%d baud - %s",
+                 GPS_UART_NUM, g_gps_rx_pin == 22 ? "CN1" : "P3/HAT", g_gps_rx_pin,
+                 g_gps_listen_baud, g_gps_uart_ready ? (g_gps_nmea_found ? "NMEA found" : "no valid NMEA") : "UART unavailable");
+        lv_label_set_text(gps_info_uart_lbl, info);
+    }
+#endif
     char buf[80];
     bool live  = current_gps.valid;
     bool stale = !live && g_gps_last_known.valid;
@@ -30766,6 +30917,9 @@ static void gps_info_stop(void)
     gps_info_fix_lbl = gps_info_time_lbl = gps_info_sat_lbl = NULL;
     gps_info_lat_lbl = gps_info_lon_lbl  = gps_info_alt_lbl = NULL;
     gps_info_acc_lbl = NULL;
+#if defined(CONFIG_BOARD_CYD2USB)
+    gps_info_uart_lbl = NULL;
+#endif
 }
 
 // ── Manual GPS position edit overlay ─────────────────────────────────────────
@@ -31166,9 +31320,17 @@ static void show_gps_info_screen(void)
 
     // UART config — baud reflects the configured GPS baud (Wardrive Options)
     lv_obj_t *uart_lbl = lv_label_create(card);
+#if defined(CONFIG_BOARD_CYD2USB)
+    gps_info_uart_lbl = uart_lbl;
+    char uart_info[96];
+    snprintf(uart_info, sizeof(uart_info), "UART%d %s IO%d=RX  RX-only\n%d baud - %s",
+             GPS_UART_NUM, g_gps_rx_pin == 22 ? "CN1" : "P3/HAT", g_gps_rx_pin,
+             g_gps_listen_baud, g_gps_nmea_found ? "NMEA found" : "no valid NMEA");
+#else
     char uart_info[64];
     snprintf(uart_info, sizeof(uart_info), "UART%d  IO%d=RX  IO%d=TX\n%d baud  ATGM336",
              GPS_UART_NUM, GPS_RX_PIN, GPS_TX_PIN, g_wd_gps_baud);
+#endif
     lv_label_set_text(uart_lbl, uart_info);
     lv_obj_set_style_text_font(uart_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(uart_lbl, ui_muted_color(), 0);
@@ -41463,6 +41625,10 @@ static volatile uint32_t g_gga_parses = 0;
 // is computed here so it is always correct regardless of the body string.
 static void gps_send_pcas(const char *body)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    return; // no output matrix attachment and no UART TX on Classic
+#endif
+
 	uint8_t cs = 0;
 	for (const char *p = body; *p; p++) cs ^= (uint8_t)*p;
 	char cmd[48];
@@ -41489,6 +41655,10 @@ static int s_gps_applied_hz = 1;
 // No-op (no UART traffic) when the requested rate equals the current rate.
 static void gps_set_update_rate_hz(int hz)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    (void)hz; return; // no PCAS/PMTK/UBX rate writes on Classic
+#endif
+
 	int want = (hz >= 5) ? 5 : (hz >= 2) ? 2 : 1;
 	if (want == s_gps_applied_hz) return;   // already at this rate — send nothing
 	int ms = (want == 5) ? 200 : (want == 2) ? 500 : 1000;
@@ -41526,6 +41696,10 @@ static int s_gps_applied_baud = 9600;
 // that are not u-blox see this as noise between NMEA sentences and drop it.
 static void gps_send_ubx(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    return; // no output matrix attachment and no UART TX on Classic
+#endif
+
 	uint8_t buf[32];
 	if ((size_t)len + 8 > sizeof(buf)) return;
 	buf[0] = 0xB5; buf[1] = 0x62; buf[2] = cls; buf[3] = id;
@@ -41586,6 +41760,33 @@ static void gps_send_baud_cmds(int target)
 // the module is running at X. Window must exceed one 1 Hz burst period.
 static bool gps_probe_nmea(int baud, int window_ms)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+
+    if (uart_set_baudrate(GPS_UART_NUM, baud) != ESP_OK ||
+        uart_flush_input(GPS_UART_NUM) != ESP_OK) return false;
+    int64_t end = esp_timer_get_time() + (int64_t)window_ms * 1000;
+    char frame[256]; size_t used = 0;
+    uint8_t chunk[128];
+    while (esp_timer_get_time() < end) {
+        int n = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), pdMS_TO_TICKS(100));
+        if (n < 0) return false;
+        for (int i = 0; i < n; ++i) {
+            char c = (char)chunk[i];
+            if (c == '$') { used = 0; frame[used++] = c; }
+            else if (c == '\r' || c == '\n') {
+                frame[used] = 0;
+                if (used >= 10 && frame[1] == 'G' && frame[6] == ',' && nmea_checksum_valid(frame)) return true;
+                used = 0;
+            } else if (used) {
+                if (used < sizeof(frame) - 1) frame[used++] = c;
+                else used = 0;
+            }
+        }
+    }
+    return false;
+
+#else
+
 	uart_set_baudrate(GPS_UART_NUM, baud);
 	uart_flush_input(GPS_UART_NUM);
 	int64_t end = esp_timer_get_time() + (int64_t)window_ms * 1000;
@@ -41596,6 +41797,8 @@ static bool gps_probe_nmea(int baud, int window_ms)
 			if (buf[i] == '$' && buf[i + 1] == 'G') return true; // $GPxxx / $GNxxx
 	}
 	return false;
+
+#endif
 }
 
 // Find the module's ACTUAL baud and make our UART + the module agree on the
@@ -41658,6 +41861,10 @@ static void gps_autodetect_and_sync(void)
 // Only 9600 and 115200 are offered (38400 was measured to silently stay at 1 Hz).
 static bool gps_apply_baud_live(int target)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    (void)target; return false; // RX-only: UI must not claim a commanded baud change
+#endif
+
 	if (target != 9600 && target != 115200) target = 9600;
 	if (target == s_gps_applied_baud) { g_wd_gps_baud = target; return true; }   // already there
 
@@ -41703,8 +41910,137 @@ static void gps_load_baud_setting(void)
 	nvs_close(h);
 }
 
+#if defined(CONFIG_BOARD_CYD2USB)
+static esp_err_t gps_classic_attach_rx(int rx)
+{
+#if CONFIG_BOARD_HAS_RF_HAT
+    if (rx == 22) return ESP_ERR_INVALID_STATE; // GPIO22/27 reserved for RF-HAT throughout
+#endif
+    if (rx != GPS_RX_PIN && rx != 22) return ESP_ERR_INVALID_ARG;
+    // Reset disables output and selects GPIO function; NO_CHANGE is not disconnect.
+    // UART2 TX has never been attached by this single-owner Classic path.
+    // UART2 TX is never attached. GPIO3/CH340 output is not driven by this firmware.
+    esp_err_t err = gpio_reset_pin((gpio_num_t)rx);
+    if (err == ESP_OK) err = gpio_set_direction((gpio_num_t)rx, GPIO_MODE_INPUT);
+    if (err == ESP_OK) err = uart_set_pin(GPS_UART_NUM, UART_PIN_NO_CHANGE, rx,
+                                         UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    if (err == ESP_OK) g_gps_rx_pin = rx;
+    return err;
+}
+
+// Retain split frames across main-loop reads. Late modules are detected with bounded,
+// nonblocking baud/route windows until valid NMEA; no PCAS writes or new parser.
+static void gps_classic_poll(void)
+{
+    if (!g_gps_uart_ready) return;
+    static size_t used = 0;
+    static int candidate = 0;
+    static int64_t window_end = 0;
+    const int bauds[] = { g_wd_gps_baud, 115200, 38400, 9600 };
+    uint8_t chunk[128];
+    int n = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), 0);
+    if (n < 0) { ESP_LOGW(TAG, "Classic GPS UART read error"); return; }
+    for (int i = 0; i < n; ++i) {
+        char c = (char)chunk[i];
+        if (c == '$') { used = 0; gps_rx_buffer[used++] = c; }
+        else if (c == '\r' || c == '\n') {
+            gps_rx_buffer[used] = 0;
+            if (used >= 10 && gps_rx_buffer[1] == 'G' && gps_rx_buffer[6] == ',' && nmea_checksum_valid(gps_rx_buffer)) {
+                g_gps_nmea_found = true;
+                g_gps_uart_data_seen = true;
+                g_wd_gps_baud = s_gps_applied_baud;
+                parse_gps_nmea(gps_rx_buffer);
+            }
+            used = 0;
+        } else if (used) {
+            if (used < sizeof(gps_rx_buffer)-1) gps_rx_buffer[used++] = c;
+            else used = 0;
+        }
+    }
+    if (!g_gps_nmea_found && esp_timer_get_time() >= window_end) {
+        // Give each receive window >=1 Hz burst period. Stay RX-only even when absent.
+        int rx = GPS_RX_PIN;
+#if !CONFIG_BOARD_HAS_RF_HAT
+        if ((candidate / 4) % 2) rx = 22;
+#endif
+        int baud = bauds[candidate % 4];
+        if (gps_classic_attach_rx(rx) == ESP_OK && uart_set_baudrate(GPS_UART_NUM, baud) == ESP_OK) {
+            uart_flush_input(GPS_UART_NUM);
+            s_gps_applied_baud = baud;
+            g_gps_listen_baud = baud;
+            used = 0;
+        }
+        candidate = (candidate + 1) % 8;
+        window_end = esp_timer_get_time() + 1300000;
+    }
+}
+#endif
+
 static esp_err_t init_gps_uart(void)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+
+	gps_load_baud_setting();   // must precede gps_autodetect_and_sync()
+	uart_config_t uart_config = {
+		.baud_rate = 9600,
+		.data_bits = UART_DATA_8_BITS,
+		.parity = UART_PARITY_DISABLE,
+		.stop_bits = UART_STOP_BITS_1,
+		.flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+		.source_clk = UART_SCLK_DEFAULT,
+	};
+
+    esp_err_t err;
+    bool installed = false;
+    if ((err = uart_driver_install(GPS_UART_NUM, GPS_BUF_SIZE * 2, 0, 0, NULL, 0)) != ESP_OK) return err;
+    installed = true;
+    if ((err = uart_param_config(GPS_UART_NUM, &uart_config)) != ESP_OK) goto fail;
+#if defined(CONFIG_BOARD_CYD2USB)
+    // Preserve physically proven UART2 RX GPIO1; CN1 RX22 is co-developer-reported.
+    // RF-HAT GPIO22/27 must remain reserved. Never attach TX3 or TX27 during/after probes.
+    const int bauds[] = { g_wd_gps_baud, 115200, 38400, 9600 };
+    const int routes[] = { GPS_RX_PIN, 22 };
+    for (unsigned r = 0; r < sizeof(routes)/sizeof(routes[0]) && !g_gps_nmea_found; ++r) {
+#if CONFIG_BOARD_HAS_RF_HAT
+        if (routes[r] == 22) continue;
+#endif
+        if ((err = gps_classic_attach_rx(routes[r])) != ESP_OK) goto fail;
+        for (unsigned b = 0; b < sizeof(bauds)/sizeof(bauds[0]); ++b) {
+            bool dup = false;
+            for (unsigned j = 0; j < b; ++j) if (bauds[j] == bauds[b]) dup = true;
+            if (!dup && gps_probe_nmea(bauds[b], 1300)) {
+                g_gps_nmea_found = true; g_gps_uart_data_seen = true;
+                s_gps_applied_baud = bauds[b]; g_wd_gps_baud = bauds[b];
+                break;
+            }
+        }
+    }
+    if (!g_gps_nmea_found) {
+        if ((err = gps_classic_attach_rx(GPS_RX_PIN)) != ESP_OK) goto fail;
+        if ((err = uart_set_baudrate(GPS_UART_NUM, g_wd_gps_baud)) != ESP_OK) goto fail;
+        s_gps_applied_baud = g_wd_gps_baud;
+    }
+    g_gps_listen_baud = s_gps_applied_baud;
+    g_gps_uart_ready = true;
+    ESP_LOGI(TAG, "Classic GPS UART2 RX=%d TX=disabled: %s; %d baud",
+             g_gps_rx_pin, g_gps_nmea_found ? "valid NMEA" : "no valid NMEA", s_gps_applied_baud);
+#else
+    if ((err = uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE)) != ESP_OK) goto fail;
+    gps_autodetect_and_sync();
+    gps_send_pcas("PCAS02,1000");
+    s_gps_applied_hz = 1;
+#endif
+    return ESP_OK;
+fail:
+#if defined(CONFIG_BOARD_CYD2USB)
+    gpio_reset_pin((gpio_num_t)g_gps_rx_pin);
+    g_gps_uart_ready = false; g_gps_nmea_found = false; g_gps_uart_data_seen = false;
+#endif
+    if (installed) uart_driver_delete(GPS_UART_NUM);
+    return err;
+
+#else
+
 	gps_load_baud_setting();   // must precede gps_autodetect_and_sync()
 	uart_config_t uart_config = {
 		.baud_rate = 9600,
@@ -41735,10 +42071,28 @@ static esp_err_t init_gps_uart(void)
 	gps_send_pcas("PCAS02,1000");
 	s_gps_applied_hz = 1;
 	return ESP_OK;
+
+#endif
 }
 
 static bool nmea_checksum_valid(const char *sentence)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+
+    if (!sentence || sentence[0] != '$') return false;
+    const char *star = strchr(sentence, '*');
+    if (!star || star - sentence < 2 || !star[1] || !star[2] || star[3] != '\0') return false;
+    if (!((star[1] >= '0' && star[1] <= '9') || (star[1] >= 'A' && star[1] <= 'F') || (star[1] >= 'a' && star[1] <= 'f')) ||
+        !((star[2] >= '0' && star[2] <= '9') || (star[2] >= 'A' && star[2] <= 'F') || (star[2] >= 'a' && star[2] <= 'f'))) return false;
+    uint8_t checksum = 0;
+    for (const char *p = sentence + 1; p < star; ++p) checksum ^= (uint8_t)*p;
+    char hex[3] = { star[1], star[2], '\0' };
+    char *end = NULL;
+    unsigned long expected = strtoul(hex, &end, 16);
+    return end == hex + 2 && checksum == (uint8_t)expected;
+
+#else
+
     if (!sentence || sentence[0] != '$') return false;
     const char *star = strchr(sentence, '*');
     if (!star || star - sentence < 2 || !star[1] || !star[2]) return false;
@@ -41748,6 +42102,8 @@ static bool nmea_checksum_valid(const char *sentence)
     char *end = NULL;
     unsigned long expected = strtoul(hex, &end, 16);
     return end == hex + 2 && checksum == (uint8_t)expected;
+
+#endif
 }
 
 static bool parse_gps_nmea(const char *nmea_sentence)
@@ -42552,6 +42908,8 @@ static void evil_twin_start_btn_cb(lv_event_t *e)
  */
 static bool ensure_wifi_mode(void)
 {
+    // A sync failure does not relinquish controller/host ownership.
+    if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return false;
     switch (current_radio_mode) {
         case RADIO_MODE_WIFI:
             // Already in WiFi mode
@@ -42640,8 +42998,8 @@ static bool ensure_ble_mode(void)
 {
     switch (current_radio_mode) {
         case RADIO_MODE_BLE:
-            // Already in BLE mode
-            return true;
+            // Radio mode alone does not establish synchronization.
+            return nimble_initialized && !nimble_stop_requested;
             
         case RADIO_MODE_NONE:
             // Initialize BLE
@@ -43295,7 +43653,7 @@ static void _ot_ble_dwell_end(void)
 static void bt_on_sync(void)
 {
     ESP_LOGI(TAG, "BLE Host synchronized");
-    nimble_initialized = true;
+    if (!__atomic_load_n(&nimble_stop_requested, __ATOMIC_SEQ_CST)) nimble_initialized = true;
 }
 
 /**
@@ -43310,11 +43668,64 @@ static void bt_on_reset(int reason)
 /**
  * NimBLE host task
  */
+// The installed SDK stop wrapper waits forever twice. Own the checked host task
+// and use its asynchronous host-stop listener instead, with an exit acknowledgement.
+static void nimble_stop_cb(int status, void *arg)
+{
+    (void)arg;
+    if (status == 0) __atomic_store_n(&nimble_stop_complete, true, __ATOMIC_SEQ_CST);
+}
+
 static void nimble_host_task(void *param)
 {
-    ESP_LOGI(TAG, "NimBLE host task started");
-    nimble_port_run();
-    nimble_port_freertos_deinit();
+    (void)param;
+    bool stop_started = false;
+    for (;;) {
+        if (__atomic_load_n(&nimble_stop_requested, __ATOMIC_SEQ_CST) && !stop_started) {
+            stop_started = true;
+            int rc = ble_hs_stop(&nimble_stop_listener, nimble_stop_cb, NULL);
+            if (rc == BLE_HS_EALREADY)
+                __atomic_store_n(&nimble_stop_complete, true, __ATOMIC_SEQ_CST);
+            else if (rc != 0)
+                ESP_LOGE(TAG, "NimBLE asynchronous stop failed: %d; retaining live port", rc);
+        }
+        if (__atomic_load_n(&nimble_stop_complete, __ATOMIC_SEQ_CST)) break;
+        struct ble_npl_event *ev = ble_npl_eventq_get(nimble_port_get_dflt_eventq(),
+                                                     ble_npl_time_ms_to_ticks32(100));
+        if (ev) ble_npl_event_run(ev);
+    }
+    // No port access beyond this point. Task-owned stack is reclaimed by FreeRTOS.
+    __atomic_store_n(&nimble_host_exited, true, __ATOMIC_SEQ_CST);
+    vTaskDelete(NULL);
+}
+
+static bool bt_nimble_cleanup_bounded(void)
+{
+    if (!nimble_port_initialized) return true;
+    if (nimble_deinit_failed) return false;
+    if (__atomic_test_and_set(&nimble_cleanup_busy, __ATOMIC_SEQ_CST)) return false;
+    bt_scan_active = false;
+    if (nimble_initialized) bt_stop_scan();
+    for (int i = 0; i < 20 && bt_scan_task_handle; ++i) vTaskDelay(pdMS_TO_TICKS(100));
+    if (bt_scan_task_handle) {
+        __atomic_clear(&nimble_cleanup_busy, __ATOMIC_SEQ_CST);
+        return false; // worker can still enter host APIs; retain the whole port
+    }
+    __atomic_store_n(&nimble_stop_requested, true, __ATOMIC_SEQ_CST);
+    nimble_initialized = false;
+    for (int i = 0; i < 30 && !__atomic_load_n(&nimble_host_exited, __ATOMIC_SEQ_CST); ++i)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    bool ok = __atomic_load_n(&nimble_host_exited, __ATOMIC_SEQ_CST);
+    if (ok) {
+        esp_err_t rc = nimble_port_deinit();
+        ok = rc == ESP_OK;
+        if (ok) { nimble_port_initialized = false; nimble_host_handle = NULL; }
+        else { nimble_deinit_failed = true; ESP_LOGE(TAG, "NimBLE deinit failed: %d; ownership retained, restart blocked", rc); }
+    } else {
+        ESP_LOGE(TAG, "NimBLE stop pending; live host/port retained, radio reuse blocked");
+    }
+    __atomic_clear(&nimble_cleanup_busy, __ATOMIC_SEQ_CST);
+    return ok;
 }
 
 // Apply BLE TX power for the current power mode.
@@ -43338,16 +43749,21 @@ static void apply_ble_power_settings(void)
  */
 static esp_err_t bt_nimble_init(void)
 {
-    if (nimble_initialized) {
+    if (nimble_initialized && !nimble_stop_requested) {
         return ESP_OK;
     }
     
+    if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return ESP_ERR_INVALID_STATE;
+    __atomic_store_n(&nimble_stop_requested, false, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&nimble_stop_complete, false, __ATOMIC_SEQ_CST);
     esp_err_t ret = nimble_port_init();
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "NimBLE port init failed: %d", ret);
         return ret;
     }
     
+    nimble_port_initialized = true;
+
     // Configure BLE host callbacks
     ble_hs_cfg.sync_cb = bt_on_sync;
     ble_hs_cfg.reset_cb = bt_on_reset;
@@ -43373,7 +43789,14 @@ static esp_err_t bt_nimble_init(void)
         honeypair_register_services();
 
     // Start NimBLE host task
-    nimble_port_freertos_init(nimble_host_task);
+    __atomic_store_n(&nimble_host_exited, false, __ATOMIC_SEQ_CST);
+    if (xTaskCreatePinnedToCore(nimble_host_task, "nimble_host",
+            CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES - 4,
+            &nimble_host_handle, CONFIG_BT_NIMBLE_PINNED_TO_CORE) != pdPASS) {
+        __atomic_store_n(&nimble_host_exited, true, __ATOMIC_SEQ_CST);
+        bt_nimble_cleanup_bounded(); // safe: no task ever started
+        return ESP_ERR_NO_MEM;
+    }
     
     // Wait for sync (max 3 seconds)
     for (int i = 0; i < 30 && !nimble_initialized; i++) {
@@ -43382,6 +43805,7 @@ static esp_err_t bt_nimble_init(void)
     
     if (!nimble_initialized) {
         ESP_LOGE(TAG, "NimBLE failed to sync");
+        bt_nimble_cleanup_bounded();
         return ESP_FAIL;
     }
     apply_ble_power_settings();
@@ -43394,7 +43818,7 @@ static esp_err_t bt_nimble_init(void)
  */
 static void bt_nimble_deinit(void)
 {
-    if (!nimble_initialized) {
+    if (!nimble_port_initialized) {
         return;
     }
     
@@ -43409,19 +43833,9 @@ static void bt_nimble_deinit(void)
         }
     }
     
-    // Stop NimBLE host task
-    nimble_port_stop();
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Deinitialize NimBLE port (also deinits BLE controller)
-    nimble_port_deinit();
-
-    /* Let the BLE controller finish radio handover before WiFi restarts.
-     * 200 ms is enough for PHY cleanup; memory fragmentation is no longer
-     * an issue because WiFi DMA buffers are never freed on the BLE switch. */
+    // Async stop also covers initialized-but-never-synced hosts.
+    if (!bt_nimble_cleanup_bounded()) return;
     vTaskDelay(pdMS_TO_TICKS(200));
-
-    nimble_initialized = false;
     ESP_LOGI(TAG, "NimBLE stopped");
 }
 

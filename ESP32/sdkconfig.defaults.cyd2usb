@@ -33,9 +33,9 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_BOARD_CYD2USB=y
 
 # Console separation for the dual-USB Classic CYD.
-# The second Micro-USB/CH340 and P1 JST share the GPS UART path, so production
+# The second Micro-USB/CH340 and P3 JST share the GPS UART path, so production
 # firmware sends no bootloader or application logs there. Programming and JTAG
-# debugging use the primary USB-C path; P1 remains dedicated to external GPS.
+# debugging use the primary USB-C path; P3 remains dedicated to external GPS.
 CONFIG_ESP_CONSOLE_NONE=y
 # CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
 CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contracts for Classic CYD external GPS on the P1 UART expansion JST."""
+"""Contracts for Classic CYD external GPS on the P3 UART expansion JST."""
 from pathlib import Path
 import re
 import unittest
@@ -23,13 +23,11 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
     def test_classic_rx_pin_is_input_before_uart2_attach(self):
         # GPIO1 is the Bruce/HaleHound Classic UART2 RX path. Establish input mode
         # explicitly before attaching the UART input matrix.
-        self.assertRegex(
-            MAIN,
-            r"#if defined\(CONFIG_BOARD_CYD2USB\)\s+"
-            r"(?:/\*.*?\*/|//[^\n]*\n|\s)*"
-            r"if \(\(err = gpio_set_direction\(\(gpio_num_t\)GPS_RX_PIN, GPIO_MODE_INPUT\)\) != ESP_OK\) return err;\s+"
-            r"#endif\s+if \(\(err = uart_set_pin",
-        )
+        self.assertIn('static esp_err_t gps_classic_attach_rx(int rx)', MAIN)
+        helper = MAIN[MAIN.index('static esp_err_t gps_classic_attach_rx(int rx)'):]
+        self.assertLess(helper.index('GPIO_MODE_INPUT'), helper.index('uart_set_pin('))
+        self.assertIn('UART_PIN_NO_CHANGE, rx', helper)
+        self.assertIn('gpio_reset_pin((gpio_num_t)rx)', helper)
 
     def test_gps_preserves_rf_hat_control_pins(self):
         def value(name):
@@ -81,17 +79,17 @@ class ClassicCydGpsDocumentationContract(unittest.TestCase):
         row = next(line for line in README.splitlines() if "**Classic CYD**" in line)
         self.assertNotIn("no GPS", row)
         self.assertIn("external GPS", row)
-        self.assertIn("P1 UART expansion JST", row)
+        self.assertIn("P3 UART expansion JST", row)
 
     def test_wiring_guide_documents_console_and_gps_connections(self):
         self.assertTrue(GUIDE_PATH.exists(), "Classic CYD GPS wiring guide must exist")
         guide = GUIDE_PATH.read_text() if GUIDE_PATH.exists() else ""
-        for text in ("primary USB-C", "second Micro-USB", "P1 UART expansion JST",
+        for text in ("primary USB-C", "second Micro-USB", "P3 UART expansion JST",
                      "GPIO1", "GPIO3", "GPS TX", "GPS RX", "ATGM336H",
                      "onboard voltage regulator", "accepts either supply",
                      "power-interchangeable"):
             self.assertIn(text, guide)
-        self.assertIn("GPS TX to P1 TX/GPIO1", guide)
+        self.assertIn("GPS TX to P3 TX/GPIO1", guide)
         self.assertIn("UART2 RX on GPIO1 and TX on GPIO3", guide)
 
     def test_universal_clock_no_longer_claims_classic_has_no_gps(self):

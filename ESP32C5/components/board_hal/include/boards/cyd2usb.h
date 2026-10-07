@@ -72,12 +72,12 @@
 #define BOARD_RFHAT_PIN_A       22    // GPIO22 — FPC2 Pin 7 via SD Card Shim
 #define BOARD_RFHAT_PIN_B       27    // GPIO27 — FPC2 Pin 9 via SD Card Shim
 
-// ── External GPS on the P1 UART expansion JST ──────────────────────────────────
+// ── External GPS on the P3 UART expansion JST ──────────────────────────────────
 // Match the physically proven Bruce and HaleHound Classic contract:
-//   GPS TX -> P1 TX-labelled signal / ESP GPIO1 (UART2 RX)
-//   GPS RX <- P1 RX-labelled signal / ESP GPIO3 (UART2 TX; optional for NMEA-only)
+//   GPS TX -> P3 TX-labelled signal / ESP GPIO1 (UART2 RX)
+//   GPS RX <- P3 RX-labelled signal / ESP GPIO3 (UART2 TX; optional for NMEA-only)
 // UART2 is deliberate: both working reference firmwares use the ESP32's third
-// UART peripheral on these GPIO-matrix pins rather than UART1. The P1/second-
+// UART peripheral on these GPIO-matrix pins rather than UART1. The P3/second-
 // Micro-USB path carries no CYM console. NM-RF-HAT remains on SPI plus
 // GPIO22/GPIO27.
 #define BOARD_HAS_GPS           1
