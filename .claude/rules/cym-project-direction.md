@@ -2,7 +2,7 @@
 
 ## Identity and boundary
 
-CYM (Cheap Yellow Monster / CYM Laboratorium) remains its own existing multi-board firmware project. ESM (Electro Magnetic Monster) is a separate, independently developed proprietary PinZero Labs flagship, not a CYM rename, a Tab5 fork, or an instruction to merge donor repositories. Work on CYM only changes CYM unless Jim explicitly authorizes another project's scope. Shared concepts do not grant source/artwork reuse rights.
+CYM (Cheap Yellow Monster / CYM Laboratorium) remains its own existing multi-board firmware project. ESM (Electromagnetic Spectrum Monster) is a separate, independently developed proprietary PinZero Labs flagship, not a CYM rename, a Tab5 fork, or an instruction to merge donor repositories. Work on CYM only changes CYM unless Jim explicitly authorizes another project's scope. Shared concepts do not grant source/artwork reuse rights.
 
 ## Requested added tools
 
