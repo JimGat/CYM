@@ -73,6 +73,12 @@
 #ifndef BOARD_HAS_BATTERY_ADC
 #define BOARD_HAS_BATTERY_ADC 0
 #endif
+// Boards whose battery-sense line is on the CH32V003 IO-expander ADC (EXIO_ADC)
+// rather than an ESP32 GPIO set this to 1. main.c then reads the level via
+// custom_io_expander_get_adc() instead of the ESP32 oneshot ADC path.
+#ifndef BOARD_BATTERY_VIA_EXPANDER
+#define BOARD_BATTERY_VIA_EXPANDER 0
+#endif
 #ifndef BOARD_BATTERY_ADC_GPIO
 #define BOARD_BATTERY_ADC_GPIO -1
 #endif
@@ -81,6 +87,12 @@
 #endif
 #ifndef BOARD_BATTERY_DIVIDER_DEN
 #define BOARD_BATTERY_DIVIDER_DEN 1
+#endif
+// Per-board linear calibration multiplier applied to the computed battery voltage,
+// to absorb ADC-reference and divider-tolerance error measured against a multimeter.
+// 1.0 = no correction (default).
+#ifndef BOARD_BATTERY_CAL_SCALE
+#define BOARD_BATTERY_CAL_SCALE 1.0f
 #endif
 #ifndef BOARD_RGB_PIN
 #ifdef BOARD_RGB_LED_GPIO

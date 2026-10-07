@@ -691,11 +691,25 @@ static int g_vibtest_strength_pct = 100;
 // scaling are supplied by the active board profile; unsupported boards never init it.
 #define BATTERY_ADC_ATTEN              ADC_ATTEN_DB_12
 #define BATTERY_ADC_SAMPLES            32
-#define BATTERY_UPDATE_INTERVAL_MS     30000   // 30 seconds
+#define BATTERY_UPDATE_INTERVAL_MS     10000   // 10 seconds (change detected within ~10s)
 
 // Battery voltage thresholds
 #define BATTERY_VOLTAGE_CRITICAL  2.0f   // Below this: no battery symbol
-#define BATTERY_VOLTAGE_CHARGING  4.8f   // Above this: charging (lightning symbol)
+#define BATTERY_VOLTAGE_CHARGING  4.8f   // (legacy; charging not detectable on VBAT boards)
+#define BATTERY_VOLTAGE_FULL      4.15f  // At/above this: reliably full -> green FULL badge
+
+// Battery level percent thresholds (single Li-ion cell). Colour bands map to the
+// user's three zones: low (red, blinks when very low) / mid (amber) / full (green).
+#define BATTERY_PCT_CRITICAL      10     // <= this: red + blink
+#define BATTERY_PCT_LOW           25     // <= this: red (low zone)
+#define BATTERY_PCT_MID           65     // <= this: amber (mid zone); above: green
+#define BATTERY_BLINK_PERIOD_MS   500    // blink half-period when critical
+
+// Battery indicator colours (explicit hex so this block is palette-independent).
+#define BATTERY_COLOR_FULL        lv_color_hex(0x4CAF50)  // green
+#define BATTERY_COLOR_MID         lv_color_hex(0xFFB300)  // amber
+#define BATTERY_COLOR_LOW         lv_color_hex(0xFF5252)  // red
+#define BATTERY_COLOR_CHARGE      lv_color_hex(0x52B6FF)  // blue
 
 // ============================================================================
 // Dark / Light dual palette (LAB5 theme)
@@ -2786,6 +2800,14 @@ static bool bt_tracking_mode = false;
 // Battery voltage monitor state (DISABLED - using regular C5 chip)
 static lv_obj_t *battery_label = NULL;  // Keep for UI layout
 static char last_voltage_str[32] = "";  // Empty = no valid reading, hide label
+// Level/colour/blink state shared between the 30s monitor task (computes) and the
+// 500ms blink timer (renders colour + critical blink on battery_label).
+static lv_color_t last_batt_color;              // colour for current level
+static volatile bool batt_color_valid = false;  // last_batt_color has been set
+static volatile bool batt_is_critical = false;   // blink when true
+static volatile bool batt_is_charging = false;   // steady blue, no blink
+static bool          batt_blink_phase = false;    // toggled by blink timer
+static lv_timer_t   *s_batt_blink_timer = NULL;   // 500ms, created once
 static adc_oneshot_unit_handle_t battery_adc_handle = NULL;
 static adc_cali_handle_t battery_adc_cali_handle = NULL;
 static adc_unit_t battery_adc_unit = ADC_UNIT_1;
@@ -7051,11 +7073,28 @@ static void create_home_ui(void)
     lv_label_set_recolor(title_label, true);
     lv_label_set_text(title_label, "#FFEB3B CYM# Laboratorium");
     lv_obj_set_style_text_color(title_label, ui_text_color(), 0);
-    // Centered on the bar, but in portrait's 240px the long title's last letter still tucks
-    // just under the GPS icon, so nudge it a little left of the right cluster in portrait only.
-    // Landscape's 320px has ample room -> keep it dead-center (0).
-    bool tb_landscape = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
-    lv_obj_align(title_label, LV_ALIGN_CENTER, tb_landscape ? 0 : -8, 0);
+    // Landscape's wide bar has ample room -> keep the title dead-center. Portrait's 240px
+    // does NOT: centered, the long title runs under the right-side cluster (battery % + GPS +
+    // Go Dark) and overlaps/hides the battery label (which is why the home battery was missing
+    // in portrait while it showed on sub-pages). In portrait, shrink to the sub-page title font
+    // and hold the title in a bounded box on the left so the right cluster has clear space.
+    // Right-side cluster on the home bar = battery (left edge ~103px from the right) + GPS
+    // + Go Dark. A wide bar (Hosyond 480) has room to dead-centre the full-size title; a
+    // narrow bar (WS 240 portrait / 320 landscape) does NOT -- centred, the long title runs
+    // under the battery/FULL badge. So on narrow bars bound the title to the space left of
+    // that cluster and centre the text within the box.
+    int hb_hor = lv_disp_get_hor_res(NULL);
+    if (hb_hor >= 400) {
+        lv_obj_align(title_label, LV_ALIGN_CENTER, 0, 0);
+    } else {
+        lv_obj_set_style_text_font(title_label, &lv_font_montserrat_12, 0);
+        int hb_w = hb_hor - 112;
+        if (hb_w < 100) hb_w = 100;
+        lv_obj_set_width(title_label, hb_w);
+        lv_label_set_long_mode(title_label, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(title_label, LV_ALIGN_LEFT_MID, 4, 0);
+    }
     lv_obj_add_flag(title_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(title_label, screenshot_btn_event_cb, LV_EVENT_CLICKED, NULL);
 
@@ -17196,10 +17235,14 @@ static void create_function_page_base(const char *name)
     lv_obj_set_style_text_color(page_title_label, ui_text_color(), 0);
     // One step smaller than the default title font so longer names don't run into the icons.
     lv_obj_set_style_text_font(page_title_label, &lv_font_montserrat_12, 0);
-    // Two icons each side (home+back left, battery+go-dark right) → center the title on the
-    // bar. Width is held clear of the back button (left edge ~x=64) and the battery (right).
-    lv_obj_set_width(page_title_label, 108);
-    lv_obj_align(page_title_label, LV_ALIGN_CENTER, 0, 0);
+    // Home+Back occupy the left (~x=64); battery + GPS + Go Dark occupy the right (~112px).
+    // Bound the title to the middle gap and centre the text in it so that on narrow bars
+    // (WS 240 portrait / 320 landscape) it never overlaps the battery label.
+    int ptb_hor = lv_disp_get_hor_res(NULL);
+    int ptb_title_w = ptb_hor - 68 - 112;
+    if (ptb_title_w < 40) ptb_title_w = 40;
+    lv_obj_set_width(page_title_label, ptb_title_w);
+    lv_obj_align(page_title_label, LV_ALIGN_LEFT_MID, 68, 0);
     lv_obj_set_style_text_align(page_title_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(page_title_label, LV_LABEL_LONG_DOT);
 
@@ -17210,12 +17253,15 @@ static void create_function_page_base(const char *name)
     lv_label_set_text(battery_label, last_voltage_str);
     lv_obj_set_style_text_color(battery_label, ui_muted_color(), 0);
     lv_obj_set_style_text_font(battery_label, &lv_font_montserrat_12, 0);
-    // Sits just left of the Go Dark button (now flush far-right, x=0 w=30).
-    lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -32, 0);
+    // Battery sits LEFT of the GPS icon (which is at -34), not on top of it. The original
+    // -32 overlapped the GPS slot -- fine when the battery was hidden (NM-CYD-C5 has no
+    // battery ADC) but on WS-C5-28 both are present, and GPS (created later) drew over the
+    // battery, hiding the %/FULL text on sub-pages. -60 gives it its own slot.
+    lv_obj_align(battery_label, LV_ALIGN_RIGHT_MID, -60, 0);
     if (last_voltage_str[0] == '\0') lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
 
-    // GPS status icon 4px left of the Go Dark button (battery slot is empty here) — same tight
-    // gap as the left-side Home<->Back cluster. Go Dark 30px @ x=0, GPS 22px right edge at 34.
+    // GPS status icon 4px left of the Go Dark button. Go Dark 30px @ x=0, GPS 22px right
+    // edge at 34; the battery label now sits further left at -60 so they no longer overlap.
     gps_status_icon_create(page_title_bar, -34);
 }
 
@@ -42034,6 +42080,17 @@ void vibrator_burst(int count, uint32_t on_ms, uint32_t gap_ms)
 #if 1  // Battery monitor enabled
 static esp_err_t init_battery_adc(void)
 {
+#if BOARD_BATTERY_VIA_EXPANDER
+    // WS-C5-28: battery sense is on the CH32V003 IO-expander ADC (EXIO_ADC),
+    // already brought up by init_i2c_bus(). There is no ESP32 oneshot ADC unit
+    // or channel to configure here; readings come from custom_io_expander_get_adc().
+    if (s_io_expander == NULL) {
+        ESP_LOGW(TAG, "Battery via IO expander requested but expander not ready");
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "Battery ADC via CH32V003 IO expander (EXIO_ADC)");
+    return ESP_OK;
+#else
     esp_err_t ret = adc_oneshot_io_to_channel(BOARD_BATTERY_ADC_GPIO,
                                                &battery_adc_unit,
                                                &battery_adc_channel);
@@ -42098,10 +42155,27 @@ static esp_err_t init_battery_adc(void)
     ESP_LOGI(TAG, "Battery ADC initialized on GPIO%d (unit %d channel %d)",
              BOARD_BATTERY_ADC_GPIO, battery_adc_unit, battery_adc_channel);
     return ESP_OK;
+#endif  // BOARD_BATTERY_VIA_EXPANDER
 }
 
 static float read_battery_voltage(void)
 {
+#if BOARD_BATTERY_VIA_EXPANDER
+    // WS-C5-28: read the 10-bit CH32V003 expander ADC (0..1023, ~3.3V ref).
+    if (s_io_expander == NULL) {
+        return 0.0f;
+    }
+    uint16_t adc_raw = 0;
+    if (custom_io_expander_get_adc(s_io_expander, &adc_raw) != ESP_OK) {
+        return 0.0f;
+    }
+    float voltage_mv = ((float)adc_raw / 1023.0f) * 3300.0f;
+    float battery_voltage = (voltage_mv / 1000.0f)
+                          * BOARD_BATTERY_DIVIDER_NUM
+                          / BOARD_BATTERY_DIVIDER_DEN
+                          * BOARD_BATTERY_CAL_SCALE;
+    return battery_voltage;
+#else
     if (battery_adc_handle == NULL) {
         return 0.0f;
     }
@@ -42141,29 +42215,129 @@ static float read_battery_voltage(void)
     float battery_voltage = (voltage_mv / 1000.0f)
                           * BOARD_BATTERY_DIVIDER_NUM
                           / BOARD_BATTERY_DIVIDER_DEN;
-    
+
     return battery_voltage;
+#endif  // BOARD_BATTERY_VIA_EXPANDER
+}
+
+// Approximate single Li-ion cell state-of-charge from resting voltage. Li-ion is
+// non-linear, so interpolate a small table (voltage -> percent) rather than a
+// straight line. Values are typical under light load; refine per board with the
+// real divider calibration.
+static int battery_pct_from_voltage(float v)
+{
+    static const struct { float v; int pct; } curve[] = {
+        { 4.20f, 100 }, { 4.10f, 90 }, { 4.00f, 80 }, { 3.90f, 65 },
+        { 3.80f, 50 },  { 3.70f, 35 }, { 3.60f, 20 }, { 3.50f, 10 },
+        { 3.40f, 5 },   { 3.30f, 0 },
+    };
+    const int n = (int)(sizeof(curve) / sizeof(curve[0]));
+    if (v >= curve[0].v)     return 100;
+    if (v <= curve[n-1].v)   return 0;
+    for (int i = 0; i < n - 1; i++) {
+        if (v <= curve[i].v && v > curve[i+1].v) {
+            float span = curve[i].v - curve[i+1].v;
+            float frac = (v - curve[i+1].v) / span;
+            return curve[i+1].pct + (int)(frac * (curve[i].pct - curve[i+1].pct) + 0.5f);
+        }
+    }
+    return 0;
+}
+
+// Runs in the LVGL timer context (~500ms). Applies the current level colour to
+// battery_label and, when critical, blinks it. Always re-fetches the global
+// battery_label and NULL/valid-guards, so it survives per-screen top-bar rebuilds
+// without a dangling pointer (no per-screen stop hook needed).
+static void battery_blink_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    if (battery_label == NULL || !lv_obj_is_valid(battery_label)) {
+        return;
+    }
+    if (last_voltage_str[0] == '\0') {          // no reading -> stay hidden
+        lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (batt_is_critical && !batt_is_charging) {
+        batt_blink_phase = !batt_blink_phase;
+        if (batt_blink_phase) {
+            lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_style_text_color(battery_label, BATTERY_COLOR_LOW, 0);
+        } else {
+            lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);  // blink off-phase
+        }
+    } else {
+        lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+        if (batt_color_valid) {
+            lv_obj_set_style_text_color(battery_label, last_batt_color, 0);
+        }
+    }
 }
 
 static void battery_monitor_task(void *arg)
 {
     (void)arg;
     char voltage_str[32];
-    
+
     // Initial delay to let UI stabilize
     vTaskDelay(pdMS_TO_TICKS(2000));
-    
+
+    // Create the 500ms blink/colour timer once (LVGL context via mutex). It renders
+    // the level colour and the critical blink; this task only computes state.
+    if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (s_batt_blink_timer == NULL) {
+            s_batt_blink_timer = lv_timer_create(battery_blink_timer_cb,
+                                                 BATTERY_BLINK_PERIOD_MS, NULL);
+        }
+        xSemaphoreGive(lvgl_mutex);
+    }
+
     for (;;) {
         float voltage = read_battery_voltage();
-        
-        // Format battery indicator; hide label entirely when no valid reading
+
+        // Compute level and colour from the reading. Charging-vs-full cannot be told
+        // from VBAT alone and this board exposes no charge-status line to firmware (see
+        // schematic trace: ETA6098 STAT drives only a HW LED, no VBUS sense pin), so we
+        // show a reliable voltage-based FULL badge instead of a charging state.
+        lv_color_t color = BATTERY_COLOR_FULL;
+        bool critical = false;
+
         if (voltage < BATTERY_VOLTAGE_CRITICAL) {
-            voltage_str[0] = '\0';  // No battery — hide label
-        } else if (voltage > BATTERY_VOLTAGE_CHARGING) {
-            snprintf(voltage_str, sizeof(voltage_str), LV_SYMBOL_CHARGE "");
+            voltage_str[0] = '\0';  // No valid reading -> hide label
         } else {
-            snprintf(voltage_str, sizeof(voltage_str), LV_SYMBOL_BATTERY_FULL " %.2fV", voltage);
+            int pct = battery_pct_from_voltage(voltage);
+            if (pct < 0)   pct = 0;
+            if (pct > 100) pct = 100;
+
+            // Symbol by fill level (5 LVGL battery glyphs).
+            const char *sym;
+            if (pct <= 10)      sym = LV_SYMBOL_BATTERY_EMPTY;
+            else if (pct <= 35) sym = LV_SYMBOL_BATTERY_1;
+            else if (pct <= 65) sym = LV_SYMBOL_BATTERY_2;
+            else if (pct <= 90) sym = LV_SYMBOL_BATTERY_3;
+            else                sym = LV_SYMBOL_BATTERY_FULL;
+
+            // Colour by zone: low=red, mid=amber, full=green. Blink when critical.
+            if (pct <= BATTERY_PCT_LOW)      color = BATTERY_COLOR_LOW;
+            else if (pct <= BATTERY_PCT_MID) color = BATTERY_COLOR_MID;
+            else                             color = BATTERY_COLOR_FULL;
+            critical = (pct <= BATTERY_PCT_CRITICAL);
+
+            if (voltage >= BATTERY_VOLTAGE_FULL) {
+                // Reliably full (from voltage) -> distinct green FULL badge, never blinks.
+                color = BATTERY_COLOR_FULL;
+                critical = false;
+                snprintf(voltage_str, sizeof(voltage_str), LV_SYMBOL_BATTERY_FULL " FULL");
+            } else {
+                snprintf(voltage_str, sizeof(voltage_str), "%s %d%%", sym, pct);
+            }
         }
+
+        // Publish state for the blink timer, then push the text under the mutex.
+        last_batt_color  = color;
+        batt_color_valid = (voltage_str[0] != '\0');
+        batt_is_charging = false;   // charging state not detectable on this hardware
+        batt_is_critical = critical;
 
         strncpy(last_voltage_str, voltage_str, sizeof(last_voltage_str) - 1);
         last_voltage_str[sizeof(last_voltage_str) - 1] = '\0';
@@ -42175,11 +42349,12 @@ static void battery_monitor_task(void *arg)
                 } else {
                     lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
                     lv_label_set_text(battery_label, voltage_str);
+                    lv_obj_set_style_text_color(battery_label, color, 0);
                 }
             }
             xSemaphoreGive(lvgl_mutex);
         }
-        
+
         vTaskDelay(pdMS_TO_TICKS(BATTERY_UPDATE_INTERVAL_MS));
     }
 }
@@ -46029,7 +46204,12 @@ static void cam_ui_timer_cb(lv_timer_t *t)
             else if (s_cam[i].conf == CAM_CONF_MED) med++;
         }
         cam_changed = (n != s_cam_built_n) || (s_cam_page != s_cam_built_page);
-        if (cam_changed) {
+        // Never rebuild while the screen is being touched: a flapping device count would otherwise
+        // lv_obj_clean()+recreate the row under the user's finger mid-tap, so the CLICKED (press+release
+        // on the SAME obj) kept getting cancelled -> "tap needs many tries" (Birol HW-QA 2026-10-01).
+        // touch_pressed_flag is the live, hardware-driven touch state (stuck-proof); freezing the
+        // snapshot during the gesture also keeps the tapped index consistent with what's on screen.
+        if (cam_changed && !touch_pressed_flag) {
             memcpy(s_cam_snap, s_cam, (size_t)n * sizeof(cam_rec_t));
             s_cam_snap_n = n;
         }

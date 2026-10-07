@@ -53,8 +53,26 @@
 
 // ── CH32V003 IO Expander (I2C 0x24) ──────────────────────────────────────────
 // Secondary RISC-V MCU controlling: LCD_RST (PIN1), Touch_RST (PIN0),
-// Audio amp enable (PIN3), LCD backlight PWM (EXIO_PWM).
+// Audio amp enable (PIN3), LCD backlight PWM (EXIO_PWM), battery sense (EXIO_ADC).
 #define BOARD_IO_EXPANDER_I2C_ADDR  0x24
+
+// ── Battery monitor (VBAT via CH32V003 EXIO_ADC, NOT an ESP32 GPIO) ───────────
+// Schematic ws-c5-28: VBAT -> R7 200K / R10 100K divider -> BAT_ADC -> CH32V003
+// EXIO_ADC. Expander ADC is 10-bit (0..1023) referenced to ~3.3V. Divider ratio
+// is (200K+100K)/100K = 3:1, so VBAT = (adc/1023 * 3.3V) * 3.
+#define BOARD_HAS_BATTERY_ADC       1
+#define BOARD_BATTERY_VIA_EXPANDER  1
+#define BOARD_BATTERY_DIVIDER_NUM   3
+#define BOARD_BATTERY_DIVIDER_DEN   1
+// Calibration (2026-10-02, device running, multimeter at VBAT node):
+//   full: meter 4.196V vs raw 4.152V  (raw ~1.0% LOW)
+//   mid : meter 3.890V vs raw ~3.938V (raw ~1.2% HIGH)
+// The error changes sign between the points (load/timing noise: charger-pinned at full,
+// battery-only under fluctuating load at mid), so there is no consistent gain/offset to
+// correct -- a single-point scale (tried 1.0106) overfits the full point and throws the
+// mid-range off (showed 77% where the curve expects ~63%). The uncorrected reading is
+// already within ~1%, so leave the scale at unity.
+#define BOARD_BATTERY_CAL_SCALE     1.0f
 
 // ── I2C bus (shared: CST3530, CH32V003, QMI8658, SHTC3, PCF85063A, ES8311) ──
 #define BOARD_I2C_SDA        0
