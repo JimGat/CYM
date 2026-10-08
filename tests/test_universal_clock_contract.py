@@ -306,9 +306,9 @@ class DocumentationContract(unittest.TestCase):
 class ReleaseVersionContract(unittest.TestCase):
     def test_all_release_versions_are_v21542(self):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.64")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.65")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32C5/docs/manifest.pancake-c5.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v2.15.64", (ROOT / rel).read_text(), rel)
+            self.assertIn("v2.15.65", (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

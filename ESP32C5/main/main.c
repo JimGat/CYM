@@ -9391,7 +9391,7 @@ void app_main(void)
                 ble_spam_needs_ui_update = false;
                 if (ble_spam_counter_label && lv_obj_is_valid(ble_spam_counter_label)) {
                     char pbuf[32];
-                    snprintf(pbuf, sizeof(pbuf), "Packets: %d", ble_spam_count);
+                    snprintf(pbuf, sizeof(pbuf), "Adv starts: %d", ble_spam_count);
                     lv_label_set_text(ble_spam_counter_label, pbuf);
                 }
                 if (ble_spam_status_label && lv_obj_is_valid(ble_spam_status_label)
@@ -9402,7 +9402,7 @@ void app_main(void)
                     };
                     int m = (ble_spam_mode >= 0 && ble_spam_mode <= 7) ? ble_spam_mode : 4;
                     char sbuf[48];
-                    snprintf(sbuf, sizeof(sbuf), "Sending: %s", s_mode_names[m]);
+                    snprintf(sbuf, sizeof(sbuf), "Adv start accepted: %s", s_mode_names[m]);
                     lv_label_set_text(ble_spam_status_label, sbuf);
                 }
             }
@@ -38126,11 +38126,40 @@ struct ble_spam_state_t {
     int mode_round;
     bool configured;
     bool started;
+    bool faulted;
+    bool stop_failed;
     lv_timer_t *timer;
     // Samsung burst optimization: hold MAC stable for 4 packets so Samsung detects a real device
     ble_addr_t samsung_burst_mac;
     int samsung_burst_count;  // 0-3: in burst, 4+: move to next mode
 } g_ble_spam_state = {0};
+
+// LVGL-owned failure unwind: no host teardown, retry or new transmission.
+static void ble_spam_abort(const char *reason)
+{
+    ble_spam_active = false;
+    g_ble_spam_state.faulted = true;
+#if MYNEWT_VAL(BLE_EXT_ADV)
+    // Single cleanup of a previously accepted start; never retry a failed stop.
+    if (g_ble_spam_state.started && !g_ble_spam_state.stop_failed) {
+        int rc = ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        g_ble_spam_state.started = (rc != 0 && rc != BLE_HS_EALREADY);
+        g_ble_spam_state.stop_failed = g_ble_spam_state.started;
+        if (g_ble_spam_state.stop_failed) ESP_LOGE(TAG, "[SPAM] failure cleanup stop failed: %d", rc);
+    }
+#endif
+    ble_spam_needs_ui_update = false;
+    if (g_ble_spam_state.timer) {
+        lv_timer_del(g_ble_spam_state.timer);
+        g_ble_spam_state.timer = NULL;
+    }
+    if (ble_spam_status_label && lv_obj_is_valid(ble_spam_status_label))
+        lv_label_set_text(ble_spam_status_label, reason);
+    if (ble_spam_start_btn && lv_obj_is_valid(ble_spam_start_btn)) {
+        lv_label_set_text(lv_obj_get_child(ble_spam_start_btn, 0), "START");
+        lv_obj_set_style_bg_color(ble_spam_start_btn, COLOR_MATERIAL_GREEN, LV_STATE_DEFAULT);
+    }
+}
 
 // ── BLE Spam timer callback (called by LVGL every 100ms) ────────────────────────
 static void ble_spam_timer_cb(lv_timer_t *timer)
@@ -38145,7 +38174,13 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     static int packets_since_restart = 0;
     if (st->configured && packets_since_restart >= 200) {
         ESP_LOGI(TAG, "[SPAM] Periodic restart at pkt%d to clear mbuf pool", ble_spam_count);
-        ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        int stop_rc = ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        if (stop_rc != 0 && stop_rc != BLE_HS_EALREADY) {
+            g_ble_spam_state.stop_failed = true;
+            ble_spam_abort("Stop failed; exit screen");
+            return;
+        }
+        st->started = false;
         vTaskDelay(pdMS_TO_TICKS(100));  // Give controller time to clean up
         st->configured = false;  // Force reconfiguration on next iteration
         packets_since_restart = 0;
@@ -38174,7 +38209,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         ESP_LOGI(TAG, "[SPAM] configure() returned %d", rc);
         if (rc != 0) {
             ESP_LOGE(TAG, "[SPAM] configure FAILED: %d — instance state invalid", rc);
-            ble_spam_active = false;
+            ble_spam_abort("Configure failed; exit screen");
             return;
         }
 
@@ -38204,6 +38239,8 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
             // Use static-random (nrpa=0) not NRPA (nrpa=1) — ble_gap_ext_adv_set_addr requires top bits 11
             if (ble_hs_id_gen_rnd(0, &st->samsung_burst_mac) != 0) {
                 ESP_LOGW(TAG, "[SPAM] [BURST] failed to generate burst MAC");
+                ble_spam_abort("Address generation failed; exit screen");
+                return;
             } else {
                 uint8_t top_bits = st->samsung_burst_mac.val[5] & 0xC0;
                 ESP_LOGI(TAG, "[SPAM] [BURST] new burst MAC: %02x:%02x:%02x:%02x:%02x:%02x (type_bits=%02x, expect 0xc0)",
@@ -38238,7 +38275,12 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     // HCI level but the controller's physical state lags; yield 10ms for the
     // disable to propagate before set_addr/set_data to avoid EINVAL host validation
     uint64_t stop_time_us = esp_timer_get_time();
-    ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+    int stop_rc = ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+    if (stop_rc != 0 && stop_rc != BLE_HS_EALREADY) {
+        g_ble_spam_state.stop_failed = true;
+        ble_spam_abort("Stop failed; exit screen");
+        return;
+    }
     vTaskDelay(pdMS_TO_TICKS(30));
     uint64_t after_delay_us = esp_timer_get_time();
     st->started = false;
@@ -38257,6 +38299,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         // Use static-random (nrpa=0) not NRPA (nrpa=1) — ble_gap_ext_adv_set_addr requires top bits 11
         if (ble_hs_id_gen_rnd(0, &rnd_addr) != 0) {
             ESP_LOGW(TAG, "[SPAM] pkt%d MAC generation failed", ble_spam_count);
+            ble_spam_abort("Address generation failed; exit screen");
             return;
         }
         uint8_t top_bits = rnd_addr.val[5] & 0xC0;
@@ -38274,6 +38317,8 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     } else {
         ESP_LOGW(TAG, "[SPAM] pkt%d set_addr FAILED: rc=%d (addr_type=%02x, top_bits=%02x)",
                  ble_spam_count, addr_rc, rnd_addr.type, rnd_addr.val[5] & 0xC0);
+        ble_spam_abort("Address failed; exit screen");
+        return;
     }
 
     struct ble_hs_adv_fields fields;
@@ -38355,7 +38400,10 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         at_addr.val[0] = k[5]; at_addr.val[1] = k[4];
         at_addr.val[2] = k[3]; at_addr.val[3] = k[2];
         at_addr.val[4] = k[1]; at_addr.val[5] = k[0] | 0xC0;
-        ble_gap_ext_adv_set_addr(BLE_SPAM_ADV_INSTANCE, &at_addr);
+        if (ble_gap_ext_adv_set_addr(BLE_SPAM_ADV_INSTANCE, &at_addr) != 0) {
+            ble_spam_abort("Address failed; exit screen");
+            return;
+        }
         at_mfg[0] = 0x4C; at_mfg[1] = 0x00;
         at_mfg[2] = 0x12; at_mfg[3] = 0x19;
         at_mfg[4] = 0x10;
@@ -38429,6 +38477,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     struct os_mbuf *om = os_msys_get_pkthdr(BLE_HS_ADV_MAX_SZ, 0);
     if (!om) {
         ESP_LOGW(TAG, "[SPAM] mbuf alloc failed");
+        ble_spam_abort("Buffer allocation failed; exit screen");
         return;
     }
 
@@ -38436,6 +38485,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     if (rc != 0) {
         ESP_LOGW(TAG, "[SPAM] set_fields failed: %d", rc);
         os_mbuf_free_chain(om);
+        ble_spam_abort("Payload serialization failed; exit screen");
         return;
     }
 
@@ -38446,6 +38496,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         // NimBLE always frees om internally on any path (success or failure). Do NOT double-free.
         // Skip ext_adv_start on failure; instance remains stopped until next timer cycle.
         ESP_LOGW(TAG, "[SPAM] pkt%d set_data FAILED: rc=%d (instance remains stopped)", ble_spam_count, rc);
+        ble_spam_abort("Payload configuration failed; exit screen");
         return;
     } else {
         ESP_LOGD(TAG, "[SPAM] pkt%d set_data OK", ble_spam_count);
@@ -38454,18 +38505,20 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     // Start advertising with fresh payload and random MAC (seen as new device by phones)
     ESP_LOGD(TAG, "[SPAM] pkt%d calling start (instance=%d)", ble_spam_count, BLE_SPAM_ADV_INSTANCE);
     rc = ble_gap_ext_adv_start(BLE_SPAM_ADV_INSTANCE, 0, 0);
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
-        ESP_LOGW(TAG, "[SPAM] pkt%d start FAILED: rc=%d", ble_spam_count, rc);
-    } else {
-        st->started = true;
+    if (rc != 0) {
+        ESP_LOGW(TAG, "[SPAM] advertising start failed: rc=%d", rc);
+        // EALREADY is not a new start; terminate the pre-existing instance once.
         if (rc == BLE_HS_EALREADY) {
-            ESP_LOGD(TAG, "[SPAM] pkt%d start returned EALREADY (already running)", ble_spam_count);
-        } else {
-            ESP_LOGD(TAG, "[SPAM] pkt%d start OK", ble_spam_count);
+            int stop_rc = ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+            st->started = (stop_rc != 0 && stop_rc != BLE_HS_EALREADY);
+            st->stop_failed = st->started;
+            if (st->stop_failed) ESP_LOGE(TAG, "[SPAM] cleanup stop failed: %d", stop_rc);
         }
+        ble_spam_abort("Advertising start failed; exit screen");
+        return;
     }
-
-    ESP_LOGI(TAG, "[SPAM] packet %d sent", ble_spam_count + 1);
+    st->started = true;
+    ESP_LOGI(TAG, "[SPAM] advertising start %d accepted (not RF proof)", ble_spam_count + 1);
     ble_spam_count++;
     packets_since_restart++;  // Track for periodic mbuf pool restart
     ble_spam_needs_ui_update = true;
@@ -38485,20 +38538,34 @@ static void ble_spam_start_btn_cb(lv_event_t *e)
         }
         ESP_LOGI(TAG, "[SPAM] stopping instance %d (keeping config)", BLE_SPAM_ADV_INSTANCE);
 #if MYNEWT_VAL(BLE_EXT_ADV)
-        ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        int rc = ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        if (rc != 0 && rc != BLE_HS_EALREADY) {
+            g_ble_spam_state.stop_failed = true;
+            ble_spam_abort("Stop failed; exit screen");
+            return;
+        }
 #endif
         g_ble_spam_state.started = false;
+        ble_spam_needs_ui_update = false;
+        lv_label_set_text(ble_spam_status_label, "Stopped");
         lv_label_set_text(lv_obj_get_child(ble_spam_start_btn, 0), "START");
         lv_obj_set_style_bg_color(ble_spam_start_btn, COLOR_MATERIAL_GREEN, LV_STATE_DEFAULT);
     } else {
-        // Start
+        // Never add a legacy TX backend on unsupported builds.
+#if !MYNEWT_VAL(BLE_EXT_ADV)
+        ble_spam_abort("Advertising unavailable on this build");
+        return;
+#else
+        if (g_ble_spam_state.started || g_ble_spam_state.faulted) {
+            ble_spam_abort("Advertising state uncertain; exit screen");
+            return;
+        }
         if (!ensure_ble_mode()) {
             if (ble_spam_status_label)
                 lv_label_set_text(ble_spam_status_label, "BLE init failed!");
             return;
         }
         ble_spam_count = 0;
-        ble_spam_active = true;
         // Reset payload indices only; keep configured/started to avoid reconfigure on persisted instance
         g_ble_spam_state.apple_idx = 0;
         g_ble_spam_state.apple_nearby_action_idx = 0;
@@ -38513,8 +38580,17 @@ static void ble_spam_start_btn_cb(lv_event_t *e)
         g_ble_spam_state.samsung_burst_count = 0;  // Reset burst counter for clean start
         // configured/started persist across start/stop cycles for the BLE session
         g_ble_spam_state.timer = lv_timer_create(ble_spam_timer_cb, 100, NULL);  // 100ms interval
+        if (!g_ble_spam_state.timer) {
+            ble_spam_abort("Timer allocation failed; exit screen");
+            return;
+        }
+        ble_spam_active = true;
+        ble_spam_needs_ui_update = false;
+        lv_label_set_text(ble_spam_status_label, "Starting; no RF confirmation");
+        lv_label_set_text(ble_spam_counter_label, "Adv starts: 0");
         lv_label_set_text(lv_obj_get_child(ble_spam_start_btn, 0), "STOP");
         lv_obj_set_style_bg_color(ble_spam_start_btn, COLOR_MATERIAL_RED, LV_STATE_DEFAULT);
+#endif
     }
 }
 
@@ -38528,13 +38604,15 @@ static void ble_spam_stop(void)
         g_ble_spam_state.timer = NULL;
     }
     ble_spam_ui_active = false;
+    ble_spam_needs_ui_update = false;
     ble_spam_status_label = NULL;
     ble_spam_counter_label = NULL;
     ble_spam_start_btn = NULL;
     if (current_radio_mode == RADIO_MODE_BLE) {
         ESP_LOGI(TAG, "[SPAM] cleanup: stopping instance %d", BLE_SPAM_ADV_INSTANCE);
 #if MYNEWT_VAL(BLE_EXT_ADV)
-        ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        int rc = ble_gap_ext_adv_stop(BLE_SPAM_ADV_INSTANCE);
+        if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "[SPAM] exit stop failed: %d", rc);
 #endif
         bt_nimble_deinit();
         current_radio_mode = RADIO_MODE_NONE;
@@ -38591,7 +38669,7 @@ static void show_ble_spam_screen(void)
 
     // Packet counter
     ble_spam_counter_label = lv_label_create(function_page);
-    lv_label_set_text(ble_spam_counter_label, "Packets: 0");
+    lv_label_set_text(ble_spam_counter_label, "Adv starts: 0");
     lv_obj_set_style_text_font(ble_spam_counter_label, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(ble_spam_counter_label, COLOR_MATERIAL_GREEN, 0);
     lv_obj_align(ble_spam_counter_label, LV_ALIGN_TOP_MID, 0, 128);
@@ -46930,15 +47008,9 @@ static void show_hidden_camera_screen(void)
 enum { BSF_NONE = 0, BSF_APPLE, BSF_SAMSUNG, BSF_GOOGLE, BSF_MICROSOFT, BSF_N };
 static const char *BSF_NAME[BSF_N] = { "-", "Apple", "Samsung", "Google", "Microsoft" };
 
-// A genuine BLE-spam flood is defined by rapid ADDRESS CHURN: the spammer uses a new
-// random address almost every packet, so dozens of BRAND-NEW popup advertisers appear
-// per second. Real Apple/Samsung/Google devices keep a stable address for ~15 min, so
-// after first sight they never count again. We therefore keep a persistent advertiser
-// table (with each address's FIRST-seen time) and flag a flood only when many NEW popup
-// advertisers appear inside a short window — NOT merely when several popup-capable
-// devices are present (which is why "count distinct popup devices" false-positived on a
-// normal room of phones/watches). Research: Wall-of-Flippers + mobile-hacker BLE-spam
-// writeups — the discriminator is rapid address/UUID rotation, not device presence.
+// Heuristic: new addresses with popup-compatible signatures in a short window.
+// Legitimate crowded environments and address rotation can produce the same signal.
+// Table eviction may re-count an established address after capacity is exceeded.
 #define BSPAM_TBL         192      // persistent advertiser table size (heap)
 #define BSPAM_WINDOW_MS   3000     // churn measurement window
 #define BSPAM_WARMUP_MS   6000     // no flood decision right after open (learn stable devices)
@@ -46956,10 +47028,8 @@ static lv_obj_t         *s_bspam_status = NULL;
 static lv_obj_t         *s_bspam_list   = NULL;
 static lv_timer_t       *s_bspam_ui_timer = NULL;
 
-// Spammer fox-hunt: the attacker rotates its MAC every packet, but every packet is a
-// spam-signature advert from the SAME physical radio — so we home in on the RSSI of
-// ANY spam advert (not a fixed MAC). Spam is high-rate (dozens/s), so the meter is
-// smooth and very responsive.
+// Signal meter observes matching signatures, potentially from multiple legitimate
+// radios. RSSI is not physical attacker attribution or a distance measurement.
 static volatile bool     s_bspam_locate    = false;
 static volatile int8_t   s_bspam_loc_rssi  = -128;
 static volatile bool     s_bspam_loc_found = false;
@@ -46981,6 +47051,10 @@ static uint8_t bspam_classify(const struct ble_hs_adv_fields *fields)
             // tools (Flipper/Bruce/Ghost) cycle. Matches Wall-of-Flippers.
             if (st == 0x0F || st == 0x07 || st == 0x01)
                 return BSF_APPLE;
+            // Exact existing nearby-action builder format; not all Apple 0x04 data.
+            if (st == 0x04 && fields->mfg_data_len == 15 &&
+                fields->mfg_data[3] == 0x04 && fields->mfg_data[4] == 0x2A)
+                return BSF_APPLE;
         } else if (cid == 0x0075) {          // Samsung (watch/buds popups)
             return BSF_SAMSUNG;
         } else if (cid == 0x0006) {          // Microsoft Swift Pair
@@ -46998,7 +47072,7 @@ static int bspam_gap_cb(struct ble_gap_event *event, void *arg)
     __atomic_add_fetch(&s_bspam_callbacks, 1, __ATOMIC_ACQ_REL);
     if (!s_bspam_active || !s_bspam) goto done;
 
-    const uint8_t *adv; uint8_t adv_len; const uint8_t *addr; int8_t rssi;
+    const uint8_t *adv; uint16_t adv_len; const uint8_t *addr; int8_t rssi;
 #if MYNEWT_VAL(BLE_EXT_ADV)
     if (event->type == BLE_GAP_EVENT_EXT_DISC) {
         struct ble_gap_ext_disc_desc *d = &event->ext_disc;
@@ -47010,6 +47084,8 @@ static int bspam_gap_cb(struct ble_gap_event *event, void *arg)
         adv = d->data; adv_len = d->length_data; addr = d->addr.val; rssi = d->rssi;
     } else goto done;
 
+    // Existing NimBLE parser accepts uint8_t lengths; reject rather than truncate.
+    if (adv_len > UINT8_MAX) goto done;
     struct ble_hs_adv_fields fields;
     if (ble_hs_adv_parse_fields(&fields, adv, adv_len) != 0) goto done;
     uint8_t fam = bspam_classify(&fields);
@@ -47064,7 +47140,7 @@ static int bspam_start_scan(void)
 #endif
 }
 
-// Enter spammer fox-hunt.
+// Enter signature signal view; no physical attribution.
 static void bspam_locate_enter_cb(lv_event_t *e)
 {
     (void)e;
@@ -47093,8 +47169,7 @@ static void bspam_ui_timer_cb(lv_timer_t *t)
     if (!s_bspam_active || !s_bspam || !s_bspam_snap) return;
     uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
 
-    // Fox-hunt view: home in on the RSSI of any spam advert (MAC rotates, signal does
-    // not). Spam is high-rate, so this meter is smooth — a short 2 s hold is plenty.
+    // Signature signal view: short hold, no transmitter identity or distance claim.
     if (s_bspam_locate) {
         bool fresh = s_bspam_loc_found && (now - s_bspam_loc_seen < 2000);
         int rssi = s_bspam_loc_rssi;
@@ -47108,8 +47183,8 @@ static void bspam_ui_timer_cb(lv_timer_t *t)
         }
         if (s_bspam_loc_hint && lv_obj_is_valid(s_bspam_loc_hint)) {
             const char *h = !fresh ? "Searching..." :
-                            pct >= 80 ? "VERY CLOSE" : pct >= 55 ? "CLOSE" :
-                            pct >= 30 ? "NEARBY"     : "FAR";
+                            pct >= 80 ? "STRONG signal" : pct >= 55 ? "Moderate signal" :
+                            pct >= 30 ? "Weak signal" : "Very weak signal";
             lv_label_set_text(s_bspam_loc_hint, h);
             lv_obj_set_style_text_color(s_bspam_loc_hint,
                                         pct >= 55 ? COLOR_MATERIAL_RED : ui_text_color(), 0);
@@ -47155,10 +47230,10 @@ static void bspam_ui_timer_cb(lv_timer_t *t)
     if (s_bspam_alert && lv_obj_is_valid(s_bspam_alert)) {
         char ab[80];
         if (flood) {
-            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " BLE SPAM (%s) - tap to locate", BSF_NAME[dom]);
+            snprintf(ab, sizeof(ab), LV_SYMBOL_WARNING " Popup churn (%s) - signal", BSF_NAME[dom]);
             lv_obj_set_style_text_color(s_bspam_alert, COLOR_MATERIAL_RED, 0);
         } else {
-            snprintf(ab, sizeof(ab), "No BLE spam - tap to hunt");
+            snprintf(ab, sizeof(ab), "%s", warmup ? "Learning - verdict pending" : "No popup churn observed - signal");
             lv_obj_set_style_text_color(s_bspam_alert, lv_color_make(150, 150, 150), 0);
         }
         lv_label_set_text(s_bspam_alert, ab);
@@ -47208,6 +47283,7 @@ static void blespam_detector_stop(void)
 
 static void show_blespam_detector_screen(void)
 {
+    s_bspam_active = false;
     create_function_page_base("BLE Spam Detect");
     g_screen_stop_fn = blespam_detector_stop;
     apply_menu_bg();
@@ -47233,9 +47309,9 @@ static void show_blespam_detector_screen(void)
     lv_label_set_long_mode(s_bspam_status, LV_LABEL_LONG_WRAP);
     lv_obj_align(s_bspam_status, LV_ALIGN_TOP_MID, 0, 34);
 
-    // Bottom: verdict, SEPARATE from the monitor line + tap to fox-hunt the spammer.
+    // Bottom: observation, separate from monitor state; tap for signature signal.
     s_bspam_alert = lv_label_create(function_page);
-    lv_label_set_text(s_bspam_alert, "No BLE spam - tap to hunt");
+    lv_label_set_text(s_bspam_alert, "Detection unavailable - initializing");
     lv_obj_set_style_text_align(s_bspam_alert, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(s_bspam_alert, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(s_bspam_alert, lv_color_make(150, 150, 150), 0);
@@ -47256,7 +47332,7 @@ static void show_blespam_detector_screen(void)
     lv_obj_set_style_pad_all(s_bspam_list, 6, 0);
     lv_obj_set_scrollbar_mode(s_bspam_list, LV_SCROLLBAR_MODE_AUTO);
 
-    // Locate overlay (hidden until the alert is tapped) — spammer RSSI fox-hunt.
+    // Signal overlay: signatures can originate from several legitimate radios.
     s_bspam_loc_cont = lv_obj_create(function_page);
     lv_obj_set_size(s_bspam_loc_cont, lv_pct(100), lv_disp_get_ver_res(NULL) - 34);
     lv_obj_align(s_bspam_loc_cont, LV_ALIGN_TOP_MID, 0, 34);
@@ -47269,7 +47345,7 @@ static void show_blespam_detector_screen(void)
     lv_obj_add_flag(s_bspam_loc_cont, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *lt = lv_label_create(s_bspam_loc_cont);
-    lv_label_set_text(lt, "BLE Spammer");
+    lv_label_set_text(lt, "Popup signature signal");
     lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(lt, ui_text_color(), 0);
 
@@ -47298,6 +47374,10 @@ static void show_blespam_detector_screen(void)
     lv_obj_center(lblb);
     lv_obj_add_event_cb(lb, bspam_locate_back_cb, LV_EVENT_CLICKED, NULL);
 
+    if (__atomic_load_n(&s_bspam_callbacks, __ATOMIC_ACQUIRE) != 0) {
+        lv_label_set_text(s_bspam_status, "Detection unavailable - callback busy");
+        return;
+    }
     // Heap-allocate the address table + snapshot (see dd_alloc).
     s_bspam      = (bspam_adv_t *)dd_alloc(sizeof(bspam_adv_t) * BSPAM_TBL);
     s_bspam_snap = (bspam_adv_t *)dd_alloc(sizeof(bspam_adv_t) * BSPAM_TBL);
@@ -47312,13 +47392,23 @@ static void show_blespam_detector_screen(void)
         lv_label_set_text(s_bspam_status, LV_SYMBOL_WARNING "  BLE init failed");
         return;
     }
-    s_bspam_active = true;
-    if (bspam_start_scan() != 0) {
-        s_bspam_active = false;
-        lv_label_set_text(s_bspam_status, LV_SYMBOL_WARNING "  BLE scan start failed");
+    s_bspam_ui_timer = lv_timer_create(bspam_ui_timer_cb, 500, NULL);
+    if (!s_bspam_ui_timer) {
+        lv_label_set_text(s_bspam_status, "Detection unavailable - timer failed");
         return;
     }
-    s_bspam_ui_timer = lv_timer_create(bspam_ui_timer_cb, 500, NULL);
+    s_bspam_active = true;
+    lv_obj_t *status_label = s_bspam_status;
+    lv_obj_t *alert_label = s_bspam_alert;
+    if (bspam_start_scan() != 0) {
+        blespam_detector_stop();
+        // Stop nulls global references; these labels still belong to the live screen.
+        lv_label_set_text(status_label, "Detection unavailable - scan failed");
+        lv_label_set_text(alert_label, "Detection unavailable");
+        return;
+    }
+    s_bspam_open_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    lv_label_set_text(s_bspam_alert, "Learning - verdict pending");
 }
 
 // ============================================================================
