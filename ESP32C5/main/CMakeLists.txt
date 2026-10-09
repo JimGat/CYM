@@ -2,3 +2,10 @@ idf_component_register(SRCS "attack_handshake.c" "xpt2046.c" "pancake_c5_port.c"
 
 # Disable format warning errors for ESP32-C5 (size_t is unsigned int, not long unsigned int)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=format)
+
+# Private native game has no engine/UI source on other generated board configs.
+if(CONFIG_BOARD_WS_C5_28 OR CONFIG_BOARD_WS_C5_35)
+    idf_component_get_property(doom_lib cym_doom COMPONENT_LIB)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE ${doom_lib})
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../components/cym_doom/include")
+endif()

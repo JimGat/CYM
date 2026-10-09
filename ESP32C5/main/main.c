@@ -96,6 +96,11 @@ LV_IMG_DECLARE(deedee_img);
 #include "driver/i2c_master.h"
 #endif
 #include "board_hal.h"
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+#include "doom_ui.h"
+static bool doom_prototype_idle(void);
+static void doom_prototype_home(void);
+#endif
 #if defined(CONFIG_BOARD_WS_S3_5B)
 #include "ws_s3_5b_port.h"
 #endif
@@ -8113,6 +8118,15 @@ void app_main(void)
                 }
             }
 
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+            /* A hidden game owns its overlay until worker cleanup acknowledges
+             * completion. Do not let ordinary Home restart radios underneath it. */
+            if (doom_ui_active() && (nav_to_menu_flag || nav_deferred_show_fn)) {
+                nav_to_menu_flag = false;
+                nav_deferred_show_fn = NULL;
+                doom_ui_request_exit();
+            }
+#endif
             // Handle deferred back navigation safely
             if (nav_to_menu_flag) {
                 nav_to_menu_flag = false;
@@ -29155,6 +29169,9 @@ static void show_clock_settings_screen(void)
 static void show_settings_screen(void)
 {
     create_function_page_base("Settings");
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    g_screen_stop_fn = doom_ui_screen_stop;
+#endif
     apply_menu_bg();
 
     lv_obj_t *tiles = lv_obj_create(function_page);
@@ -29184,6 +29201,9 @@ static void show_settings_screen(void)
 
     lv_obj_t *ver = lv_label_create(function_page);
     lv_label_set_text(ver, "LAB5 " FW_VERSION);
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    doom_ui_attach_footer(ver, doom_prototype_idle, doom_prototype_home);
+#endif
     lv_obj_set_style_text_font(ver, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(ver, ui_muted_color(), 0);
     lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -4);
@@ -72009,3 +72029,94 @@ static void show_espnow_pktlog_screen(void)
     espnow_pktlog_rebuild();
     espnow_pl_timer = lv_timer_create(espnow_pl_refresh_cb, 500, NULL);
 }
+
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+/* Fail closed on all root-scope active tools; a menu location alone is not
+ * proof of idle. WiFi idle driver is left untouched; BLE/154 modes refused. */
+static bool doom_prototype_idle(void)
+{
+    if (!sd_mounted_lazy || current_radio_mode == RADIO_MODE_BLE || current_radio_mode == RADIO_MODE_154) return false;
+    if (wifi_scanner_is_scanning() || wifi_attacks_is_deauth_active() || wifi_attacks_is_blackout_active() || wifi_attacks_is_sae_overflow_active() || wifi_attacks_is_karma_active() || wifi_attacks_is_portal_active()) return false;
+    if (screenshot_task_handle || s_ntp_wifi_task || wardrive_task_handle || sniffer_task_handle || handshake_attack_task_handle) return false;
+    return !(
+        airtag_scan_active ||
+        airtag_scan_ui_active ||
+        arp_ban_active ||
+        blackout_ui_active ||
+        ble_disc_active ||
+        ble_disc_ui_active ||
+        ble_pcap_active ||
+        ble_pcap_filter_active ||
+        ble_scan_ui_active ||
+        ble_spam_active ||
+        ble_spam_ui_active ||
+        ble_spoof_active ||
+        ble_spoof_ui_active ||
+        bt_locator_tracking_active ||
+        bt_locator_ui_active ||
+        bt_lookout_ui_active ||
+        bt_sas_ui_active ||
+        bt_scan_active ||
+        bto_active ||
+        deauth_monitor_active ||
+        deauth_monitor_ui_active ||
+        deauth_rescan_active ||
+        disco_mode_active ||
+        drone_scan_active ||
+        drone_ui_active ||
+        espnow_scout_active ||
+        g_ot_espnow_capture_active ||
+        g_vibrator_active ||
+        g_wcs_scan_active ||
+        go_dark_active ||
+        gw_probe_screen_active ||
+        gw_screen_active ||
+        handshake_attack_active ||
+        handshake_ui_active ||
+        karma_ui_active ||
+        lw_ui_active ||
+        mitm_active ||
+        mitm_arp_active ||
+        mitm_capture_active ||
+        portal_ui_active ||
+        s_blaster_active ||
+        s_blaster_nrf_active ||
+        s_bspam_active ||
+        s_cam_active ||
+        s_cam_gesture_active ||
+        s_cc1101_cal_tx_active ||
+        s_fileserv_active ||
+        s_flip_active ||
+        s_harv_active ||
+        s_hf_dump_active ||
+        s_n24_jam_active ||
+        s_ntp_clock_active ||
+        s_obs_loc_running ||
+        s_pwn_active ||
+        s_rf433_ook_cap_active ||
+        s_spoof_active ||
+        s_tvbg_running ||
+        s_wcap_running ||
+        sae_overflow_ui_active ||
+        sd_provision_active ||
+        sniffer_dog_active ||
+        sniffer_task_active ||
+        sniffer_ui_active ||
+        snifferdog_ui_active ||
+        targeted_deauth_active ||
+        wana_active ||
+        wardrive_active ||
+        wardrive_ui_active ||
+        wdup_active ||
+        wpasec_upload_active ||
+        wscope_active);
+}
+/* Engine resources have already been joined/released. Rebuild Home WITHOUT
+ * show_menu(), which deliberately restarts radios in ordinary navigation. */
+static void doom_prototype_home(void)
+{
+    run_screen_stop_fn();
+    if (g_home_layout_4cat) show_category_home();
+    else show_main_tiles();
+}
+#endif

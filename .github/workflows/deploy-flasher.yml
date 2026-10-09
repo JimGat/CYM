@@ -17,6 +17,11 @@ on:
       - "ESP32S3/binaries-hosyond-s3-35/*.bin"
       - ".github/workflows/deploy-flasher.yml"
   workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: Exact independently verified Jimgat_Dev commit (beta dispatch only)
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -37,6 +42,14 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
+      - name: Verify beta dispatch authorization
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          test "$GITHUB_REF" = "refs/heads/Jimgat_Dev"
+          test "$GITHUB_SHA" = "$EXPECTED_SHA"
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -116,6 +129,14 @@ jobs:
           text = text.replace('const betaUnlock = urlParams.get("beta") === "1";',
                               'const betaUnlock = true; // isolated Beta deployment')
           assert '"hackerbox-cyd"' in text
+          import os, re
+          sha = os.environ['GITHUB_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}', sha)
+          old = 'const BRANCH = { stable: "main", dev: "Jimgat_Dev" };'
+          assert text.count(old) == 1
+          text = text.replace(old, 'const BRANCH = { stable: "main", dev: "' + sha + '" };')
+          text = text.replace('binaries fetched live from the <code>Jimgat_Dev</code> branch.',
+                              'binaries pinned to verified development commit <code>' + sha + '</code>.')
           page.write_text(text)
           PY
 

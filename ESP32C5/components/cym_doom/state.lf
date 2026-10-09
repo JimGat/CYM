@@ -1,0 +1,15 @@
+# Reuse IDF's default section fragments so ldgen emits exclusions from the
+# early generic DRAM catch-all. Engine disables RISC-V small-data sections.
+[scheme:doom_mutable]
+entries:
+    data -> dram0_data
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:doom_engine_mutable]
+archive: libcym_doom_engine.a
+entries:
+    * (doom_mutable);
+        data -> dram0_data ALIGN(8) SURROUND(doom_init),
+        bss -> extern_ram ALIGN(8) SURROUND(doom_zero),
+        common -> extern_ram ALIGN(8) SURROUND(doom_common)
