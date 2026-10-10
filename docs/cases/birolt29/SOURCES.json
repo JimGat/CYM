@@ -1,0 +1,375 @@
+{
+  "schema_version": 1,
+  "import_commit": "6f39934b5bd68354e63006015dc40b0695859599",
+  "license": "CC BY-NC-ND 4.0",
+  "original_manual_credits": [
+    "@birolt29",
+    "@alen29"
+  ],
+  "thingiverse_uploader": "alen29",
+  "hash_scope": "Original package files as received in the Git import; not independently compared with upstream ZIP bytes.",
+  "packages": [
+    {
+      "board": "NM-CYD-C5",
+      "manual_revision": 2,
+      "source_url": "https://www.thingiverse.com/thing:7420383",
+      "directory": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383",
+      "files": [
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/LICENSE.txt",
+          "bytes": 137,
+          "sha256": "7ed5e8a29d4acf6193be2483ef08768bedd1b29340605ad2fc562a4a813eef03"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/README.txt",
+          "bytes": 2532,
+          "sha256": "91bc1ee1425b7a08a869943b3774e082bfad57138df3d9498163ce0e807000f7"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/files/CYM_Case_NM-CYD-C5.3mf",
+          "bytes": 189964,
+          "sha256": "e4e688578a81c9b37b7d53745fb604e9e4ab6339c8bc9cd53ebc17f456724758"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/files/CYM_Case_NM-CYD-C5_3D-Druck-_und_Montageanleitung_DE.pdf",
+          "bytes": 2992286,
+          "sha256": "a25ce59905357ac3dff5141f1da8d1834810d0981446ab5dea6b14a5f0fa9dbb"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/files/CYM_Case_NM-CYD-C5_3D_Baski_ve_Montaj_Kilavuzu_TR.pdf",
+          "bytes": 3009895,
+          "sha256": "0f89959d3938699fca809a24d8a2ce5b67e9efb55647e66f88508291ff40f8fc"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/files/CYM_Case_NM-CYD-C5_3D_Printing_and_Installation_Manual_EN.pdf",
+          "bytes": 2988448,
+          "sha256": "26c6cb70277fdb1e749f9cfa38035127da7fa5fa635e000740276aeb614081b2"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/files/CYM_Case_NM-CYD-C5_Case.stl",
+          "bytes": 778984,
+          "sha256": "5e13fdb20a296077fab1402014d16ea7f9f9cefb177a7f44f5201bf2481e667b"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/files/CYM_Case_NM-CYD-C5_Front_Frame.stl",
+          "bytes": 239884,
+          "sha256": "36623ca3ace7fa375b5b9fcbce72bf9f341ab93cab1ca1782a14373a436d38db"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/01_Front.jpg",
+          "bytes": 359261,
+          "sha256": "3bfb709143f3d04e68d381a55833b59ee63d5ec80d99158d4f09c0303c479fc6"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/02_Angle.jpg",
+          "bytes": 73247,
+          "sha256": "9b314b01039db10ce494c7263f7fd1a0157c9a9ca7fc6b9a65f9baa4baa0f8ff"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/03_USB_Wall.jpg",
+          "bytes": 103592,
+          "sha256": "f8540697fdf363b5519cd69d0dc5445fee9624402b9df1dbf2df7fe85a2b5639"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/04_Angle_2.jpg",
+          "bytes": 72472,
+          "sha256": "471e71db593ef32b8e504c65bef41af49555bedbb8cd0c3523d2c71c7f442065"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/05_Design_Views.png",
+          "bytes": 400891,
+          "sha256": "522a0e38630deb69f25c284d090b81a3694e44e858c8de7d019c636bf3bc0af1"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/CYM_Case_NM-CYD-C5.png",
+          "bytes": 472054,
+          "sha256": "8b6e5931134492c27c04d20a971161ea6b7c128053ffe2c6ca0955af80549551"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/CYM_Case_NM-CYD-C5_Case.png",
+          "bytes": 336059,
+          "sha256": "a6e7018e810f9589420a6707fda64b03748758f2dbca104bf631e5a6e4b3e06e"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case NM-CYD-C5 – RockBase NM-CYD-C5 (ESP32-C5, 2.8_ Touch) Case (battery + GPS) - 7420383/images/CYM_Case_NM-CYD-C5_Front_Frame.png",
+          "bytes": 291287,
+          "sha256": "efcfe9032dcea07ee622956c39ff59d212d947dad08c732392db1a68db491e46"
+        }
+      ]
+    },
+    {
+      "board": "Classic CYD / 2432S028R",
+      "manual_revision": 1,
+      "source_url": "https://www.thingiverse.com/thing:7420388",
+      "directory": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388",
+      "files": [
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/LICENSE.txt",
+          "bytes": 137,
+          "sha256": "7ed5e8a29d4acf6193be2483ef08768bedd1b29340605ad2fc562a4a813eef03"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/README.txt",
+          "bytes": 2690,
+          "sha256": "a7ca60d7ffe5d5eb34a23786eb89899b2431fcad29a0d4ac73b3854d271463a3"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/files/CYM_Case_2432S028R.3mf",
+          "bytes": 202480,
+          "sha256": "9b798f12616f0ec7191e52402601ab246fd46590d59dabfc9f7d44b5f59a5c65"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/files/CYM_Case_2432S028R_3D-Druck-_und_Montageanleitung_DE.pdf",
+          "bytes": 2780890,
+          "sha256": "54f9b9149c6791f8d875c7f6f6d43d726cb72082f39ee6246471de47d8182301"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/files/CYM_Case_2432S028R_3D_Baski_ve_Montaj_Kilavuzu_TR.pdf",
+          "bytes": 2792734,
+          "sha256": "5dd59c0cd3bee45d1aa3bbfc06185b2e3f4bf21bc086da02931d69b570285671"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/files/CYM_Case_2432S028R_3D_Printing_and_Installation_Manual_EN.pdf",
+          "bytes": 2769380,
+          "sha256": "9dca88522a1f6e7051dce8d103cd70f91408c2c56145bd9994baedd1a447c11c"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/files/CYM_Case_2432S028R_Case.stl",
+          "bytes": 747984,
+          "sha256": "af333ea1d24f2b47e445744bcc0c45dd4e30bf0f9e564df6132725f2d8c977b5"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/files/CYM_Case_2432S028R_Front_Frame.stl",
+          "bytes": 336584,
+          "sha256": "3aa79fa68a0033b153d6ebbaa45038a56097dfc889bf596233e45594ce4a5f6f"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/01_Front.jpg",
+          "bytes": 218739,
+          "sha256": "f4b00e7476173eb7027a19b39d638a836aff3126d410d86257159869c49452e0"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/02_Angle.jpg",
+          "bytes": 267959,
+          "sha256": "02538d7a6e5be6fc4da81b0d75e2f23619ec70477ad41ceaa599dfc601f7be3b"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/03_USB_Wall.jpg",
+          "bytes": 210622,
+          "sha256": "ddd2f738e8ad54bc983ff39b6485c984dbe76e41eaf6098f99e4b4bc8b54218f"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/04_Back.jpg",
+          "bytes": 490723,
+          "sha256": "3fb061c1a4225f872d7dce3b506b19971aa765e724b5c59a79168302da3a6dd6"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/05_Design_Views.png",
+          "bytes": 387186,
+          "sha256": "62035ba448ae2af4676ac0e2004a5f09a131a5546e1fa3435f4258ca416a858a"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/CYM_Case_2432S028R.png",
+          "bytes": 471947,
+          "sha256": "538af55b8453f319ca4244f6fad46b6b38fdd399213f4b1c5da36e4691f1e45b"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/CYM_Case_2432S028R_Case.png",
+          "bytes": 534799,
+          "sha256": "0d7df9c3112634d1b209a10ad5ddfed1febd1e2110ddd45cf3b3ceb9bdc12ac7"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case 2432S028R – ESP32-2432S028R (CYD-2432S028) Case (battery + GPS) - 7420388/images/CYM_Case_2432S028R_Front_Frame.png",
+          "bytes": 489516,
+          "sha256": "04646d3fe89f69d85c9c3bf33702ef9db17bbdbee3ad8892903c446ee32964f2"
+        }
+      ]
+    },
+    {
+      "board": "Waveshare WS-C5-28",
+      "manual_revision": 4,
+      "source_url": "https://www.thingiverse.com/thing:7417770",
+      "directory": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770",
+      "files": [
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/LICENSE.txt",
+          "bytes": 137,
+          "sha256": "7ed5e8a29d4acf6193be2483ef08768bedd1b29340605ad2fc562a4a813eef03"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/README.txt",
+          "bytes": 2395,
+          "sha256": "28e94c4af772dcc65b772b6f73d785361a1527f0bb02fddd58554219141259c4"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/files/CYM_Case_WS-C5-28.3mf",
+          "bytes": 149901,
+          "sha256": "d69bfaceca099469d5d2b8c7a32362d95b2251e268a5ed52907fe837eaddd52f"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/files/CYM_Case_WS-C5-28.stl",
+          "bytes": 583284,
+          "sha256": "6ed65a74c3ceb2075383e308f378ec867ad19def9826a0b1a11c8b995e26f04c"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/files/CYM_Case_WS-C5-28_3D-Druck-_und_Montageanleitung_DE.pdf",
+          "bytes": 3206578,
+          "sha256": "954b8236f71f1bfea265de74c2cc3a8252491590ea7028b8d4e3d5dbeee6480a"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/files/CYM_Case_WS-C5-28_3D_Baski_ve_Montaj_Kilavuzu_TR.pdf",
+          "bytes": 3200517,
+          "sha256": "4ddae445b9384e136194e35e47d466d5b9a04f33dc4365682f2405002cf4a9b2"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/files/CYM_Case_WS-C5-28_3D_Printing_and_Installation_Manual_EN.pdf",
+          "bytes": 3189555,
+          "sha256": "7812afa8a48c5ead55a026fac0feb987d903e3b85013efd00ee0989125f6810c"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/images/01_Front.jpg",
+          "bytes": 409539,
+          "sha256": "5eea17a27c55f33aea154876102f4da55576d3d78c33fe8053d4ca084746ff03"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/images/02_Angle.jpg",
+          "bytes": 175698,
+          "sha256": "c238d3d92c60def6143602627596753efc4f6f80553208dbef045db01af9b8d4"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/images/03_Side.jpg",
+          "bytes": 104627,
+          "sha256": "c59c39db9833141e2d7585950790bd330b2d081cdea3f3dfb4a1511b96329ec9"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/images/04_Angle_2.jpg",
+          "bytes": 97477,
+          "sha256": "32d90b4bcb0bbbd59b35aa68684b19235fbf56c4933bae6b92f57393ebe57570"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/images/05_Design_Views.png",
+          "bytes": 523982,
+          "sha256": "299327d0013867230932eb9cc1996186e8423f93a248a33b834a243e20245be6"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case WS-C5-28 – Waveshare ESP32-C5-Touch-LCD-2.8 Case (battery + GPS) - 7417770/images/CYM_Case_WS-C5-28.png",
+          "bytes": 336355,
+          "sha256": "4d4d47cacfe728ba2b951497bb2f59fc60b743d6bff9b1b671a0d7e99c4275ff"
+        }
+      ]
+    },
+    {
+      "board": "Hosyond ES3C35P 3.5-inch",
+      "manual_revision": 1,
+      "source_url": "https://www.thingiverse.com/thing:7420392",
+      "directory": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392",
+      "files": [
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/LICENSE.txt",
+          "bytes": 137,
+          "sha256": "7ed5e8a29d4acf6193be2483ef08768bedd1b29340605ad2fc562a4a813eef03"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/README.txt",
+          "bytes": 2417,
+          "sha256": "7487f010b4ef397014238cdb13e97040b699fa92b89cd65952651caff613e94c"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_3D-Druck-_und_Montageanleitung_DE.pdf",
+          "bytes": 4595526,
+          "sha256": "917bfd170790c68f2a1ffce030916c530a75a4e28d9f2845d6c2ed9fed5daa8d"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_3D_Baski_ve_Montaj_Kilavuzu_TR.pdf",
+          "bytes": 4592856,
+          "sha256": "d96981de4c21d749b07594b78824b735b29334c66ab604d0343b955546fc624f"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_3D_Printing_and_Installation_Manual_EN.pdf",
+          "bytes": 4572708,
+          "sha256": "9fcd5a9d8a13e91866ed1ab360dcc5cece803d6eadac9804c4218da420be8825"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_Front_Cover.stl",
+          "bytes": 276484,
+          "sha256": "6fe50efd00e36c9317e84c6f4c0c01f4002bc110e25ee7b89c480300b55352ee"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_Slim.3mf",
+          "bytes": 154403,
+          "sha256": "fb1903a294e7eebdb6f4e66af9a49e0e21554ddd501d04820760a0cae6114f45"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_Slim_Case.stl",
+          "bytes": 533784,
+          "sha256": "08db3864fa7f08ed2dd73d96cda62e412089c7b79baf0e17fa6704657585a5f2"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_Standard.3mf",
+          "bytes": 185614,
+          "sha256": "58c9b2dd655caaa50c7c635add38abbd7dabc489f445159aa01ec64f3d24167b"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/files/CYM_Case_Hosyond-S3-35_Standard_Case.stl",
+          "bytes": 730784,
+          "sha256": "ba9b853f2832d3e66bea90016ba9554769f5ef2750c9d391e81f306871d913f5"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/01_Front.jpg",
+          "bytes": 112464,
+          "sha256": "97e0859c22719defe371e0a4cf33a2b7d50a54a61d0363689580029d82a7cfd6"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/02_Socket_Wall.jpg",
+          "bytes": 66908,
+          "sha256": "01ee2eac2476ad20a6793d5134c1b09602ad51c04f19efeb889660aac85c8302"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/03_Back.jpg",
+          "bytes": 84630,
+          "sha256": "c0ea77655b36d35e912b6614f6c8613bdb9a13af9fed106594c42ab08bd00088"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/04_Design_Front.png",
+          "bytes": 85222,
+          "sha256": "d71c53c04054cf4faeefa09bcd2cce6f47b2e30a5775912f63775fa83f3e05cf"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/05_Design_Standard_Back.png",
+          "bytes": 98785,
+          "sha256": "d56f260354967f537b6252bcfeae180b3a6b636e69c5938de3858bb45ce45d5f"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/06_Design_Slim_Back.png",
+          "bytes": 57303,
+          "sha256": "5385320f720add6378cac833d478c1c508e84d1d7de76aa903d6975724ade3b1"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/CYM_Case_Hosyond-S3-35_Front_Cover.png",
+          "bytes": 480190,
+          "sha256": "70d2e5d58cdcc01259cbf7789f341947880d68f8bc4c0310a2054e22e133cbe8"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/CYM_Case_Hosyond-S3-35_Slim.png",
+          "bytes": 447681,
+          "sha256": "f015d8368718a0558d9e4e329ab8d84f52bc3be06e263e6f9ef50dee27f37bd1"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/CYM_Case_Hosyond-S3-35_Slim_Case.png",
+          "bytes": 529473,
+          "sha256": "0b5525e7e579f1c88d637b1872955616ca589d64f797e353838aa5dbb1bb1a3a"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/CYM_Case_Hosyond-S3-35_Standard.png",
+          "bytes": 456308,
+          "sha256": "9f07a6784d05bd0b6eefa2730dd00d8223a1ddda56d5f2031e1ca6036f02631c"
+        },
+        {
+          "path": "docs/cases/birolt29/CYM Case Hosyond-S3-35 – Hosyond 3.5_ ESP32-S3 Touch Display Case (battery + GPS + speaker, Standard and Slim) - 7420392/images/CYM_Case_Hosyond-S3-35_Standard_Case.png",
+          "bytes": 539516,
+          "sha256": "212b68da6d43fed4ec84bd2baeea250537b58695058dc58c91d82ca1657979c2"
+        }
+      ]
+    }
+  ]
+}

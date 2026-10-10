@@ -2,6 +2,10 @@
 
 CYM releases the Hosyond/LCDWiki ES3C35P 3.5-inch as a shared-CYM web-flasher target beginning with v2.15.34. It compiles the canonical `ESP32C5/main/` application through a narrow board adapter. Display/touch, Modern and Classic navigation, and the current Deauth Harvest workflow are physically exercised; the remaining peripheral acceptance checklist is still gated. The 2.8-inch and 4.0-inch variants remain experimental development targets.
 
+## Official case for the 3.5-inch ES3C35P
+
+Start with co-developer **@birolt29**’s **[Official CYM Case collection](../cases/birolt29/README.md#hosyond-es3c35p-35-inch)**. The Hosyond package offers Standard (speaker) and Slim (no speaker) backs with a shared front cover, EN/DE/TR manuals, STL/3MF files and original photos. The supplied @birolt29 / @alen29 credits and CC BY-NC-ND 4.0 license remain intact. These mechanical designs do not qualify CYM audio, GPS, charging or other peripherals, and are not cases for the 2.8-inch or 4.0-inch boards.
+
 ## Family summary
 
 All three boards use an ESP32-S3 N16R8 module: dual-core Xtensa LX7 at up to 240 MHz, 16 MB flash, 8 MB OPI PSRAM, 2.4-GHz 802.11b/g/n Wi-Fi, and Bluetooth 5. They also provide capacitive touch, microSD, USB-C, battery charging, audio hardware, an RGB status LED, UART, and expansion pins. The display/touch/storage buses are not interchangeable across the whole family.
