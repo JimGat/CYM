@@ -7492,7 +7492,9 @@ void app_main(void)
     g_font_icon14.fallback = &lv_extra_symbols;
     memcpy(&g_font_icon16, &lv_font_montserrat_16, sizeof(lv_font_t));
     g_font_icon16.fallback = &lv_extra_symbols;
-#if BOARD_TIME_HAS_RTC
+#if defined(CONFIG_BOARD_WS_C5_35)
+    ESP_ERROR_CHECK_WITHOUT_ABORT(cym_timekeeper_init(ws_c5_35_i2c_bus()));
+#elif BOARD_TIME_HAS_RTC
     init_i2c_bus();   // WS-C5-28 shared I2C bus must be ready before RTC probe
     ESP_ERROR_CHECK_WITHOUT_ABORT(cym_timekeeper_init(s_i2c_bus));
 #else
@@ -42539,7 +42541,10 @@ void vibrator_burst(int count, uint32_t on_ms, uint32_t gap_ms)
 #if 1  // Battery monitor enabled
 static esp_err_t init_battery_adc(void)
 {
-#if BOARD_BATTERY_VIA_EXPANDER
+#if defined(CONFIG_BOARD_WS_C5_35)
+    // Sensor errors are reported/retried by the monitor without GPIO ADC setup.
+    return ws_c5_35_i2c_bus() ? ESP_OK : ESP_ERR_INVALID_STATE;
+#elif BOARD_BATTERY_VIA_EXPANDER
     // WS-C5-28: battery sense is on the CH32V003 IO-expander ADC (EXIO_ADC),
     // already brought up by init_i2c_bus(). There is no ESP32 oneshot ADC unit
     // or channel to configure here; readings come from custom_io_expander_get_adc().
@@ -42619,7 +42624,11 @@ static esp_err_t init_battery_adc(void)
 
 static float read_battery_voltage(void)
 {
-#if BOARD_BATTERY_VIA_EXPANDER
+#if defined(CONFIG_BOARD_WS_C5_35)
+    bool present = false;
+    uint16_t mv = 0;
+    return ws_c5_35_battery_read(&present, &mv) == ESP_OK && present ? mv / 1000.0f : 0.0f;
+#elif BOARD_BATTERY_VIA_EXPANDER
     // WS-C5-28: read the 10-bit CH32V003 expander ADC (0..1023, ~3.3V ref).
     if (s_io_expander == NULL) {
         return 0.0f;
@@ -42767,10 +42776,26 @@ static void battery_monitor_task(void *arg)
 
     for (;;) {
         // Sensor/I2C acquisition must never block while the LVGL mutex is held.
+#if defined(CONFIG_BOARD_WS_C5_35)
+        bool battery_present = false;
+        uint16_t battery_mv = 0;
+        esp_err_t battery_err = ws_c5_35_battery_read(&battery_present, &battery_mv);
+        float voltage = battery_mv / 1000.0f;
+#else
         float voltage = read_battery_voltage();
+#endif
         lv_color_t color = BATTERY_COLOR_FULL;
         bool critical = false;
 
+#if defined(CONFIG_BOARD_WS_C5_35)
+        if (battery_err != ESP_OK) {
+            snprintf(voltage_str, sizeof(voltage_str), "BAT ERR");
+            color = BATTERY_COLOR_MID;
+        } else if (!battery_present) {
+            snprintf(voltage_str, sizeof(voltage_str), "NO BAT");
+            color = BATTERY_COLOR_MID;
+        } else
+#endif
         if (voltage < BATTERY_VOLTAGE_CRITICAL) {
             voltage_str[0] = '\0';
         } else {

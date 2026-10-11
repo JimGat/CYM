@@ -14,3 +14,8 @@ esp_err_t ws_c5_35_display_init(esp_lcd_panel_handle_t *panel,
 esp_err_t ws_c5_35_touch_init(void);
 bool ws_c5_35_touch_read(uint16_t *x, uint16_t *y, bool *touched);
 void ws_c5_35_backlight_set(uint8_t level);
+
+#include "driver/i2c_master.h"
+// Existing adapter-owned bus; no second I2C port/bus is created.
+i2c_master_bus_handle_t ws_c5_35_i2c_bus(void);
+esp_err_t ws_c5_35_battery_read(bool *present, uint16_t *millivolts);

@@ -37,9 +37,9 @@ class WsC535ProfileContract(unittest.TestCase):
         p = text("ESP32C5/components/board_hal/include/boards/ws_c5_35.h")
         for macro, value in {
             "BOARD_HAS_PSRAM": 1, "BOARD_HAS_SD": 1,
-            "BOARD_HAS_GPS": 0, "BOARD_HAS_BATTERY_ADC": 0,
+            "BOARD_HAS_GPS": 0, "BOARD_HAS_BATTERY_ADC": 1,
             "BOARD_HAS_AUDIO": 0, "BOARD_HAS_RGB_LED": 0,
-            "BOARD_TIME_HAS_RTC": 0, "BOARD_TIME_HAS_GPS_UART": 0,
+            "BOARD_TIME_HAS_RTC": 1, "BOARD_TIME_HAS_GPS_UART": 0,
             "BOARD_TIME_ESTIMATE_CHARACTERIZED": 0,
         }.items():
             self.assertRegex(p, rf"#define\s+{macro}\s+{value}\b", macro)
@@ -115,14 +115,14 @@ class WsC535AdapterContract(unittest.TestCase):
 class WsC535PackagingContract(unittest.TestCase):
     def test_version_is_shared_for_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.72")', text(rel), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.73")', text(rel), rel)
 
     def test_dedicated_package_and_manifest(self):
         c = text("ESP32C5/CMakeLists.txt")
         self.assertRegex(c, re.compile(r"CONFIG_BOARD_WS_C5_35.*?binaries-ws-c5-35.*?CYM-WS-C5-35.*?32MB", re.S))
         manifest = json.loads(text("ESP32C5/docs/manifest.ws-c5-35.json"))
         self.assertIn("WS-C5-35 Experimental", manifest["name"])
-        self.assertEqual(manifest["version"], "v2.15.72")
+        self.assertEqual(manifest["version"], "v2.15.73")
         self.assertEqual({p["offset"] for p in manifest["parts"]}, {0x2000, 0x8000, 0x10000})
         self.assertTrue(all("binaries-ws-c5-35" in p["path"] for p in manifest["parts"]))
 

@@ -48,8 +48,8 @@ class Hardware(unittest.TestCase):
  def test_read_error_and_range(self):
   r=fn("static float read_battery_voltage(void)")
   for x in ("custom_io_expander_get_adc","adc_raw > 1023","BOARD_BATTERY_CAL_SCALE","BOARD_BATTERY_DIVIDER_DEN","Battery ADC read failed"):self.assertIn(x,r)
- def test_ws35_unsupported(self):
-  s=(ROOT/"ESP32C5/components/board_hal/include/boards/ws_c5_35.h").read_text();self.assertRegex(s,r"#define\s+BOARD_HAS_BATTERY_ADC\s+0\b");self.assertNotIn("BOARD_BATTERY_VIA_EXPANDER",s)
+ def test_ws35_does_not_reuse_ws28_expander(self):
+  s=(ROOT/"ESP32C5/components/board_hal/include/boards/ws_c5_35.h").read_text();self.assertRegex(s,r"#define\s+BOARD_HAS_BATTERY_ADC\s+1\b");self.assertNotIn("BOARD_BATTERY_VIA_EXPANDER",s)
 class Layout(unittest.TestCase):
  def test_both_header_paths(self):
   h=fn("static void create_home_ui(void)");p=fn("static void create_function_page_base(const char *name)")

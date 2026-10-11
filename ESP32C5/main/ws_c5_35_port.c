@@ -29,6 +29,8 @@ static const char *TAG = "ws_c5_35";
 
 static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_exio_dev;
+static i2c_master_dev_handle_t s_pmic_dev;
+static bool s_battery_adc_ready;
 static uint16_t output_shadow;   // tracks the 16-bit output register state
 static esp_lcd_touch_handle_t s_touch;
 
@@ -122,16 +124,16 @@ static esp_err_t ws35_init_i2c(void)
 
     // Probe AXP2101 PMIC — report presence without full rail programming.
     // Full AXP2101 control is not necessary for display bring-up.
-    i2c_master_dev_handle_t pmic_dev;
+    // Retain one adapter-owned PMIC handle for telemetry.
     i2c_device_config_t pmic_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = BOARD_PMIC_I2C_ADDR,
         .scl_speed_hz = 400000,
     };
-    if (i2c_master_bus_add_device(s_i2c_bus, &pmic_cfg, &pmic_dev) == ESP_OK) {
+    if (i2c_master_bus_add_device(s_i2c_bus, &pmic_cfg, &s_pmic_dev) == ESP_OK) {
         uint8_t probe_buf[1] = {0x03};  // chip ID register
         uint8_t chip_id = 0;
-        if (i2c_master_transmit_receive(pmic_dev, probe_buf, 1, &chip_id, 1, 100) == ESP_OK) {
+        if (i2c_master_transmit_receive(s_pmic_dev, probe_buf, 1, &chip_id, 1, 100) == ESP_OK) {
             ESP_LOGI(TAG, "AXP2101 PMIC detected at 0x%02X (chip ID: 0x%02X)",
                      BOARD_PMIC_I2C_ADDR, chip_id);
         } else {
@@ -141,6 +143,55 @@ static esp_err_t ws35_init_i2c(void)
         ESP_LOGW(TAG, "AXP2101 at 0x%02X: device add failed", BOARD_PMIC_I2C_ADDR);
     }
 
+    return ESP_OK;
+}
+
+// Vendor XPowersLib at 04e6134: chip=0x4A, status0 bit3=battery present,
+// ADC_CHANNEL_CTRL 0x30 bit0=VBAT measurement, VBAT 0x34/35 = H5:L8 in mV.
+// Only measurement enable is written; rails/charger/TS settings are untouched.
+i2c_master_bus_handle_t ws_c5_35_i2c_bus(void)
+{
+    return ws35_init_i2c() == ESP_OK ? s_i2c_bus : NULL;
+}
+
+static esp_err_t ws35_pmic_read(uint8_t reg, uint8_t *data, size_t len)
+{
+    if (!s_pmic_dev) return ESP_ERR_INVALID_STATE;
+    return i2c_master_transmit_receive(s_pmic_dev, &reg, 1, data, len, 100);
+}
+
+esp_err_t ws_c5_35_battery_read(bool *present, uint16_t *millivolts)
+{
+    if (!present || !millivolts) return ESP_ERR_INVALID_ARG;
+    *present = false;
+    *millivolts = 0;
+    uint8_t id = 0, status = 0, adc[2] = {0};
+    esp_err_t err = ws35_pmic_read(0x03, &id, 1);
+    if (err != ESP_OK) return err;
+    if (id != 0x4A) return ESP_ERR_NOT_SUPPORTED;
+    if (!s_battery_adc_ready) {
+        uint8_t ctrl = 0;
+        err = ws35_pmic_read(0x30, &ctrl, 1);
+        if (err != ESP_OK) return err;
+        if (!(ctrl & 1)) {
+            uint8_t enable[2] = {0x30, (uint8_t)(ctrl | 1)};
+            err = i2c_master_transmit(s_pmic_dev, enable, sizeof(enable), 100);
+            if (err != ESP_OK) return err;
+            // First conversion is not immediate; next bounded polling cycle samples.
+            s_battery_adc_ready = true;
+            return ESP_ERR_INVALID_STATE;
+        }
+        s_battery_adc_ready = true;
+    }
+    err = ws35_pmic_read(0x00, &status, 1);
+    if (err != ESP_OK) return err;
+    if (!(status & (1u << 3))) return ESP_OK; // USB-only: no fabricated battery level
+    err = ws35_pmic_read(0x34, adc, sizeof(adc));
+    if (err != ESP_OK) return err;
+    uint16_t mv = ((uint16_t)(adc[0] & 0x1f) << 8) | adc[1];
+    if (mv < 2500 || mv > 5000) return ESP_ERR_INVALID_RESPONSE;
+    *millivolts = mv;
+    *present = true;
     return ESP_OK;
 }
 
@@ -272,4 +323,6 @@ esp_err_t ws_c5_35_display_init(esp_lcd_panel_handle_t *panel, esp_lcd_panel_io_
 esp_err_t ws_c5_35_touch_init(void) { return ESP_ERR_NOT_SUPPORTED; }
 bool ws_c5_35_touch_read(uint16_t *x, uint16_t *y, bool *touched) { (void)x; (void)y; if (touched) *touched=false; return false; }
 void ws_c5_35_backlight_set(uint8_t level) { (void)level; }
+i2c_master_bus_handle_t ws_c5_35_i2c_bus(void) { return NULL; }
+esp_err_t ws_c5_35_battery_read(bool *present, uint16_t *millivolts) { if (present) *present=false; if (millivolts) *millivolts=0; return ESP_ERR_NOT_SUPPORTED; }
 #endif

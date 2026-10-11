@@ -8,9 +8,8 @@
 //        Vendor commit: 04e6134cf3e37309b2bec9915189efeace1161bc
 //
 // EXPERIMENTAL — hardware validation pending.
-// Display, touch, and PMIC settings use vendor BSP defaults and have NOT
-// been verified on CYM hardware. Do not treat any transform, inversion,
-// or color-order setting as confirmed until Jim's SKU 35419 unit boots.
+// Jim reports display, touch and keyboard work on his delivered board.
+// RTC/PMIC telemetry are test candidates; accuracy/holdover remain unqualified.
 #pragma once
 
 // ── SPI bus ───────────────────────────────────────────────────────────────────
@@ -75,12 +74,12 @@
 
 // ── Capability flags (experimental — conservative) ───────────────────────────
 // Capabilities present on the board but NOT yet enabled in CYM firmware
-// (GPS, RTC, audio, sensors, battery, camera) are explicitly set to 0.
-// They must not be enabled until hardware-validated on Jim's SKU 35419.
+// (GPS, audio, sensors, camera) are explicitly set to 0.
+// RTC/battery are enabled for owner-requested qualification; measurements unverified.
 #define BOARD_HAS_PSRAM      1
 #define BOARD_HAS_SD         1
 #define BOARD_HAS_GPS        0
-#define BOARD_HAS_BATTERY_ADC 0
+#define BOARD_HAS_BATTERY_ADC 1  // AXP2101 telemetry, NOT ESP32 GPIO ADC
 #define BOARD_HAS_AUDIO      0
 #define BOARD_HAS_RGB_LED    0
 
@@ -89,8 +88,10 @@
 #define BOARD_RGB_LED_GPIO   -1
 #define BOARD_RGB_LED_COUNT  0
 
-// ── Timing profile (uncharacterized — all sources disabled) ──────────────────
-#define BOARD_TIME_HAS_RTC                    0
+// ── Timing profile (uncharacterized — RTC enabled for qualification) ──────────────────
+#define BOARD_TIME_HAS_RTC                    1
+#define BOARD_RTC_I2C_ADDR   0x51
+#define BOARD_TIME_RTC_DRIFT_PPM              50
 #define BOARD_TIME_HAS_GPS_UART               0
 #define BOARD_TIME_HAS_MDNS                   1
 #define BOARD_TIME_RTOS_DRIFT_PPM             100
