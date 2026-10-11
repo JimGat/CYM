@@ -69,7 +69,7 @@ def verify(version,commit=None):
   nm=d['c_compiler'].removesuffix('gcc')+'nm'
   sym=subprocess.check_output([nm,'-S','--defined-only',str(build/d['app_elf'])],text=True)
   names={l.split()[-1] for l in sym.splitlines() if l.split()}
-  for name in ('D_DoomMain','doomgeneric_Tick','doom_ui_attach_footer','_doom_init_start','_doom_init_end','_doom_zero_start','_doom_zero_end'):
+  for name in ('D_DoomMain','doomgeneric_Tick','doom_ui_tile_click','_doom_init_start','_doom_init_end','_doom_zero_start','_doom_zero_end'):
    assert (name in names)==ws,(board,'engine inclusion',name)
   sec=sections(build/d['app_elf'])
   addresses={l.split()[-1]:int(l.split()[0],16) for l in sym.splitlines() if l.split()}

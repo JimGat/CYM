@@ -32,12 +32,12 @@ host gameplay and compile/link checks are not physical approval.
 3. Insert the card. Use CYM's existing Settings -> SD Card -> Remount SD Card
    only if the existing mount is not ready, then return to Settings. Do not
    format your card or run an unrelated provisioning operation for this test.
-4. Stop other tools normally. The launcher fails closed if SD is unmounted,
+4. Stop other tools normally. Startup fails closed if SD is unmounted,
    Bluetooth/802.15.4 mode or an active tool/task is present. It does not stop
-   or restart radios itself. Return to an idle Settings screen.
-5. Tap and RELEASE the existing LAB5 firmware-version footer area five times
+   or restart radios itself. The dialog remains accessible without SD; Continue reports the failure. Return to an idle Settings screen.
+5. Tap and RELEASE the Hardware Options tile in Settings five times
    within six seconds. A held press is not five taps. Navigation, touch loss
-   or timeout resets the sequence. No corner gesture or added menu tile.
+   or timeout resets the sequence. Keep gaps below 800 ms, as with the existing Settings interaction. A normal single tap opens Hardware Options after the short delay. No footer or corner gesture.
 6. The license page appears before engine allocations. Scroll to read its
    attribution, GPL/no-warranty and matching-source notice. Cancel returns
    unchanged to Settings. Continue checks the idle gate again and validates
@@ -153,4 +153,6 @@ no WAD; the separate SD branch keeps Freedoom's own license and credits.
 - Worker requests a 24,576-byte stack through FreeRTOS; runtime allocations reduce these static upper bounds. Initialization fails closed if worker/buffers cannot be allocated. Confirm actual startup and stack/heap headroom on hardware; no minimum runtime free-memory guarantee is claimed.
 - The two large mutable tables are copied from immutable flash defaults into owned PSRAM for each launch. Tests mutate them before teardown and assert restored defaults on reentry; initialized values are not lost in NOLOAD storage.
 
-Footer interaction update: dialog access no longer depends on mounted SD. Continue retains idle-tool checks and reports missing WAD/SD with asset instructions before engine allocations when SD is unavailable. Five released taps within six seconds; Settings footer touch area is full width and 36 pixels high.
+
+
+Tile access replaces the unreliable footer. Five completed clicks in six seconds with gaps below 800 ms open the license dialog even when SD is not ready or idle gate refuses startup. Continue shows the refusal or missing-asset message; no engine startup bypass. Clicking another Settings tile or leaving the screen cancels deferred navigation. Existing Settings Easter egg unchanged.

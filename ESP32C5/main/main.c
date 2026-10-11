@@ -100,6 +100,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "doom_ui.h"
 static bool doom_prototype_idle(void);
 static bool doom_prototype_sd_ready(void);
+static void doom_prototype_hardware(void);
 static void doom_prototype_home(void);
 #endif
 #if defined(CONFIG_BOARD_WS_S3_5B)
@@ -28073,6 +28074,9 @@ static void settings_tile_event_cb(lv_event_t *e)
     const char *tile_name = (const char *)lv_event_get_user_data(e);
     if (!tile_name) return;
     ESP_LOGI(TAG, "[UI] %s", tile_name);
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    if (strcmp(tile_name, "Hardware Options") != 0) doom_ui_screen_stop();
+#endif
 
     if (strcmp(tile_name, "Compromised Data") == 0) {
         show_wifi_monitor_screen();
@@ -28091,7 +28095,11 @@ static void settings_tile_event_cb(lv_event_t *e)
     } else if (strcmp(tile_name, "GPS Info") == 0) {
         show_gps_info_screen();
     } else if (strcmp(tile_name, "Hardware Options") == 0) {
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+        doom_ui_tile_click();
+#else
         show_hardware_options_screen();
+#endif
     } else if (strcmp(tile_name, "Clock") == 0) {
         show_clock_settings_screen();
 #if CONFIG_BOARD_HAS_VIBRATOR
@@ -29174,6 +29182,8 @@ static void show_settings_screen(void)
     create_function_page_base("Settings");
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
     g_screen_stop_fn = doom_ui_screen_stop;
+    doom_ui_configure(doom_prototype_idle, doom_prototype_home,
+                      doom_prototype_sd_ready, doom_prototype_hardware);
 #endif
     apply_menu_bg();
 
@@ -29202,20 +29212,8 @@ static void show_settings_screen(void)
 #endif
     create_tile(tiles, MY_SYMBOL_CLOCK,          "Clock",              lv_color_hex(0x00897B),  settings_tile_event_cb, "Clock");
 
-#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
-    lv_obj_t *ver_area = lv_obj_create(function_page);
-    lv_obj_remove_style_all(ver_area);
-    lv_obj_set_size(ver_area, lv_pct(100), 36);
-    lv_obj_align(ver_area, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_clear_flag(ver_area, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *ver = lv_label_create(ver_area);
-#else
     lv_obj_t *ver = lv_label_create(function_page);
-#endif
     lv_label_set_text(ver, "LAB5 " FW_VERSION);
-#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
-    doom_ui_attach_footer(ver_area, doom_prototype_idle, doom_prototype_home, doom_prototype_sd_ready);
-#endif
     lv_obj_set_style_text_font(ver, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(ver, ui_muted_color(), 0);
     lv_obj_align(ver, LV_ALIGN_BOTTOM_MID, 0, -4);
@@ -72068,6 +72066,11 @@ static void show_espnow_pktlog_screen(void)
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 /* Fail closed on all root-scope active tools; a menu location alone is not
  * proof of idle. WiFi idle driver is left untouched; BLE/154 modes refused. */
+static void doom_prototype_hardware(void)
+{
+    nav_deferred_show_fn = show_hardware_options_screen;
+}
+
 static bool doom_prototype_sd_ready(void)
 {
     return sd_mounted_lazy && sd_spi_mutex != NULL;

@@ -8,7 +8,8 @@ class FooterAccess(unittest.TestCase):
  def test_sd_not_required_for_dialog(self):
   s=(ROOT/'ESP32C5/main/main.c').read_text();a=s.index('static bool doom_prototype_idle(void)\n{');b=s.index('/* Engine resources',a)
   self.assertFalse('!sd_mounted_lazy' in s[a:b])
-  self.assertTrue('lv_obj_set_size(ver_area, lv_pct(100), 36)' in s)
+  self.assertTrue('doom_ui_tile_click();' in s)
+  self.assertFalse('doom_ui_attach_footer(' in s)
  def test_ws35_in_normal_selector(self):
   s=(ROOT/'ESP32C5/docs/index.html').read_text();a=s.index('const DEFAULT_BOARD_IDS');b=s.index(';',a)
   self.assertIn('"ws-c5-35"',s[a:b])
