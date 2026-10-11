@@ -3,6 +3,8 @@
  * Bounded TX-only DMA writes run on the engine worker; shutdown is synchronous.
  */
 #include "doom_audio.h"
+#include "doom_metrics.h"
+#include "esp_timer.h"
 #include "driver/i2s_std.h"
 #include "esp_codec_dev_defaults.h"
 #include "esp_log.h"
@@ -62,5 +64,11 @@ fail:
 bool doom_audio_write(const int16_t *pcm,size_t count){
  if(!enabled||!pcm||count>1103)return false;size_t bytes=count*sizeof(*pcm),written=0;
  /* IDF copies the supplied buffer into the channel DMA; timeout is finite. */
- return i2s_channel_write(tx,pcm,bytes,&written,50)==ESP_OK&&written==bytes;
+ uint32_t before=(uint32_t)esp_timer_get_time();
+ bool ok=i2s_channel_write(tx,pcm,bytes,&written,50)==ESP_OK&&written==bytes;
+ uint32_t elapsed=(uint32_t)esp_timer_get_time()-before;
+ DM_ADD(audio_writes,1);DM_ADD(audio_us,elapsed);
+ if(elapsed>=1000)DM_ADD(audio_waits,1);
+ if(!ok)DM_ADD(audio_faults,1);
+ return ok;
 }

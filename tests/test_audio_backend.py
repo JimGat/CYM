@@ -46,6 +46,8 @@ int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*);
 """
 HARNESS=r"""#include "backend_stub.h"
 #include "doom_audio.h"
+#include "doom_metrics.h"
+doom_metrics_t doom_metrics;
 #include <assert.h>
 #include <stdio.h>
 static int seq,fail_at=-1,tx_live,tx_on,ctrl_live,codec_live,amp_on,short_write;
@@ -76,7 +78,7 @@ int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);codec_l
 int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*c){assert(c==&ci);ctrl_live=0;return 0;}
 int main(void){int16_t pcm[1103]={0};assert(!doom_audio_write(pcm,1));
 for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on);}
-seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on);assert(doom_audio_write(pcm,1103));assert(!doom_audio_write(pcm,1104));short_write=1;assert(!doom_audio_write(pcm,2));short_write=0;
+seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on);assert(doom_audio_write(pcm,1103));assert(!doom_audio_write(pcm,1104));short_write=1;assert(!doom_audio_write(pcm,2));short_write=0;assert(DM_GET(audio_writes)==2&&DM_GET(audio_waits)==2&&DM_GET(audio_faults)==1);
 fail_at=seq+3;assert(doom_audio_end()!=0);assert(tx_live);fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on);
 puts("PRODUCTION_AUDIO_BACKEND routing, DMA bounds, init/stop failures, retry retention PASS (mock driver, not hardware)");return 0;}
 """
@@ -86,6 +88,7 @@ class Backend(unittest.TestCase):
   (OUT/'backend_stub.h').write_text(STUB)
   for p in [OUT/'driver/i2s_std.h',OUT/'esp_codec_dev_defaults.h',OUT/'esp_log.h']:p.write_text('#include "backend_stub.h"\n')
   (OUT/'harness.c').write_text(HARNESS)
+  (OUT/'esp_timer.h').write_text('#include <stdint.h>\nstatic inline int64_t esp_timer_get_time(void){static int64_t us;return us+=2000;}\n')
   for board in ['28','35']:
    exe=OUT/('backend-'+board)
    cmd=['cc','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fsanitize=address,undefined','-g','-DCONFIG_BOARD_WS_C5_'+board+'=1','-I'+str(OUT),'-I'+str(COMP/'include'),str(OUT/'harness.c'),str(COMP/'doom_audio.c'),'-o',str(exe)]

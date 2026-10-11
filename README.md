@@ -906,7 +906,7 @@ Bluetooth
 | **BT Blacklist** | Per-device suppression list at `/sdcard/lab/bluetooth/blacklist.csv`. Any device on the blacklist is silently ignored by BT Scan & Select, BT Lookout, BLE PCAP, and all other BT scan functions. Editor in the **BT Lookout** screen via the **Blacklist** button. |
 | **BT Observer** | Configurable-duration BLE scan (default 10 s, set via Settings → Timing) followed by sequential GATT walks on every discovered device (5 s timeout per device). Results shown in a scrollable live list; tap any row to open the full GATT detail view. **Advanced advertising fingerprinting** decodes every AD type in each device's advertising payload — company IDs (from Bluetooth SIG assigned numbers), URI schemes, service UUIDs, TX power, flags, and custom manufacturer data. Fingerprint data is appended to the JSON alongside the GATT walk. |
 | **BT Locator** | RSSI-based proximity tracking of a selected BLE device; updates every 10 s. Vibrator strength scales logarithmically with signal strength — silent below −69 dBm, 10% at −69 dBm, 100% at −40 dBm (requires vibrator hardware). |
-| **GATT Walker** | Full BLE GATT inspection — walks all services, characteristics, and descriptors; reads attribute values; computes FNV-32 device fingerprint; saves enriched JSON to SD card with service/characteristic names, decoded properties, ASCII data preview, OUI manufacturer, and optional GPS geotag |
+| **GATT Walker** | Full BLE GATT inspection — walks all services, characteristics, and descriptors; reads attribute values; preserves the FNV-32 layout fingerprint and adds an optional versioned SHA-256 metadata correlation hint on all eight boards; saves enriched JSON to SD card with service/characteristic names, decoded properties, ASCII data preview, OUI manufacturer, and optional GPS geotag |
 | **AirTag Scanner** | Passive BLE scan — detects Apple AirTags, Samsung SmartTags, and Tile trackers. Live summary shows four categories. Found Tags list shows type badge, RSSI, Track + GATT Walk buttons per device; Ring button for AirTag (Apple FMN non-owner `{0x01}` confirmed). SmartTag and Tile ring requires owner auth — clearly labeled. |
 | **Tag Locator** | Per-tag RSSI tracking launched from the AirTag Scan found-tags list |
 | **Bluetooth Lookout** | Continuous BLE monitor that alerts when a watchlisted device (by full MAC or OUI prefix) is detected nearby. Triggers 3 × 1-second vibrator pulses on each detection (requires vibrator hardware). |
@@ -1231,7 +1231,7 @@ Tap **GATT Walk** on any Found Tags entry to connect and enumerate the device's 
 
 Reading a device name is just the surface. A full GATT walk is one of the richest passive fingerprinting and intelligence-gathering techniques in the BLE space.
 
-**Rolling MAC defeat.** Modern BLE devices randomize their advertising MAC every 7–15 minutes (iOS, Android, and Windows all do this). The GATT service/characteristic layout does not rotate — it is fixed per device model and firmware version. The FNV-32 fingerprint computed over the ordered set of service and characteristic UUIDs creates a stable device signature that survives MAC rotation entirely. Two captures with different MACs but matching fingerprints are almost certainly the same physical device. Combined with `System ID (0x2A23)` — which is derived from the Bluetooth address and does not rotate — and `Serial Number (0x2A25)`, you get a tracking signature more robust than the advertising MAC.
+**Correlation across rotating MACs.** The legacy ordered GATT layout FNV-32 hint can match across advertising-address changes, but many devices share that layout. The optional `cym-gatt-metadata-v1` SHA-256 hint also incorporates observed Device Name (GATT first, advertising fallback) and readable manufacturer/model metadata. Read completion is unknown and names can change, duplicate or be spoofed: neither hint proves that two captures are the same physical device. Serial, System ID, MAC, RSSI, GPS, time and battery data are excluded from the secondary hint. See [metadata contract and tester instructions](docs/gatt23-metadata.md).
 
 **Gratuitous information leakage.** Many devices expose the Device Information Service (0x180A) completely unauthenticated:
 
@@ -3337,10 +3337,18 @@ Sources:
 [3] https://wsjt.sourceforge.io/wsjtx-doc/wsjtx-main.html — WSJT-X User Guide
 [4] https://docs.waveshare.com/ESP32-C5-Touch-LCD-2.8 — Waveshare ESP32-C5-Touch-LCD-2.8 documentation
 
-### WS after-hours beta candidate (parent review pending)
+### WS after-hours development beta
 
-Development v2.15.78 adds a five-Hardware-tap PinZero LABS selector on WS-C5-28/35.
+Development v2.15.80 preserves a five-Hardware-tap PinZero LABS selector on WS-C5-28/35.
 Enabled engine uses consumed one-shot same-image restart, not live radio/tool takeover;
 busy SD owners refused. SFX only. Arduboy is disabled COMING SOON, not an emulator.
-CYM config preserved; no partition/OTA changes. See [operator/recovery manual](docs/ws-c5-game-beta.md).
+CYM config preserved; no partition/OTA changes. Adds visible loading phases/hash progress,
+reliable completion-owned game display transfers and interval performance diagnostics.
+Audible speaker output and physical responsiveness remain qualification checks.
+See [operator/recovery manual](docs/ws-c5-game-beta.md).
 Host/build gates are not physical speaker/touch qualification or publication.
+
+Shared development metadata integration: original fingerprint/filenames preserved;
+GATT Device Name preferred, advertised fallback, readable manufacturer/model; full
+SHA-256 in SD JSON, short result-screen preview and explicit uncertainty.
+See [GATT metadata operator contract](docs/gatt23-metadata.md).

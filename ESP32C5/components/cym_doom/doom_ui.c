@@ -4,6 +4,7 @@
  */
 #include "doom_ui.h"
 #include "doom_session.h"
+#include "doom_metrics.h"
 #include "doom_contracts.h"
 #include "selector_art.h"
 #include "esp_heap_caps.h"
@@ -16,7 +17,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#ifndef WAD_PATH
 #define WAD_PATH "/sdcard/doom/doom1.wad"
+#endif
 extern SemaphoreHandle_t sd_spi_mutex;
 static const char *TAG="CYM_DOOM";
 static bool (*idle_gate)(void);
@@ -44,6 +47,13 @@ static TaskHandle_t worker;
 static bool cancel,done,started,go_home;
 static unsigned held_keys;
 static uint32_t last_hold_ms,frames,dropped;
+static uint32_t displayed,overwritten,last_sequence,scale_us,ui_updates,ui_last_log,shown_fps10;
+static uint32_t last_frames,last_displayed,last_dropped,last_overwritten,last_ticks,last_tick_us,last_audio_us,last_audio_writes,last_sd_us,last_sd_reads,last_sleep_us,last_frame_us,last_input_events,last_input_sum,last_scale_us,last_ui_updates,last_panel_flushes,last_panel_us;
+/* Worker publishes numeric state only. Main owns all animation and text. */
+enum { LOAD_STRUCTURE,LOAD_HASH,LOAD_INIT,LOAD_RUNNING };
+static uint32_t load_phase,hash_bytes,hash_total,boot_ms,cooperate_ms;
+static void cooperate(void){uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if((uint32_t)(now-cooperate_ms)>=20){vTaskDelay(1);cooperate_ms=(uint32_t)(esp_timer_get_time()/1000);}}
+static void phase(uint32_t p,const char *marker){__atomic_store_n(&load_phase,p,__ATOMIC_RELEASE);ESP_LOGI(TAG,"%s elapsed_ms=%lu",marker,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));}
 static doom_rect fit;
 #define ASSET_URL "https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard"
 #define ASSET_HELP "\n\nGet official Freedoom Phase 1 v0.13.0:\n" ASSET_URL "\n\nCopy the contents of sdcard/ to the FAT32 SD root. Required: doom/doom1.wad (runtime /sdcard/doom/doom1.wad). License and credits accompany the separate SD assets."
@@ -52,21 +62,23 @@ _Static_assert(sizeof(worker_status) > sizeof(ASSET_HELP) + 128, "Asset instruct
 static bool quitting(void){return __atomic_load_n(&cancel,__ATOMIC_ACQUIRE);}
 static bool transport_take(void){return sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;}
 static void transport_give(void){xSemaphoreGive(sd_spi_mutex);}
-static bool bounded_read(void *ctx,uint64_t off,void *dst,size_t n){if(quitting()||off>INT32_MAX||!transport_take())return false;FILE *f=ctx;bool ok=fseek(f,(long)off,SEEK_SET)==0&&fread(dst,1,n,f)==n;transport_give();return ok;}
+static bool bounded_read(void *ctx,uint64_t off,void *dst,size_t n){if(quitting()||off>INT32_MAX||!transport_take())return false;FILE *f=ctx;bool ok=fseek(f,(long)off,SEEK_SET)==0&&fread(dst,1,n,f)==n;transport_give();cooperate();return ok;}
 static void heap_marker(const char *phase){ESP_LOGI(TAG,"%s free_psram=%lu largest_psram=%lu free_internal=%lu",phase,(unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));}
 /* Known-content allowlist avoids accepting arbitrary hostile lump internals
  * into the legacy renderer. Hash in fixed chunks, one shared-bus lock per read.
  * No mount, directory creation, write, download or user-SD maintenance occurs.
  */
 static bool validate_asset(void){FILE *f=NULL;uint64_t size=0;if(!transport_take()){snprintf(worker_status,sizeof(worker_status),"SD transport busy");return false;}struct stat st;if(stat(WAD_PATH,&st)==0&&st.st_size>0){size=(uint64_t)st.st_size;f=fopen(WAD_PATH,"rb");}transport_give();if(!f){snprintf(worker_status,sizeof(worker_status),"Missing WAD: /sdcard/doom/doom1.wad" ASSET_HELP);return false;}
- doom_wad_result result=doom_wad_validate(bounded_read,f,size);bool valid=result==DOOM_WAD_OK;psa_hash_operation_t hash=PSA_HASH_OPERATION_INIT;uint8_t digest[32],chunk[4096];size_t digest_n=0;
- if(valid){valid=psa_crypto_init()==PSA_SUCCESS&&psa_hash_setup(&hash,PSA_ALG_SHA_256)==PSA_SUCCESS;for(uint64_t off=0;valid&&off<size;){size_t n=size-off<sizeof(chunk)?(size_t)(size-off):sizeof(chunk);valid=bounded_read(f,off,chunk,n)&&psa_hash_update(&hash,chunk,n)==PSA_SUCCESS;off+=n;vTaskDelay(1);}if(valid)valid=psa_hash_finish(&hash,digest,sizeof(digest),&digest_n)==PSA_SUCCESS&&digest_n==32&&doom_wad_trusted_hash(digest);psa_hash_abort(&hash);}
+ phase(LOAD_STRUCTURE,"STRUCTURE_BEGIN");
+ doom_wad_result result=doom_wad_validate(bounded_read,f,size);
+ ESP_LOGI(TAG,"STRUCTURE_END result=%d elapsed_ms=%lu",result,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));bool valid=result==DOOM_WAD_OK;psa_hash_operation_t hash=PSA_HASH_OPERATION_INIT;uint8_t digest[32],chunk[4096];size_t digest_n=0;
+ if(valid){__atomic_store_n(&hash_total,(uint32_t)size,__ATOMIC_RELEASE);phase(LOAD_HASH,"HASH_BEGIN");uint32_t hash_start=(uint32_t)(esp_timer_get_time()/1000);valid=psa_crypto_init()==PSA_SUCCESS&&psa_hash_setup(&hash,PSA_ALG_SHA_256)==PSA_SUCCESS;for(uint64_t off=0;valid&&off<size;){size_t n=size-off<sizeof(chunk)?(size_t)(size-off):sizeof(chunk);valid=bounded_read(f,off,chunk,n)&&psa_hash_update(&hash,chunk,n)==PSA_SUCCESS;if(valid){off+=n;__atomic_store_n(&hash_bytes,(uint32_t)off,__ATOMIC_RELEASE);}cooperate();}if(valid)valid=psa_hash_finish(&hash,digest,sizeof(digest),&digest_n)==PSA_SUCCESS&&digest_n==32&&doom_wad_trusted_hash(digest);psa_hash_abort(&hash);ESP_LOGI(TAG,"HASH_END bytes=%lu total=%lu hash_ms=%lu trusted=%d",(unsigned long)__atomic_load_n(&hash_bytes,__ATOMIC_ACQUIRE),(unsigned long)size,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-hash_start),valid);}
  /* Never surrender file ownership on transport failure; cancellation remains
   * pending and UI stays intact until close succeeds and worker signals done. */
  while(!transport_take())vTaskDelay(pdMS_TO_TICKS(20));fclose(f);transport_give();if(!valid)snprintf(worker_status,sizeof(worker_status),"Invalid/unsupported WAD. Use official Freedoom 0.13.0 Phase 1." ASSET_HELP);return valid;
 }
-static void frame_ready(const uint8_t *pixels,void *unused){(void)unused;if(xSemaphoreTake(frame_lock,pdMS_TO_TICKS(5))==pdTRUE){memcpy(mailbox,pixels,320*200);for(unsigned i=0;i<256;i++)mailbox_palette[i]=doom_session_color565((uint8_t)i);frames++;xSemaphoreGive(frame_lock);}else dropped++;}
-static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
+static void frame_ready(const uint8_t *pixels,void *unused){(void)unused;if(xSemaphoreTake(frame_lock,pdMS_TO_TICKS(5))==pdTRUE){memcpy(mailbox,pixels,320*200);for(unsigned i=0;i<256;i++)mailbox_palette[i]=doom_session_color565((uint8_t)i);if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED))__atomic_fetch_add(&overwritten,1,__ATOMIC_RELAXED);__atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);xSemaphoreGive(frame_lock);}else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);}
+static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{phase(LOAD_INIT,"INIT_BEGIN");doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){phase(LOAD_RUNNING,"INIT_END");__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
 heap_marker("WORKER_CLEAN");ESP_LOGI(TAG,"ENGINE_JOIN_READY frames=%lu dropped=%lu owned=%lu",(unsigned long)frames,(unsigned long)dropped,(unsigned long)doom_session_owned());/* Last worker access is publishing done. No UI/buffer access after this store. */__atomic_store_n(&done,true,__ATOMIC_RELEASE);vTaskSuspend(NULL);for(;;)vTaskDelay(pdMS_TO_TICKS(1000));}
 /* Joining uses the FreeRTOS task lifecycle, not merely an arbitrary delay. UI
  * waits for done (all engine resources gone) then checks task deletion before
@@ -85,7 +97,33 @@ static bool join_worker(TaskHandle_t *task, const bool *clean)
 }
 static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(!join_worker(&worker,&done))return;if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=0;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
 static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(held_keys&&(uint32_t)(now-last_hold_ms)>250){held_keys=0;doom_session_set_keys(0);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){if(!join_worker(&worker,&done))return;/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(!error_shown){error_shown=true;error_view();}return;}
- if(__atomic_load_n(&started,__ATOMIC_ACQUIRE)&&canvas&&surface&&xSemaphoreTake(frame_lock,0)==pdTRUE){for(int y=0;y<fit.h;y++)for(int x=0;x<fit.w;x++){uint8_t i=mailbox[(y*200/fit.h)*320+x*320/fit.w];uint16_t c=mailbox_palette[i];surface[y*fit.w+x]=lv_color_make((uint8_t)((c>>11)<<3),(uint8_t)(((c>>5)&63)<<2),(uint8_t)((c&31)<<3));}xSemaphoreGive(frame_lock);lv_obj_invalidate(canvas);}if(status&&!__atomic_load_n(&started,__ATOMIC_ACQUIRE))lv_label_set_text(status,"Validating assets...");}
+ bool running=__atomic_load_n(&started,__ATOMIC_ACQUIRE);
+ if(running&&canvas&&surface&&xSemaphoreTake(frame_lock,0)==pdTRUE){
+  if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED)){uint32_t before=(uint32_t)esp_timer_get_time();
+   for(int y=0;y<fit.h;y++)for(int x=0;x<fit.w;x++){
+    uint8_t i=mailbox[(y*200/fit.h)*320+x*320/fit.w];uint16_t c=mailbox_palette[i];
+    surface[y*fit.w+x]=lv_color_make((uint8_t)((c>>11)<<3),(uint8_t)(((c>>5)&63)<<2),(uint8_t)((c&31)<<3));
+   }
+   __atomic_store_n(&last_sequence,__atomic_load_n(&frames,__ATOMIC_RELAXED),__ATOMIC_RELAXED);displayed++;scale_us+=(uint32_t)esp_timer_get_time()-before;lv_obj_invalidate(canvas);
+  }
+  xSemaphoreGive(frame_lock);
+ }
+ if(status&&!quitting()){
+  char text[160];uint32_t elapsed=(now-boot_ms)/1000,p=__atomic_load_n(&load_phase,__ATOMIC_ACQUIRE);
+  static const char *markers[]={"[o...]","[.o..]","[..o.]","[...o]"};
+  if(running)snprintf(text,sizeof(text),"SFX only | %lus | %lu.%lu fps",(unsigned long)elapsed,(unsigned long)(shown_fps10/10),(unsigned long)(shown_fps10%10));
+  else if(p==LOAD_HASH){uint32_t n=__atomic_load_n(&hash_bytes,__ATOMIC_ACQUIRE),total=__atomic_load_n(&hash_total,__ATOMIC_ACQUIRE);
+   snprintf(text,sizeof(text),"%s Hash %lu%% %lu/%lu B | %lus",markers[(now/250)%4],(unsigned long)(total?(uint64_t)n*100/total:0),(unsigned long)n,(unsigned long)total,(unsigned long)elapsed);
+  }else snprintf(text,sizeof(text),"%s %s | %lus | Exit below",markers[(now/250)%4],p==LOAD_INIT?"Engine init":"Structure check",(unsigned long)elapsed);
+  if(strcmp(lv_label_get_text(status),text)){lv_label_set_text(status,text);ui_updates++;}
+ }
+ if((uint32_t)(now-ui_last_log)>=5000){
+  uint32_t ticks=DM_GET(ticks),tu=DM_GET(tick_us),au=DM_GET(audio_us),aw=DM_GET(audio_writes),su=DM_GET(sd_us),sr=DM_GET(sd_reads),sl=DM_GET(sleep_us),fu=DM_GET(frame_us),ie=DM_GET(input_events),is=DM_GET(input_age_sum);
+  ESP_LOGI(TAG,"PERF interval_ms=%lu published=%lu displayed=%lu overwritten=%lu lock_dropped=%lu scale_us=%lu ticks=%lu tick_us=%lu frame_copy_us=%lu sleep_us=%lu sd_reads=%lu sd_us=%lu audio_writes=%lu audio_us=%lu audio_waits_total=%lu audio_faults_total=%lu input_events=%lu input_age_sum_ms=%lu input_age_max_ms=%lu loading_redraws=%lu panel_flushes=%lu panel_us=%lu",
+   (unsigned long)(now-ui_last_log),(unsigned long)(__atomic_load_n(&frames,__ATOMIC_RELAXED)-last_frames),(unsigned long)(displayed-last_displayed),(unsigned long)(__atomic_load_n(&overwritten,__ATOMIC_RELAXED)-last_overwritten),(unsigned long)(__atomic_load_n(&dropped,__ATOMIC_RELAXED)-last_dropped),(unsigned long)(scale_us-last_scale_us),(unsigned long)(ticks-last_ticks),(unsigned long)(tu-last_tick_us),(unsigned long)(fu-last_frame_us),(unsigned long)(sl-last_sleep_us),(unsigned long)(sr-last_sd_reads),(unsigned long)(su-last_sd_us),(unsigned long)(aw-last_audio_writes),(unsigned long)(au-last_audio_us),(unsigned long)DM_GET(audio_waits),(unsigned long)DM_GET(audio_faults),(unsigned long)(ie-last_input_events),(unsigned long)(is-last_input_sum),(unsigned long)DM_GET(input_age_max),(unsigned long)(ui_updates-last_ui_updates),(unsigned long)(DM_GET(panel_flushes)-last_panel_flushes),(unsigned long)(DM_GET(panel_us)-last_panel_us));
+  shown_fps10=(uint32_t)((uint64_t)(displayed-last_displayed)*10000/(now-ui_last_log));ui_last_log=now;last_frames=__atomic_load_n(&frames,__ATOMIC_RELAXED);last_displayed=displayed;last_overwritten=__atomic_load_n(&overwritten,__ATOMIC_RELAXED);last_dropped=__atomic_load_n(&dropped,__ATOMIC_RELAXED);last_scale_us=scale_us;last_ticks=ticks;last_tick_us=tu;last_frame_us=fu;last_sleep_us=sl;last_sd_reads=sr;last_sd_us=su;last_audio_writes=aw;last_audio_us=au;last_input_events=ie;last_input_sum=is;last_ui_updates=ui_updates;last_panel_flushes=DM_GET(panel_flushes);last_panel_us=DM_GET(panel_us);
+ }
+}
 bool doom_ui_active(void){return overlay!=NULL;}
 bool doom_ui_exclusive(void){return isolated;}
 static void close_selector(void)
@@ -119,9 +157,13 @@ static void error_view(void)
  button(overlay,"Return CYM",4,h-52,w-8,44,error_return_event,NULL);
  ESP_LOGW(TAG,"GAME_BOOT_ERROR intent_consumed=1 error=%s",worker_status);
 }
-static void launch_game(void){if(!isolated){lv_label_set_text(status,"Game startup requires reboot isolation");return;}int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);lv_obj_set_size(overlay,w,h);fit=doom_scale_fit(w,h-120);if(!fit.w||!fit.h)return;heap_marker("CONTINUE");surface=heap_caps_calloc((size_t)fit.w*fit.h,sizeof(*surface),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);mailbox=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);frame_lock=xSemaphoreCreateMutex();if(!surface||!mailbox||!frame_lock){free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}lv_label_set_text(status,"Insufficient memory for game surface");return;}lv_obj_clean(overlay);status_scroll=lv_obj_create(overlay);lv_obj_set_pos(status_scroll,0,0);lv_obj_set_size(status_scroll,w,30);lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);lv_obj_set_style_pad_all(status_scroll,4,0);status=lv_label_create(status_scroll);lv_label_set_text(status,"Validating assets...");lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);canvas=lv_canvas_create(overlay);lv_canvas_set_buffer(canvas,surface,fit.w,fit.h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(canvas,fit.x,30+fit.y);
+static void launch_game(void){if(!isolated){lv_label_set_text(status,"Game startup requires reboot isolation");return;}int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);lv_obj_set_size(overlay,w,h);fit=doom_scale_fit(w,h-138);if(!fit.w||!fit.h)return;heap_marker("CONTINUE");surface=heap_caps_calloc((size_t)fit.w*fit.h,sizeof(*surface),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);mailbox=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);frame_lock=xSemaphoreCreateMutex();if(!surface||!mailbox||!frame_lock){free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}lv_label_set_text(status,"Insufficient memory for game surface");return;}lv_obj_clean(overlay);status_scroll=lv_obj_create(overlay);lv_obj_set_pos(status_scroll,0,0);lv_obj_set_size(status_scroll,w,48);lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);lv_obj_set_style_pad_all(status_scroll,4,0);status=lv_label_create(status_scroll);lv_label_set_text(status,"Validating assets...");lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);canvas=lv_canvas_create(overlay);lv_canvas_set_buffer(canvas,surface,fit.w,fit.h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(canvas,fit.x,48+fit.y);
  static const char *labels[]={"Left","Move","Right","Back","Fire","Use","Menu","OK","Exit"};static const unsigned masks[]={DOOM_KEY_LEFT,DOOM_KEY_FORWARD,DOOM_KEY_RIGHT,DOOM_KEY_BACK,DOOM_KEY_FIRE,DOOM_KEY_USE,DOOM_KEY_MENU,DOOM_KEY_CONFIRM,DOOM_KEY_EXIT};for(unsigned i=0;i<9;i++){int x=(int)(i%3)*w/3;button(overlay,labels[i],x,h-90+(int)(i/3)*30,w/3,29,control_event,(void *)(uintptr_t)masks[i]);}
- cancel=done=started=go_home=error_shown=false;frames=dropped=0;held_keys=0;timer=lv_timer_create(update,33,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
+ cancel=done=started=go_home=error_shown=false;frames=dropped=0;shown_fps10=0;displayed=overwritten=last_sequence=scale_us=ui_updates=0;
+ boot_ms=cooperate_ms=ui_last_log=(uint32_t)(esp_timer_get_time()/1000);
+ load_phase=LOAD_STRUCTURE;hash_bytes=hash_total=0;memset(&doom_metrics,0,sizeof(doom_metrics));
+ last_frames=last_displayed=last_dropped=last_overwritten=last_ticks=last_tick_us=last_audio_us=last_audio_writes=last_sd_us=last_sd_reads=last_sleep_us=last_frame_us=last_input_events=last_input_sum=last_scale_us=last_ui_updates=last_panel_flushes=last_panel_us=0;
+ held_keys=0;timer=lv_timer_create(update,33,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
 /* No game allocator exists on the normal selector/license path. Art is flash
  * indexed data; these screens and decoder cache die in reboot, not live handover. */
 static void back_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED&&!isolated)close_selector();}

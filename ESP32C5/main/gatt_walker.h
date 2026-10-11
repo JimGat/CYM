@@ -80,7 +80,14 @@ typedef struct {
     bool     gps_valid;
     gw_svc_t svcs[GW_MAX_SVCS];
     int      svc_count;
-    uint32_t fingerprint;
+    uint32_t fingerprint; /* original layout FNV32: unchanged */
+    /* Optional correlation hint, NOT device identity or authentication. */
+    char     metadata_fingerprint[65]; /* full SHA256 hex; empty if unavailable */
+    bool     metadata_available;
+    uint8_t  metadata_name_source; /* 0 none, 1 GATT, 2 advertised */
+    uint8_t  metadata_fields; /* bit0 name, bit1 manufacturer, bit2 model */
+    uint8_t  metadata_states[3]; /* gatt_metadata.h observed-byte states */
+    uint8_t  metadata_name_gatt_state; /* retained even on advertised fallback */
     char     timestamp[20];   /* "YYYYMMDD_HHMMSS" */
     char     filepath[80];    /* full SD path */
     bool     probe_done;

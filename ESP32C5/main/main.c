@@ -7387,6 +7387,8 @@ static game_mode game_early_consume(esp_err_t nvs_status)
  * PMIC essentials (display+touch adapters), display/touch/backlight, mutexes,
  * display DMA/flush semaphore, input driver, LVGL tick, synchronous no-format
  * SD mount, main watchdog, isolated UI/engine + codec/I2S SFX. */
+#include "doom_metrics.h"
+#include "game_panel_transport.h"
 static void game_isolated_main(void)
 {
     ESP_LOGI("CYM_DOOM","ISOLATED_BOOT normal_services=0 rotation=270 intent_consumed=1");
@@ -7414,10 +7416,15 @@ static void game_isolated_main(void)
     lv_indev_drv_register(&game_input);
     const esp_timer_create_args_t tick={.callback=lvgl_tick_task,.name="game_lvgl_tick"};
     esp_timer_handle_t tick_timer;ESP_ERROR_CHECK(esp_timer_create(&tick,&tick_timer));ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer,10000));
+    /* Soft reset need not erase panel GRAM. Clear the full NATIVE viewport
+     * before SD mount or worker startup, using completion-owned DMA chunks. */
+    esp_task_wdt_add(NULL);
+    game_panel_clear(panel_handle,buf1,LCD_H_RES,LCD_V_RES,15);
+    ESP_LOGI("CYM_DOOM","PANEL_CLEARED native=%dx%d DMA_complete=1",LCD_H_RES,LCD_V_RES);
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle,true));
     /* Transport helper only mounts. No cache/dirs/provision/whitelist/workers. */
     esp_err_t sd=wifi_wardrive_init_sd_ex(BOARD_SD_SPI_FREQ_HZ/1000,false);sd_mounted_lazy=sd==ESP_OK;
-    doom_ui_boot_start(doom_prototype_home,sd_mounted_lazy);esp_task_wdt_add(NULL);
+    doom_ui_boot_start(doom_prototype_home,sd_mounted_lazy);
     for(;;){
         if(gpio_get_level(BOOT_BTN_GPIO)==0)doom_ui_request_exit();
         if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){lv_timer_handler();xSemaphoreGive(lvgl_mutex);}
@@ -10208,6 +10215,15 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
 #else
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
 
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    if(doom_ui_exclusive()) {
+        uint32_t before=(uint32_t)esp_timer_get_time();
+        game_panel_transfer(panel,area->x1,area->y1,area->x2+1,area->y2+1,color_p);
+        DM_ADD(panel_flushes,1);DM_ADD(panel_us,(uint32_t)esp_timer_get_time()-before);
+        lv_disp_flush_ready(drv);
+        return;
+    }
+#endif
     // CRITICAL: Take SD/SPI mutex before drawing to display
     // Display and SD card share the same SPI bus (SPI2_HOST)
     // IMPORTANT: Do NOT spin-wait for this mutex. If another task holds it (e.g., SD provision),
@@ -37615,6 +37631,7 @@ static void gw_probe_btn_cb(lv_event_t *e)
         show_gw_probe_running_screen();
 }
 
+#include "gatt_result_ui.h"
 static void show_gw_result_screen(void)
 {
     const gw_result_t *r = gw_get_result();
@@ -37679,6 +37696,7 @@ static void show_gw_result_screen(void)
         snprintf(hdr, sizeof(hdr), "FP: 0x%08lX   %d svc / %d chr",
                  (unsigned long)r->fingerprint, r->svc_count, (int)gw_ui_chr_count);
         GW_ROW(scrl, hdr, &lv_font_montserrat_12, UI_ACCENT_CYAN);
+        gw_metadata_rows(scrl,r,ui_text_color());
 
         if (r->gps_valid) {
             snprintf(hdr, sizeof(hdr), "GPS: %.5f, %.5f", r->lat, r->lon);

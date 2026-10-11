@@ -44,8 +44,10 @@ static inline int xTaskCreate(void(*fn)(void*),const char*n,int st,void*a,int pr
 """,
 'freertos/semphr.h':r"""#include <stdlib.h>
 typedef void *SemaphoreHandle_t;
-static inline int xSemaphoreTake(SemaphoreHandle_t h,int t){(void)t;return h!=NULL;}
-static inline void xSemaphoreGive(SemaphoreHandle_t h){(void)h;}
+extern int host_take(SemaphoreHandle_t,int);
+extern void host_give(SemaphoreHandle_t);
+static inline int xSemaphoreTake(SemaphoreHandle_t h,int t){return host_take(h,t);}
+static inline void xSemaphoreGive(SemaphoreHandle_t h){host_give(h);}
 static inline void *xSemaphoreCreateMutex(void){return malloc(1);}
 static inline void vSemaphoreDelete(void *h){free(h);}
 """,
@@ -71,15 +73,44 @@ HOST=r"""
 int64_t fake_us;
 int task_state,task_starts,task_deletes;
 #include "doom_ui.c"
+doom_metrics_t doom_metrics;
 SemaphoreHandle_t sd_spi_mutex=(void*)1;
 static unsigned reboots,navigations,restores,rotations,records,engine_calls;
 static bool ready,record_fail;
 static int width,height;
 static lv_disp_drv_t host_disp;
-static lv_color_t framebuffer[480*320];
+static lv_color_t framebuffer[480*320],native_panel[480*320];
+static unsigned char coverage[480*320];
+static void *flush_done_sem=(void*)2;
+#define ESP_OK 0
+typedef void *esp_lcd_panel_handle_t;
+static const lv_color_t *borrowed;
+static lv_area_t pending;
+static unsigned waits,lock_tries,transfers;
+static void esp_task_wdt_reset(void){}
+static int esp_lcd_panel_draw_bitmap(void*p,int x1,int y1,int x2,int y2,const void*buf){
+ (void)p;assert(!borrowed);borrowed=buf;pending=(lv_area_t){x1,y1,x2-1,y2-1};waits=0;return 0;
+}
+int host_take(SemaphoreHandle_t h,int t){
+ if(h==flush_done_sem){if(!t)return 0;if(++waits<4)return 0;
+  assert(borrowed);
+  for(int y=pending.y1;y<=pending.y2;y++)for(int x=pending.x1;x<=pending.x2;x++){
+   assert(x>=0&&x<height&&y>=0&&y<width);
+   native_panel[y*height+x]=*borrowed;
+   framebuffer[(height-1-x)*width+y]=*borrowed++;
+   coverage[y*height+x]=1;
+  }
+  borrowed=NULL;transfers++;return 1;
+ }
+ if(h==sd_spi_mutex&&++lock_tries<=3)return 0;
+ return h!=NULL;
+}
+void host_give(SemaphoreHandle_t h){(void)h;assert(!borrowed);}
+#include "game_panel_transport.h"
+
 static void flush(lv_disp_drv_t*d,const lv_area_t*a,lv_color_t*p){
- for(int y=a->y1;y<=a->y2;y++)for(int x=a->x1;x<=a->x2;x++){assert(x>=0&&x<width&&y>=0&&y<height);framebuffer[y*width+x]=*p++;}
- lv_disp_flush_ready(d);
+ game_panel_transfer(NULL,a->x1,a->y1,a->x2+1,a->y2+1,p);
+ assert(!borrowed);lv_disp_flush_ready(d);
 }
 static bool gate(void){return true;}
 static bool sd_ready(void){return ready;}
@@ -118,8 +149,12 @@ static void capture(const char *path){
 }
 int main(int argc,char**argv){
  assert(argc==4);width=atoi(argv[1]);height=atoi(argv[2]);assert((width==320&&height==240)||(width==480&&height==320));
- lv_init();static lv_color_t draw[480*16];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,draw,NULL,width*16);
- lv_disp_drv_init(&host_disp);host_disp.hor_res=width;host_disp.ver_res=height;host_disp.draw_buf=&db;host_disp.flush_cb=flush;lv_disp_drv_register(&host_disp);
+ lv_init();static lv_color_t draw[480*16];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,draw,NULL,height*15);
+ lv_disp_drv_init(&host_disp);host_disp.hor_res=height;host_disp.ver_res=width;host_disp.sw_rotate=1;host_disp.draw_buf=&db;host_disp.flush_cb=flush;lv_disp_t *display=lv_disp_drv_register(&host_disp);lv_disp_set_rotation(display,LV_DISP_ROT_270);
+ /* Panel starts with retained old license/button pixels, not blank RAM. */
+ for(unsigned i=0;i<480*320;i++)native_panel[i]=lv_color_hex(0xff00ff);
+ game_panel_clear(NULL,draw,height,width,15);
+ for(int i=0;i<width*height;i++)assert(native_panel[i].full==0);
  doom_ui_configure(gate,reboot,sd_ready,normal);doom_ui_configure_selector(rotate,back,record);
  doom_ui_tile_click();assert(navigation_timer&&!overlay);lv_tick_inc(810);fake_us+=810000;lv_timer_handler();assert(navigations==1&&!navigation_timer);
  for(int cycle=0;cycle<3;cycle++){
@@ -137,7 +172,24 @@ int main(int argc,char**argv){
  }
  assert(navigations==1&&records==3&&reboots==0);
  doom_ui_boot_start(reboot,false);assert(isolated&&strstr(lv_label_get_text(status),"SD unavailable"));assert(!worker&&!surface);doom_ui_request_exit();assert(reboots==1&&!overlay);
- doom_ui_boot_start(reboot,true);assert(worker&&surface&&mailbox&&frame_lock&&task_starts==1);doom_ui_request_exit();
+ memset(coverage,0,sizeof(coverage));doom_ui_boot_start(reboot,true);assert(worker&&surface&&mailbox&&frame_lock&&task_starts==1);
+ lv_refr_now(NULL);
+ for(int i=0;i<width*height;i++)assert(coverage[i]);
+ unsigned buttons=0;lv_obj_update_layout(overlay);
+ for(unsigned i=0;i<lv_obj_get_child_cnt(overlay);i++){
+  lv_obj_t *obj=lv_obj_get_child(overlay,i);
+  if(lv_obj_check_type(obj,&lv_btn_class)){lv_area_t a;lv_obj_get_coords(obj,&a);assert(a.x1>=0&&a.y1>=0&&a.x2<width&&a.y2<height);buttons++;}
+ }
+ assert(buttons==9);
+ char game_path[512];snprintf(game_path,sizeof(game_path),"%s-loading.ppm",argv[3]);capture(game_path);
+ uint32_t redraws=ui_updates;fake_us+=250000;update(timer);assert(ui_updates>redraws);
+ load_phase=LOAD_HASH;hash_total=100;hash_bytes=25;update(timer);assert(strstr(lv_label_get_text(status),"25% 25/100 B"));
+ load_phase=LOAD_INIT;update(timer);assert(strstr(lv_label_get_text(status),"Engine init"));
+ /* Regression: real production UI must replace validation text on start. */
+ started=true;update(timer);assert(!strstr(lv_label_get_text(status),"Validating"));
+ assert(strstr(lv_label_get_text(status),"SFX only"));
+ snprintf(game_path,sizeof(game_path),"%s-running.ppm",argv[3]);capture(game_path);
+ doom_ui_request_exit();
  done=true;task_state=eRunning;update(timer);assert(worker&&surface&&reboots==1&&task_deletes==0);
  task_state=eSuspended;update(timer);assert(!worker&&!surface&&!mailbox&&!frame_lock&&!overlay&&reboots==2&&task_deletes==1);
  doom_ui_boot_start(reboot,true);assert(worker);strcpy(worker_status,"Injected engine init failure - readable recovery");done=true;task_state=eSuspended;update(timer);
@@ -152,7 +204,7 @@ def run():
  for name,content in STUBS.items():
   p=OUT/'stubs'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content)
  (OUT/'host.c').write_text(HOST)
- flags=['-std=gnu11','-O1','-g','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=malloc','-DLV_MEM_CUSTOM_FREE=free','-DLV_MEM_CUSTOM_REALLOC=realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_16=1','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_18=1','-DLV_FONT_MONTSERRAT_20=1','-I'+str(LVGL),'-I'+str(OUT/'stubs'),'-I'+str(COMP/'include'),'-I'+str(COMP)]
+ flags=['-std=gnu11','-O1','-g','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=malloc','-DLV_MEM_CUSTOM_FREE=free','-DLV_MEM_CUSTOM_REALLOC=realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_16=1','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_18=1','-DLV_FONT_MONTSERRAT_20=1','-I'+str(LVGL),'-I'+str(OUT/'stubs'),'-I'+str(COMP/'include'),'-I'+str(COMP),'-I'+str(ROOT/'ESP32C5/main')]
  sources=[str(x) for x in (LVGL/'src').rglob('*.c')]
  cmd=['cc',*flags,str(OUT/'host.c'),str(COMP/'doom_contracts.c'),str(COMP/'selector_art.c'),*sources,'-lm','-o',str(OUT/'host')]
  r=subprocess.run(cmd,capture_output=True,text=True);(OUT/'compile.log').write_text(r.stdout+r.stderr)
@@ -163,6 +215,8 @@ def run():
   logs.append(r.stdout+r.stderr)
   if r.returncode:raise RuntimeError(r.stdout+r.stderr)
   im=Image.open(ppm);assert im.size==(w,h)
+  for phase in ['loading','running']:
+   Image.open(str(ppm)+'-'+phase+'.ppm').save(Path('/home/dev/ws-c5-35-fixes/cycle79')/(board+'-'+phase+'.png'))
   target=Path('/home/dev/ws-c5-35-fixes')/('selector-preview-'+board+'.png');im.save(target)
   digest=__import__('hashlib').sha256(target.read_bytes()).hexdigest()
   target.with_suffix('.txt').write_text('ACTUAL production-code headless LVGL capture, not a Pillow mockup or hardware photograph. Engine/IDF peripherals mocked. Native logical '+str((w,h))+'. SHA256 '+digest+'\n')

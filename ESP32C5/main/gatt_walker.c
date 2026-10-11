@@ -1,4 +1,6 @@
 #include "gatt_walker.h"
+#include "gatt_metadata.h"
+#include "psa/crypto.h"
 #include <stdio.h>
 #include <inttypes.h>
 #include <string.h>
@@ -142,6 +144,35 @@ static uint32_t s_compute_fingerprint(void)
     return h;
 }
 
+/* Metadata SHA adapter: the canonical helper remains portable and host-testable.
+ * Failure/unavailable stays empty/null, never a layout-only digest. */
+static int s_metadata_sha_sink(void *ctx, const uint8_t *data, size_t len)
+{
+    return psa_hash_update((psa_hash_operation_t *)ctx, data, len)==PSA_SUCCESS ? 0 : -1;
+}
+static void s_compute_metadata(gw_result_t *r)
+{
+    gm_selection_t selected=gm_select(r);
+    r->metadata_available=false;
+    r->metadata_fingerprint[0]=0;
+    r->metadata_name_source=selected.fields[0].len ? selected.fields[0].source : GM_NONE;
+    r->metadata_fields=selected.mask;
+    r->metadata_name_gatt_state=selected.name_gatt_state;
+    for(int i=0;i<3;++i) r->metadata_states[i]=selected.fields[i].state;
+    if(!selected.mask) return;
+    psa_hash_operation_t ctx=PSA_HASH_OPERATION_INIT;
+    uint8_t digest[32];size_t digest_len=0;
+    int rc=psa_crypto_init()==PSA_SUCCESS ? 0 : -1;
+    if(!rc) rc=psa_hash_setup(&ctx,PSA_ALG_SHA_256)==PSA_SUCCESS ? 0 : -1;
+    if(!rc) rc=gm_canonical(&selected,r->fingerprint,s_metadata_sha_sink,&ctx);
+    if(!rc) rc=psa_hash_finish(&ctx,digest,sizeof(digest),&digest_len)==PSA_SUCCESS ? 0 : -1;
+    (void)psa_hash_abort(&ctx);
+    if(rc || digest_len!=sizeof(digest)) return;
+    for(size_t i=0;i<sizeof(digest);++i)
+        snprintf(r->metadata_fingerprint+2*i,3,"%02x",digest[i]);
+    r->metadata_available=true;
+}
+
 /* ── Local UUID name table ───────────────────────────────────────── */
 typedef struct { uint16_t uuid16; const char *name; } s_uuid_entry_t;
 static const s_uuid_entry_t s_uuid_table[] = {
@@ -235,10 +266,11 @@ static void jb_str(jb_t *j, const char *k, const char *v)
     jb_key(j, k);
     jb_rawc(j, '"');
     while (v && *v) {
-        char c = *v++;
+        unsigned char c = (unsigned char)*v++;
         if      (c == '"')  jb_raw(j, "\\\"");
         else if (c == '\\') jb_raw(j, "\\\\");
-        else if (c >= 0x20) jb_rawc(j, c);
+        else if (c >= 0x20) jb_rawc(j, (char)c);
+        else { char esc[7]; snprintf(esc, sizeof(esc), "\\u%04x", c); jb_raw(j, esc); }
     }
     jb_rawc(j, '"');
 }
@@ -277,6 +309,7 @@ static void jb_hex(jb_t *j, const char *k, const uint8_t *data, int len)
 
 static bool s_write_json(void)
 {
+    s_compute_metadata(s_result);
     const gw_result_t *r = s_result;
     char *jbuf = heap_caps_malloc(GW_JSON_BUF, MALLOC_CAP_SPIRAM);
     if (!jbuf) { ESP_LOGE(TAG, "No PSRAM for JSON"); return false; }
@@ -310,6 +343,37 @@ static bool s_write_json(void)
 
     char fp[12]; snprintf(fp, sizeof(fp), "0x%08" PRIX32, r->fingerprint);
     jb_str(&j, "fingerprint", fp); jb_comma(&j);
+
+    /* No raw metadata strings added: states and contributing fields only.
+     * Raw GATT bytes remain available in the existing read_data hex fields. */
+    jb_key(&j, "metadata_fingerprint");
+    if(r->metadata_available) { jb_rawc(&j, '"'); jb_raw(&j, r->metadata_fingerprint); jb_rawc(&j, '"'); }
+    else jb_raw(&j, "null");
+    jb_comma(&j);
+    jb_str(&j, "metadata_algorithm", GW_METADATA_ALGORITHM); jb_comma(&j);
+    jb_key(&j, "metadata"); jb_raw(&j, "{ ");
+    jb_bool(&j, "available", r->metadata_available); jb_raw(&j, ", ");
+    jb_bool(&j, "identifying_metadata_present", r->metadata_fields!=0); jb_raw(&j, ", ");
+    jb_str(&j, "name_source", r->metadata_name_source==GM_GATT ? "gatt" :
+        r->metadata_name_source==GM_ADVERTISED ? "advertised" : "none"); jb_raw(&j, ", ");
+    jb_key(&j, "fields"); jb_raw(&j, "[");
+    const char *field_names[3]={"device_name","manufacturer_name","model_number"};
+    bool first_field=true;
+    for(int k=0;k<3;++k) if(r->metadata_fields & (1u<<k)) {
+        if(!first_field) jb_raw(&j, ", ");
+        jb_rawc(&j, '"'); jb_raw(&j, field_names[k]); jb_rawc(&j, '"'); first_field=false;
+    }
+    jb_raw(&j, "], ");
+    const char *states[5]={"absent","unreadable","empty","observed_completion_unknown","cap_truncation_unknown"};
+    for(int k=0;k<3;++k) {
+        unsigned state=r->metadata_states[k];
+        jb_str(&j, field_names[k], state<5 ? states[state] : "unknown"); jb_raw(&j, ", ");
+    }
+    unsigned name_state=r->metadata_name_gatt_state;
+    jb_str(&j, "name_gatt_state", name_state<5 ? states[name_state] : "unknown"); jb_raw(&j, ", ");
+    jb_str(&j, "completeness", "observed_bytes_only_read_completion_not_proven"); jb_raw(&j, ", ");
+    jb_str(&j, "meaning", "correlation_hint_not_identity_or_security_proof");
+    jb_raw(&j, " }"); jb_comma(&j);
 
     jb_key(&j, "services"); jb_raw(&j, "[\n");
     for (int i = 0; i < r->svc_count; i++) {
@@ -352,7 +416,8 @@ static bool s_write_json(void)
                 jb_key(&j, "ascii"); jb_rawc(&j, '"');
                 for (int bi = 0; bi < chr->read_len; bi++) {
                     uint8_t b = chr->read_data[bi];
-                    if (b >= 0x20 && b < 0x7F) jb_rawc(&j, (char)b);
+                    if (b == '"' || b == '\\') { jb_rawc(&j, '\\'); jb_rawc(&j, (char)b); }
+                    else if (b >= 0x20 && b < 0x7F) jb_rawc(&j, (char)b);
                     else jb_rawc(&j, '.');
                 }
                 jb_rawc(&j, '"');
@@ -443,6 +508,7 @@ static int  s_mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
 static void s_finish(void)
 {
     s_result->fingerprint = s_compute_fingerprint();
+    s_compute_metadata(s_result);
 
     /* Filename built here (fingerprint now known), not at gw_walk() start:
      * fingerprint FIRST field so a repeat device is obvious at a glance in

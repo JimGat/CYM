@@ -29,7 +29,7 @@ idf_component_register(
         "${C5_MAIN}/chameleon_t55xx.c"
     INCLUDE_DIRS
         "${C5_MAIN}"
-    REQUIRES
+    REQUIRES mbedtls
         heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi board_hal
         espressif__esp_lcd_ili9341
         cym_timekeeper

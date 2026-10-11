@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.78 |
+| Version | v2.15.80 |
 | Build date | 2026-10-11 |
 | .iram0.text | 135,752 B (132.6 KB) |
 | .dram0.data | 44,525 B (43.5 KB) |
-| .dram0.bss  (internal) | 101,560 B (99.2 KB) |
+| .dram0.bss  (internal) | 101,736 B (99.4 KB) |
 | .ext_ram.bss  (PSRAM) | 312,392 B (305.1 KB) |
-| App binary size | 3,772,384 B (3684.0 KB) |
+| App binary size | 3,782,624 B (3694.0 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -33,7 +33,7 @@
 | `libieee802154.a` | 3,590 B (3.5 KB) |
 | `libespressif__mdns.a` | 3,529 B (3.4 KB) |
 | `libpp.a` | 3,467 B (3.4 KB) |
-| `libcym_doom.a` | 2,780 B (2.7 KB) |
+| `libcym_doom.a` | 2,844 B (2.8 KB) |
 | `libwifi_scanner.a` | 2,400 B (2.3 KB) |
 | `libfreertos.a` | 2,148 B (2.1 KB) |
 | `libwifi_attacks.a` | 1,935 B (1.9 KB) |

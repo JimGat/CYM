@@ -99,7 +99,7 @@ add_library(cym_doom_engine STATIC
     "engine/z_zone.c"
 )
 target_include_directories(cym_doom_engine PRIVATE "engine" "include")
-target_link_libraries(cym_doom_engine PRIVATE idf::heap idf::esp_driver_i2s idf::espressif__esp_codec_dev)
+target_link_libraries(cym_doom_engine PRIVATE idf::heap idf::esp_timer idf::esp_driver_i2s idf::espressif__esp_codec_dev)
 target_compile_options(cym_doom_engine PRIVATE
     -include "${CMAKE_CURRENT_LIST_DIR}/include/doom_runtime_shim.h"
     -msmall-data-limit=0 -fdata-sections -ffunction-sections -fno-common -fwrapv -fno-strict-aliasing

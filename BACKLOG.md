@@ -15,10 +15,18 @@ Last updated: 2026-09-23.
 ## Features (firmware)
 
 - **WS after-hours selector / reboot-isolated beta** — DEVELOPMENT BETA
-  v2.15.78; physical qualification pending. Five Hardware taps opens
+  v2.15.80; physical qualification pending. Five Hardware taps opens
   PinZero LABS selector; enabled engine uses consumed one-shot same-image restart,
   not live subsystem handover. Busy SD owners refused; no partition/OTA change.
   SFX only. Physical checks pending. `docs/ws-c5-game-beta.md` is the operator manual.
+- **GATT metadata correlation hint / issue #23** — DEVELOPMENT INTEGRATION v2.15.80,
+  shared by all eight release profiles. Legacy layout/filenames unchanged; secondary
+  SHA-256, source/presence/read uncertainty and result rows. Private nine-capture
+  host regression separates metadata hints; physical tester qualification pending.
+  Contract: `docs/gatt23-metadata.md`.
+- **WS loading/redraw/startup diagnostics** — DEVELOPMENT v2.15.80; visible phases,
+  full hash progress, completion-owned display transfers, elapsed-budget yields
+  and interval PERF diagnostics. Physical speed/audio confirmation pending.
 - **Arduboy SD library / AVR feasibility** — UNDER INVESTIGATION. Disabled
   COMING SOON selector card only; no emulator delivered this cycle.
 

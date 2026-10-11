@@ -1,9 +1,9 @@
 # WS-C5 selector and same-image reboot-isolated beta operator manual
 
-Development v2.15.78, built on ESP32-Dev as dev, branch Jimgat_Dev.
+Development v2.15.80, built on ESP32-Dev as dev, branch Jimgat_Dev.
 Use the exact development commit pinned by the Beta flasher for matching source.
 This beta is provided for physical qualification, not hardware sign-off.
-Current-cycle evidence: /home/dev/ws-c5-35-fixes/selector-reboot-handoff.md.
+Current-cycle evidence: /home/dev/ws-c5-35-fixes/cycle79/ (cycle80 parent evidence).
 This is not a hardware qualification or publication claim.
 
 ## Delivered scope and explicit non-features
@@ -38,12 +38,37 @@ MUS/OPL synth, microphone or beep substitute. Engine owns samples; DMA copies PC
 Audio stops before memory reclaim; stop faults retain ownership. PCM host proof
 is not audible speaker proof.
 
+## Loading, redraw and timing changes
+
+The isolated display path now retains the SPI mutex and rotated draw memory until
+real DMA completion, rather than acknowledging skipped/busy transfers. Native
+panel GRAM is explicitly cleared before rendering. This targets the reported old
+license/button pixels; physical confirmation remains necessary.
+
+Main-owned [o...] / [.o..] / [..o.] / [...o] markers advance during loading.
+Structure check -> Hash percentage and bytes -> Engine init -> SFX only / elapsed /
+interval displayed FPS. Hash 100% is not engine-ready. Exit remains below the canvas.
+The running status replaces validation text rather than leaving it on-screen.
+
+The full trusted WAD SHA check is retained. The old one-tick delay per 4096-byte
+chunk is replaced with an elapsed-budget cooperative yield, retaining cancellation,
+watchdog/fairness and the SD mutex. At the configured 100Hz tick, the old 7031 hash
+chunks requested 7031 scheduling ticks; this is not a measured physical speedup.
+No SD/panel clock, codec routing/rate, orientation or partition change is made.
+No loading chime or substitute beep is added; loading is visibly signaled. Existing
+engine SFX remains enabled, but audible sound and latency require speaker testing.
+
+Serial now separates STRUCTURE_BEGIN/END, HASH_BEGIN/END (bytes/total/hash_ms/trusted),
+INIT_BEGIN/END and ENGINE_STARTED. Five-second PERF windows include frame publication,
+display/overwrite/drop, scale/panel time, worker ticks/SD/audio/sleep and input age.
+Use equal gameplay windows to compare responsiveness; host timings are not device FPS.
+
 ## Copy-paste operator sequence AFTER parent publication
 
 1. Desktop Chrome/Edge, correct board beta URL:
      https://jimgat.github.io/CYM/beta/?board=ws-c5-28
      https://jimgat.github.io/CYM/beta/?board=ws-c5-35
-   Expected: correct board/version and parent-approved Development pin. Select Development and confirm the displayed v2.15.78 version before flashing.
+   Expected: correct board/version and parent-approved Development pin. Select Development and confirm the displayed v2.15.80 version before flashing.
 2. Separate SD contents:
      https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard
    Copy contents of sdcard/ to FAT32 root, retaining licenses/credits.
@@ -151,7 +176,7 @@ Through ssh dev@ESP32-Dev, as dev in the authorized worktree:
   python3 tests/run_doom_engine_host.py --wad .hermes/doom-prototype/fixtures/freedoom-0.13.0/freedoom1.wad --output .hermes/doom-prototype/selector-reboot-engine
   . /home/dev/esp/esp-idf/export.sh
   make -j1 all-boards
-  python3 scripts/verify-dev-packages.py --version v2.15.78 --output /home/dev/ws-c5-35-fixes/selector-reboot-packages.json
+  python3 scripts/verify-dev-packages.py --version v2.15.80 --output /home/dev/ws-c5-35-fixes/cycle79/cycle80-packages.json
 
 Real engine/WAD host gate: gameplay/ammo/menu/use/turn/confirm/release, three reopens,
 missing-file recovery,24 allocation faults/cancellation, nonzeroSFX PCM, owned=0.

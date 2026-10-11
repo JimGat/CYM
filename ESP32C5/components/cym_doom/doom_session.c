@@ -6,6 +6,8 @@
  * Host tests are evidence for headless engine lifetime, NOT hardware/UI proof.
  */
 #include "doom_session.h"
+#include "doom_metrics.h"
+doom_metrics_t doom_metrics;
 #include "doom_contracts.h"
 #include "doomgeneric.h"
 #include "w_file.h"
@@ -32,6 +34,13 @@ extern unsigned char _doom_common_start[], _doom_common_end[];
 #else
 extern unsigned char __doom_state_start[],__doom_state_end[];
 #endif
+static uint32_t metric_us(void){
+#ifdef ESP_PLATFORM
+ return (uint32_t)esp_timer_get_time();
+#else
+ struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint32_t)((uint64_t)t.tv_sec*1000000+t.tv_nsec/1000);
+#endif
+}
 void doom_engine_tables_init(void);
 #define OWN_MAX 4096
 static void **owned;
@@ -122,7 +131,7 @@ static void io_unlock(void){
 }
 FILE *doom_owned_fopen(const char *p,const char *mode){check_stop();if(!p||strcmp(p,wad_path)||(strcmp(mode,"rb")&&strcmp(mode,"r")))return NULL;if(file_n==16)doom_engine_fail("File registry full");if(!io_lock())doom_engine_fail("SD transport busy");FILE *f=fopen(p,mode);io_unlock();if(f)files[file_n++]=f;return f;}
 int doom_owned_fclose(FILE *f){if(!f)return 0;for(unsigned i=0;i<file_n;i++)if(files[i]==f){if(!io_lock())doom_engine_fail("SD close transport busy");int rc=fclose(f);io_unlock();files[i]=files[--file_n];return rc;}doom_engine_fail("Unregistered engine file close");}
-size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){check_stop();if(s&&n>SIZE_MAX/s)doom_engine_fail("File read overflow");if(!io_lock())doom_engine_fail("SD read transport busy");size_t result=fread(p,s,n,f);io_unlock();return result;}
+size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){check_stop();if(s&&n>SIZE_MAX/s)doom_engine_fail("File read overflow");if(!io_lock())doom_engine_fail("SD read transport busy");uint32_t before=metric_us();size_t result=fread(p,s,n,f);io_unlock();DM_ADD(sd_reads,1);DM_ADD(sd_us,metric_us()-before);return result;}
 int doom_owned_fseek(FILE *f,long off,int whence){check_stop();if(!io_lock())doom_engine_fail("SD seek transport busy");int rc=fseek(f,off,whence);io_unlock();return rc;}
 long doom_owned_ftell(FILE *f){if(!io_lock())doom_engine_fail("SD tell transport busy");long result=ftell(f);io_unlock();return result;}
 int doom_owned_forbidden(const char *p){(void)p;doom_engine_fail("Host shell/SD write disabled in prototype");}
@@ -156,23 +165,24 @@ const char *doom_session_error(void){return error_text;}
  */
 extern int doom_sound_stop(void);
 int doom_session_stop(void){if(armed||!same_owner())return -1;/* Drop all borrowed sample pointers and disable DMA before engine reclamation. */if(doom_sound_stop()!=0){snprintf(error_text,sizeof(error_text),"Audio cleanup busy - ownership retained");return -1;}while(file_n){FILE *f=files[file_n-1];if(!io_lock()){snprintf(error_text,sizeof(error_text),"SD cleanup busy - ownership retained");return -1;}fclose(f);io_unlock();--file_n;}
-while(owned_n)free(owned[--owned_n]);free(owned);owned=NULL;if(state){snapshot_state(true);free(state);state=NULL;}active=false;memset(&keys,0,sizeof(keys));desired_keys=0;return 0;}
+while(owned_n)free(owned[--owned_n]);free(owned);owned=NULL;if(state){snapshot_state(true);free(state);state=NULL;}active=false;memset(&keys,0,sizeof(keys));desired_keys=0;__atomic_store_n(&stop_requested,false,__ATOMIC_RELEASE);return 0;}
 static void create(void){static char *argv[]={"cym-doom","-iwad",wad_path,"-nomusic","-warp","1","1",NULL};doom_engine_tables_init();doomgeneric_Create(7,argv);}
 int doom_session_start(const char *path){if(active||armed||!path||strlen(path)>=sizeof(wad_path))return -1;
 #ifdef ESP_PLATFORM
 owner=xTaskGetCurrentTaskHandle();
 #endif
-stop_requested=false;error_text[0]=0;snprintf(wad_path,sizeof(wad_path),"%s",path);size_t bytes=doom_session_state_bytes();if(!bytes){snprintf(error_text,sizeof(error_text),"Missing engine state linker region");return -1;}state=raw_alloc(bytes);owned=raw_alloc(OWN_MAX*sizeof(*owned));if(!state||!owned){free(state);state=NULL;free(owned);owned=NULL;snprintf(error_text,sizeof(error_text),"No memory for engine ownership/reset state");return -1;}snapshot_state(false);owned_n=file_n=0;active=true;memset(&keys,0,sizeof(keys));desired_keys=0;int rc=call_engine(create);if(rc)doom_session_stop();return rc;}
-int doom_session_tick(void){if(!active)return -1;return call_engine(doomgeneric_Tick);}
-void doom_session_set_keys(unsigned mask){__atomic_store_n(&desired_keys,mask,__ATOMIC_RELEASE);}
+error_text[0]=0;snprintf(wad_path,sizeof(wad_path),"%s",path);size_t bytes=doom_session_state_bytes();if(!bytes){snprintf(error_text,sizeof(error_text),"Missing engine state linker region");return -1;}state=raw_alloc(bytes);owned=raw_alloc(OWN_MAX*sizeof(*owned));if(!state||!owned){free(state);state=NULL;free(owned);owned=NULL;snprintf(error_text,sizeof(error_text),"No memory for engine ownership/reset state");return -1;}snapshot_state(false);owned_n=file_n=0;active=true;memset(&keys,0,sizeof(keys));desired_keys=0;int rc=call_engine(create);if(rc)doom_session_stop();return rc;}
+int doom_session_tick(void){if(!active)return -1;uint32_t before=metric_us();int rc=call_engine(doomgeneric_Tick);DM_ADD(ticks,1);DM_ADD(tick_us,metric_us()-before);return rc;}
+void doom_session_set_keys(unsigned mask){if(mask!=__atomic_load_n(&desired_keys,__ATOMIC_ACQUIRE)){__atomic_store_n(&doom_metrics.input_ms,DG_GetTicksMs(),__ATOMIC_RELAXED);}__atomic_store_n(&desired_keys,mask,__ATOMIC_RELEASE);}
 void DG_Init(void){memset(palette,0,sizeof(palette));}
-void DG_DrawFrame(void){check_stop();if(frame_fn)frame_fn(DG_ScreenBuffer,frame_ctx);}
-void DG_SleepMs(uint32_t ms){check_stop();
+void DG_DrawFrame(void){check_stop();uint32_t before=metric_us();if(frame_fn)frame_fn(DG_ScreenBuffer,frame_ctx);DM_ADD(frame_us,metric_us()-before);}
+void DG_SleepMs(uint32_t ms){check_stop();uint32_t before=metric_us();
 #ifdef ESP_PLATFORM
 vTaskDelay(pdMS_TO_TICKS(ms?ms:1));
 #else
 struct timespec t={.tv_sec=ms/1000,.tv_nsec=(long)(ms%1000)*1000000};nanosleep(&t,NULL);
 #endif
+DM_ADD(sleep_us,metric_us()-before);
 }
 uint32_t DG_GetTicksMs(void){
 #ifdef ESP_PLATFORM
@@ -181,7 +191,7 @@ return (uint32_t)(esp_timer_get_time()/1000);
 struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint32_t)((uint64_t)t.tv_sec*1000+t.tv_nsec/1000000);
 #endif
 }
-int DG_GetKey(int *pressed,unsigned char *key){unsigned bit;bool down;static const unsigned char map[]={KEY_LEFTARROW,KEY_UPARROW,KEY_RIGHTARROW,KEY_DOWNARROW,KEY_FIRE,KEY_USE,KEY_ESCAPE,KEY_ENTER,KEY_ESCAPE};doom_keys_set(&keys,__atomic_load_n(&desired_keys,__ATOMIC_ACQUIRE));if(!doom_keys_next(&keys,&bit,&down))return 0;unsigned i=0;while((1u<<i)!=bit)i++;*pressed=down;*key=map[i];return 1;}
+int DG_GetKey(int *pressed,unsigned char *key){unsigned bit;bool down;static const unsigned char map[]={KEY_LEFTARROW,KEY_UPARROW,KEY_RIGHTARROW,KEY_DOWNARROW,KEY_FIRE,KEY_USE,KEY_ESCAPE,KEY_ENTER,KEY_ESCAPE};doom_keys_set(&keys,__atomic_load_n(&desired_keys,__ATOMIC_ACQUIRE));if(!doom_keys_next(&keys,&bit,&down))return 0;uint32_t age=DG_GetTicksMs()-DM_GET(input_ms);DM_ADD(input_events,1);DM_ADD(input_age_sum,age);dm_input_max(age);unsigned i=0;while((1u<<i)!=bit)i++;*pressed=down;*key=map[i];return 1;}
 void DG_SetWindowTitle(const char *title){printf("[CYM_DOOM] TITLE %s\n",title);}
 void DG_PaletteLoad(const void *data){const uint8_t *p=data;for(unsigned i=0;i<256;i++)palette[i]=(uint16_t)(((p[i*3]>>3)<<11)|((p[i*3+1]>>2)<<5)|(p[i*3+2]>>3));}
 uint16_t DG_PaletteColor565(uint8_t i){return palette[i];}

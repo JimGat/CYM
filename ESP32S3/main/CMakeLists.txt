@@ -30,7 +30,7 @@ idf_component_register(
     INCLUDE_DIRS
         "${C5_MAIN}"
         "."
-    REQUIRES
+    REQUIRES mbedtls
         esp_mm heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi
         board_hal esp_lcd_st77922 esp_lcd esp_timer freertos log nvs_flash fatfs
         sdmmc lvgl led_strip
