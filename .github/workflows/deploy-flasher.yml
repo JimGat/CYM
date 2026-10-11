@@ -110,6 +110,7 @@ jobs:
           mkdir -p _site/beta
           cp -a stable-site/_site/. _site/beta/
           cp ESP32C5/docs/index.html _site/beta/index.html
+          cp ESP32C5/docs/deedee.png _site/beta/deedee.png
           mkdir -p _site/beta/binaries-ws-s3-5b
           cp ESP32S3/binaries-ws-s3-5b/*.bin _site/beta/binaries-ws-s3-5b/
           python3 - <<"PY"
