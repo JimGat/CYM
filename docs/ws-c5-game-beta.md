@@ -35,8 +35,8 @@ host gameplay and compile/link checks are not physical approval.
 4. Stop other tools normally. The launcher fails closed if SD is unmounted,
    Bluetooth/802.15.4 mode or an active tool/task is present. It does not stop
    or restart radios itself. Return to an idle Settings screen.
-5. Tap and RELEASE the existing LAB5 firmware-version footer eight times
-   within six seconds. A held press is not eight taps. Navigation, touch loss
+5. Tap and RELEASE the existing LAB5 firmware-version footer area five times
+   within six seconds. A held press is not five taps. Navigation, touch loss
    or timeout resets the sequence. No corner gesture or added menu tile.
 6. The license page appears before engine allocations. Scroll to read its
    attribution, GPL/no-warranty and matching-source notice. Cancel returns
@@ -152,3 +152,5 @@ no WAD; the separate SD branch keeps Freedoom's own license and credits.
 - WS-C5-35 uses the same reset spans; linked static upper-bound internal headroom: 40,608 bytes.
 - Worker requests a 24,576-byte stack through FreeRTOS; runtime allocations reduce these static upper bounds. Initialization fails closed if worker/buffers cannot be allocated. Confirm actual startup and stack/heap headroom on hardware; no minimum runtime free-memory guarantee is claimed.
 - The two large mutable tables are copied from immutable flash defaults into owned PSRAM for each launch. Tests mutate them before teardown and assert restored defaults on reentry; initialized values are not lost in NOLOAD storage.
+
+Footer interaction update: dialog access no longer depends on mounted SD. Continue retains idle-tool checks and reports missing WAD/SD with asset instructions before engine allocations when SD is unavailable. Five released taps within six seconds; Settings footer touch area is full width and 36 pixels high.

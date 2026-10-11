@@ -31,7 +31,7 @@ all: nm-cyd-c5
 # hosyond-s3-35 is the fourth release board and compiles canonical CYM sources
 # through a narrow ESP32-S3 board adapter.
 
-all-boards: nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 cyd-2432s028 hosyond-s3-35 hackerbox-cyd
+all-boards: nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 cyd-2432s028 hosyond-s3-35 hackerbox-cyd ws-s3-5b
 	@echo ""
 	@echo "=== all-boards complete: NM-CYD-C5, WS-C5-28, WS-C5-35, Pancake-C5, CYD-2432S028, hosyond-s3-35, HackerBox CYD all built ==="
 	@echo ""

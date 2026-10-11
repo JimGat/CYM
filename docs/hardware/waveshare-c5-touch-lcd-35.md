@@ -1,10 +1,10 @@
-# Waveshare ESP32-C5-Touch-LCD-3.5 — Experimental
+# Waveshare ESP32-C5-Touch-LCD-3.5 — Supported display/touch/RTC profile
 
-Development channel only; not stable. Hardware validation pending.
+Owner-tested display/touch, battery acquisition and RTC synchronization/reboot holdover. Battery percentage accuracy and additional peripherals remain unqualified.
 
-CYM support for the **Waveshare ESP32-C5-Touch-LCD-3.5** exists as an experimental board target (`ws-c5-35`). A dedicated binary and web-flasher entry are available via the development channel (`?beta=1`). This build must not be flashed with the existing WS-C5-28 image — and vice versa.
+CYM support for the **Waveshare ESP32-C5-Touch-LCD-3.5** exists as a dedicated board target (`ws-c5-35`). A dedicated binary and web-flasher entry are available in the normal board selector; select Development for current firmware. This build must not be flashed with the existing WS-C5-28 image — and vice versa.
 
-Jim's ordered unit is **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C**, the version supplied with the BF3901 camera and a 3.7 V lithium battery.[1] Physical qualification has not been completed.
+Jim's ordered unit is **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C**, the version supplied with the BF3901 camera and a 3.7 V lithium battery.[1] The unit has arrived and Jim has completed the display/touch and RTC tests described above.
 
 ## Vendor BSP reference
 
@@ -16,12 +16,12 @@ The board adapter was implemented from the [Waveshare ESP32-C5-Touch-LCD-3.5](ht
 - **Touch:** FT6336 capacitive via dedicated `esp_lcd_touch_ft6336` local component (not the Pancake driver)
 - **IO expander:** CH32V006 16-bit little-endian I2C protocol (registers 0x02/0x03/0x05) - distinct from WS-C5-28's CH32V003
 - **Backlight:** PWM via CH32V006 IO expander register 0x05
-- **PMIC:** AXP2101 at I2C 0x34, probe-only (chip ID read, no rail programming)
+- **PMIC:** AXP2101 at I2C 0x34, checked battery-voltage telemetry with measurement enable only; no rail/charging programming
 - **GPS:** disabled - UART header is exposed but not wired in firmware; `BOARD_HAS_GPS=0`, `BOARD_TIME_HAS_GPS_UART=0`
 - **Audio:** disabled (`BOARD_HAS_AUDIO=0`)
-- **Battery ADC:** disabled (`BOARD_HAS_BATTERY_ADC=0`)
+- **Battery acquisition:** AXP2101 VBAT enabled; percentage remains voltage-estimated
 - **RGB LED:** disabled (`BOARD_HAS_RGB_LED=0`)
-- **RTC:** disabled (`BOARD_TIME_HAS_RTC=0`)
+- **RTC:** PCF85063 enabled; NTP synchronization and reboot holdover tested
 
 ## Why this should be a contained port
 

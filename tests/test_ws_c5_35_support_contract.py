@@ -115,28 +115,28 @@ class WsC535AdapterContract(unittest.TestCase):
 class WsC535PackagingContract(unittest.TestCase):
     def test_version_is_shared_for_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.73")', text(rel), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.74")', text(rel), rel)
 
     def test_dedicated_package_and_manifest(self):
         c = text("ESP32C5/CMakeLists.txt")
         self.assertRegex(c, re.compile(r"CONFIG_BOARD_WS_C5_35.*?binaries-ws-c5-35.*?CYM-WS-C5-35.*?32MB", re.S))
         manifest = json.loads(text("ESP32C5/docs/manifest.ws-c5-35.json"))
-        self.assertIn("WS-C5-35 Experimental", manifest["name"])
-        self.assertEqual(manifest["version"], "v2.15.73")
+        self.assertIn("WS-C5-35", manifest["name"])
+        self.assertEqual(manifest["version"], "v2.15.74")
         self.assertEqual({p["offset"] for p in manifest["parts"]}, {0x2000, 0x8000, 0x10000})
         self.assertTrue(all("binaries-ws-c5-35" in p["path"] for p in manifest["parts"]))
 
-    def test_beta_flasher_is_opt_in_and_isolated(self):
+    def test_owner_promoted_board_is_in_default_selector(self):
         f = text("ESP32C5/docs/index.html")
         self.assertIn('"ws-c5-35": {', f)
         start = f.index('"ws-c5-35": {')
         board = f[start:f.index("},", start)]
         for token in ('fullBin: "CYM-WS-C5-35-full.bin"',
                       'manifest: "docs/manifest.ws-c5-35.json"',
-                      "beta:    true", "Experimental"):
+                      "beta:    false", "RTC holdover tested"):
             self.assertIn(token, board)
         defaults = re.search(r"const DEFAULT_BOARD_IDS = \[(.*?)\]", f).group(1)
-        self.assertNotIn("ws-c5-35", defaults)
+        self.assertIn("ws-c5-35", defaults)
         self.assertIn('const PAGE_VERSION    = "2.14.2"', f)
         w = text(".github/workflows/deploy-flasher.yml")
         for token in ("manifest.ws-c5-35.json", "binaries-ws-c5-35", "CYM-WS-C5-35-full.bin"):
@@ -145,10 +145,10 @@ class WsC535PackagingContract(unittest.TestCase):
         self.assertNotIn("|| true", ws_copy)
 
 class WsC535DocumentationContract(unittest.TestCase):
-    def test_docs_mark_static_evidence_and_pending_hardware_validation(self):
+    def test_docs_record_owner_tested_and_remaining_limits(self):
         r = text("README.md")
         d = text("docs/hardware/waveshare-c5-touch-lcd-35.md")
-        for token in ("Development channel only; not stable", "hardware validation pending",
+        for token in ("Owner-tested display/touch", "additional peripherals remain unqualified",
                       "CH32V006", "ST7796", "FT6336"):
             self.assertIn(token, r + d)
         self.assertIn("https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5", d)

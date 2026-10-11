@@ -99,6 +99,7 @@ LV_IMG_DECLARE(deedee_img);
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 #include "doom_ui.h"
 static bool doom_prototype_idle(void);
+static bool doom_prototype_sd_ready(void);
 static void doom_prototype_home(void);
 #endif
 #if defined(CONFIG_BOARD_WS_S3_5B)
@@ -29201,10 +29202,19 @@ static void show_settings_screen(void)
 #endif
     create_tile(tiles, MY_SYMBOL_CLOCK,          "Clock",              lv_color_hex(0x00897B),  settings_tile_event_cb, "Clock");
 
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    lv_obj_t *ver_area = lv_obj_create(function_page);
+    lv_obj_remove_style_all(ver_area);
+    lv_obj_set_size(ver_area, lv_pct(100), 36);
+    lv_obj_align(ver_area, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_clear_flag(ver_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *ver = lv_label_create(ver_area);
+#else
     lv_obj_t *ver = lv_label_create(function_page);
+#endif
     lv_label_set_text(ver, "LAB5 " FW_VERSION);
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
-    doom_ui_attach_footer(ver, doom_prototype_idle, doom_prototype_home);
+    doom_ui_attach_footer(ver_area, doom_prototype_idle, doom_prototype_home, doom_prototype_sd_ready);
 #endif
     lv_obj_set_style_text_font(ver, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(ver, ui_muted_color(), 0);
@@ -72058,9 +72068,14 @@ static void show_espnow_pktlog_screen(void)
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 /* Fail closed on all root-scope active tools; a menu location alone is not
  * proof of idle. WiFi idle driver is left untouched; BLE/154 modes refused. */
+static bool doom_prototype_sd_ready(void)
+{
+    return sd_mounted_lazy && sd_spi_mutex != NULL;
+}
+
 static bool doom_prototype_idle(void)
 {
-    if (!sd_mounted_lazy || current_radio_mode == RADIO_MODE_BLE || current_radio_mode == RADIO_MODE_154) return false;
+    if (current_radio_mode == RADIO_MODE_BLE || current_radio_mode == RADIO_MODE_154) return false;
     if (wifi_scanner_is_scanning() || wifi_attacks_is_deauth_active() || wifi_attacks_is_blackout_active() || wifi_attacks_is_sae_overflow_active() || wifi_attacks_is_karma_active() || wifi_attacks_is_portal_active()) return false;
     if (screenshot_task_handle || s_ntp_wifi_task || wardrive_task_handle || sniffer_task_handle || handshake_attack_task_handle) return false;
     return !(

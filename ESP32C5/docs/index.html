@@ -510,13 +510,13 @@
           label:   "WS-C5-35",
           chip:    "ESP32-C5",
           soc:     "ESP32C5",
-          desc:    "Development channel only; not stable. Waveshare ESP32-C5-Touch-LCD-3.5 Experimental (ESP32-C5, 32 MB flash, 8 MB PSRAM, ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander). Hardware validation pending.",
+          desc:    "Waveshare ESP32-C5-Touch-LCD-3.5 (ESP32-C5, 32 MB flash, 8 MB PSRAM, ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander). Display/touch and RTC holdover tested by owner; battery percentage is estimated. Camera, audio and IMU support remain unqualified.",
           binDir:  "binaries-ws-c5-35",
           appBin:  "CYM-WS-C5-35.bin",
           fullBin: "CYM-WS-C5-35-full.bin",
           manifest: "docs/manifest.ws-c5-35.json",
           bootOffset: "0x2000", // ESP32-C5
-          beta:    true,
+          beta:    false,
         },
         "ws-s3-5b": {
           label: "Waveshare S3 Touch LCD 5B",
@@ -548,7 +548,7 @@
       // added to BOARDS above stays hidden from the selector until either it's
       // added here or a visitor passes ?beta=1 (see betaUnlock below), which shows
       // every board BOARDS defines regardless of this list.
-      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35"];
+      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35"];
 
       // Hidden opt-in: ?beta=1 in the URL starts the flasher on the Dev channel
       // (instead of Stable) and unlocks every board BOARDS defines, not just

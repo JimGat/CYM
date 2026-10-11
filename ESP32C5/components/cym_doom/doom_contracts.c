@@ -48,7 +48,7 @@ bool doom_trigger_update(doom_trigger *t,uint32_t now,bool down,bool target,bool
     if(!t->down)return false;
     t->down=false;
     if((uint32_t)(now-t->first_ms)>6000){t->count=0;return false;}
-    if(++t->count==8){doom_trigger_reset(t);return true;}
+    if(++t->count==5){doom_trigger_reset(t);return true;}
     return false;
 }
 /* Fit the original 320x200 aspect in the available surface, centered. Reject
