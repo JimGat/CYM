@@ -4734,7 +4734,7 @@ static void nvs_settings_save_brightness(uint8_t pct)
     }
 }
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 static void nvs_settings_save_orientation(uint8_t orient)
 {
     nvs_handle_t h;
@@ -4751,7 +4751,7 @@ static void nvs_settings_save_orientation(uint8_t orient)
 // init) so LVGL rotates BOTH the framebuffer (lv_refr.c draw_buf_rotate) and the
 // touch/indev coordinates (lv_indev.c) — the touch read cb keeps returning native
 // portrait coords, so no manual coordinate rotation is needed here. NM-CYD-C5 and
-// WS-C5-28 only — both are 240x320 ST7789 with a native-portrait touch driver
+// WS-C5-28 plus WS-C5-35 (320x480 ST7796), all with native-portrait touch drivers
 // (XPT2046 calibrated to native portrait; CST3530 configured x_max/y_max=LCD dims,
 // swap_xy/mirror_x/mirror_y=0), so this same software-rotation approach applies to
 // both unchanged. CYD2USB is excluded: its ILI9341 already needs a board-specific
@@ -7622,14 +7622,14 @@ void app_main(void)
 #else
     disp_drv.user_data = panel_handle;
 #endif
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
     // Enable LVGL software rotation so the user Orientation setting can rotate the
     // whole UI (and touch) at runtime. rot=0 (portrait) costs nothing; a landscape
     // rotation costs a per-flush rotate buffer. See apply_screen_orientation().
     disp_drv.sw_rotate = 1;
 #endif
     lv_disp_drv_register(&disp_drv);
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
     // Apply the persisted orientation now (before any UI is built) so the splash
     // and home screen come up already rotated.
     apply_screen_orientation(screen_orientation);
@@ -26504,7 +26504,7 @@ static void show_scan_time_popup(void)
 
 static lv_obj_t *timeout_popup = NULL;
 static lv_obj_t *timeout_dropdown = NULL;
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 static lv_obj_t *orient_dropdown  = NULL;   // Screen orientation (NM-CYD-C5 + WS-C5-28)
 #endif
 
@@ -27115,7 +27115,7 @@ static void screen_popup_save_cb(lv_event_t *e)
         nvs_settings_save_home_layout(new_home_4cat);
     }
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
     uint8_t new_orient = orient_dropdown ? (uint8_t)lv_dropdown_get_selected(orient_dropdown)
                                          : screen_orientation;
     bool orient_changed = (new_orient != screen_orientation);
@@ -27127,7 +27127,7 @@ static void screen_popup_save_cb(lv_event_t *e)
     brightness_value_label = NULL;
     screen_home_classic_radio = NULL;
     screen_home_4cat_radio = NULL;
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
     orient_dropdown       = NULL;
     // Persist + REBOOT on change (same pattern as Recalibrate Touch). Orientation is
     // applied at boot by apply_screen_orientation() BEFORE any UI is built, so every
@@ -27298,7 +27298,7 @@ static void show_screen_popup(void)
     lv_obj_set_style_text_font(brightness_value_label, &lv_font_montserrat_12, 0);
     lv_obj_center(brightness_value_label);
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
     /* ── Orientation section (LEFT column in landscape) ── */
     lv_obj_t *orient_hdr = lv_label_create(pOri);
     lv_label_set_text(orient_hdr, "Orientation");

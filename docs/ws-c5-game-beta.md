@@ -58,7 +58,7 @@ host gameplay and compile/link checks are not physical approval.
    rather than freeing live memory. Persistent SD failure needs investigation,
    not a fabricated successful exit.
 9. Exit returns to the existing home layout without the usual radio restart.
-   Re-enter through Settings and the same footer gesture. Repeat at least ten
+   Re-enter through Settings and the same Hardware Options gesture. Repeat at least ten
    times, including Exit while validating and while fighting/moving.
 
 ## Serial evidence to capture tomorrow
@@ -156,3 +156,6 @@ no WAD; the separate SD branch keeps Freedoom's own license and credits.
 
 
 Tile access replaces the unreliable footer. Five completed clicks in six seconds with gaps below 800 ms open the license dialog even when SD is not ready or idle gate refuses startup. Continue shows the refusal or missing-asset message; no engine startup bypass. Clicking another Settings tile or leaving the screen cancels deferred navigation. Existing Settings Easter egg unchanged.
+
+## WS-C5-35 orientation test
+Settings -> Screen -> Orientation: choose 90 Landscape or 270 Landscape flipped, then Save. Saving a changed orientation reboots and rebuilds the UI at 480x320; native touch coordinates are rotated by LVGL, not again by the adapter. Check all corners, keyboard, Classic and Modern layouts, and game controls. v2.15.76 is a hardware test candidate, not physical qualification. Missing SD is checked before idle refusal; active tools still refuse startup. Full exclusive game mode and reboot-on-exit are not implemented in this rotation cycle.
