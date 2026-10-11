@@ -4,7 +4,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class TileTrigger(unittest.TestCase):
  def test_production_click_and_navigation(self):
   ui=(ROOT/'ESP32C5/components/cym_doom/doom_ui.c').read_text()
-  tail=ui[ui.index('static void navigation_due('):]
+  tail=ui[ui.index('static void navigation_due('):len(ui)]
   cancel=ui[ui.index('static void cancel_navigation('):ui.index('static void cancel_navigation(')+ui[ui.index('static void cancel_navigation('):].index('\n')]
   stub=r"""#include <stdint.h>
 #include <stdbool.h>
@@ -23,7 +23,7 @@ static int64_t time_us;
 static int64_t esp_timer_get_time(void){return time_us;}
 static void lv_timer_del(lv_timer_t*t){assert(t==&timer_obj);deletes++;}
 static lv_timer_t*lv_timer_create(void (*cb)(lv_timer_t*),int ms,void*p){(void)cb;(void)p;assert(ms==800);return fail_timer?NULL:&timer_obj;}
-static void license_dialog(void){dialogs++;}
+static void selector_dialog(void){dialogs++;}
 static void navigate(void){navigations++;}
 static bool no(void){return false;}
 """

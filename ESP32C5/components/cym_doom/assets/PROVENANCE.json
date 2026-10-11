@@ -1,0 +1,36 @@
+{
+  "source_url": "https://pinzerolabs.com/images/lab-1440.webp",
+  "source_sha256": "eafc818296097827b1bfe95765144a73a0c2527f73111992569a373b3ececddd",
+  "source_unchanged": true,
+  "format": "LV_IMG_CF_INDEXED_4BIT, 16-color BGRA palette; packed immutable flash data",
+  "derivatives": [
+    {
+      "name": "selector_portal",
+      "width": 128,
+      "height": 64,
+      "flash_bytes": 4160,
+      "png_sha256": "bf24e1c17867ac53884e64fcc114866f88f3ae21bb8ba10ba14bb1851476abdf"
+    },
+    {
+      "name": "selector_handheld",
+      "width": 128,
+      "height": 64,
+      "flash_bytes": 4160,
+      "png_sha256": "bd05fe0c6f955ec428e1bbb9ab24b118bf243ee2bef7b196daed41da695e5939"
+    },
+    {
+      "name": "selector_lab_ws28",
+      "width": 320,
+      "height": 240,
+      "flash_bytes": 38464,
+      "png_sha256": "35adacf590788c8feeac32084a47ae6660b46bb9b898971c4919f8125b4386e2"
+    },
+    {
+      "name": "selector_lab_ws35",
+      "width": 480,
+      "height": 320,
+      "flash_bytes": 76864,
+      "png_sha256": "e59c1f1d8fa390912fb3a6cd47a6a449df9a4e7072142c01ef1dea3416fb0cfd"
+    }
+  ]
+}

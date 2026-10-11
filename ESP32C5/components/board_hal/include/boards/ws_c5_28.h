@@ -14,6 +14,9 @@
 // with confirmed values from BSP header; verify all values on board arrival.
 #pragma once
 
+// Initial CYM preference only; a valid saved NVS orientation wins.
+#define BOARD_DEFAULT_ORIENTATION 3
+
 // ── SPI bus ───────────────────────────────────────────────────────────────────
 // SPI2_HOST shared by ST7789 (LCD) and SD card.
 // Note: MISO is GPIO8 (SD only; LCD is write-only ST7789).

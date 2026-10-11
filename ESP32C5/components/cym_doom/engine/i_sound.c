@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if defined(FEATURE_SOUND) && !defined(__DJGPP__) && !defined(ARDUINO)
+#if defined(CYM_USE_SDL_MIXER)
 #include <SDL_mixer.h>
 #endif
 
@@ -130,7 +130,7 @@ static void InitSfxModule(doom_boolean use_sfx_prefix)
 
 static void InitMusicModule(void)
 {
-#ifdef FEATURE_SOUND
+#ifdef CYM_MUSIC_SYNTH
     music_module = &DG_music_module;
 #endif /* FEATURE_SOUND */
 }
@@ -408,7 +408,7 @@ void I_BindSoundVariables(void)
     M_BindVariable("snd_samplerate",    &snd_samplerate);
     M_BindVariable("snd_cachesize",     &snd_cachesize);
 
-#ifdef FEATURE_SOUND
+#ifdef CYM_USE_LIBSAMPLERATE
     M_BindVariable("use_libsamplerate",   &use_libsamplerate);
     M_BindVariable("libsamplerate_scale", &libsamplerate_scale);
 #endif

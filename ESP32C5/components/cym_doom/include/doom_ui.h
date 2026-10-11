@@ -3,6 +3,9 @@
 #include "lvgl.h"
 #include <stdbool.h>
 void doom_ui_configure(bool (*)(void),void (*)(void),bool (*)(void),void (*)(void));
+void doom_ui_configure_selector(void (*rotate)(bool),void (*back)(void),const char *(*reboot)(void));
+void doom_ui_boot_start(void (*home)(void),bool sd_ready);
+bool doom_ui_exclusive(void);
 void doom_ui_tile_click(void);
 void doom_ui_screen_stop(void);
 bool doom_ui_active(void);

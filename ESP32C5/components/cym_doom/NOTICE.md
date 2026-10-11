@@ -26,5 +26,8 @@ No WAD or commercial game assets are embedded in or committed to this firmware
 repository. Official Freedoom Phase 1 v0.13.0 is separately supplied on the
 CYM-SD-Assets feature/doom-sd-assets branch, with its permissive license and
 credits. The runtime accepts only that exact SHA256, not arbitrary commercial
-IWADs or mods. No audio, shell, networking or external controller is added by
-the game engine.
+IWADs or mods. Native SFX-only PCM output is implemented through the ES8311/I2S backend.
+Music synthesis remains disabled (-nomusic). No shell, networking or external
+controller is added by the game engine.
+
+Reboot isolation additions: game_mode.c, storage_gate.c/storage_gate_fs.c and their headers are CYM integration code under GPL-2.0-or-later. PinZero LABS workshop source art is owned/supplied by Jim; the original source is pinned unchanged under assets/ with derivative hashes. Original industrial portal and pixel handheld illustrations were composed for this selector, not imported game/emulator art.

@@ -14,6 +14,14 @@ Last updated: 2026-09-23.
 
 ## Features (firmware)
 
+- **WS after-hours selector / reboot-isolated beta** — DEVELOPMENT BETA
+  v2.15.78; physical qualification pending. Five Hardware taps opens
+  PinZero LABS selector; enabled engine uses consumed one-shot same-image restart,
+  not live subsystem handover. Busy SD owners refused; no partition/OTA change.
+  SFX only. Physical checks pending. `docs/ws-c5-game-beta.md` is the operator manual.
+- **Arduboy SD library / AVR feasibility** — UNDER INVESTIGATION. Disabled
+  COMING SOON selector card only; no emulator delivered this cycle.
+
 - **BLE / WiFi Chat** — IDEA. Device-to-device off-grid messaging between CYM units (and
   potentially other ESP devices) over BLE and/or WiFi. Long-wanted. Open questions: transport
   (BLE GATT vs advertising vs ESP-NOW vs SoftAP), peer model (CYM↔CYM only vs open), and how it

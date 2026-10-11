@@ -154,9 +154,10 @@ const char *doom_session_error(void){return error_text;}
  * caller must report joined only after this returns. No upstream teardown is
  * invoked on partially initialized globals, and no atexit callback is called.
  */
-int doom_session_stop(void){if(armed||!same_owner())return -1;while(file_n){FILE *f=files[file_n-1];if(!io_lock()){snprintf(error_text,sizeof(error_text),"SD cleanup busy - ownership retained");return -1;}fclose(f);io_unlock();--file_n;}
+extern int doom_sound_stop(void);
+int doom_session_stop(void){if(armed||!same_owner())return -1;/* Drop all borrowed sample pointers and disable DMA before engine reclamation. */if(doom_sound_stop()!=0){snprintf(error_text,sizeof(error_text),"Audio cleanup busy - ownership retained");return -1;}while(file_n){FILE *f=files[file_n-1];if(!io_lock()){snprintf(error_text,sizeof(error_text),"SD cleanup busy - ownership retained");return -1;}fclose(f);io_unlock();--file_n;}
 while(owned_n)free(owned[--owned_n]);free(owned);owned=NULL;if(state){snapshot_state(true);free(state);state=NULL;}active=false;memset(&keys,0,sizeof(keys));desired_keys=0;return 0;}
-static void create(void){static char *argv[]={"cym-doom","-iwad",wad_path,"-nosound","-nomusic","-warp","1","1",NULL};doom_engine_tables_init();doomgeneric_Create(8,argv);}
+static void create(void){static char *argv[]={"cym-doom","-iwad",wad_path,"-nomusic","-warp","1","1",NULL};doom_engine_tables_init();doomgeneric_Create(7,argv);}
 int doom_session_start(const char *path){if(active||armed||!path||strlen(path)>=sizeof(wad_path))return -1;
 #ifdef ESP_PLATFORM
 owner=xTaskGetCurrentTaskHandle();

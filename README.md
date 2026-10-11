@@ -3336,3 +3336,11 @@ Sources:
 [2] https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf — NXP PCF85063A data sheet
 [3] https://wsjt.sourceforge.io/wsjtx-doc/wsjtx-main.html — WSJT-X User Guide
 [4] https://docs.waveshare.com/ESP32-C5-Touch-LCD-2.8 — Waveshare ESP32-C5-Touch-LCD-2.8 documentation
+
+### WS after-hours beta candidate (parent review pending)
+
+Development v2.15.78 adds a five-Hardware-tap PinZero LABS selector on WS-C5-28/35.
+Enabled engine uses consumed one-shot same-image restart, not live radio/tool takeover;
+busy SD owners refused. SFX only. Arduboy is disabled COMING SOON, not an emulator.
+CYM config preserved; no partition/OTA changes. See [operator/recovery manual](docs/ws-c5-game-beta.md).
+Host/build gates are not physical speaker/touch qualification or publication.

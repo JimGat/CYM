@@ -9,6 +9,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
+  espressif/esp_codec_dev:
+    component_hash: df70f10af8d7b922add7b9d07372c9c97ab356e58d72b7a892050227c2d44348
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.5.11
   espressif/esp_io_expander:
     component_hash: 7b7f91270172e46ca4597e3874f48d8412e280e8c295559f5922ec38656e3e5f
     dependencies:
@@ -52,11 +62,12 @@ dependencies:
     version: 8.4.0
 direct_dependencies:
 - espressif/cmake_utilities
+- espressif/esp_codec_dev
 - espressif/esp_io_expander
 - espressif/esp_lcd_touch
 - espressif/mdns
 - idf
 - lvgl/lvgl
-manifest_hash: 0f9f5af46e7e6dd2749beb22afea0812af9a7d153ab624364d963ad4b9724223
+manifest_hash: 6fd3ae33d27e653c0e41eb1cd95940167419f474c9c15c9e55ddb0e8a596d76b
 target: esp32c5
 version: 3.0.0

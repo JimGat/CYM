@@ -6,6 +6,7 @@
 #include "d_event.h"
 #include "info.h"
 extern int leveltime;
+extern unsigned long cym_host_audio_samples,cym_host_audio_nonzero,cym_host_audio_starts;
 extern doom_boolean menuactive;
 #include <assert.h>
 #include <stdio.h>
@@ -21,6 +22,8 @@ int before_time=leveltime;fixed_t before_x=players[consoleplayer].mo->x,before_y
 doom_session_set_keys(DOOM_KEY_FORWARD);for(unsigned k=0;k<35;k++)assert(doom_session_tick()==0);doom_session_set_keys(0);assert(doom_session_tick()==0);
 assert(leveltime>before_time);assert(players[consoleplayer].mo->x!=before_x||players[consoleplayer].mo->y!=before_y);
 int before_ammo=players[consoleplayer].ammo[am_clip];doom_session_set_keys(DOOM_KEY_FIRE);for(unsigned k=0;k<35;k++)assert(doom_session_tick()==0);doom_session_set_keys(0);assert(doom_session_tick()==0);assert(players[consoleplayer].ammo[am_clip]<before_ammo);int after_fire_ammo=players[consoleplayer].ammo[am_clip];
+assert(cym_host_audio_starts>0);assert(cym_host_audio_samples>0);assert(cym_host_audio_nonzero>0);
+printf("REAL_ENGINE_AUDIO run=%u starts=%lu pcm_samples=%lu nonzero=%lu SFX_ONLY host_sink\n",run,cym_host_audio_starts,cym_host_audio_samples,cym_host_audio_nonzero);
 doom_session_set_keys(DOOM_KEY_MENU);for(unsigned k=0;k<4;k++)assert(doom_session_tick()==0);doom_session_set_keys(0);for(unsigned k=0;k<4;k++)assert(doom_session_tick()==0);assert(menuactive);
 doom_session_set_keys(DOOM_KEY_MENU);for(unsigned k=0;k<4;k++)assert(doom_session_tick()==0);doom_session_set_keys(0);for(unsigned k=0;k<4;k++)assert(doom_session_tick()==0);assert(!menuactive);
 doom_session_set_keys(DOOM_KEY_USE);for(unsigned k=0;k<8;k++)assert(doom_session_tick()==0);assert(players[consoleplayer].cmd.buttons&BT_USE);doom_session_set_keys(0);for(unsigned k=0;k<4;k++)assert(doom_session_tick()==0);

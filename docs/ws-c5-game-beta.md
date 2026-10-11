@@ -1,161 +1,182 @@
-# WS-C5 hardware beta operator manual
+# WS-C5 selector and same-image reboot-isolated beta operator manual
 
-Software test candidate: v2.15.71. All eight builds and 32 generated/package
-artifacts verified. 366 regression tests and real-engine ASan gameplay,
-mutation/reset, fault/reopen tests passed. Parent publication/readback remains
-a separate gate; hardware boot/display/touch/stack/heap evidence is still pending.
-The current source uses native IDF PSRAM BSS placement and flash-backed mutable
-state/mobj tables. Do not substitute an older WS package with this version label.
+Development v2.15.78, built on ESP32-Dev as dev, branch Jimgat_Dev.
+Use the exact development commit pinned by the Beta flasher for matching source.
+This beta is provided for physical qualification, not hardware sign-off.
+Current-cycle evidence: /home/dev/ws-c5-35-fixes/selector-reboot-handoff.md.
+This is not a hardware qualification or publication claim.
 
-Scope: existing CYM application, WS-C5-28 and WS-C5-35 only. This is a silent,
-touch-only experimental game. Other six packages carry no game engine. There
-is no ordinary menu tile, sound implementation, external controller support,
-new SD mount, RF change, or commercial WAD. Hardware qualification is pending;
-host gameplay and compile/link checks are not physical approval.
+## Delivered scope and explicit non-features
 
-## Jim: prepare and launch
+WS-C5-28 and WS-C5-35 only; engine excluded from the other six profiles.
+Five-Hardware-tap PinZero LABS selector: after-hours workshop backdrop, Professor
+Zero/ZeroBot reference, cyan/magenta/amber panels, original industrial portal and
+128x64 pixel handheld silhouettes, large Back/Cancel. Arduboy is disabled COMING
+SOON: no AVR emulator or launch exists. Selector/license work without SD.
+Artwork is immutable flash indexed16 data, no continuous animation. Original
+Jim-owned lab-1440.webp is untouched/pinned with derivative hashes in assets/PROVENANCE.json.
 
-1. Use desktop Chrome/Edge and the normal beta board choices:
-   https://jimgat.github.io/CYM/beta/?board=ws-c5-28
-   https://jimgat.github.io/CYM/beta/?board=ws-c5-35
-   After coordinator publication, select Development and check the handoff
-   firmware version and exact board. Do not select a different screen size.
-   Neither this recovery nor its tools flash anything automatically.
-2. Get separately supplied SD contents from exactly:
-   https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard
-   Copy the contents of sdcard/ to the FAT32 SD root. Required file:
-   doom/doom1.wad, opened by firmware as /sdcard/doom/doom1.wad.
-   This is official Freedoom Phase 1 v0.13.0, SHA256
-   7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d.
-   Preserve accompanying license and credits. The SD-assets branch is not
-   merged to assets main and is not part of the firmware repository.
-3. Insert the card. Use CYM's existing Settings -> SD Card -> Remount SD Card
-   only if the existing mount is not ready, then return to Settings. Do not
-   format your card or run an unrelated provisioning operation for this test.
-4. Stop other tools normally. Startup fails closed if SD is unmounted,
-   Bluetooth/802.15.4 mode or an active tool/task is present. It does not stop
-   or restart radios itself. The dialog remains accessible without SD; Continue reports the failure. Return to an idle Settings screen.
-5. Tap and RELEASE the Hardware Options tile in Settings five times
-   within six seconds. A held press is not five taps. Navigation, touch loss
-   or timeout resets the sequence. Keep gaps below 800 ms, as with the existing Settings interaction. A normal single tap opens Hardware Options after the short delay. No footer or corner gesture.
-6. The license page appears before engine allocations. Scroll to read its
-   attribution, GPL/no-warranty and matching-source notice. Cancel returns
-   unchanged to Settings. Continue checks the idle gate again and validates
-   the existing SD file before engine startup.
-7. During the hash/init wait, Exit remains usable. Missing or invalid WAD
-   shows a wrapped vertical-scroll message with the full SD-assets URL and
-   FAT32 root-copy instructions above. Exit is outside that scroll area.
-   Download on a computer, correct the SD file, exit and launch again.
-8. Gameplay buttons, bottom three rows:
-     Left / Move / Right: turn left, forward movement, turn right.
-     Back / Fire / Use: backward movement, shoot, activate a door/switch.
-     Menu / OK / Exit: engine menu, confirm, leave game.
-   A single touch holds one action; simultaneous move/fire is not claimed.
-   Lift or slide off a control to release it. Touch-loss watchdog releases
-   stale holds. Exit requests cancellation immediately; CYM waits for safe
-   cleanup and explicit worker deletion before deleting the canvas/mailbox.
-   If SD cleanup is busy, it retains ownership and shows a stopping message
-   rather than freeing live memory. Persistent SD failure needs investigation,
-   not a fabricated successful exit.
-9. Exit returns to the existing home layout without the usual radio restart.
-   Re-enter through Settings and the same Hardware Options gesture. Repeat at least ten
-   times, including Exit while validating and while fighting/moving.
+Both WS default270 only without valid saved orientation (0..3). Saved CYM choice
+wins. Selector temporarily uses270; Back restores prior live transform, then main
+rebuilds Settings. No saved orientation change. Game uses270 on a fresh boot.
+Native logical sizes: WS28 320x240; WS35 480x320. DEV preview paths:
+  /home/dev/ws-c5-35-fixes/selector-preview-ws28.png
+  /home/dev/ws-c5-35-fixes/selector-preview-ws35.png
+These are actual production-code headless LVGL captures with host peripheral/
+engine stubs, NOT hardware photographs. Recursive bounds/font widths and image
+pixel/color inspection are executable; physical appearance remains parent review.
 
-## Serial evidence to capture tomorrow
+Live subsystem handover is superseded. No universal stop/join, radio shutdown,
+forced deletion, live flag wiping or subsystem restoration in launch. Radios
+reset with the system. Same firmware/factory app and existing NVS: no partition,
+bootloader, offset, OTA slot/boot-selection change. All eight packaged partition
+SHA256 values must equal published HEAD before parent acceptance.
 
-Capture full boot/version/PSRAM output and CYM_DOOM messages:
-  LICENSE_SHOWN engine_not_started
-  LICENSE_CANCEL no_engine_allocations (Cancel path)
-  CONTINUE / WORKER_BEGIN heap markers
-  LAUNCH_REQUESTED path=/sdcard/doom/doom1.wad
-  ENGINE_STARTED state_bytes=<actual linked span>
-  EXIT_REQUESTED
-  WORKER_CLEAN and ENGINE_JOIN_READY ... owned=0
-  UI_RELEASED heap marker
+SFX preserve WAD DMX data, eight mixer channels, 22050 Hz mono 16-bit Philips I2S
+through ES8311, -30 dB initial volume plus mixer headroom. No music (-nomusic),
+MUS/OPL synth, microphone or beep substitute. Engine owns samples; DMA copies PCM.
+Audio stops before memory reclaim; stop faults retain ownership. PCM host proof
+is not audible speaker proof.
 
-Check responsive touch in every screen orientation already supported by the
-board HAL; renderer uses the existing LVGL canvas, logical coordinates,
-RGB565 palette conversion, display byte order and panel flush path. There is
-no private display driver. Check red/green/blue, text orientation, no clipping,
-all controls, long errors, SD/display concurrency and repeated heap recovery.
-Photograph missing/invalid messages and both panels. Report resets, watchdogs,
-low-memory refusal, stuck held actions, blocking Exit or steadily declining
-free/largest PSRAM. A compile success does not qualify existing panel DMA
-completion behavior; the game never lends its worker mailbox to display DMA.
-Check boot/heap/stack headroom from real hardware; linked static headroom is
-an upper bound before runtime allocations, not measured live free RAM.
+## Copy-paste operator sequence AFTER parent publication
 
-## Reproduce software gates on ESP32-Dev
+1. Desktop Chrome/Edge, correct board beta URL:
+     https://jimgat.github.io/CYM/beta/?board=ws-c5-28
+     https://jimgat.github.io/CYM/beta/?board=ws-c5-35
+   Expected: correct board/version and parent-approved Development pin. Select Development and confirm the displayed v2.15.78 version before flashing.
+2. Separate SD contents:
+     https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard
+   Copy contents of sdcard/ to FAT32 root, retaining licenses/credits.
+   Required disk path doom/doom1.wad; runtime /sdcard/doom/doom1.wad.
+   Supported ONLY official Freedoom Phase 1 v0.13.0, SHA256:
+     7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d
+   No commercial WAD/mods, automatic download or auto-format.
+3. CYM -> Settings -> Hardware Options: five completed taps/releases within
+   existing six-second window, gaps below800 ms. Expected: landscape270 selector;
+   no license or engine yet. One Hardware tap still navigates after800 ms.
+   Settings Easter egg is unchanged. Classic/Modern share this Settings callback.
+4. ARDUBOY: no launch, COMING SOON. DOOM: scrollable GPL attribution, no warranty,
+   data-license/source notice. Cancel returns to selector without intent/engine.
+   BACK / CANCEL rebuilds Settings in prior live orientation, including portrait touch.
+5. Continue: mounted SD and a regular nonempty doom1.wad checked before commit.
+   Expected success: MODE_INTENT_COMMITTED, then same-image system restart.
+   Busy: REBOOT_REFUSED owner=<named owner>, readable refusal. Finish/exit that
+   transfer in CYM and retry; launcher does not stop it. Missing SD/WAD or NVS
+   open/set/commit failure never authorizes restart.
+6. Next boot: MODE_CONSUMED selected=1, ISOLATED_BOOT normal_services=0 rotation270,
+   then structural/hash validation, engine/audio. No normal radios/tools/GPS/
+   capture/provision/screenshot workers. Missing/untrusted WAD or engine init error:
+   readable scrolling instructions, Return CYM outside scroll; ordinary CYM restart.
+7. Gameplay controls (single touch, not simultaneous move/fire):
+     Left / Move / Right: turn left, forward, turn right.
+     Back / Fire / Use: backward, shoot, activate doors/switches.
+     Menu / OK / Exit: menu, confirm, safe cleanup then ordinary CYM restart.
+   Lift/slide off releases; lost-touch timeout releases stale holds.
+8. Exit during hash/init/play waits actual audio/engine cleanup, release-done AND
+   suspended-state join before worker/UI/mailbox deletion. Expected EXIT_REQUESTED,
+   AUDIO_STOPPED if started, ENGINE_JOIN_READY owned=0, UI_RELEASED, GAME_EXIT,
+   then normal CYM using saved preferences. Fault retains ownership, not fake release.
 
-Use the canonical checkout, Jimgat_Dev, and no other firmware writer:
-  cd /home/dev/projects/CYM-NM28C5-jarvis-ws35-docs
+## Recovery independent of SD/game
+
+Intent is read and consumed+committed just after minimal safe NVS init, BEFORE
+normal services/game initialization. Bounded12-byte magic/version+mode/integrity
+record; Doom enabled, Arduboy enum reserved/disabled. Only supported WS software
+reset ESP_RST_SW with BOOT not held launches. Missing/corrupt/unknown/disabled/
+consume-failed records fall back to normal CYM. Stale power-on intent is consumed,
+never launched; watchdog/panic also falls back. No NVS erase/repair for intent. If NVS initialization itself fails, normal CYM
+uses defaults with WiFi refused instead of erasing saved configuration.
+
+BOOT held at early app entry bypasses independently of SD/display/engine. During
+isolated loop BOOT requests safe Exit. Reset/power-cycle recovers a hard hang: intent
+already consumed. If BOOT+reset enters ROM download mode, release BOOT and reset
+normally; physical strap/button behavior is a bench check, not host evidence.
+Essential display/DMA/mutex failure before usable rendering logs ESSENTIAL_INIT_FAILED;
+reset returns CYM. No readable-screen claim if the display/allocator itself cannot init.
+
+## Exact initialization allowlist and storage policy
+
+app_main consumes intent before obs_store/detectors, OT hooks/survey flush timer,
+GPS UART/task, LED, wifi_cli_init, saved-config/UI splash, scanner arrays, normal
+RTC/timekeeper, screenshot worker, gw/cham/honeypair/blueduck/wp, portal HTML,
+normal SD cache/provision/whitelist and battery tasks. Isolated entry returns instead
+of falling through ordinary startup/main loop.
+
+Allowed: LVGL allocator/core, existing WS board I2C/expander/PMIC essentials via
+display/touch adapters, display/touch/backlight, LVGL+SD mutexes, display DMA/flush
+semaphore, input driver, LVGL tick, synchronous no-format SD transport mount, logging/
+main watchdog, isolated validation/UI/engine/SFX worker. WS35 audio shares
+ws_c5_35_i2c_bus(); WS28 already-live I2C/expander. No normal splash/idle/tool/UI
+timers are registered. Display/touch callbacks contain no radio/worker starts.
+Source ordering/suppression tests cover this boundary, not device task enumeration.
+
+Before intent commit: named persistent service/write producers are refused: file
+server, captures/survey, uploads, provision/pending completion, active screenshot/
+queue and scanner-log owners. Parked screenshot handle alone is not busy.
+WS-only bounded32-slot admission wraps real /sdcard fopen/fclose/open/close and
+mkdir/unlink/remove/rename/rmdir, retaining ownership through real close/mutator
+return. Atomic freeze rejects new opens/mutators and immediately refuses existing
+handles/operations; no giant cleanup or indefinite wait. Close errors retain admission,
+refuse launch and require reset/recovery. Raw provision format separately refused.
+Remount reserves admission in main before task creation until transport/result
+submission finishes. File-server service refused even between requests. Shared SD
+transport must also be idle and stays held until restart. Deferred UI/survey/write
+starts are main-owned; no callbacks pumped during synchronous transaction. app_main
+starts no console. Future external/raw storage API must enroll before use.
+
+## Vendor routing evidence
+
+WS28: https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8
+Commit 4d7a40b75cfe609f87b619296db2d96536fe800e at:
+  /home/dev/projects/ESP32-C5-Touch-LCD-2.8-upstream
+04_sd_music BSP header lines 52..61: I2C0/1, BCLK24/LRCLK25/DOUT26/DIN27,
+MCLK NC. BSP c lines 300..318 enables CH32V003 IO_POWER_AMP_IO (PIN3) high;
+lines 381..426 configure ES8311 slave DAC, use_mclk=false. Reuse existing
+CYM s_i2c_bus and s_io_expander; no second bus.
+
+WS35: https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5
+Commit 04e6134cf3e37309b2bec9915189efeace1161bc at:
+  /home/dev/projects/ESP32-C5-Touch-LCD-3.5-upstream
+02_lvgl_demo BSP header lines 79..92: I2C26/27, BCLK23/LRCLK10/DOUT25/DIN24,
+MCLK and PA GPIO NC. BSP c lines 251..358: I2S0 master Philips 16-bit mono
+22050 Hz, ES8311 slave use_mclk=false, esp_codec_dev 1.5.11. CYM reuses
+ws_c5_35_i2c_bus(); TX only, microphone absent. No inferred audio capability
+flag is added to other boards.
+
+## Reproduce gates on canonical DEV only
+
+Through ssh dev@ESP32-Dev, as dev in the authorized worktree:
   python3 -m unittest discover -s tests -v
-  python3 tests/run_doom_engine_host.py --wad .hermes/doom-prototype/fixtures/freedoom-0.13.0/freedoom1.wad --output .hermes/doom-prototype/host-recheck
-
-The official fixture is external/private test data, not tracked. The runner
-checks its exact hash, compiles all 80 actual engine C files with ASan, and
-asserts level ticks, movement, ammo consumption, menu/confirm/use/turn/release,
-three reopens, missing-file recovery, 24 allocation failures and cancel/reopen.
-No WAD download, title-only substitute or synthetic gameplay is used.
-
-Build all eight sequentially, with the current intended source version already
-synchronized in the three CMake anchors and eight manifests:
+  python3 tests/run_selector_host.py
+  python3 tests/run_doom_engine_host.py --wad .hermes/doom-prototype/fixtures/freedoom-0.13.0/freedoom1.wad --output .hermes/doom-prototype/selector-reboot-engine
   . /home/dev/esp/esp-idf/export.sh
-  for board in nm-cyd-c5 ws-c5-28 cyd-2432s028 hosyond-s3-35 ws-c5-35 pancake-c5 hackerbox-cyd ws-s3-5b; do scripts/build.sh "$board" || break; done
-  python3 scripts/verify-dev-packages.py --version <handoff-version> --output .hermes/doom-prototype/recheck-packages.json --commit <handoff-SHA>
+  make -j1 all-boards
+  python3 scripts/verify-dev-packages.py --version v2.15.78 --output /home/dev/ws-c5-35-fixes/selector-reboot-packages.json
 
-The verifier checks generated board flags, actual ELF engine symbols on two
-WS/exclusion on six others, separately captured image-loaded initialized state and IDF-zeroed PSRAM state ranges, linked static RAM, actual
-application descriptor, flash header/size, partitions, exact generated exports,
-merged-image parts, all part paths/hashes and all 32 Git blobs (not LFS pointers).
-Firmware changes require another sequential patch version before building.
+Real engine/WAD host gate: gameplay/ammo/menu/use/turn/confirm/release, three reopens,
+missing-file recovery,24 allocation faults/cancellation, nonzeroSFX PCM, owned=0.
+Portable production intent/storage/main C tests use ASan/UBSan; storage has threaded
+admission races. Real LVGL production UI checks glyph widths/bounds/art decode,
+five-click timer, license/readiness/refusal/Cancel, repeat selectors, init errors/join.
+No synthesized API/hardware success. Verifier without --commit checks working
+packages, not committed blobs. Preserve unrelated .hermes/state_idf.ld/caches.
 
-## Coordinator-only publication and beta deployment
+BOTH-board physical checks after parent approval: four saved orientations/default270,
+Cancel/corner touch/RGB/clipping, real speaker SFX/volume/no music, busy transfer/
+file-server/provision refusal, BOOT, Exit during hash/init/play and repeated cycles.
+Save serial/photos. Build/host success is not physical evidence.
 
-The writer does not push or deploy. Independently verify the prepared commit,
-all gates, licensing source and artifact hashes first. If branch HEAD changed
-unexpectedly, stop; no force push, reset, main merge, tag or release.
+## Parent-only review/publication
 
-After verification, from the authoritative checkout, substitute the exact
-handoff commit (not a guessed future SHA):
-  test "$(git branch --show-current)" = Jimgat_Dev
-  test "$(git rev-parse HEAD)" = <handoff-SHA>
-  git push origin HEAD:refs/heads/Jimgat_Dev
-  git ls-remote origin refs/heads/Jimgat_Dev
-  gh workflow run deploy-flasher.yml --repo JimGat/CYM --ref Jimgat_Dev -f expected_sha=<handoff-SHA>
-  gh run list --repo JimGat/CYM --workflow deploy-flasher.yml --branch Jimgat_Dev --limit 5
-  gh run view <run-id> --repo JimGat/CYM --json headSha,conclusion,url
-
-Require run headSha == handoff SHA and conclusion == success. The workflow
-rejects a dispatch outside Jimgat_Dev or with a different expected SHA. Stable
-root is copied exclusively from main; only /beta/index.html is replaced and
-its normal Development board choices are pinned to immutable GITHUB_SHA.
-The six default stable packages are not sourced from development. No main or
-stable branch change is needed. The beta preview gate compares every root
-stable file byte-for-byte and checks the development pin without deploying.
-
-After deployment, read back /beta/index.html and verify its dev reference equals
-the handoff SHA; fetch both WS manifests and every immutable artifact URL and
-compare all handoff hashes. URLs after push (not yet available before push):
-  https://raw.githubusercontent.com/JimGat/CYM/<handoff-SHA>/ESP32C5/docs/manifest.ws-c5-28.json
-  https://raw.githubusercontent.com/JimGat/CYM/<handoff-SHA>/ESP32C5/docs/manifest.ws-c5-35.json
-Manifest part paths resolve relative to each immutable manifest URL. All eight
-manifest/artifact URLs are enumerated in finish-handoff.json. Matching source:
-  https://github.com/JimGat/CYM/archive/<handoff-SHA>.tar.gz
-Source/license/provenance: ESP32C5/components/cym_doom/NOTICE.md,
-LICENSE.engine, PROVENANCE.json and patches/native-cym.patch. Firmware embeds
-no WAD; the separate SD branch keeps Freedoom's own license and credits.
-
-## Linked memory evidence (not live free RAM)
-
-- WS-C5-28 initialized engine state: 19,892 bytes in loaded internal data; zero engine state: 93,936 bytes in IDF-zeroed PSRAM. Linked static upper-bound internal headroom: 35,888 bytes.
-- WS-C5-35 uses the same reset spans; linked static upper-bound internal headroom: 40,608 bytes.
-- Worker requests a 24,576-byte stack through FreeRTOS; runtime allocations reduce these static upper bounds. Initialization fails closed if worker/buffers cannot be allocated. Confirm actual startup and stack/heap headroom on hardware; no minimum runtime free-memory guarantee is claimed.
-- The two large mutable tables are copied from immutable flash defaults into owned PSRAM for each launch. Tests mutate them before teardown and assert restored defaults on reentry; initialized values are not lost in NOLOAD storage.
-
-
-
-Tile access replaces the unreliable footer. Five completed clicks in six seconds with gaps below 800 ms open the license dialog even when SD is not ready or idle gate refuses startup. Continue shows the refusal or missing-asset message; no engine startup bypass. Clicking another Settings tile or leaving the screen cancels deferred navigation. Existing Settings Easter egg unchanged.
-
-## WS-C5-35 orientation test
-Settings -> Screen -> Orientation: choose 90 Landscape or 270 Landscape flipped, then Save. Saving a changed orientation reboots and rebuilds the UI at 480x320; native touch coordinates are rotated by LVGL, not again by the adapter. Check all corners, keyboard, Classic and Modern layouts, and game controls. v2.15.76 is a hardware test candidate, not physical qualification. Missing SD is checked before idle refusal; active tools still refuse startup. Full exclusive game mode and reboot-on-exit are not implemented in this rotation cycle.
+Parent reviews exact scoped files, eight builds/32 packages, partition SHA equality
+vs HEAD, pinned engine/art provenance and test evidence. Do not stage unrelated
+.hermes/, state_idf.ld, caches or docs/feedback/docs/prompts. No AI trailers/game
+name in commit messages; preserve human birolt29 credit. Stable artwork/flasher/
+manifests remain main-sourced, unchanged by this cycle. After parent commit, pin
+beta to exact SHA and verify workflow headSha/immutable outputs/hashes. Matching
+GPL source must accompany binaries:
+  https://github.com/JimGat/CYM/archive/<parent-commit>.tar.gz
+  https://raw.githubusercontent.com/JimGat/CYM/<parent-commit>/ESP32C5/docs/manifest.ws-c5-28.json
+  https://raw.githubusercontent.com/JimGat/CYM/<parent-commit>/ESP32C5/docs/manifest.ws-c5-35.json
+License: component NOTICE.md, LICENSE.engine, PROVENANCE.json, native-cym.patch;
+art provenance separately in assets/PROVENANCE.json.

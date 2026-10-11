@@ -32,7 +32,7 @@
 #undef FEATURE_MULTIPLAYER
 
 // Enables sound output
-#undef FEATURE_SOUND /* silent feasibility probe; audio integration not tested */
+#define FEATURE_SOUND 1 /* native SFX module; independent music disabled */
 
 #endif /* #ifndef DOOM_FEATURES_H */
 

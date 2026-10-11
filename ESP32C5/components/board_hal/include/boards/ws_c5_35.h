@@ -12,6 +12,9 @@
 // RTC/PMIC telemetry are test candidates; accuracy/holdover remain unqualified.
 #pragma once
 
+// Initial CYM preference only; a valid saved NVS orientation wins.
+#define BOARD_DEFAULT_ORIENTATION 3
+
 // ── SPI bus ───────────────────────────────────────────────────────────────────
 // SPI2_HOST shared by ST7796 (LCD) and SD card.
 // MISO is GPIO2 (SD only; ST7796 is write-only).

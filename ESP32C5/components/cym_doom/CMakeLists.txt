@@ -3,13 +3,13 @@
 set(doom_sources)
 set(doom_fragments)
 if(CONFIG_BOARD_WS_C5_28 OR CONFIG_BOARD_WS_C5_35)
-    set(doom_sources "doom_contracts.c" "doom_session.c" "doom_ui.c")
+    set(doom_sources "doom_contracts.c" "doom_session.c" "doom_ui.c" "game_mode.c" "storage_gate.c" "storage_gate_fs.c" "selector_art.c")
     set(doom_fragments "state.lf")
 endif()
 idf_component_register(SRCS ${doom_sources}
     INCLUDE_DIRS "include" PRIV_INCLUDE_DIRS "engine"
     LDFRAGMENTS ${doom_fragments}
-    REQUIRES heap esp_timer freertos lvgl mbedtls)
+    REQUIRES heap esp_timer freertos lvgl mbedtls esp_driver_i2s esp_codec_dev)
 if(NOT (CONFIG_BOARD_WS_C5_28 OR CONFIG_BOARD_WS_C5_35))
     return()
 endif()
@@ -38,6 +38,9 @@ add_library(cym_doom_engine STATIC
     "engine/i_joystick.c"
     "engine/i_scale.c"
     "engine/i_sound.c"
+    "engine/i_cym_sound.c"
+    "doom_mixer.c"
+    "doom_audio.c"
     "engine/i_system.c"
     "engine/i_timer.c"
     "engine/i_video.c"
@@ -96,7 +99,7 @@ add_library(cym_doom_engine STATIC
     "engine/z_zone.c"
 )
 target_include_directories(cym_doom_engine PRIVATE "engine" "include")
-target_link_libraries(cym_doom_engine PRIVATE idf::heap)
+target_link_libraries(cym_doom_engine PRIVATE idf::heap idf::esp_driver_i2s idf::espressif__esp_codec_dev)
 target_compile_options(cym_doom_engine PRIVATE
     -include "${CMAKE_CURRENT_LIST_DIR}/include/doom_runtime_shim.h"
     -msmall-data-limit=0 -fdata-sections -ffunction-sections -fno-common -fwrapv -fno-strict-aliasing
@@ -104,3 +107,8 @@ target_compile_options(cym_doom_engine PRIVATE
 target_link_libraries(${COMPONENT_LIB} PRIVATE cym_doom_engine)
 # Native IDF state.lf records both engine reset ranges and lets IDF initialize
 # external zero state before application startup. No supplemental INSERT script.
+
+# Enforce storage admission at actual SD open/close/mutator boundaries on WS only.
+foreach(call fopen fclose open close mkdir unlink remove rename rmdir)
+    target_link_options(${COMPONENT_LIB} INTERFACE "LINKER:--wrap=${call}")
+endforeach()

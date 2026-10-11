@@ -98,10 +98,18 @@ LV_IMG_DECLARE(deedee_img);
 #include "board_hal.h"
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 #include "doom_ui.h"
+#include "game_mode.h"
+#include "storage_gate.h"
 static bool doom_prototype_idle(void);
 static bool doom_prototype_sd_ready(void);
 static void doom_prototype_hardware(void);
 static void doom_prototype_home(void);
+static void game_selector_rotation(bool entering);
+static void game_selector_back(void);
+static const char *game_record_reboot(void);
+static bool s_game_reboot_frozen;
+static bool s_game_selector_rotated;
+static uint8_t s_game_prior_orientation;
 #endif
 #if defined(CONFIG_BOARD_WS_S3_5B)
 #include "ws_s3_5b_port.h"
@@ -875,7 +883,10 @@ static uint8_t screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
 // Applied via LVGL software rotation (disp_drv.sw_rotate=1 + lv_disp_set_rotation);
 // LVGL rotates the rendered pixels AND the indev (touch) points, so the touch
 // read callback keeps returning native-portrait coords (no manual rotation there).
-static uint8_t screen_orientation = 0;
+#ifndef BOARD_DEFAULT_ORIENTATION
+#define BOARD_DEFAULT_ORIENTATION 0
+#endif
+static uint8_t screen_orientation = BOARD_DEFAULT_ORIENTATION;
 static lv_obj_t *brightness_overlay = NULL; // Software brightness overlay on lv_layer_top()
 static uint16_t scan_time_min_ms = 100;     // Active scan min time per channel (default 100)
 static uint16_t scan_time_max_ms = 300;     // Active scan max time per channel (default 300)
@@ -7350,6 +7361,71 @@ static void survey_flush_timer_cb(void *arg)
         s_survey_flush_pending = true;
 }
 
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+static game_read game_nvs_read(void *ctx,game_intent *v)
+{
+    size_t n=sizeof(*v);esp_err_t rc=nvs_get_blob((nvs_handle_t)(uintptr_t)ctx,"intent",v,&n);
+    if(rc==ESP_ERR_NVS_NOT_FOUND)return GAME_ABSENT;
+    return rc==ESP_OK && n==sizeof(*v)?GAME_FOUND:GAME_READ_FAULT;
+}
+static bool game_nvs_set(void *ctx,const game_intent *v){return nvs_set_blob((nvs_handle_t)(uintptr_t)ctx,"intent",v,sizeof(*v))==ESP_OK;}
+static bool game_nvs_erase(void *ctx){esp_err_t rc=nvs_erase_key((nvs_handle_t)(uintptr_t)ctx,"intent");return rc==ESP_OK || rc==ESP_ERR_NVS_NOT_FOUND;}
+static bool game_nvs_commit(void *ctx){return nvs_commit((nvs_handle_t)(uintptr_t)ctx)==ESP_OK;}
+static game_mode_io game_nvs_io(nvs_handle_t h){return (game_mode_io){(void *)(uintptr_t)h,game_nvs_read,game_nvs_set,game_nvs_erase,game_nvs_commit};}
+static game_mode game_early_consume(esp_err_t nvs_status)
+{
+    init_boot_button(); /* independent of SD/display/engine/services */
+    bool held=gpio_get_level(BOOT_BTN_GPIO)==0;
+    if(nvs_status!=ESP_OK){ESP_LOGW("CYM_DOOM","MODE_NVS_UNAVAILABLE normal fallback; no erase");return GAME_NORMAL;}
+    nvs_handle_t h;esp_err_t rc=nvs_open("cym_game",NVS_READWRITE,&h);
+    if(rc!=ESP_OK){ESP_LOGW("CYM_DOOM","MODE_OPEN_FAILED normal fallback");return GAME_NORMAL;}
+    game_mode_io io=game_nvs_io(h);game_mode mode=game_mode_consume(&io,true,esp_reset_reason()==ESP_RST_SW,held);nvs_close(h);
+    ESP_LOGI("CYM_DOOM","MODE_CONSUMED selected=%d software_reset=%d BOOT_held=%d",mode,esp_reset_reason()==ESP_RST_SW,held);
+    return mode;
+}
+/* Separate early startup allowlist: LVGL allocator/core, board I2C/expander/
+ * PMIC essentials (display+touch adapters), display/touch/backlight, mutexes,
+ * display DMA/flush semaphore, input driver, LVGL tick, synchronous no-format
+ * SD mount, main watchdog, isolated UI/engine + codec/I2S SFX. */
+static void game_isolated_main(void)
+{
+    ESP_LOGI("CYM_DOOM","ISOLATED_BOOT normal_services=0 rotation=270 intent_consumed=1");
+    lvgl_memory_init();lv_init();
+#if defined(CONFIG_BOARD_WS_C5_28)
+    init_i2c_bus();
+#endif
+    init_display();init_touch();init_backlight();
+    lvgl_mutex=xSemaphoreCreateMutex();sd_spi_mutex=xSemaphoreCreateMutex();
+    if(!lvgl_mutex || !sd_spi_mutex){ESP_LOGE("CYM_DOOM","ESSENTIAL_INIT_FAILED mutex; reset returns CYM");return;}
+    const size_t bytes=LCD_H_RES*15*sizeof(lv_color_t);
+    buf1=spi_bus_dma_memory_alloc(LCD_HOST,bytes,MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+    buf2=spi_bus_dma_memory_alloc(LCD_HOST,bytes,MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+    if(!buf1 || !buf2){ESP_LOGE("CYM_DOOM","ESSENTIAL_INIT_FAILED display DMA; reset returns CYM");return;}
+    lv_disp_draw_buf_init(&draw_buf,buf1,buf2,LCD_H_RES*15);
+    static lv_disp_drv_t game_disp;lv_disp_drv_init(&game_disp);
+    game_disp.hor_res=LCD_H_RES;game_disp.ver_res=LCD_V_RES;game_disp.flush_cb=lvgl_flush_cb;game_disp.draw_buf=&draw_buf;
+    game_disp.user_data=panel_handle;game_disp.sw_rotate=1;
+    lv_disp_drv_register(&game_disp);apply_screen_orientation(3);
+    flush_done_sem=xSemaphoreCreateBinary();
+    if(!flush_done_sem){ESP_LOGE("CYM_DOOM","ESSENTIAL_INIT_FAILED flush semaphore");return;}
+    const esp_lcd_panel_io_callbacks_t cbs={.on_color_trans_done=on_color_trans_done};
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(lcd_io_handle,&cbs,&game_disp));
+    static lv_indev_drv_t game_input;lv_indev_drv_init(&game_input);game_input.type=LV_INDEV_TYPE_POINTER;game_input.read_cb=lvgl_touch_read_cb;
+    lv_indev_drv_register(&game_input);
+    const esp_timer_create_args_t tick={.callback=lvgl_tick_task,.name="game_lvgl_tick"};
+    esp_timer_handle_t tick_timer;ESP_ERROR_CHECK(esp_timer_create(&tick,&tick_timer));ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer,10000));
+    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle,true));
+    /* Transport helper only mounts. No cache/dirs/provision/whitelist/workers. */
+    esp_err_t sd=wifi_wardrive_init_sd_ex(BOARD_SD_SPI_FREQ_HZ/1000,false);sd_mounted_lazy=sd==ESP_OK;
+    doom_ui_boot_start(doom_prototype_home,sd_mounted_lazy);esp_task_wdt_add(NULL);
+    for(;;){
+        if(gpio_get_level(BOOT_BTN_GPIO)==0)doom_ui_request_exit();
+        if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){lv_timer_handler();xSemaphoreGive(lvgl_mutex);}
+        esp_task_wdt_reset();vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+#endif
+
 void app_main(void)
 {
     // Log active board identity so crash logs are unambiguous about which board built the binary.
@@ -7363,11 +7439,17 @@ void app_main(void)
     // RAM got commanded back DOWN to 9600 — while the UI, loaded later, still claimed
     // 115200. NVS init is a few ms, so GPS still starts essentially at boot.
     esp_err_t nvs_ret = nvs_flash_init();
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    if(game_early_consume(nvs_ret)==GAME_DOOM){game_isolated_main();return;}
+    /* Mode-intent failures never authorize erasing saved CYM config. */
+    if(nvs_ret!=ESP_OK){ESP_LOGE(TAG,"NVS unavailable; degraded normal CYM, config preserved. No erase.");}
+#else
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         nvs_ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(nvs_ret);
+#endif
 
     // Passive observation store: 8192-record PSRAM ring buffer (OBS_STORE_DEFAULT_CAPACITY —
     // see obs_store.h for why 512 was too small for a real OT Air Survey session)
@@ -7454,7 +7536,7 @@ void app_main(void)
     // The 42 KB DMA footprint is unavoidable on ESP32-C5, so keep it allocated once at boot
     // rather than fragmenting it across BLE screen transitions. This allows bt_nimble_init()
     // to succeed during wardrive by initializing BLE into a clean, stable WiFi+coex stack.
-    esp_err_t wifi_init_ret = wifi_cli_init();
+    esp_err_t wifi_init_ret = nvs_ret==ESP_OK ? wifi_cli_init() : nvs_ret;
     if (wifi_init_ret == ESP_OK) {
         current_radio_mode = RADIO_MODE_WIFI;
         wifi_initialized = true;
@@ -10467,6 +10549,9 @@ static void screenshot_save_task(void *arg)
 
 static void screenshot_btn_event_cb(lv_event_t *e)
 {
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    if(s_game_reboot_frozen || s_game_selector_rotated)return;
+#endif
     (void)e;
 
 #if !(defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM)
@@ -29184,6 +29269,7 @@ static void show_settings_screen(void)
     g_screen_stop_fn = doom_ui_screen_stop;
     doom_ui_configure(doom_prototype_idle, doom_prototype_home,
                       doom_prototype_sd_ready, doom_prototype_hardware);
+    doom_ui_configure_selector(game_selector_rotation,game_selector_back,game_record_reboot);
 #endif
     apply_menu_bg();
 
@@ -30718,6 +30804,9 @@ static void s_sd_remount_task(void *arg)
 
     sd_remount_result_t *res = malloc(sizeof(sd_remount_result_t));
     if (res) { res->ok = ok; res->freq_khz = ok_freq; lv_async_call(s_sd_remount_done_cb, res); }
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    storage_gate_leave(); /* full remount/async-result submission has finished */
+#endif
     vTaskDelete(NULL);
 }
 
@@ -30729,7 +30818,20 @@ static void s_sd_remount_trigger_cb(lv_event_t *e)
         lv_obj_set_style_text_color(s_sd_remount_status, ui_text_color(), 0);
     }
     if (s_sd_remount_btn) lv_obj_add_state(s_sd_remount_btn, LV_STATE_DISABLED);
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    if(!storage_gate_enter()){
+        if(s_sd_remount_status)lv_label_set_text(s_sd_remount_status,"SD remount refused: reboot pending");
+        if(s_sd_remount_btn)lv_obj_clear_state(s_sd_remount_btn,LV_STATE_DISABLED);
+        return;
+    }
+    if(xTaskCreate(s_sd_remount_task,"sd_remount",4096,NULL,tskIDLE_PRIORITY+2,NULL)!=pdPASS){
+        storage_gate_leave();
+        if(s_sd_remount_status)lv_label_set_text(s_sd_remount_status,"SD remount task allocation failed");
+        if(s_sd_remount_btn)lv_obj_clear_state(s_sd_remount_btn,LV_STATE_DISABLED);
+    }
+#else
     xTaskCreate(s_sd_remount_task, "sd_remount", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
+#endif
 }
 
 static void show_sd_remount_screen(void)
@@ -72066,6 +72168,26 @@ static void show_espnow_pktlog_screen(void)
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 /* Fail closed on all root-scope active tools; a menu location alone is not
  * proof of idle. WiFi idle driver is left untouched; BLE/154 modes refused. */
+void *cym_game_audio_bus(void)
+{
+#if CONFIG_BOARD_WS_C5_35
+    return ws_c5_35_i2c_bus();
+#else
+    return s_i2c_bus;
+#endif
+}
+bool cym_game_audio_amp(bool on)
+{
+#if CONFIG_BOARD_WS_C5_28
+    /* Vendor IO_POWER_AMP_IO is CH32V003 PIN3, active high. */
+    if (!s_io_expander) return false;
+    return esp_io_expander_set_dir(s_io_expander, IO_EXPANDER_PIN_NUM_3, IO_EXPANDER_OUTPUT) == ESP_OK &&
+           esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_3, on ? 1 : 0) == ESP_OK;
+#else
+    (void)on; /* Vendor PA GPIO is NC on WS35. */
+    return true;
+#endif
+}
 static void doom_prototype_hardware(void)
 {
     nav_deferred_show_fn = show_hardware_options_screen;
@@ -72073,93 +72195,76 @@ static void doom_prototype_hardware(void)
 
 static bool doom_prototype_sd_ready(void)
 {
-    return sd_mounted_lazy && sd_spi_mutex != NULL;
+    if(!sd_mounted_lazy || !sd_spi_mutex || xSemaphoreTake(sd_spi_mutex,0)!=pdTRUE)return false;
+    struct stat st;bool ready=stat("/sdcard/doom/doom1.wad",&st)==0 && S_ISREG(st.st_mode) && st.st_size>0;
+    xSemaphoreGive(sd_spi_mutex);return ready;
 }
 
-static bool doom_prototype_idle(void)
+/* Reboot admission refuses persistent storage owners. Never stops/deletes
+ * an owner, clears live flags or tears down radios. Parked screenshot is OK. */
+static const char *game_storage_blocker(void)
 {
-    if (current_radio_mode == RADIO_MODE_BLE || current_radio_mode == RADIO_MODE_154) return false;
-    if (wifi_scanner_is_scanning() || wifi_attacks_is_deauth_active() || wifi_attacks_is_blackout_active() || wifi_attacks_is_sae_overflow_active() || wifi_attacks_is_karma_active() || wifi_attacks_is_portal_active()) return false;
-    if (screenshot_task_handle || s_ntp_wifi_task || wardrive_task_handle || sniffer_task_handle || handshake_attack_task_handle) return false;
-    return !(
-        airtag_scan_active ||
-        airtag_scan_ui_active ||
-        arp_ban_active ||
-        blackout_ui_active ||
-        ble_disc_active ||
-        ble_disc_ui_active ||
-        ble_pcap_active ||
-        ble_pcap_filter_active ||
-        ble_scan_ui_active ||
-        ble_spam_active ||
-        ble_spam_ui_active ||
-        ble_spoof_active ||
-        ble_spoof_ui_active ||
-        bt_locator_tracking_active ||
-        bt_locator_ui_active ||
-        bt_lookout_ui_active ||
-        bt_sas_ui_active ||
-        bt_scan_active ||
-        bto_active ||
-        deauth_monitor_active ||
-        deauth_monitor_ui_active ||
-        deauth_rescan_active ||
-        disco_mode_active ||
-        drone_scan_active ||
-        drone_ui_active ||
-        espnow_scout_active ||
-        g_ot_espnow_capture_active ||
-        g_vibrator_active ||
-        g_wcs_scan_active ||
-        go_dark_active ||
-        gw_probe_screen_active ||
-        gw_screen_active ||
-        handshake_attack_active ||
-        handshake_ui_active ||
-        karma_ui_active ||
-        lw_ui_active ||
-        mitm_active ||
-        mitm_arp_active ||
-        mitm_capture_active ||
-        portal_ui_active ||
-        s_blaster_active ||
-        s_blaster_nrf_active ||
-        s_bspam_active ||
-        s_cam_active ||
-        s_cam_gesture_active ||
-        s_cc1101_cal_tx_active ||
-        s_fileserv_active ||
-        s_flip_active ||
-        s_harv_active ||
-        s_hf_dump_active ||
-        s_n24_jam_active ||
-        s_ntp_clock_active ||
-        s_obs_loc_running ||
-        s_pwn_active ||
-        s_rf433_ook_cap_active ||
-        s_spoof_active ||
-        s_tvbg_running ||
-        s_wcap_running ||
-        sae_overflow_ui_active ||
-        sd_provision_active ||
-        sniffer_dog_active ||
-        sniffer_task_active ||
-        sniffer_ui_active ||
-        snifferdog_ui_active ||
-        targeted_deauth_active ||
-        wana_active ||
-        wardrive_active ||
-        wardrive_ui_active ||
-        wdup_active ||
-        wpasec_upload_active ||
-        wscope_active);
+#define BLOCK(owner) do { if (owner) return #owner; } while (0)
+    BLOCK(s_fileserv_httpd); BLOCK(s_fileserv_active);
+    BLOCK(sd_provision_active); BLOCK(sd_prov_pending_start); BLOCK(sd_provision_stack_free_pending);
+    BLOCK(sd_lazy_mount_task);
+    BLOCK(wpasec_upload_task_handle); BLOCK(wpasec_upload_active);
+    BLOCK(wdup_task_handle); BLOCK(wdup_active);
+    BLOCK(screenshot_in_progress);
+    if(screenshot_queue && uxQueueMessagesWaiting(screenshot_queue))return "screenshot queue";
+    BLOCK(wardrive_task_handle); BLOCK(wardrive_active);
+    BLOCK(sniffer_task_handle); BLOCK(sniffer_task_active);
+    BLOCK(sniffer_dog_task_handle); BLOCK(sniffer_dog_active);
+    BLOCK(handshake_attack_task_handle); BLOCK(handshake_attack_active);
+    BLOCK(mitm_writer_task_handle); BLOCK(mitm_capture_active);
+    BLOCK(ble_pcap_file); BLOCK(ble_pcap_active); BLOCK(ble_pcap_filter_active);
+    BLOCK(s_wcap_file); BLOCK(s_wcap_running);
+    BLOCK(g_active_survey); BLOCK(g_ot_survey_active); BLOCK(g_ot_espnow_capture_active);
+    BLOCK(s_cc1101_cap_task); BLOCK(s_rf433_ook_cap_active);
+    BLOCK(bt_lookout_scan_loop_handle); BLOCK(bt_lookout_is_active());
+    BLOCK(bt_scan_task_handle); BLOCK(bt_scan_active);
+    BLOCK(honeypair_is_active()); BLOCK(blueduck_is_active()); BLOCK(wp_is_active());
+    BLOCK(s_obs_ring_task_hdl);
+    BLOCK(wifi_sniffer_is_active()); BLOCK(wifi_sniffer_dog_is_active());
+    BLOCK(wifi_wardrive_is_active());
+#undef BLOCK
+    return NULL;
 }
-/* Engine resources have already been joined/released. Rebuild Home WITHOUT
- * show_menu(), which deliberately restarts radios in ordinary navigation. */
+static bool doom_prototype_idle(void){return game_storage_blocker()==NULL;}
+static void game_selector_rotation(bool entering)
+{
+    if(entering){
+        if(s_game_selector_rotated)return;
+        s_game_prior_orientation=screen_orientation;s_game_selector_rotated=true;
+        if(function_page)lv_obj_add_flag(function_page,LV_OBJ_FLAG_HIDDEN);
+        if(title_bar)lv_obj_add_flag(title_bar,LV_OBJ_FLAG_HIDDEN);
+        apply_screen_orientation(3); /* volatile display only, never NVS */
+    }else if(s_game_selector_rotated){apply_screen_orientation(s_game_prior_orientation);s_game_selector_rotated=false;}
+}
+static void game_selector_back(void){nav_deferred_show_fn=show_settings_screen;}
+static const char *game_record_reboot(void)
+{
+    s_game_reboot_frozen=true; /* main-owner write admission, no callbacks pumped */
+    const char *owner=game_storage_blocker();
+    if(owner){storage_gate_thaw();s_game_reboot_frozen=false;return owner;}
+    if(!storage_gate_freeze()){storage_gate_thaw();s_game_reboot_frozen=false;return "SD open file / filesystem operation";}
+    /* File-server service itself is refused, so no new external PUT can arrive.
+     * No console is started by app_main. Deferred provision/survey/snapshot/UI
+     * starts are main-owner and cannot run inside this synchronous transaction. */
+    if(!sd_spi_mutex || xSemaphoreTake(sd_spi_mutex,0)!=pdTRUE){storage_gate_thaw();s_game_reboot_frozen=false;return "SD transport operation";}
+    owner=game_storage_blocker();
+    if(owner){xSemaphoreGive(sd_spi_mutex);storage_gate_thaw();s_game_reboot_frozen=false;return owner;}
+    nvs_handle_t h;esp_err_t rc=nvs_open("cym_game",NVS_READWRITE,&h);
+    if(rc!=ESP_OK){xSemaphoreGive(sd_spi_mutex);storage_gate_thaw();s_game_reboot_frozen=false;return "NVS intent open";}
+    game_mode_io io=game_nvs_io(h);bool ok=game_mode_record(&io,GAME_DOOM);nvs_close(h);
+    if(!ok){xSemaphoreGive(sd_spi_mutex);storage_gate_thaw();s_game_reboot_frozen=false;return "NVS intent set/commit";}
+    ESP_LOGI("CYM_DOOM","MODE_INTENT_COMMITTED mode=1 version=1 same_image=1 rebooting");
+    /* Hold storage admission+transport until reset. No forced live cleanup. */
+    esp_restart();return "restart returned unexpectedly";
+}
 static void doom_prototype_home(void)
 {
-    run_screen_stop_fn();
-    if (g_home_layout_4cat) show_category_home();
-    else show_main_tiles();
+    ESP_LOGI("CYM_DOOM","GAME_EXIT rebooting normal CYM intent_already_consumed=1");esp_restart();
 }
+
 #endif

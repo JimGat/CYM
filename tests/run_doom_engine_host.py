@@ -19,6 +19,8 @@ def main():
    src=comp/entry['path'];obj=out/(src.name+'.o')
    subprocess.run(args+['-include',str(comp/'include/doom_runtime_shim.h'),'-c',str(src),'-o',str(obj)],check=True,stdout=log,stderr=log);objects.append(str(obj))
   assert len(objects)==80
+  for src in [comp/'engine/i_cym_sound.c',comp/'doom_mixer.c']:
+   obj=out/(src.name+'.o');subprocess.run(args+['-include',str(comp/'include/doom_runtime_shim.h'),'-c',str(src),'-o',str(obj)],check=True,stdout=log,stderr=log);objects.append(str(obj))
   subprocess.run(['ar','rcs',str(out/'libcym_doom_engine.a')]+objects,check=True,stdout=log,stderr=log)
   subprocess.run(args+[str(ROOT/'tests/doom_engine_host.c'),str(comp/'doom_session.c'),str(comp/'doom_contracts.c'),str(out/'libcym_doom_engine.a'),'-Wl,-T,'+str(out/'state.ld'),'-lm','-o',str(out/'engine-test')],check=True,stdout=log,stderr=log)
  r=subprocess.run([str(out/'engine-test'),str(a.wad.resolve())],capture_output=True,text=True,timeout=180,env={**os.environ,'ASAN_OPTIONS':'detect_leaks=1:halt_on_error=1:detect_stack_use_after_return=1'})

@@ -151,11 +151,16 @@ esp_err_t init_led(void) {
 esp_err_t wifi_cli_init(void) {
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    /* Intent recovery must never repair by erasing saved CYM configuration. */
+    if(ret!=ESP_OK){ESP_LOGE(TAG,"NVS unavailable; WiFi refused without erasing config");return ret;}
+#else
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+#endif
     
     // Initialize LED
     init_led();

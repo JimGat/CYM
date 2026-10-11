@@ -16,15 +16,17 @@ class FinishContracts(unittest.TestCase):
   s=(COMP/'doom_ui.c').read_text()
   self.assertIn('lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP)',s)
   self.assertIn('lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER)',s)
-  self.assertIn('lv_obj_set_height(status_scroll,lv_disp_get_ver_res(NULL)-90)',s)
-  self.assertIn('lv_obj_move_foreground(status_scroll)',s)
-  self.assertIn('lv_obj_add_flag(canvas,LV_OBJ_FLAG_HIDDEN)',s)
+  self.assertIn('lv_obj_set_size(status_scroll,w,h-56)',s)
+  self.assertIn('error_view();',s)
+  self.assertIn('button(overlay,"Return CYM"',s)
   self.assertIn('"Menu","OK","Exit"',s)
  def test_join_precedes_ui_free(self):
   s=(COMP/'doom_ui.c').read_text();release=s[s.index('static void release_ui'):s.index('static void update')]
-  self.assertLess(release.index('vTaskDelete(worker)'),release.index('lv_obj_del(overlay)'))
-  self.assertLess(release.index('vTaskDelete(worker)'),release.index('free(surface)'))
-  self.assertIn('if(!__atomic_load_n(&done,__ATOMIC_ACQUIRE))return;',release)
+  self.assertLess(release.index("if(!join_worker(&worker,&done))return;"),release.index("lv_obj_del(overlay)"))
+  self.assertLess(release.index("if(!join_worker(&worker,&done))return;"),release.index("free(surface)"))
+  join=s[s.index("static bool join_worker"):s.index("static void release_ui")]
+  self.assertIn("__atomic_load_n(clean, __ATOMIC_ACQUIRE)",join)
+  self.assertLess(join.index("eTaskGetState(*task) != eSuspended"),join.index("vTaskDelete(*task)"))
   self.assertNotIn('vTaskDelete(NULL)',s)
  def test_persistent_engine_arguments(self):
   self.assertIn('static void create(void){static char *argv[]',(COMP/'doom_session.c').read_text())

@@ -16,7 +16,7 @@
  
  // Enables sound output
 -#define FEATURE_SOUND
-+#undef FEATURE_SOUND /* silent feasibility probe; audio integration not tested */
++#define FEATURE_SOUND 1 /* native SFX module; independent music disabled */
  
  #endif /* #ifndef DOOM_FEATURES_H */
  
@@ -31,6 +31,35 @@
          {
              key = shiftxform[key];
          }
+--- a/engine/i_sound.c
++++ b/engine/i_sound.c
+@@ -18,7 +18,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+-#if defined(FEATURE_SOUND) && !defined(__DJGPP__) && !defined(ARDUINO)
++#if defined(CYM_USE_SDL_MIXER)
+ #include <SDL_mixer.h>
+ #endif
+ 
+@@ -130,7 +130,7 @@
+ 
+ static void InitMusicModule(void)
+ {
+-#ifdef FEATURE_SOUND
++#ifdef CYM_MUSIC_SYNTH
+     music_module = &DG_music_module;
+ #endif /* FEATURE_SOUND */
+ }
+@@ -408,7 +408,7 @@
+     M_BindVariable("snd_samplerate",    &snd_samplerate);
+     M_BindVariable("snd_cachesize",     &snd_cachesize);
+ 
+-#ifdef FEATURE_SOUND
++#ifdef CYM_USE_LIBSAMPLERATE
+     M_BindVariable("use_libsamplerate",   &use_libsamplerate);
+     M_BindVariable("libsamplerate_scale", &libsamplerate_scale);
+ #endif
 --- a/engine/i_system.c
 +++ b/engine/i_system.c
 @@ -18,6 +18,7 @@

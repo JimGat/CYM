@@ -5,6 +5,7 @@
 #include "doom_ui.h"
 #include "doom_session.h"
 #include "doom_contracts.h"
+#include "selector_art.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -19,6 +20,14 @@
 extern SemaphoreHandle_t sd_spi_mutex;
 static const char *TAG="CYM_DOOM";
 static bool (*idle_gate)(void);
+static bool isolated;
+static void (*selector_rotate)(bool),(*selector_back)(void);
+static const char *(*record_reboot)(void);
+static void selector_dialog(void);
+static void license_dialog(void);
+static void launch_game(void);
+static void error_view(void);
+static bool error_shown;
 static bool (*sd_ready_gate)(void);
 static void (*return_home)(void);
 static doom_trigger unlock;
@@ -57,29 +66,141 @@ static bool validate_asset(void){FILE *f=NULL;uint64_t size=0;if(!transport_take
  while(!transport_take())vTaskDelay(pdMS_TO_TICKS(20));fclose(f);transport_give();if(!valid)snprintf(worker_status,sizeof(worker_status),"Invalid/unsupported WAD. Use official Freedoom 0.13.0 Phase 1." ASSET_HELP);return valid;
 }
 static void frame_ready(const uint8_t *pixels,void *unused){(void)unused;if(xSemaphoreTake(frame_lock,pdMS_TO_TICKS(5))==pdTRUE){memcpy(mailbox,pixels,320*200);for(unsigned i=0;i<256;i++)mailbox_palette[i]=doom_session_color565((uint8_t)i);frames++;xSemaphoreGive(frame_lock);}else dropped++;}
-static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - silent");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
+static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
 heap_marker("WORKER_CLEAN");ESP_LOGI(TAG,"ENGINE_JOIN_READY frames=%lu dropped=%lu owned=%lu",(unsigned long)frames,(unsigned long)dropped,(unsigned long)doom_session_owned());/* Last worker access is publishing done. No UI/buffer access after this store. */__atomic_store_n(&done,true,__ATOMIC_RELEASE);vTaskSuspend(NULL);for(;;)vTaskDelay(pdMS_TO_TICKS(1000));}
 /* Joining uses the FreeRTOS task lifecycle, not merely an arbitrary delay. UI
  * waits for done (all engine resources gone) then checks task deletion before
  * freeing the mailbox. The worker has no memory access after publishing done.
  */
-static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(worker){if(!__atomic_load_n(&done,__ATOMIC_ACQUIRE))return;vTaskDelete(worker);worker=NULL;}if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=0;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
-static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(held_keys&&(uint32_t)(now-last_hold_ms)>250){held_keys=0;doom_session_set_keys(0);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(status){lv_label_set_text(status,worker_status);if(status_scroll){lv_obj_set_height(status_scroll,lv_disp_get_ver_res(NULL)-90);lv_obj_move_foreground(status_scroll);}if(canvas)lv_obj_add_flag(canvas,LV_OBJ_FLAG_HIDDEN);}return;}
+/* A release store is cleanup acknowledgement, NOT a scheduling join. A worker
+ * may be preempted before vTaskSuspend on SMP or at any task priority. */
+static bool join_worker(TaskHandle_t *task, const bool *clean)
+{
+    if (!*task) return true;
+    if (!__atomic_load_n(clean, __ATOMIC_ACQUIRE) ||
+        eTaskGetState(*task) != eSuspended) return false;
+    vTaskDelete(*task);
+    *task = NULL;
+    return true;
+}
+static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(!join_worker(&worker,&done))return;if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=0;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
+static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(held_keys&&(uint32_t)(now-last_hold_ms)>250){held_keys=0;doom_session_set_keys(0);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){if(!join_worker(&worker,&done))return;/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(!error_shown){error_shown=true;error_view();}return;}
  if(__atomic_load_n(&started,__ATOMIC_ACQUIRE)&&canvas&&surface&&xSemaphoreTake(frame_lock,0)==pdTRUE){for(int y=0;y<fit.h;y++)for(int x=0;x<fit.w;x++){uint8_t i=mailbox[(y*200/fit.h)*320+x*320/fit.w];uint16_t c=mailbox_palette[i];surface[y*fit.w+x]=lv_color_make((uint8_t)((c>>11)<<3),(uint8_t)(((c>>5)&63)<<2),(uint8_t)((c&31)<<3));}xSemaphoreGive(frame_lock);lv_obj_invalidate(canvas);}if(status&&!__atomic_load_n(&started,__ATOMIC_ACQUIRE))lv_label_set_text(status,"Validating assets...");}
 bool doom_ui_active(void){return overlay!=NULL;}
-void doom_ui_request_exit(void){if(!overlay)return;go_home=true;if(worker){__atomic_store_n(&cancel,true,__ATOMIC_RELEASE);doom_session_set_keys(0);doom_session_request_stop();if(status)lv_label_set_text(status,"Stopping - waiting for engine cleanup...");ESP_LOGI(TAG,"EXIT_REQUESTED");}else{release_ui();if(return_home)return_home();}}
-/* Screen stop never deletes engine-owned memory or callback targets while a
- * worker remains live. The overlay is a child of lv_scr_act, NOT function_page;
- * unexpected underlying navigation cannot delete the worker's visible surface.
- */
-void doom_ui_screen_stop(void){cancel_navigation();if(worker)doom_ui_request_exit();}
+bool doom_ui_exclusive(void){return isolated;}
+static void close_selector(void)
+{
+ release_ui();
+ if(selector_rotate)selector_rotate(false);
+ if(selector_back)selector_back();
+}
+void doom_ui_request_exit(void){if(!overlay)return;go_home=true;
+ if(worker){__atomic_store_n(&cancel,true,__ATOMIC_RELEASE);doom_session_set_keys(0);doom_session_request_stop();if(status)lv_label_set_text(status,"Stopping - waiting for engine cleanup...");ESP_LOGI(TAG,"EXIT_REQUESTED");}
+ else if(isolated){release_ui();if(return_home)return_home();}
+ else close_selector();
+}
+/* Parent navigation cannot free an engine callback target. Selector owns a
+ * dedicated full-screen overlay, and restores live rotation before Settings rebuild. */
+void doom_ui_screen_stop(void){cancel_navigation();if(worker||isolated)doom_ui_request_exit();else if(overlay){release_ui();if(selector_rotate)selector_rotate(false);}}
 static void control_event(lv_event_t *e){unsigned mask=(unsigned)(uintptr_t)lv_event_get_user_data(e);lv_event_code_t code=lv_event_get_code(e);if(code==LV_EVENT_PRESSED||code==LV_EVENT_PRESSING){last_hold_ms=(uint32_t)(esp_timer_get_time()/1000);if(mask==DOOM_KEY_EXIT){doom_ui_request_exit();return;}held_keys=mask;doom_session_set_keys(mask);}else if(code==LV_EVENT_RELEASED||code==LV_EVENT_PRESS_LOST){held_keys=0;doom_session_set_keys(0);}}
-static lv_obj_t *button(lv_obj_t *p,const char *text,int x,int y,int w,int h,lv_event_cb_t cb,void *data){lv_obj_t *b=lv_btn_create(p);lv_obj_set_pos(b,x,y);lv_obj_set_size(b,w,h);lv_obj_t *l=lv_label_create(b);lv_label_set_text(l,text);lv_obj_center(l);lv_obj_add_event_cb(b,cb,LV_EVENT_ALL,data);return b;}
-static void continue_event(lv_event_t *e){if(lv_event_get_code(e)!=LV_EVENT_CLICKED||worker)return;if(!sd_ready_gate||!sd_ready_gate()){lv_label_set_text(status,"Missing WAD or SD not mounted: /sdcard/doom/doom1.wad" ASSET_HELP);return;}if(!idle_gate||!idle_gate()){lv_label_set_text(status,"Launch refused: CYM tools/radios/SD are not idle.");return;}int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);fit=doom_scale_fit(w,h-120);if(!fit.w||!fit.h)return;heap_marker("CONTINUE");surface=heap_caps_calloc((size_t)fit.w*fit.h,sizeof(*surface),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);mailbox=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);frame_lock=xSemaphoreCreateMutex();if(!surface||!mailbox||!frame_lock){free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}lv_label_set_text(status,"Insufficient memory for game surface");return;}lv_obj_clean(overlay);status_scroll=lv_obj_create(overlay);lv_obj_set_pos(status_scroll,0,0);lv_obj_set_size(status_scroll,w,30);lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);lv_obj_set_style_pad_all(status_scroll,4,0);status=lv_label_create(status_scroll);lv_label_set_text(status,"Validating assets...");lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);canvas=lv_canvas_create(overlay);lv_canvas_set_buffer(canvas,surface,fit.w,fit.h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(canvas,fit.x,30+fit.y);
+static lv_obj_t *button(lv_obj_t *p,const char *text,int x,int y,int w,int h,lv_event_cb_t cb,void *data){lv_obj_t *b=lv_btn_create(p);lv_obj_set_pos(b,x,y);lv_obj_set_size(b,w,h);lv_obj_t *l=lv_label_create(b);lv_obj_set_style_text_font(l,&lv_font_montserrat_16,0);lv_label_set_text(l,text);lv_obj_center(l);lv_obj_add_event_cb(b,cb,LV_EVENT_ALL,data);return b;}
+static void error_return_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED)doom_ui_request_exit();}
+static void error_view(void)
+{
+ /* Worker is already joined. Replace controls with one accessible recovery
+  * action; retain UI allocations until normal Exit releases them safely. */
+ int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
+ lv_obj_clean(overlay);canvas=NULL;
+ status_scroll=lv_obj_create(overlay);lv_obj_set_size(status_scroll,w,h-56);
+ lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);
+ status=lv_label_create(status_scroll);lv_obj_set_width(status,lv_pct(100));
+ lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);
+ lv_label_set_text(status,worker_status);
+ button(overlay,"Return CYM",4,h-52,w-8,44,error_return_event,NULL);
+ ESP_LOGW(TAG,"GAME_BOOT_ERROR intent_consumed=1 error=%s",worker_status);
+}
+static void launch_game(void){if(!isolated){lv_label_set_text(status,"Game startup requires reboot isolation");return;}int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);lv_obj_set_size(overlay,w,h);fit=doom_scale_fit(w,h-120);if(!fit.w||!fit.h)return;heap_marker("CONTINUE");surface=heap_caps_calloc((size_t)fit.w*fit.h,sizeof(*surface),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);mailbox=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);frame_lock=xSemaphoreCreateMutex();if(!surface||!mailbox||!frame_lock){free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}lv_label_set_text(status,"Insufficient memory for game surface");return;}lv_obj_clean(overlay);status_scroll=lv_obj_create(overlay);lv_obj_set_pos(status_scroll,0,0);lv_obj_set_size(status_scroll,w,30);lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);lv_obj_set_style_pad_all(status_scroll,4,0);status=lv_label_create(status_scroll);lv_label_set_text(status,"Validating assets...");lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);canvas=lv_canvas_create(overlay);lv_canvas_set_buffer(canvas,surface,fit.w,fit.h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(canvas,fit.x,30+fit.y);
  static const char *labels[]={"Left","Move","Right","Back","Fire","Use","Menu","OK","Exit"};static const unsigned masks[]={DOOM_KEY_LEFT,DOOM_KEY_FORWARD,DOOM_KEY_RIGHT,DOOM_KEY_BACK,DOOM_KEY_FIRE,DOOM_KEY_USE,DOOM_KEY_MENU,DOOM_KEY_CONFIRM,DOOM_KEY_EXIT};for(unsigned i=0;i<9;i++){int x=(int)(i%3)*w/3;button(overlay,labels[i],x,h-90+(int)(i/3)*30,w/3,29,control_event,(void *)(uintptr_t)masks[i]);}
- cancel=done=started=go_home=false;frames=dropped=0;held_keys=0;timer=lv_timer_create(update,33,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
-static void cancel_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED){ESP_LOGI(TAG,"LICENSE_CANCEL no_engine_allocations");release_ui();}}
-static void license_dialog(void){if(overlay)return;int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);overlay=lv_obj_create(lv_scr_act());lv_obj_remove_style_all(overlay);lv_obj_set_size(overlay,w,h);lv_obj_set_style_bg_color(overlay,lv_color_black(),0);lv_obj_set_style_bg_opa(overlay,LV_OPA_COVER,0);lv_obj_clear_flag(overlay,LV_OBJ_FLAG_SCROLLABLE);lv_obj_t *scroll=lv_obj_create(overlay);lv_obj_set_size(scroll,w,h-42);lv_obj_set_scroll_dir(scroll,LV_DIR_VER);status=lv_label_create(scroll);lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);lv_label_set_text(status,"Silent game beta\n\nDoom engine: id Software, Simon Howard, doomgeneric and rear16/ESP-DOOM contributors. GPL version 2 or later. NO WARRANTY, including merchantability or fitness.\n\nFirmware embeds no WAD. Separately supplied official Freedoom Phase 1 v0.13.0 is licensed data, with license and credits in the SD assets.\n\nCorresponding source, build scripts, provenance, actual engine patches and full GPL license are distributed in JimGat/CYM with this firmware. See ESP32C5/components/cym_doom and docs/ws-c5-game-beta.md. Use the exact firmware commit for matching source.\n\nContinue validates assets before engine startup. Cancel leaves CYM unchanged.");button(overlay,"Continue",4,h-38,w/2-8,34,continue_event,NULL);button(overlay,"Cancel",w/2+4,h-38,w/2-8,34,cancel_event,NULL);ESP_LOGI(TAG,"LICENSE_SHOWN engine_not_started");}
+ cancel=done=started=go_home=error_shown=false;frames=dropped=0;held_keys=0;timer=lv_timer_create(update,33,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
+/* No game allocator exists on the normal selector/license path. Art is flash
+ * indexed data; these screens and decoder cache die in reboot, not live handover. */
+static void back_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED&&!isolated)close_selector();}
+static void cancel_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED&&!isolated){ESP_LOGI(TAG,"LICENSE_CANCEL no_engine_allocations");selector_dialog();}}
+static void continue_event(lv_event_t *e){
+ if(lv_event_get_code(e)!=LV_EVENT_CLICKED||worker||isolated)return;
+ if(!sd_ready_gate||!sd_ready_gate()){lv_label_set_text(status,"Missing WAD or SD not mounted: /sdcard/doom/doom1.wad" ASSET_HELP);return;}
+ /* NVS set+commit and named storage refusal live in the main owner. It never
+  * calls esp_restart until write admission is frozen and SD transport is held. */
+ const char *error=record_reboot?record_reboot():"Reboot mode unavailable";
+ if(error){lv_label_set_text_fmt(status,"Launch refused: %s. Finish that operation, then retry. CYM remains unchanged.",error);ESP_LOGW(TAG,"REBOOT_REFUSED owner=%s",error);}
+}
+static void doom_card_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED&&!isolated)license_dialog();}
+static lv_obj_t *panel(lv_obj_t *p,int x,int y,int w,int h,uint32_t border)
+{
+ lv_obj_t *v=lv_obj_create(p);lv_obj_remove_style_all(v);lv_obj_set_pos(v,x,y);lv_obj_set_size(v,w,h);
+ lv_obj_set_style_bg_color(v,lv_color_hex(0x0c1725),0);lv_obj_set_style_bg_opa(v,LV_OPA_80,0);
+ lv_obj_set_style_border_color(v,lv_color_hex(border),0);lv_obj_set_style_border_width(v,2,0);
+ lv_obj_set_style_radius(v,8,0);lv_obj_clear_flag(v,LV_OBJ_FLAG_SCROLLABLE);return v;
+}
+static void caption(lv_obj_t *p,const char *text,int x,int y,int width,const lv_font_t *font,uint32_t color)
+{
+ lv_obj_t *l=lv_label_create(p);lv_label_set_text(l,text);lv_obj_set_pos(l,x,y);lv_obj_set_width(l,width);
+ lv_label_set_long_mode(l,LV_LABEL_LONG_CLIP);lv_obj_set_style_text_font(l,font,0);lv_obj_set_style_text_color(l,lv_color_hex(color),0);
+}
+static void make_overlay(void)
+{
+ if(overlay)return;
+ overlay=lv_obj_create(lv_scr_act());lv_obj_remove_style_all(overlay);
+ lv_obj_set_size(overlay,lv_disp_get_hor_res(NULL),lv_disp_get_ver_res(NULL));
+ lv_obj_set_style_bg_color(overlay,lv_color_black(),0);lv_obj_set_style_bg_opa(overlay,LV_OPA_COVER,0);
+ lv_obj_clear_flag(overlay,LV_OBJ_FLAG_SCROLLABLE);
+}
+static void selector_dialog(void)
+{
+ cancel_navigation();if(selector_rotate)selector_rotate(true);make_overlay();lv_obj_clean(overlay);status=canvas=status_scroll=NULL;
+ int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);lv_obj_set_size(overlay,w,h);
+ /* WS28 320x240, WS35 480x320 in software rotation 270. 8 px margins;
+  * title y6..54; cards y64..h-60; Back y(h-52)..h-8 (44 px touch). */
+ lv_obj_t *art=lv_img_create(overlay);lv_img_set_src(art,w==320?&selector_lab_ws28:&selector_lab_ws35);
+ lv_obj_clear_flag(art,LV_OBJ_FLAG_CLICKABLE);
+ lv_obj_t *head=panel(overlay,8,6,w-16,48,0x24d8e5);
+ caption(head,"PinZero LABS",10,2,w-36,&lv_font_montserrat_20,0x53f0f1);
+ caption(head,"AFTER HOURS / Professor Zero + ZeroBot",10,28,w-36,&lv_font_montserrat_12,0xffc277);
+ int cw=(w-28)/2,ch=h-124;
+ for(int i=0;i<2;i++){
+  lv_obj_t *card=panel(overlay,8+i*(cw+12),64,cw,ch,i?0xee68be:0x2ddfea);
+  lv_obj_t *icon=lv_img_create(card);lv_img_set_src(icon,i?&selector_handheld:&selector_portal);lv_obj_set_pos(icon,(cw-128)/2,8);
+  lv_obj_clear_flag(icon,LV_OBJ_FLAG_CLICKABLE);
+  caption(card,i?"ARDUBOY":"DOOM",12,ch-44,cw-24,&lv_font_montserrat_20,i?0xee68be:0x2ddfea);
+  caption(card,i?"COMING SOON":"SFX / SD LIBRARY",12,ch-21,cw-24,&lv_font_montserrat_12,0xffffff);
+  if(!i){lv_obj_add_flag(card,LV_OBJ_FLAG_CLICKABLE);lv_obj_add_event_cb(card,doom_card_event,LV_EVENT_CLICKED,NULL);}
+  else lv_obj_clear_flag(card,LV_OBJ_FLAG_CLICKABLE); /* explicitly disabled, no emulator */
+ }
+ lv_obj_t *back=button(overlay,"BACK / CANCEL",8,h-52,w-16,44,back_event,NULL);
+ lv_obj_set_style_bg_color(back,lv_color_hex(0x132332),0);lv_obj_set_style_border_color(back,lv_color_hex(0xeeb567),0);lv_obj_set_style_border_width(back,1,0);
+ ESP_LOGI(TAG,"SELECTOR_SHOWN logical=%dx%d rotation=270 art=flash Arduboy=disabled",w,h);
+}
+static void license_dialog(void)
+{
+ make_overlay();lv_obj_clean(overlay);int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
+ lv_obj_t *scroll=lv_obj_create(overlay);lv_obj_set_size(scroll,w,h-56);lv_obj_set_scroll_dir(scroll,LV_DIR_VER);
+ status=lv_label_create(scroll);lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);
+ lv_label_set_text(status,"Reboot-isolated game beta - SFX only\n\nDoom engine: id Software, Simon Howard, doomgeneric and rear16/ESP-DOOM contributors. GPL version 2 or later. NO WARRANTY, including merchantability or fitness.\n\nFirmware embeds no WAD. Separately supplied official Freedoom Phase 1 v0.13.0 is licensed data, with license and credits in the SD assets.\n\nCorresponding source, build scripts, provenance, actual engine patches and full GPL license are distributed in JimGat/CYM with this firmware. See ESP32C5/components/cym_doom and docs/ws-c5-game-beta.md. Use the exact firmware commit for matching source.\n\nContinue records a one-shot mode and reboots this SAME image. Live storage owners must finish first. Game uses 270-degree controls; saved CYM orientation is unchanged. Music disabled. Exit reboots to CYM. Cancel returns to the selector.");
+ button(overlay,"Continue",4,h-52,w/2-8,44,continue_event,NULL);button(overlay,"Cancel",w/2+4,h-52,w/2-8,44,cancel_event,NULL);
+ ESP_LOGI(TAG,"LICENSE_SHOWN engine_not_started");
+}
+static void return_cym_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED)doom_ui_request_exit();}
+void doom_ui_boot_start(void (*home)(void),bool sd_ready)
+{
+ isolated=true;return_home=home;make_overlay();int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
+ status_scroll=lv_obj_create(overlay);lv_obj_set_size(status_scroll,w,h-56);lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);
+ status=lv_label_create(status_scroll);lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);
+ lv_label_set_text(status,"Game boot - intent already consumed");button(overlay,"Return CYM",4,h-52,w-8,44,return_cym_event,NULL);
+ if(!sd_ready){lv_label_set_text(status,"SD unavailable / missing WAD. Return CYM reboots." ASSET_HELP);return;}
+ launch_game();
+}
+void doom_ui_configure_selector(void (*rotate)(bool),void (*back)(void),const char *(*reboot)(void))
+{selector_rotate=rotate;selector_back=back;record_reboot=reboot;}
 static void navigation_due(lv_timer_t *t)
 {
     lv_timer_del(t);
@@ -96,7 +217,7 @@ void doom_ui_tile_click(void)
     // Tile callbacks are CLICKED: each event represents a completed tap/release.
     doom_trigger_update(&unlock, now, true, true, true);
     if (doom_trigger_update(&unlock, now, false, true, true)) {
-        license_dialog();
+        selector_dialog();
         return;
     }
     navigation_timer = lv_timer_create(navigation_due, 800, NULL);

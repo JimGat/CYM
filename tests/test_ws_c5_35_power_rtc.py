@@ -14,7 +14,12 @@ class WS35PowerRTC(unittest.TestCase):
         import subprocess
         for p in ['ESP32C5/components/board_hal/include/boards/ws_c5_28.h', 'ESP32C5/main/custom_io_expander_ch32v003.c']:
             f=ROOT/p
-            if f.exists(): self.assertEqual(f.read_bytes(),subprocess.check_output(['git','show','9c5f2d0:'+p],cwd=ROOT))
+            if f.exists():
+                before=subprocess.check_output(['git','show','9c5f2d0:'+p],cwd=ROOT).decode()
+                after=f.read_text()
+                # Owner-approved default is the only WS28 HAL difference.
+                after=after.replace('// Initial CYM preference only; a valid saved NVS orientation wins.\n#define BOARD_DEFAULT_ORIENTATION 3\n\n','')
+                self.assertEqual(after,before)
 
     def test_production_pmic_faults_and_decode(self):
         import subprocess, tempfile

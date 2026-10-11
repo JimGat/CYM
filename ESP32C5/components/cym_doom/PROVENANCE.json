@@ -221,7 +221,7 @@
     {
       "path": "engine/doomfeatures.h",
       "upstream_sha256": "ab948ee5d6737505e1f770511d30b425dd3f1527cf2e4a0df09c09a4260af12d",
-      "source_sha256": "a73fb806e6b82e38663011f3e9e03259f302545d16fe83c44cc34fbc9d056502",
+      "source_sha256": "45deefa937b9e4a6e5f990314e6a05476523bd238beb329d73bc84617c32f21f",
       "modified": true
     },
     {
@@ -413,8 +413,8 @@
     {
       "path": "engine/i_sound.c",
       "upstream_sha256": "ce9103b8fd34790436fe93dbafdeb7f4478c33a450de3c2997155320722daed7",
-      "source_sha256": "ce9103b8fd34790436fe93dbafdeb7f4478c33a450de3c2997155320722daed7",
-      "modified": false
+      "source_sha256": "d7c7d4a09dcac31277b5b789f3157279eccc28ac5bc7603de9714b06bc3d190e",
+      "modified": true
     },
     {
       "path": "engine/i_sound.h",
