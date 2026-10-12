@@ -1,10 +1,13 @@
-# Display / engine-I/O observational diagnostic candidate
+# Display / engine-I/O diagnostics
 
-This candidate measures boundaries only. It is NOT a responsiveness/performance
-repair and is NOT physically qualified. Normal CYM remains LVGL; no game-only
-native rendering fallback is implemented. .86 transport ownership, 4096-byte
-staging, bus/wait budgets, SPI/SD clocks, tick/priorities, audio, touch, orientation,
-isolation, startup SD consent and watchdog-subscription guards are unchanged.
+The original .89 observational candidate preserved transport behavior. Jim now
+reports normal .89 responsiveness working and isolated gameplay unacceptable.
+The activated Task8 candidate adds ONLY isolated RUNNING native presentation
+and its measured local scheduling boundary; normal CYM stays unchanged LVGL.
+See [isolated native presentation](isolated-native-presentation.md) for current
+ownership, counter semantics, waits, input/Exit and physical acceptance gates.
+The historical canvas/priority descriptions below describe .89 unless the
+native-mode supplement explicitly overrides them. No physical speedup claim.
 
 ## DISPLAY_DIAG
 

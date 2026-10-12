@@ -44,7 +44,14 @@ static uint8_t *mailbox,*snapshot;
 static lv_color_t frame_colors[256];
 static uint16_t scale_x[480],scale_y[320];
 static doom_game_layout controls;
-static uint16_t mailbox_palette[256];
+static uint16_t mailbox_palette[256],snapshot_palette[256];
+static doom_native native_state;
+static uint16_t *native_buffer;
+static size_t native_capacity;
+static doom_native_send native_send;
+static doom_native_poll native_poll;
+static bool native_controls_ready,native_pending;
+static uint32_t native_report_ms,native_report_completed,native_report_failed;
 static SemaphoreHandle_t frame_lock;
 static TaskHandle_t worker;
 static bool cancel,done,started,go_home,running_view;
@@ -103,11 +110,11 @@ static bool join_worker(TaskHandle_t *task, const bool *clean)
     *task = NULL;
     return true;
 }
-static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(!join_worker(&worker,&done))return;if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=touch_keys=0;boot_raw=boot_fire=false;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
-static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(touch_keys&&(uint32_t)(now-last_hold_ms)>250){touch_keys=0;held_keys=boot_fire?DOOM_KEY_FIRE:0;doom_session_set_keys(held_keys);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){if(!join_worker(&worker,&done))return;/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(!error_shown){error_shown=true;error_view();}return;}
+static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(!join_worker(&worker,&done))return;if(native_state.painting)return;doom_native_release(&native_state);if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=touch_keys=0;boot_raw=boot_fire=false;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
+static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(touch_keys&&(uint32_t)(now-last_hold_ms)>250){touch_keys=0;held_keys=boot_fire?DOOM_KEY_FIRE:0;doom_session_set_keys(held_keys);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){if(!join_worker(&worker,&done))return;/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(native_state.active){/* No live return to LVGL after native ownership. */go_home=true;release_ui();if(return_home)return_home();return;}if(!error_shown){error_shown=true;error_view();}return;}
  bool running=__atomic_load_n(&started,__ATOMIC_ACQUIRE);
  bool new_frame=false;
- if(running&&canvas&&surface&&xSemaphoreTake(frame_lock,0)==pdTRUE){
+ if(!native_buffer&&running&&canvas&&surface&&xSemaphoreTake(frame_lock,0)==pdTRUE){
   if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED)){
    memcpy(snapshot,mailbox,320*200);
    for(unsigned i=0;i<256;i++){uint16_t c=mailbox_palette[i];frame_colors[i]=lv_color_make((uint8_t)((c>>11)<<3),(uint8_t)(((c>>5)&63)<<2),(uint8_t)((c&31)<<3));}
@@ -122,7 +129,7 @@ static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_
    for(int x=0;x<fit.w;x++)dst[x]=frame_colors[row[scale_x[x]]];}
   displayed++;scale_us+=(uint32_t)esp_timer_get_time()-before;lv_obj_invalidate(canvas);
  }
- if(status&&!quitting()){
+ if(status&&!quitting()&&!native_state.active&&!(native_buffer&&running)){
   char text[160];uint32_t elapsed=(now-boot_ms)/1000,p=__atomic_load_n(&load_phase,__ATOMIC_ACQUIRE);
   static const char *markers[]={"[o...]","[.o..]","[..o.]","[...o]"};
   if(running){
@@ -210,6 +217,58 @@ static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_
   shown_fps10=(uint32_t)((uint64_t)(displayed-last_displayed)*10000/(now-ui_last_log));ui_last_log=now;last_frames=__atomic_load_n(&frames,__ATOMIC_RELAXED);last_displayed=displayed;last_overwritten=__atomic_load_n(&overwritten,__ATOMIC_RELAXED);last_dropped=__atomic_load_n(&dropped,__ATOMIC_RELAXED);last_scale_us=scale_us;last_ticks=ticks;last_tick_us=tu;last_frame_us=fu;last_sleep_us=sl;last_sd_reads=sr;last_sd_us=su;last_audio_writes=aw;last_audio_us=au;last_input_events=ie;last_input_sum=is;last_ui_updates=ui_updates;last_panel_flushes=DM_GET(panel_flushes);last_panel_us=DM_GET(panel_us);
  }
 }
+
+void doom_ui_native_configure(uint16_t *buffer,size_t cap,doom_native_send send,doom_native_poll poll)
+{native_buffer=buffer;native_capacity=cap;native_send=send;native_poll=poll;}
+bool doom_ui_native_active(void){return native_state.active;}
+bool doom_ui_native_accepting(void){return native_state.active&&!quitting()&&!__atomic_load_n(&done,__ATOMIC_ACQUIRE);}
+bool doom_ui_native_takeover(bool drained)
+{
+ if(!drained||!isolated||!worker||!canvas||!native_buffer||!native_send||!native_poll||quitting()||__atomic_load_n(&done,__ATOMIC_ACQUIRE)||!__atomic_load_n(&started,__ATOMIC_ACQUIRE))return false;
+ if(!doom_native_takeover(&native_state,controls,controls.height,controls.width,3,native_buffer,native_capacity,true))return false;
+ /* Called by the main owner outside ALL LVGL callbacks, after synchronous
+  * flush returned. Delete only the inactive gameplay timer, never a task. */
+ if(timer){lv_timer_del(timer);timer=NULL;}
+ native_controls_ready=native_pending=false;
+ native_report_ms=(uint32_t)(esp_timer_get_time()/1000);native_report_completed=native_report_failed=0;
+ ESP_LOGI(TAG,"NATIVE_TAKEOVER rotation=270 period_ms=%u owner_priority=%u PCM=3 engine=2 drained=1",DOOM_NATIVE_PERIOD_MS,DOOM_NATIVE_PRIORITY);
+ return true;
+}
+void doom_ui_native_step(void)
+{
+ if(!native_state.active)return;
+ /* Poll and orderly-stop processing occur even without a new publication,
+  * while shared SD admission is failing, and while worker cleanup is pending. */
+ (void)native_poll(NULL);update(NULL);
+ if(!native_state.active||quitting())return;
+ uint32_t now=(uint32_t)(esp_timer_get_time()/1000);
+ if(!native_controls_ready){native_controls_ready=doom_native_controls(&native_state,native_send,native_poll,NULL);if(!native_controls_ready)return;}
+ if(doom_native_due(&native_state,now)){
+  if(xSemaphoreTake(frame_lock,0)==pdTRUE){
+   if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED)){
+    memcpy(snapshot,mailbox,320*200);memcpy(snapshot_palette,mailbox_palette,sizeof(snapshot_palette));
+    __atomic_store_n(&last_sequence,__atomic_load_n(&frames,__ATOMIC_RELAXED),__ATOMIC_RELAXED);native_pending=true;
+   }
+   xSemaphoreGive(frame_lock);
+  }
+  if(native_pending){
+   uint32_t before=(uint32_t)esp_timer_get_time();
+   if(doom_native_viewport(&native_state,snapshot,snapshot_palette,native_send,native_poll,NULL,now)){displayed++;native_pending=false;}
+   scale_us+=(uint32_t)esp_timer_get_time()-before;
+   /* Cadence is from actual RETURN after final completion, not start time.
+    * Failure also backs off; stale mailbox publications are safely replaced. */
+   native_state.last_finish_ms=(uint32_t)(esp_timer_get_time()/1000);
+  }
+ }
+ now=(uint32_t)(esp_timer_get_time()/1000);
+ if((uint32_t)(now-native_report_ms)>=5000){
+  ESP_LOGI(TAG,"NATIVE_PRESENT interval_ms=%lu completed_viewports=%lu failed_viewports=%lu completed_total=%lu owner_priority=%u block_ticks=%u",
+   (unsigned long)(now-native_report_ms),(unsigned long)(native_state.completed-native_report_completed),
+   (unsigned long)(native_state.failed-native_report_failed),(unsigned long)native_state.completed,
+   DOOM_NATIVE_PRIORITY,DOOM_NATIVE_BLOCK_TICKS);
+  native_report_ms=now;native_report_completed=native_state.completed;native_report_failed=native_state.failed;
+ }
+}
 bool doom_ui_active(void){return overlay!=NULL;}
 bool doom_ui_exclusive(void){return isolated;}
 static void close_selector(void)
@@ -219,7 +278,7 @@ static void close_selector(void)
  if(selector_back)selector_back();
 }
 void doom_ui_request_exit(void){if(!overlay)return;go_home=true;held_keys=touch_keys=0;boot_raw=boot_fire=false;
- if(worker){__atomic_store_n(&cancel,true,__ATOMIC_RELEASE);doom_session_set_keys(0);doom_session_request_stop();if(status)lv_label_set_text(status,"Stopping - waiting for engine cleanup...");ESP_LOGI(TAG,"EXIT_REQUESTED");}
+ if(worker){__atomic_store_n(&cancel,true,__ATOMIC_RELEASE);doom_session_set_keys(0);doom_session_request_stop();if(status&&!native_state.active)lv_label_set_text(status,"Stopping - waiting for engine cleanup...");ESP_LOGI(TAG,"EXIT_REQUESTED");}
  else if(isolated){release_ui();if(return_home)return_home();}
  else close_selector();
 }

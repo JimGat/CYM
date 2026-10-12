@@ -7463,6 +7463,31 @@ static game_mode game_early_consume(esp_err_t nvs_status)
  * display DMA/flush semaphore, input driver, LVGL tick, synchronous no-format
  * SD mount, main watchdog, isolated UI/engine + codec/I2S SFX. */
 #include "doom_metrics.h"
+/* Running-only input owner, independent of LVGL timers/new mailbox frames.
+ * Board adapter coordinates and the existing explicit 270 mapping are reused.
+ * On read fault initialized zero contacts releases touch; BOOT remains separate. */
+static uint32_t s_native_input_ms;
+static bool game_native_poll(void *ctx)
+{
+    (void)ctx;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);
+    if((uint32_t)(now-s_native_input_ms)>=10){
+        s_native_input_ms=now;
+        uint16_t px[2]={0},py[2]={0};uint8_t n=0;
+#if CONFIG_BOARD_WS_C5_35
+        if(!ws_c5_35_touch_read_points(px,py,&n,2))n=0;
+#else
+        if(esp_lcd_touch_read_data(touch_handle)==ESP_OK)
+            (void)esp_lcd_touch_get_coordinates(touch_handle,px,py,NULL,&n,2);
+#endif
+        int lx[2]={0},ly[2]={0};unsigned valid=0;
+        for(unsigned i=0;i<n&&i<2;i++)
+            if(doom_rotate_point(LCD_H_RES,LCD_V_RES,3,px[i],py[i],&lx[valid],&ly[valid]))valid++;
+        (void)doom_ui_touch_snapshot(lx,ly,valid);
+        doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
+    }
+    return doom_ui_native_accepting();
+}
+#include "isolated_native_panel.h"
 static void game_isolated_main(void)
 {
     ESP_LOGI("CYM_DOOM","ISOLATED_BOOT normal_services=0 rotation=270 intent_consumed=1");
@@ -7501,13 +7526,29 @@ static void game_isolated_main(void)
     /* Transport helper only mounts. No cache/dirs/provision/whitelist/workers. */
     esp_err_t sd=wifi_wardrive_init_sd_ex(BOARD_SD_SPI_FREQ_HZ/1000,false);sd_mounted_lazy=sd==ESP_OK;
     doom_ui_boot_start(doom_prototype_home,sd_mounted_lazy);
+    doom_ui_native_configure(s_panel_stage,CYM_PANEL_STAGE_BYTES/sizeof(uint16_t),game_native_send,game_native_poll);
+    bool native_taken=false;
     for(;;){
+        if(native_taken){
+            /* Priority3 equals PCM, above engine2; actual SPI waits block.
+             * Positive delay on EVERY loop and >=50ms after each presentation
+             * guarantee lower-priority engine/idle time. No mutex held here. */
+            doom_ui_native_step();cym_display_diag_report();
+            esp_task_wdt_reset();vTaskDelay(DOOM_NATIVE_BLOCK_TICKS);continue;
+        }
         doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
         if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){
             uint32_t before=(uint32_t)esp_timer_get_time(),cb=s_display_diag[1].callback_us;
             lv_timer_handler();
             cym_diag_handler(&s_display_diag[1],(uint32_t)esp_timer_get_time()-before,s_display_diag[1].callback_us-cb);
             xSemaphoreGive(lvgl_mutex);
+            /* Synchronous flush has returned; no active timer/input callback.
+             * No engine/LVGL task suspension or live return to LVGL. */
+            if(doom_ui_native_takeover(__atomic_load_n(&s_display_channel.pending,__ATOMIC_ACQUIRE)==0)){
+                native_taken=true;ESP_ERROR_CHECK(esp_timer_stop(tick_timer));
+                vTaskPrioritySet(NULL,DOOM_NATIVE_PRIORITY);
+                ESP_LOGI("CYM_DOOM","NATIVE_OWNER effective_priority=%u",(unsigned)uxTaskPriorityGet(NULL));
+            }
         }
         cym_display_diag_report();
         esp_task_wdt_reset();vTaskDelay(pdMS_TO_TICKS(10));

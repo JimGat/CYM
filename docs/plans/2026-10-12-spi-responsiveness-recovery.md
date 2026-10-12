@@ -99,3 +99,14 @@ Normal CYM is first priority and can ship independently of gameplay improvement.
 
 ## Stop conditions and handoff
 If remote host unavailable, competing writer present, ISR-safe clock unavailable, source freeze drifts, native headroom unsafe or diagnostic counters can't distinguish boundaries, stop with concrete blocker; never substitute a VM build or fabricated numbers. After diagnostic publication, wait for physical capture before speculative transport edits. No broad refactor, stable release or unrequested unrelated repair. Progress lives /home/dev/ws-c5-35-fixes/cycle87/progress.md; parent verifies actual diffs/tests/packages before publication.
+
+## Task8 activation (cycle90, Jim-authorized following physical .89 evidence)
+
+Jim reports normal .89 CYM responsive; PRESERVE that baseline. Task7 normal
+repair is not required or activated. Game physical rejection (.3fps) plus
+cycle90/hardware-game-89-analysis.json justifies Task8 isolated native RUNNING
+and the game-only main-owner priority3/fairness boundary. No second method
+approval, whole-app refactor, global priority/tick/SPI change or init-fairness
+experiment. See docs/isolated-native-presentation.md for implemented scope and
+truthful completion counters. Eight-build/parent-review and physical acceptance
+remain required; this activation is not a claim of >=10FPS or audible SFX.

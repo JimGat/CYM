@@ -161,6 +161,17 @@ static void capture(const char *path){
   lv_color32_t c;c.full=lv_color_to32(framebuffer[i]);unsigned char rgb[3]={c.ch.red,c.ch.green,c.ch.blue};assert(fwrite(rgb,1,3,f)==3);
  }fclose(f);
 }
+
+static uint16_t buf_native[2048];
+static bool native_reject;static unsigned native_polls,native_exit_after;
+static bool host_native_send(void *ctx,doom_rect r,const uint16_t *p){
+ (void)ctx;if(native_reject)return false;
+ return game_panel_transfer(NULL,r.x,r.y,r.x+r.w,r.y+r.h,p)==ESP_OK;
+}
+static bool host_native_poll(void *ctx){(void)ctx;native_polls++;
+ if(native_exit_after&&native_polls==native_exit_after)doom_ui_request_exit();
+ return !quitting();
+}
 int main(int argc,char**argv){
  assert(argc==4);width=atoi(argv[1]);height=atoi(argv[2]);assert((width==320&&height==240)||(width==480&&height==320));
  assert(cym_panel_transport_init()==ESP_OK);
@@ -235,6 +246,35 @@ int main(int argc,char**argv){
  assert(!worker&&status&&strstr(lv_label_get_text(status),"Injected engine init failure"));assert(lv_obj_get_child_cnt(overlay)==2);
  lv_event_send(lv_obj_get_child(overlay,1),LV_EVENT_CLICKED,NULL);assert(!overlay&&!surface&&!mailbox&&!frame_lock&&reboots==3);
 
+
+ /* New native mode uses SAME production UI/mailbox/join/input code.
+  * Retain every preceding LVGL selector/license and ownership assertion. */
+ doom_ui_native_configure(NULL,0,NULL,NULL);
+ assert(!doom_ui_native_takeover(true));
+ doom_ui_boot_start(reboot,true);started=true;
+ assert(!doom_ui_native_takeover(false));
+ doom_ui_native_configure(buf_native,2048,host_native_send,host_native_poll);
+ assert(!doom_ui_native_takeover(false));assert(timer);
+ assert(doom_ui_native_takeover(true));assert(!timer&&doom_ui_native_active());
+ assert(native_state.completed==0);
+ fake_us+=50000;frame_ready(pixels,NULL);frame_ready(pixels,NULL);
+ uint32_t seq=frames;doom_ui_native_step();assert(last_sequence==seq&&native_state.completed==1);
+ assert(displayed==1&&!borrowed);uint16_t first=doom_native_wire565(snapshot_palette[pixels[0]]);
+ int nx,ny;assert(doom_native_point(&native_state,fit.x,fit.y,&nx,&ny));
+ assert(native_panel[ny*height+nx].full==first);
+ doom_ui_native_step();assert(native_state.completed==1);
+ assert(doom_ui_touch_snapshot(tx,ty,2));assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_LEFT|DOOM_KEY_FIRE));
+ assert(doom_ui_touch_snapshot(tx,ty,1));assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_LEFT));
+ doom_ui_boot_fire(true);fake_us+=20000;doom_ui_boot_fire(true);assert(delivered_keys&DOOM_KEY_FIRE);
+ assert(doom_ui_touch_snapshot(tx,ty,0));assert(delivered_keys==DOOM_KEY_FIRE);
+ frame_ready(pixels,NULL);fake_us+=50000;native_reject=true;unsigned poll_before=native_polls;
+ doom_ui_native_step();assert(native_state.completed==1&&native_polls>poll_before);
+ native_reject=false;fake_us+=50000;doom_ui_native_step();assert(native_state.completed==2);
+ frame_ready(pixels,NULL);fake_us+=50000;native_exit_after=2;native_polls=0;
+ doom_ui_native_step();assert(quitting()&&!borrowed&&native_state.completed==2);
+ done=true;task_state=eRunning;doom_ui_native_step();assert(worker&&mailbox);
+ task_state=eSuspended;doom_ui_native_step();assert(!worker&&!mailbox&&reboots==4&&!doom_ui_native_active());
+ puts("production UI native takeover/drain/mailbox/latest/palette/no-frame input/BOOT/partial release/SD reject/retry/Exit/join race PASS");
  /* Pixel-exact software rotation on both native panel geometries. Unique RGB565
   * reference includes odd native dirty widths and source ownership across strips. */
  lv_obj_t *screen=lv_scr_act();lv_obj_clean(screen);
