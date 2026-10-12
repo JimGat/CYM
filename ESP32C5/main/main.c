@@ -845,6 +845,9 @@ static hosyond_s3_35_display_t s_hosyond_display;
 static SemaphoreHandle_t lvgl_mutex = NULL;
 SemaphoreHandle_t sd_spi_mutex = NULL;  // Mutex for SD/SPI access (shared with display) - used by attack_handshake.c
 static SemaphoreHandle_t flush_done_sem = NULL;  // Binary semaphore: ISR signals DMA done, task calls lv_disp_flush_ready
+#if !defined(CONFIG_BOARD_HOSYOND_S3_35) && !defined(CONFIG_BOARD_WS_S3_5B)
+#include "game_panel_transport.h"
+#endif
 static volatile bool touch_pressed_flag = false;
 static volatile uint16_t touch_x_flag = 0;
 static volatile uint16_t touch_y_flag = 0;
@@ -7389,7 +7392,6 @@ static game_mode game_early_consume(esp_err_t nvs_status)
  * display DMA/flush semaphore, input driver, LVGL tick, synchronous no-format
  * SD mount, main watchdog, isolated UI/engine + codec/I2S SFX. */
 #include "doom_metrics.h"
-#include "game_panel_transport.h"
 static void game_isolated_main(void)
 {
     ESP_LOGI("CYM_DOOM","ISOLATED_BOOT normal_services=0 rotation=270 intent_consumed=1");
@@ -7397,7 +7399,9 @@ static void game_isolated_main(void)
 #if defined(CONFIG_BOARD_WS_C5_28)
     init_i2c_bus();
 #endif
-    init_display();init_touch();init_backlight();
+    init_display();
+    ESP_ERROR_CHECK(cym_panel_transport_init());
+    init_touch();init_backlight();
     lvgl_mutex=xSemaphoreCreateMutex();sd_spi_mutex=xSemaphoreCreateMutex();
     if(!lvgl_mutex || !sd_spi_mutex){ESP_LOGE("CYM_DOOM","ESSENTIAL_INIT_FAILED mutex; reset returns CYM");return;}
     const size_t bytes=LCD_H_RES*15*sizeof(lv_color_t);
@@ -7420,7 +7424,7 @@ static void game_isolated_main(void)
     /* Soft reset need not erase panel GRAM. Clear the full NATIVE viewport
      * before SD mount or worker startup, using completion-owned DMA chunks. */
     esp_task_wdt_add(NULL);
-    game_panel_clear(panel_handle,buf1,LCD_H_RES,LCD_V_RES,15);
+    ESP_ERROR_CHECK(game_panel_clear(panel_handle,buf1,LCD_H_RES,LCD_V_RES,15));
     ESP_LOGI("CYM_DOOM","PANEL_CLEARED native=%dx%d DMA_complete=1",LCD_H_RES,LCD_V_RES);
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle,true));
     /* Transport helper only mounts. No cache/dirs/provision/whitelist/workers. */
@@ -7593,6 +7597,9 @@ void app_main(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(cym_timekeeper_init(NULL));
 #endif
     init_display();
+#if !defined(CONFIG_BOARD_HOSYOND_S3_35) && !defined(CONFIG_BOARD_WS_S3_5B)
+    ESP_ERROR_CHECK(cym_panel_transport_init());
+#endif
     init_touch();
     init_backlight();
     init_boot_button();
@@ -10215,70 +10222,33 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
     return;
 #else
     esp_lcd_panel_handle_t panel = (esp_lcd_panel_handle_t)drv->user_data;
-
+    bool exclusive = false;
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
-    if(doom_ui_exclusive()) {
-        uint32_t before=(uint32_t)esp_timer_get_time();
-        game_panel_transfer(panel,area->x1,area->y1,area->x2+1,area->y2+1,color_p);
-        DM_ADD(panel_flushes,1);DM_ADD(panel_us,(uint32_t)esp_timer_get_time()-before);
-        lv_disp_flush_ready(drv);
-        return;
+    exclusive = doom_ui_exclusive();
+    uint32_t before = (uint32_t)esp_timer_get_time();
+#endif
+    esp_err_t draw_err = cym_panel_transfer(panel, area->x1, area->y1,
+                                            area->x2 + 1, area->y2 + 1, color_p, exclusive);
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+    if (exclusive) {
+        if (draw_err == ESP_OK) DM_ADD(panel_flushes, 1);
+        DM_ADD(panel_us, (uint32_t)esp_timer_get_time() - before);
     }
 #endif
-    // CRITICAL: Take SD/SPI mutex before drawing to display
-    // Display and SD card share the same SPI bus (SPI2_HOST)
-    // IMPORTANT: Do NOT spin-wait for this mutex. If another task holds it (e.g., SD provision),
-    // just skip the flush. LVGL will mark the area dirty and re-render it next cycle.
-    // Spin-waiting blocks the main task and prevents watchdog resets.
-    if (sd_spi_mutex) {
-        uint64_t flush_start = esp_timer_get_time();
-        if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
-            uint64_t mutex_acquired = esp_timer_get_time();
-            xSemaphoreTake(flush_done_sem, 0); // drain any stale count from init DMAs
-            uint64_t draw_start = esp_timer_get_time();
-            esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_p);
-            uint64_t draw_done = esp_timer_get_time();
-            // Hold mutex until DMA completes. Releasing before the semaphore
-            // creates a window where another task can start an SPI transaction
-            // on the shared bus while display DMA is still running — causing
-            // the ST7789 column-counter to desync and produce a vertical tear.
-            uint64_t sem_start = esp_timer_get_time();
-            xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(1000));
-            uint64_t sem_done = esp_timer_get_time();
-            xSemaphoreGive(sd_spi_mutex);
-            uint64_t flush_done = esp_timer_get_time();
-
-#ifdef NRF24_BENCH
-            {
-                static uint32_t s_bench_flush_count = 0;
-                static uint64_t s_bench_flush_total_us = 0;
-                static uint32_t s_bench_flush_max_us = 0;
-                uint32_t this_flush_us = (uint32_t)(flush_done - flush_start);
-                s_bench_flush_total_us += this_flush_us;
-                if (this_flush_us > s_bench_flush_max_us) s_bench_flush_max_us = this_flush_us;
-                if (++s_bench_flush_count % 100 == 0) {
-                    ESP_LOGI("flush", "[BENCH] count=%lu avg_us=%lu max_us=%lu",
-                             (unsigned long)s_bench_flush_count,
-                             (unsigned long)(s_bench_flush_total_us / s_bench_flush_count),
-                             (unsigned long)s_bench_flush_max_us);
-                }
-            }
-#endif
-
-            if (sd_provision_active && (area->y2 - area->y1) > 50) {
-                ESP_LOGI(TAG, "[FLUSH-PROV-SUCCESS] draw=%lld us, sem_wait=%lld us, total=%lld us",
-                         draw_done - draw_start, sem_done - sem_start, flush_done - flush_start);
-            }
-        } else {
-            flush_mutex_wait_count++;
-            if (sd_provision_active && flush_mutex_wait_count % 10 == 0) {
-                ESP_LOGW(TAG, "[FLUSH-PROV-SKIP] Skipped %d times (mutex unavailable)", flush_mutex_wait_count);
-            }
+    static bool flush_error_reported;
+    if (draw_err == ESP_OK) flush_error_reported = false;
+    if (draw_err != ESP_OK) {
+        /* A failed enqueue has no in-flight color buffer. Report the failure
+         * once per burst; release LVGL memory only after transport returned.
+         * Busy normal storage remains a nonblocking skip, as before. */
+        if (draw_err != ESP_ERR_TIMEOUT || exclusive) {
+            if (!flush_error_reported) ESP_LOGE(TAG, "Display flush rejected (no DMA borrowed): %s; bus released, Exit/retry available",
+                                   esp_err_to_name(draw_err));
+            flush_error_reported = true;
         }
-    } else {
-        esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_p);
-        xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(1000));
+        if (draw_err == ESP_ERR_TIMEOUT) flush_mutex_wait_count++;
     }
+
 #endif
     lv_disp_flush_ready(drv);
 }

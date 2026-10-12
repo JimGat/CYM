@@ -153,7 +153,7 @@ static void slew_clock(int32_t correction_us)
         .tv_usec = correction_us % 1000000,
     };
     adjtime(&delta, NULL);
-    ESP_LOGI(TAG, "Clock slewed by %d us", (int)correction_us);
+    ESP_LOGD(TAG, "Clock slewed by %d us", (int)correction_us);
 }
 
 static uint32_t grow_uncertainty(uint32_t base_us,
@@ -476,6 +476,7 @@ esp_err_t cym_timekeeper_observe_gps_rtc_utc(time_t epoch, int64_t rx_monotonic_
                          s_source == CYM_TIME_NTP_HOLDOVER ||
                          s_source == CYM_TIME_GPS_RTC_HOLDOVER;
     if (s_gps_rtc_trusted && may_take_over) {
+        const bool entering_holdover = s_source != CYM_TIME_GPS_RTC_HOLDOVER;
         int64_t diff_us = error_s * 1000000LL;
         if (diff_us < -STEP_THRESHOLD_US || diff_us > STEP_THRESHOLD_US ||
             (int64_t)now < MIN_REASONABLE_EPOCH) {
@@ -496,7 +497,9 @@ esp_err_t cym_timekeeper_observe_gps_rtc_utc(time_t epoch, int64_t rx_monotonic_
             GPS_RTC_UNCERTAINTY_US, trusted_age_s * 1000000ULL,
             BOARD_TIME_GPS_RTC_DRIFT_PPM);
         s_holdover_drift_ppm = BOARD_TIME_GPS_RTC_DRIFT_PPM;
-        ESP_LOGI(TAG, "Using cross-validated GPS module RTC holdover");
+        if (entering_holdover) {
+            ESP_LOGI(TAG, "Using cross-validated GPS module RTC holdover");
+        }
     }
 
     xSemaphoreGive(s_tk_mutex);

@@ -83,13 +83,23 @@ static lv_color_t framebuffer[480*320],native_panel[480*320];
 static unsigned char coverage[480*320];
 static void *flush_done_sem=(void*)2;
 #define ESP_OK 0
+#define ESP_ERR_NO_MEM 257
+#define ESP_ERR_INVALID_ARG 258
+#define ESP_ERR_TIMEOUT 260
+#define MALLOC_CAP_DMA 8
+#define LCD_HOST 2
+static void *host_stage;
+static void *spi_bus_dma_memory_alloc(int h,size_t n,unsigned caps){(void)h;(void)caps;host_stage=aligned_alloc(64,(n+63)&~63);return host_stage;}
+static void esp_restart(void){abort();}
+static bool enqueue_fail;
+typedef int esp_err_t;
 typedef void *esp_lcd_panel_handle_t;
 static const lv_color_t *borrowed;
 static lv_area_t pending;
 static unsigned waits,lock_tries,transfers;
 static void esp_task_wdt_reset(void){}
 static int esp_lcd_panel_draw_bitmap(void*p,int x1,int y1,int x2,int y2,const void*buf){
- (void)p;assert(!borrowed);borrowed=buf;pending=(lv_area_t){x1,y1,x2-1,y2-1};waits=0;return 0;
+ (void)p;assert(!borrowed);if(enqueue_fail)return ESP_ERR_NO_MEM;assert(buf==host_stage&&!((uintptr_t)buf&63));assert((x2-x1)*(y2-y1)*sizeof(lv_color_t)<=1024);borrowed=buf;pending=(lv_area_t){x1,y1,x2-1,y2-1};waits=0;return 0;
 }
 int host_take(SemaphoreHandle_t h,int t){
  if(h==flush_done_sem){if(!t)return 0;if(++waits<4)return 0;
@@ -150,11 +160,13 @@ static void capture(const char *path){
 }
 int main(int argc,char**argv){
  assert(argc==4);width=atoi(argv[1]);height=atoi(argv[2]);assert((width==320&&height==240)||(width==480&&height==320));
+ assert(cym_panel_transport_init()==ESP_OK);
  lv_init();static lv_color_t draw[480*16];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,draw,NULL,height*15);
  lv_disp_drv_init(&host_disp);host_disp.hor_res=height;host_disp.ver_res=width;host_disp.sw_rotate=1;host_disp.draw_buf=&db;host_disp.flush_cb=flush;lv_disp_t *display=lv_disp_drv_register(&host_disp);lv_disp_set_rotation(display,LV_DISP_ROT_270);
  /* Panel starts with retained old license/button pixels, not blank RAM. */
  for(unsigned i=0;i<480*320;i++)native_panel[i]=lv_color_hex(0xff00ff);
- game_panel_clear(NULL,draw,height,width,15);
+ enqueue_fail=true;assert(game_panel_transfer(NULL,0,0,7,3,draw)==ESP_ERR_NO_MEM);assert(!borrowed);enqueue_fail=false;
+ assert(game_panel_clear(NULL,draw,height,width,15)==ESP_OK);
  for(int i=0;i<width*height;i++)assert(native_panel[i].full==0);
  doom_ui_configure(gate,reboot,sd_ready,normal);doom_ui_configure_selector(rotate,back,record);
  doom_ui_tile_click();assert(navigation_timer&&!overlay);lv_tick_inc(810);fake_us+=810000;lv_timer_handler();assert(navigations==1&&!navigation_timer);
@@ -219,6 +231,27 @@ int main(int argc,char**argv){
  doom_ui_boot_start(reboot,true);assert(worker);strcpy(worker_status,"Injected engine init failure - readable recovery");done=true;task_state=eSuspended;update(timer);
  assert(!worker&&status&&strstr(lv_label_get_text(status),"Injected engine init failure"));assert(lv_obj_get_child_cnt(overlay)==2);
  lv_event_send(lv_obj_get_child(overlay,1),LV_EVENT_CLICKED,NULL);assert(!overlay&&!surface&&!mailbox&&!frame_lock&&reboots==3);
+
+ /* Pixel-exact software rotation on both native panel geometries. Unique RGB565
+  * reference includes odd native dirty widths and source ownership across strips. */
+ lv_obj_t *screen=lv_scr_act();lv_obj_clean(screen);
+ static lv_color_t reference[480*320];
+ for(int rotation=0;rotation<4;rotation++){
+  lv_disp_set_rotation(display,(lv_disp_rot_t)rotation);
+  int logical_w=lv_disp_get_hor_res(display),logical_h=lv_disp_get_ver_res(display);
+  for(int y=0;y<logical_h;y++)for(int x=0;x<logical_w;x++)reference[y*logical_w+x].full=(uint16_t)(x*37+y*11+1);
+  lv_obj_t *c=lv_canvas_create(screen);lv_canvas_set_buffer(c,reference,logical_w,logical_h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(c,0,0);
+  memset(coverage,0,sizeof(coverage));lv_refr_now(display);
+  for(int y=0;y<logical_h;y++)for(int x=0;x<logical_w;x++){
+   int nx=x,ny=y;
+   if(rotation==1){nx=y;ny=width-1-x;}
+   if(rotation==2){nx=height-1-x;ny=width-1-y;}
+   if(rotation==3){nx=height-1-y;ny=x;}
+   assert(coverage[ny*height+nx]);assert(native_panel[ny*height+nx].full==reference[y*logical_w+x].full);
+  }
+  lv_obj_del(c);
+ }
+ puts("Real LVGL rotations 0/90/180/270: exact RGB565 reference, owned DMA stripes PASS");
  printf("Production UI+real LVGL %dx%d: native bounds/font widths/art decode, five clicks/timer, license/readiness/refusal/cancel, repeated selectors, isolated SD error, join race PASS\n",width,height);
  return 0;
 }

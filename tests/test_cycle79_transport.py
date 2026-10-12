@@ -12,6 +12,15 @@ PRE=r"""
 #define pdTRUE 1
 #define pdMS_TO_TICKS(x) (x)
 #define ESP_OK 0
+#define ESP_ERR_NO_MEM 257
+#define ESP_ERR_INVALID_ARG 258
+#define ESP_ERR_TIMEOUT 260
+#define MALLOC_CAP_DMA 1
+#define MALLOC_CAP_INTERNAL 2
+#define LCD_HOST 2
+#include <stdlib.h>
+static void *spi_bus_dma_memory_alloc(int h,size_t n,unsigned c){(void)h;(void)c;return aligned_alloc(64,(n+63)&~63);}
+static void esp_restart(void){abort();}
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
@@ -54,9 +63,10 @@ class Transport(unittest.TestCase):
   metrics='#include "'+str(ROOT/'ESP32C5/components/cym_doom/include/doom_metrics.h')+'"\ndoom_metrics_t doom_metrics;\n'
   code=PRE+metrics+inc+fn+r"""
 int main(void){
+ assert(cym_panel_transport_init()==ESP_OK);
  memset(panel,0x7e,sizeof(panel));uint16_t pixels[320*15];memset(pixels,0,sizeof(pixels));lv_disp_drv_t d={0};
  for(int y=0;y<480;y+=15){lv_area_t a={0,y,319,y+14};dma_waits=0;lvgl_flush_cb(&d,&a,pixels);}
- assert(draws==32);assert(acks==32);assert(releases==32);assert(lock_attempts>=35);
+ assert(draws==480);assert(acks==32);assert(releases==32);assert(lock_attempts>=35);
  for(unsigned i=0;i<320*480;i++)assert(panel[i]==0);
  puts("actual production flush: busy retry, slow DMA ownership, full native coverage PASS");
 }
