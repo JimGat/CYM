@@ -47,10 +47,12 @@ unsigned doom_audio_demand(void){
 bool doom_audio_healthy(void){return enabled&&!__atomic_load_n(&audio_failed,__ATOMIC_ACQUIRE);}
 
 #if CONFIG_BOARD_WS_C5_28
+#define AUDIO_BOARD "WS28"
 #define BCLK 24
 #define LRCLK 25
 #define DOUT 26
 #elif CONFIG_BOARD_WS_C5_35
+#define AUDIO_BOARD "WS35"
 #define BCLK 23
 #define LRCLK 10
 #define DOUT 25
@@ -72,7 +74,19 @@ int doom_audio_end(void){
  if(audio_queue){vQueueDelete(audio_queue);audio_queue=NULL;}
 
  bool ok=cym_game_audio_amp(false);
- if(codec){if(codec->mute(codec,true)!=0)ok=false;if(codec->enable(codec,false)!=0)ok=false;}
+ if(codec){
+  if(codec->mute(codec,true)!=0)ok=false;
+  if(codec->enable(codec,false)!=0)ok=false;
+  uint8_t r12=0,r14=0,r31=0;unsigned mask=0;
+  if(ctrl&&ctrl->read_reg){
+   if(ctrl->read_reg(ctrl,0x12,1,&r12,1)==0)mask|=1;
+   if(ctrl->read_reg(ctrl,0x14,1,&r14,1)==0)mask|=2;
+   if(ctrl->read_reg(ctrl,0x31,1,&r31,1)==0)mask|=4;
+  }
+  bool off_verified=mask==7&&r12==2&&r14==0&&(r31&0x60)==0x60;
+  if(!off_verified)ok=false;
+  ESP_LOGI("CYM_DOOM","CODEC_STOP_DIAG board=%s read_mask=%x reg12=%02x reg14=%02x reg31=%02x muted_powerdown_verified=%d",AUDIO_BOARD,mask,r12,r14,r31,off_verified);
+ }
  if(enabled){if(i2s_channel_disable(tx)!=ESP_OK)return -1;enabled=false;}
  if(tx){if(i2s_del_channel(tx)!=ESP_OK)return -1;tx=NULL;}
  if(codec){audio_codec_delete_codec_if(codec);codec=NULL;}
@@ -94,21 +108,24 @@ bool doom_audio_begin(void){
  audio_codec_i2c_cfg_t ic={.port=0,.addr=ES8311_CODEC_DEFAULT_ADDR,.bus_handle=bus};
  ctrl=audio_codec_new_i2c_ctrl(&ic);if(!ctrl)goto fail;
  es8311_codec_cfg_t ec={.ctrl_if=ctrl,.codec_mode=ESP_CODEC_DEV_WORK_MODE_DAC,
-  .pa_pin=-1,.master_mode=false,.use_mclk=false,.hw_gain={.pa_voltage=5.0,.codec_dac_voltage=3.3}};
+  .pa_pin=-1,.master_mode=false,.use_mclk=false,.hw_gain={.pa_voltage=3.3,.codec_dac_voltage=3.3}};
  codec=es8311_codec_new(&ec);if(!codec)goto fail;
  esp_codec_dev_sample_info_t fs={.sample_rate=RATE,.channel=1,.bits_per_sample=16};
  if(codec->set_fs(codec,&fs)!=0||codec->mute(codec,true)!=0||codec->set_vol(codec,-30.0f)!=0)goto fail;
  if(i2s_channel_enable(tx)!=ESP_OK)goto fail;enabled=true;
- if(codec->enable(codec,true)!=0||!cym_game_audio_amp(true)||codec->mute(codec,false)!=0)goto fail;
- /* One startup readback, never per-sample I2C. Values distinguish accepted
-  * API calls from actual mute/clock/power/format state on the physical codec. */
- uint8_t regs[8]={0};const int addresses[]={0x01,0x02,0x06,0x0a,0x12,0x14,0x31,0x32};unsigned read_mask=0;
- for(unsigned i=0;i<8;i++)if(ctrl->read_reg&&ctrl->read_reg(ctrl,addresses[i],1,&regs[i],1)==0)read_mask|=1u<<i;
- ESP_LOGI("CYM_DOOM","CODEC_DIAG read_mask=%02x reg01=%02x reg02=%02x reg06=%02x reg0a=%02x reg12=%02x reg14=%02x reg31=%02x reg32=%02x",read_mask,regs[0],regs[1],regs[2],regs[3],regs[4],regs[5],regs[6],regs[7]);
- (void)read_mask;
+ if(codec->enable(codec,true)!=0||codec->mute(codec,false)!=0)goto fail;
+ /* Read the actual DAC input09, not only ADC output0a. Driver can report
+  * success after internal write failures; counters cannot prove audibility. */
+ uint8_t regs[12]={0};const int addresses[]={0x00,0x01,0x02,0x06,0x09,0x0a,0x0d,0x12,0x14,0x31,0x32,0x37};unsigned read_mask=0;
+ for(unsigned i=0;i<12;i++)if(ctrl->read_reg&&ctrl->read_reg(ctrl,addresses[i],1,&regs[i],1)==0)read_mask|=1u<<i;
+ bool verified=read_mask==0xfff && !(regs[0]&0x40) && regs[1]==0xbf && regs[2]==0x18 && regs[3]==0x03 && (regs[4]&0x7f)==0x0c && regs[6]==0x01 && regs[7]==0 && regs[8]==0x1a && !(regs[9]&0x60) && regs[10]!=0 && regs[11]==0x08;
+ ESP_LOGI("CYM_DOOM","CODEC_DIAG board=%s read_mask=%03x reg00=%02x reg01=%02x reg02=%02x reg06=%02x reg09=%02x reg0a=%02x reg0d=%02x reg12=%02x reg14=%02x reg31=%02x reg32=%02x reg37=%02x configuration_verified=%d audible=unconfirmed",AUDIO_BOARD,read_mask,regs[0],regs[1],regs[2],regs[3],regs[4],regs[5],regs[6],regs[7],regs[8],regs[9],regs[10],regs[11],verified);
+ if(!verified){ESP_LOGE("CYM_DOOM","AUDIO_NOT_READY board=%s reason=codec_readback",AUDIO_BOARD);goto fail;}
+ if(!cym_game_audio_amp(true)){ESP_LOGE("CYM_DOOM","AUDIO_NOT_READY board=%s reason=amp_pin_readback",AUDIO_BOARD);goto fail;}
+ ESP_LOGI("CYM_DOOM","I2S_DIAG board=%s TX_ONLY no_mclk rate=%d bits=%d slot_bits=%d slot_mask=%d mono=%d bclk=%d lrclk=%d dout=%d pa_supply=3.3 dac_supply=3.3 configured_clocks_not_wire_measurement",AUDIO_BOARD,RATE,(int)cfg.slot_cfg.data_bit_width,(int)cfg.slot_cfg.slot_bit_width,(int)cfg.slot_cfg.slot_mask,(int)cfg.slot_cfg.slot_mode,BCLK,LRCLK,DOUT);
  audio_queue=xQueueCreate(8,sizeof(audio_block));if(!audio_queue)goto fail;
  if(xTaskCreate(audio_worker,"cym_pcm",4096,NULL,3,&audio_task)!=pdPASS){audio_task=NULL;goto fail;}
- ESP_LOGI("CYM_DOOM","AUDIO_STARTED ES8311 rate=%d BCLK=%d LRCLK=%d DOUT=%d volume_db=-30 SFX_ONLY",RATE,BCLK,LRCLK,DOUT);
+ ESP_LOGI("CYM_DOOM","AUDIO_STARTED configuration_verified audible=unconfirmed ES8311 rate=%d BCLK=%d LRCLK=%d DOUT=%d volume_db=-30 SFX_ONLY",RATE,BCLK,LRCLK,DOUT);
  return true;
 fail:
  ESP_LOGE("CYM_DOOM","AUDIO_INIT_FAILED ES8311/I2S/PA - exit and reboot");

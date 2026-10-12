@@ -845,6 +845,23 @@ static hosyond_s3_35_display_t s_hosyond_display;
 static SemaphoreHandle_t lvgl_mutex = NULL;
 SemaphoreHandle_t sd_spi_mutex = NULL;  // Mutex for SD/SPI access (shared with display) - used by attack_handshake.c
 static SemaphoreHandle_t flush_done_sem = NULL;  // Binary semaphore: ISR signals DMA done, task calls lv_disp_flush_ready
+#include "ui_diagnostics.h"
+static DRAM_ATTR cym_ui_diag s_ui_diag;
+static bool s_ui_diag_normal = true;
+uint32_t cym_ui_diag_clock(void){return (uint32_t)esp_timer_get_time();}
+void cym_ui_diag_record(unsigned kind,uint32_t start){if(!s_ui_diag_normal)return;cym_ui_diag_add(&s_ui_diag,kind,cym_ui_diag_elapsed(start,cym_ui_diag_clock()));}
+static void cym_ui_diag_report(void)
+{
+    static uint64_t last_ms;
+    uint64_t now=(uint64_t)esp_timer_get_time()/1000;
+    if(now-last_ms<5000)return;
+    static const char *names[CYM_UI_KINDS]={"render","sw_rotate","settings_build","hardware_build","settings_event","hardware_event"};
+    for(unsigned k=0;k<CYM_UI_KINDS;k++){
+        cym_ui_span w=s_ui_diag.window[k],t=s_ui_diag.total[k];
+        if(w.count)ESP_LOGI("display","UI_DIAG normal kind=%s interval_ms=%llu window_count=%lu window_us=%lu window_max_us=%lu total_count=%lu total_us=%lu lifetime_max_us=%lu elapsed_includes_preemption=1 overlapping_spans=1",names[k],(unsigned long long)(now-last_ms),(unsigned long)w.count,(unsigned long)w.us,(unsigned long)w.max_us,(unsigned long)t.count,(unsigned long)t.us,(unsigned long)t.max_us);
+    }
+    cym_ui_diag_reset_window(&s_ui_diag);last_ms=now;
+}
 #include "display_diagnostics_report.h"
 #if !defined(CONFIG_BOARD_HOSYOND_S3_35) && !defined(CONFIG_BOARD_WS_S3_5B)
 #include "game_panel_transport.h"
@@ -7490,6 +7507,7 @@ static bool game_native_poll(void *ctx)
 #include "isolated_native_panel.h"
 static void game_isolated_main(void)
 {
+    s_ui_diag_normal = false; /* normal-UI counters never include isolated boot */
     ESP_LOGI("CYM_DOOM","ISOLATED_BOOT normal_services=0 rotation=270 intent_consumed=1");
     lvgl_memory_init();lv_init();
 #if defined(CONFIG_BOARD_WS_C5_28)
@@ -10091,7 +10109,7 @@ void app_main(void)
             xSemaphoreGive(lvgl_mutex);
         }
 
-        cym_display_diag_report();
+        cym_display_diag_report();cym_ui_diag_report();
 
         // Reset watchdog again after releasing mutex
         uint64_t wdt_after_us = esp_timer_get_time();
@@ -28290,7 +28308,14 @@ static void show_dip_switch_popup(uint8_t dip_pos, const char *module_name, void
     lv_obj_add_event_cb(ok_btn, dip_popup_ok_cb, LV_EVENT_CLICKED, ctx);
 }
 
+static void hw_options_tile_event_cb_measured(lv_event_t *e);
 static void hw_options_tile_event_cb(lv_event_t *e)
+{
+    uint32_t started=cym_ui_diag_clock();
+    hw_options_tile_event_cb_measured(e);
+    cym_ui_diag_record(CYM_UI_HARDWARE_EVENT,started);
+}
+static void hw_options_tile_event_cb_measured(lv_event_t *e)
 {
     const char *name = (const char *)lv_event_get_user_data(e);
     if (!name) return;
@@ -28300,7 +28325,14 @@ static void hw_options_tile_event_cb(lv_event_t *e)
         show_nmrfhat_settings_screen();
 }
 
+static void show_hardware_options_screen_measured(void);
 static void show_hardware_options_screen(void)
+{
+    uint32_t started=cym_ui_diag_clock();
+    show_hardware_options_screen_measured();
+    cym_ui_diag_record(CYM_UI_HARDWARE,started);
+}
+static void show_hardware_options_screen_measured(void)
 {
     create_function_page_base("Hardware Options");
     apply_menu_bg();
@@ -28322,7 +28354,14 @@ static void show_hardware_options_screen(void)
 }
 
 // Settings sub-menu tile event callback
+static void settings_tile_event_cb_measured(lv_event_t *e);
 static void settings_tile_event_cb(lv_event_t *e)
+{
+    uint32_t started=cym_ui_diag_clock();
+    settings_tile_event_cb_measured(e);
+    cym_ui_diag_record(CYM_UI_SETTINGS_EVENT,started);
+}
+static void settings_tile_event_cb_measured(lv_event_t *e)
 {
     const char *tile_name = (const char *)lv_event_get_user_data(e);
     if (!tile_name) return;
@@ -29430,7 +29469,14 @@ static void show_clock_settings_screen(void)
     lv_obj_add_event_cb(cancel_btn, clock_settings_cancel_cb, LV_EVENT_CLICKED, NULL);
 }
 
+static void show_settings_screen_measured(void);
 static void show_settings_screen(void)
+{
+    uint32_t started=cym_ui_diag_clock();
+    show_settings_screen_measured();
+    cym_ui_diag_record(CYM_UI_SETTINGS,started);
+}
+static void show_settings_screen_measured(void)
 {
     create_function_page_base("Settings");
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
@@ -72359,16 +72405,33 @@ void *cym_game_audio_bus(void)
     return s_i2c_bus;
 #endif
 }
+#if CONFIG_BOARD_WS_C5_28
+static bool ws_c5_28_audio_amp(bool on)
+{
+    const uint32_t mask = IO_EXPANDER_PIN_NUM_3;
+    if (!s_io_expander) return false;
+    uint32_t dir = 0, output = 0, pins = 0;
+    esp_err_t err = esp_io_expander_set_dir(s_io_expander, mask, IO_EXPANDER_OUTPUT);
+    if (err == ESP_OK) err = esp_io_expander_set_level(s_io_expander, mask, on ? 1 : 0);
+    /* Installed CH32V003 protocol: accepted direction/output shadows, input04
+     * is physical pin read. API preserves every other direction/output bit. */
+    if (err == ESP_OK) err = s_io_expander->read_direction_reg(s_io_expander, &dir);
+    if (err == ESP_OK) err = s_io_expander->read_output_reg(s_io_expander, &output);
+    if (err == ESP_OK) err = s_io_expander->read_input_reg(s_io_expander, &pins);
+    bool dir_out = s_io_expander->config.flags.dir_out_bit_zero ? !(dir & mask) : !!(dir & mask);
+    bool verified = err == ESP_OK && dir_out && !!(output & mask) == on && !!(pins & mask) == on;
+    ESP_LOGI(TAG, "AUDIO_PA board=WS28 exio=3 requested=%d direction_shadow=%02lx output_shadow=%02lx pin_read=%02lx rc=%d verified=%d audible=unconfirmed", on, (unsigned long)dir, (unsigned long)output, (unsigned long)pins, err, verified);
+    return verified;
+}
+#endif
 bool cym_game_audio_amp(bool on)
 {
-#if CONFIG_BOARD_WS_C5_28
-    /* Vendor IO_POWER_AMP_IO is CH32V003 PIN3, active high. */
-    if (!s_io_expander) return false;
-    return esp_io_expander_set_dir(s_io_expander, IO_EXPANDER_PIN_NUM_3, IO_EXPANDER_OUTPUT) == ESP_OK &&
-           esp_io_expander_set_level(s_io_expander, IO_EXPANDER_PIN_NUM_3, on ? 1 : 0) == ESP_OK;
+#if CONFIG_BOARD_WS_C5_35
+    return ws_c5_35_audio_amp(on);
+#elif CONFIG_BOARD_WS_C5_28
+    return ws_c5_28_audio_amp(on);
 #else
-    (void)on; /* Vendor PA GPIO is NC on WS35. */
-    return true;
+    (void)on; return false;
 #endif
 }
 static void doom_prototype_hardware(void)

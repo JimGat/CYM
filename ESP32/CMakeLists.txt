@@ -9,7 +9,7 @@ set(EXTRA_COMPONENT_DIRS "../ESP32C5/components")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 
 # ── Single source of truth for firmware version ──────────────────────────────
-set(PROJECT_VER "v2.15.90")
+set(PROJECT_VER "v2.15.91")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -110,3 +110,5 @@ if(Python3_FOUND)
         VERBATIM
     )
 endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/../scripts/lvgl-diag.cmake")

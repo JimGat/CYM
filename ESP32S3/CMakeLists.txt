@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.16)
 #     build
 # ─────────────────────────────────────────────────────────────────────────────
 
-set(PROJECT_VER "v2.15.90")
+set(PROJECT_VER "v2.15.91")
 
 # S3-specific components first (esp_lcd_st77922), then shared C5 components.
 # Ordering matters: ESP-IDF uses the first occurrence when two directories
@@ -111,3 +111,5 @@ if(Python3_FOUND)
 else()
     message(STATUS "[memory_map] Python3 not found — skipping memory-budget update")
 endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/../scripts/lvgl-diag.cmake")

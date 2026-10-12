@@ -33,6 +33,7 @@ static i2c_master_bus_handle_t s_i2c_bus;
 static i2c_master_dev_handle_t s_exio_dev;
 static i2c_master_dev_handle_t s_pmic_dev;
 static bool s_battery_adc_ready;
+static uint16_t mode_shadow; /* accepted direction write, not a physical read */
 static uint16_t output_shadow;   // tracks the 16-bit output register state
 static esp_lcd_touch_handle_t s_touch;
 
@@ -44,7 +45,9 @@ static esp_err_t ws35_exio_write16(uint8_t reg, uint16_t val)
         buf[1] = val & 0xff;
         buf[2] = val >> 8;
     }
-    return i2c_master_transmit(s_exio_dev, buf, sizeof(buf), 100);
+    esp_err_t err = i2c_master_transmit(s_exio_dev, buf, sizeof(buf), 100);
+    if (err == ESP_OK && reg == WS35_EXIO_REG_MODE) mode_shadow = val;
+    return err;
 }
 
 // Write the output shadow register to the CH32V006.
@@ -307,6 +310,25 @@ bool ws_c5_35_touch_read(uint16_t *x,uint16_t *y,bool *touched)
     if(!touched)return false;
     uint8_t count=0;bool ok=ws_c5_35_touch_read_points(x,y,&count,1);
     *touched=ok&&count>0;return ok;
+}
+
+/* Factory Audio_PA_EN/DIS routes EXIO5. Keep the full adapter shadow,
+ * including upper bits and LCD/touch reset lines. Vendor component1.0.2
+ * documents INPUT04 as one byte;02/03 read APIs are shadows, not I2C reads.
+ * Do not alter the accepted boot mode protocol in an audio lifecycle change. */
+bool ws_c5_35_audio_amp(bool on)
+{
+    const uint16_t mask = 1u << BOARD_POWER_ENABLE_EXIO;
+    if (!s_exio_dev || (mode_shadow & mask)) return false;
+    uint16_t next = on ? output_shadow | mask : output_shadow & ~mask;
+    uint8_t cmd[3] = {WS35_EXIO_REG_OUTPUT, next & 0xff, next >> 8};
+    esp_err_t err = i2c_master_transmit(s_exio_dev, cmd, sizeof(cmd), 100);
+    if (err == ESP_OK) output_shadow = next;
+    uint8_t reg = 0x04, pins = 0;
+    esp_err_t read = err == ESP_OK ? i2c_master_transmit_receive(s_exio_dev, &reg, 1, &pins, 1, 100) : err;
+    bool verified = err == ESP_OK && read == ESP_OK && !!(pins & mask) == on;
+    ESP_LOGI(TAG, "AUDIO_PA board=WS35 exio=5 requested=%d mode_shadow=%04x output_shadow=%04x pin_read=%02x write_rc=%d read_rc=%d verified=%d audible=unconfirmed", on, mode_shadow, output_shadow, pins, err, read, verified);
+    return verified;
 }
 
 // ── Backlight control (CH32V006 PWM) ────────────────────────────────────────

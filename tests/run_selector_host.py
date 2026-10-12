@@ -70,6 +70,11 @@ HOST=r"""
 #include <stdint.h>
 #include <string.h>
 #include "lvgl.h"
+#include "ui_diagnostics.h"
+static cym_ui_diag host_ui_diag;
+static uint32_t host_diag_clock;
+uint32_t cym_ui_diag_clock(void){return ++host_diag_clock;}
+void cym_ui_diag_record(unsigned kind,uint32_t start){cym_ui_diag_add(&host_ui_diag,kind,cym_ui_diag_elapsed(start,cym_ui_diag_clock()));}
 int64_t fake_us;
 int task_state,task_starts,task_deletes;
 #include "doom_ui.c"
@@ -294,6 +299,12 @@ int main(int argc,char**argv){
   }
   lv_obj_del(c);
  }
+ assert(host_ui_diag.total[CYM_UI_RENDER].count>0&&host_ui_diag.total[CYM_UI_ROTATE].count>0);
+ assert(host_ui_diag.total[CYM_UI_ROTATE].us==host_ui_diag.total[CYM_UI_ROTATE].count);
+ assert(host_ui_diag.total[CYM_UI_ROTATE].max_us==1);
+ unsigned render_total=host_ui_diag.total[CYM_UI_RENDER].count;
+ cym_ui_diag_reset_window(&host_ui_diag);assert(!host_ui_diag.window[CYM_UI_RENDER].count&&host_ui_diag.total[CYM_UI_RENDER].count==render_total);
+ puts("Real LVGL pinned production render/rotation RAM counts+window reset PASS; simulated clock not timing proof");
  puts("Real LVGL rotations 0/90/180/270: exact RGB565 reference, owned DMA stripes PASS");
  printf("Production UI+real LVGL %dx%d: native bounds/font widths/art decode, five clicks/timer, license/readiness/refusal/cancel, repeated selectors, isolated SD error, join race PASS\n",width,height);
  return 0;
@@ -305,7 +316,11 @@ def run():
   p=OUT/'stubs'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content)
  (OUT/'host.c').write_text(HOST)
  flags=['-std=gnu11','-O1','-g','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=malloc','-DLV_MEM_CUSTOM_FREE=free','-DLV_MEM_CUSTOM_REALLOC=realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_16=1','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_18=1','-DLV_FONT_MONTSERRAT_20=1','-I'+str(LVGL),'-I'+str(OUT/'stubs'),'-I'+str(COMP/'include'),'-I'+str(COMP),'-I'+str(ROOT/'ESP32C5/main')]
- sources=[str(x) for x in (LVGL/'src').rglob('*.c')]
+ diag_src=OUT/'lv_refr.c'
+ r=subprocess.run(['python3',str(ROOT/'scripts/lvgl-diag-copy.py'),str(LVGL/'src/core/lv_refr.c'),str(diag_src)],capture_output=True,text=True)
+ if r.returncode:raise RuntimeError(r.stderr)
+ flags+=['-I'+str(LVGL/'src/core')]
+ sources=[str(diag_src) if x==LVGL/'src/core/lv_refr.c' else str(x) for x in (LVGL/'src').rglob('*.c')]
  cmd=['cc',*flags,str(OUT/'host.c'),str(COMP/'doom_contracts.c'),str(COMP/'selector_art.c'),*sources,'-lm','-o',str(OUT/'host')]
  r=subprocess.run(cmd,capture_output=True,text=True);(OUT/'compile.log').write_text(r.stdout+r.stderr)
  if r.returncode:raise RuntimeError(r.stdout+r.stderr)

@@ -23,9 +23,9 @@ typedef void *i2s_chan_handle_t;
 typedef struct {int dma_desc_num,dma_frame_num;bool auto_clear;} i2s_chan_config_t;
 #define I2S_CHANNEL_DEFAULT_CONFIG(a,b) {0}
 typedef struct {int rate;} mock_clk;
-typedef struct {int bits,mode;} mock_slot;
+typedef struct {int bits,mode,data_bit_width,slot_bit_width,slot_mask,slot_mode;} mock_slot;
 #define I2S_STD_CLK_DEFAULT_CONFIG(r) {r}
-#define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(b,m) {b,m}
+#define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(b,m) {b,m,b,16,1,m}
 typedef struct {mock_clk clk_cfg;mock_slot slot_cfg;struct {int mclk,bclk,ws,dout,din;} gpio_cfg;} i2s_std_config_t;
 typedef struct {int port,addr;void *bus_handle;} audio_codec_i2c_cfg_t;
 typedef struct audio_codec_ctrl_if_t {int (*read_reg)(const struct audio_codec_ctrl_if_t*,int,int,void*,int);} audio_codec_ctrl_if_t;
@@ -54,7 +54,10 @@ doom_metrics_t doom_metrics;
 #include <stdlib.h>
 #include <string.h>
 static int seq,fail_at=-1,tx_live,tx_on,ctrl_live,codec_live,amp_on,short_write;
-static audio_codec_ctrl_if_t ci;
+static int read_fail,bad_reg,muted,codec_enabled;
+static int read_reg(const audio_codec_ctrl_if_t*c,int reg,int width,void*out,int len){(void)c;assert(width==1&&len==1);if(read_fail)return -1;
+unsigned v=0;switch(reg){case 0x00:v=0x80;break;case 0x01:v=0xbf;break;case 0x02:v=0x18;break;case 0x06:v=3;break;case 0x09:case 0x0a:v=0x0c;break;case 0x0d:v=1;break;case 0x14:v=0x1a;break;case 0x32:v=0x8a;break;case 0x37:v=8;break;}if(reg==0x12)v=codec_enabled?0:2;if(reg==0x14)v=codec_enabled?0x1a:0;if(reg==0x31)v=muted?0x60:0;if(reg==bad_reg)v^=0x40;*(unsigned char*)out=v;return 0;}
+static audio_codec_ctrl_if_t ci={read_reg};
 static int op(void){return seq++==fail_at?-1:0;}
 void *cym_game_audio_bus(void){return &ci;}
 bool cym_game_audio_amp(bool on){if(op())return false;amp_on=on;return true;}
@@ -71,12 +74,12 @@ int i2s_channel_disable(i2s_chan_handle_t t){assert(t);if(op())return -1;tx_on=0
 int i2s_del_channel(i2s_chan_handle_t t){assert(t&&!tx_on);if(op())return -1;tx_live=0;return 0;}
 int i2s_channel_write(i2s_chan_handle_t t,const void *p,size_t n,size_t *out,unsigned timeout){assert(t&&tx_on&&p);assert(n==512&&timeout==50);*out=short_write?n-2:n;return op();}
 const audio_codec_ctrl_if_t *audio_codec_new_i2c_ctrl(audio_codec_i2c_cfg_t*c){assert(c->port==0&&c->addr==0x30&&c->bus_handle==&ci);if(op())return NULL;ctrl_live=1;return &ci;}
-static int mute(const audio_codec_if_t*c,bool v){(void)c;(void)v;return op();}
-static int enable(const audio_codec_if_t*c,bool v){(void)c;(void)v;return op();}
+static int mute(const audio_codec_if_t*c,bool v){(void)c;if(op())return -1;muted=v;return 0;}
+static int enable(const audio_codec_if_t*c,bool v){(void)c;if(op())return -1;codec_enabled=v;return 0;}
 static int fs(const audio_codec_if_t*c,esp_codec_dev_sample_info_t*f){(void)c;assert(f->sample_rate==22050&&f->bits_per_sample==16&&f->channel==1);return op();}
 static int vol(const audio_codec_if_t*c,float db){(void)c;assert(db==-30.0f);return op();}
 static const audio_codec_if_t co={mute,enable,fs,vol};
-const audio_codec_if_t *es8311_codec_new(es8311_codec_cfg_t*c){assert(c->ctrl_if==&ci&&!c->master_mode&&!c->use_mclk&&c->pa_pin==-1&&c->codec_mode==1);if(op())return NULL;codec_live=1;return &co;}
+const audio_codec_if_t *es8311_codec_new(es8311_codec_cfg_t*c){assert(c->hw_gain.pa_voltage==3.3f&&c->hw_gain.codec_dac_voltage==3.3f);assert(c->ctrl_if==&ci&&!c->master_mode&&!c->use_mclk&&c->pa_pin==-1&&c->codec_mode==1);if(op())return NULL;codec_live=1;return &co;}
 int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);codec_live=0;return 0;}
 int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*c){assert(c==&ci);ctrl_live=0;return 0;}
 static void (*task_fn)(void*);
@@ -92,9 +95,11 @@ int eTaskGetState(TaskHandle_t h){assert(h);return task_state;}
 void vTaskDelete(TaskHandle_t h){assert(h&&task_state==eSuspended);task_deleted++;}
 void vTaskSuspend(void*h){(void)h;task_state=eSuspended;}
 void vTaskDelay(int t){(void)t;if(!task_block&&audio_stop&&task_state!=eSuspended)task_fn(NULL);}
-int main(void){int16_t pcm[DOOM_AUDIO_BLOCK];for(unsigned i=0;i<DOOM_AUDIO_BLOCK;i++)pcm[i]=123;
+int main(void){bad_reg=-1;int16_t pcm[DOOM_AUDIO_BLOCK];for(unsigned i=0;i<DOOM_AUDIO_BLOCK;i++)pcm[i]=123;
 assert(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK));
 for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);}
+read_fail=1;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);read_fail=0;
+for(int reg=0;reg<=0x37;reg++){if(reg==0||reg==1||reg==2||reg==6||reg==9||reg==0x0d||reg==0x12||reg==0x14||reg==0x31||reg==0x37){bad_reg=reg;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);}}bad_reg=-1;
 queue_fail=1;assert(!doom_audio_begin());queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
 seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on&&doom_audio_demand()==6);
 unsigned writes=DM_GET(audio_writes);for(unsigned i=0;i<6;i++)assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));assert(!doom_audio_demand());assert(DM_GET(audio_writes)==writes);
