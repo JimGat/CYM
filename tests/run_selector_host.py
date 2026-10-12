@@ -97,9 +97,10 @@ typedef void *esp_lcd_panel_handle_t;
 static const lv_color_t *borrowed;
 static lv_area_t pending;
 static unsigned waits,lock_tries,transfers;
+static int esp_task_wdt_status(void *task){(void)task;return ESP_OK;}
 static void esp_task_wdt_reset(void){}
 static int esp_lcd_panel_draw_bitmap(void*p,int x1,int y1,int x2,int y2,const void*buf){
- (void)p;assert(!borrowed);if(enqueue_fail)return ESP_ERR_NO_MEM;assert(buf==host_stage&&!((uintptr_t)buf&63));assert((x2-x1)*(y2-y1)*sizeof(lv_color_t)<=1024);borrowed=buf;pending=(lv_area_t){x1,y1,x2-1,y2-1};waits=0;return 0;
+ (void)p;assert(!borrowed);if(enqueue_fail)return ESP_ERR_NO_MEM;assert(buf==host_stage&&!((uintptr_t)buf&63));assert((x2-x1)*(y2-y1)*sizeof(lv_color_t)<=4096);borrowed=buf;pending=(lv_area_t){x1,y1,x2-1,y2-1};waits=0;return 0;
 }
 int host_take(SemaphoreHandle_t h,int t){
  if(h==flush_done_sem){if(!t)return 0;if(++waits<4)return 0;

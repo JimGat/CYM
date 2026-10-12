@@ -5,8 +5,14 @@
  */
 #ifndef CYM_GAME_PANEL_TRANSPORT_H
 #define CYM_GAME_PANEL_TRANSPORT_H
-#define CYM_PANEL_STAGE_BYTES 1024
+#define CYM_PANEL_STAGE_BYTES 4096
 static void *s_panel_stage;
+
+/* Startup renders before main_task subscribes. Never reset an unsubscribed task. */
+static inline void cym_panel_watchdog_feed(void)
+{
+    if (esp_task_wdt_status(NULL) == ESP_OK) esp_task_wdt_reset();
+}
 
 /* The bus allocator supplies its native TX/RX alignment, not guessed malloc
  * alignment. Allocate after SPI init, before radio/tasks consume internal RAM. */
@@ -38,7 +44,7 @@ static inline esp_err_t cym_panel_transfer(esp_lcd_panel_handle_t panel,
                 locked = true;
                 break;
             }
-            esp_task_wdt_reset();
+            cym_panel_watchdog_feed();
         }
         if (!locked) return ESP_ERR_TIMEOUT;
     }
@@ -50,7 +56,7 @@ static inline esp_err_t cym_panel_transfer(esp_lcd_panel_handle_t panel,
         const size_t bytes = row_bytes * rows;
         memcpy(s_panel_stage, source, bytes);
         xSemaphoreTake(flush_done_sem, 0);
-        /* Each stripe is below every SPI adapter's max_transfer_sz (>=4096).
+        /* Each stripe fits every SPI adapter's max_transfer_sz (>=4096).
          * Thus this call queues ONE color transaction: error means no borrowed
          * color memory, unlike a partially queued multi-transaction frame.
          * Internal SRAM on these SoCs needs pointer alignment, not padded TX
@@ -63,7 +69,7 @@ static inline esp_err_t cym_panel_transfer(esp_lcd_panel_handle_t panel,
                 completed = true;
                 break;
             }
-            esp_task_wdt_reset();
+            cym_panel_watchdog_feed();
         }
         if (!completed) {
             /* A successful enqueue still owns staging and the shared bus.
@@ -76,7 +82,7 @@ static inline esp_err_t cym_panel_transfer(esp_lcd_panel_handle_t panel,
         }
         source += bytes;
         y += rows;
-        esp_task_wdt_reset();
+        cym_panel_watchdog_feed();
     }
     if (locked) xSemaphoreGive(sd_spi_mutex);
     return err;

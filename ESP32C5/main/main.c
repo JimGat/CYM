@@ -2869,7 +2869,11 @@ static bool bt_tracking_mode = false;
 
 // Battery voltage monitor state (DISABLED - using regular C5 chip)
 static lv_obj_t *battery_label = NULL;  // Keep for UI layout
-static char last_voltage_str[32] = "";  // Empty = no valid reading, hide label
+#if defined(CONFIG_BOARD_WS_C5_28)
+static char last_voltage_str[32] = "BAT ?";  // Unknown until the first successful sample.
+#else
+static char last_voltage_str[32] = "";  // Unsupported/absent voltage stays hidden.
+#endif
 // UI state below is owned by the LVGL context. The monitor acquires voltage before
 // taking lvgl_mutex, then publishes one coherent voltage-estimate snapshot while locked.
 static lv_color_t last_batt_color;
@@ -6575,6 +6579,8 @@ static void hide_sd_loading_popup(void) {
     }
 }
 
+#include "sd_startup_check.h"
+
 /* SD error screen state — set by button callbacks, read by polling loop */
 /* SD error / format screen return values */
 #define SD_ERR_RETRY    1
@@ -6726,6 +6732,70 @@ static bool show_sd_format_confirm(void)
 
     s_poll_lvgl_until(&s_sd_err_choice, 0);
     return (s_sd_err_choice == SD_ERR_RETRY); /* SD_ERR_RETRY(1) = confirmed */
+}
+
+/* Startup owns LVGL; callbacks record consent only, not storage work. */
+static volatile int s_sd_startup_choice;
+static void sd_startup_choice_cb(lv_event_t *e)
+{
+    s_sd_startup_choice = (int)(uintptr_t)lv_event_get_user_data(e);
+}
+static bool show_sd_startup_provision_prompt(unsigned missing)
+{
+    if (!missing) return false;
+    s_sd_startup_choice = 0;
+    if (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGW(TAG, "[SD_STARTUP] Cannot display consent; no provisioning started");
+        return false;
+    }
+    hide_sd_loading_popup();
+    lv_obj_t *overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(overlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(overlay, ui_bg_color(), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_radius(overlay, 0, 0);
+    lv_obj_set_style_pad_all(overlay, 8, 0);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    char message[256] = "SD feature folders missing:\n";
+    size_t used = strlen(message);
+    for (unsigned i = 0; i < 3; i++) {
+        if (missing & (1u << i))
+            used += snprintf(message + used, sizeof(message) - used,
+                             "%s\n", sd_startup_paths[i]);
+    }
+    snprintf(message + used, sizeof(message) - used,
+             "\nValidate & Provision now?\nNo format or file overwrite.");
+    lv_obj_t *label = lv_label_create(overlay);
+    lv_label_set_text(label, message);
+    lv_obj_set_size(label, lv_pct(100), lv_disp_get_ver_res(NULL) - 72);
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(label, ui_text_color(), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+    lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 0);
+    for (unsigned i = 0; i < 2; i++) {
+        lv_obj_t *btn = lv_btn_create(overlay);
+        lv_obj_set_size(btn, 100, 36);
+        lv_obj_align(btn, i ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        lv_obj_set_style_bg_color(btn, i ? COLOR_MATERIAL_TEAL : ui_panel_color(), 0);
+        lv_obj_add_event_cb(btn, sd_startup_choice_cb, LV_EVENT_CLICKED,
+                            (void *)(uintptr_t)(i + 1));
+        lv_obj_t *text = lv_label_create(btn);
+        lv_label_set_text(text, i ? "Provision" : "Later");
+        lv_obj_set_style_text_color(text, ui_text_color(), 0);
+        lv_obj_set_style_text_font(text, &lv_font_montserrat_14, 0);
+        lv_obj_center(text);
+    }
+    lv_refr_now(NULL);
+    xSemaphoreGive(lvgl_mutex);
+    s_poll_lvgl_until(&s_sd_startup_choice, 0);
+    while (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) != pdTRUE)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    lv_obj_del(overlay);
+    xSemaphoreGive(lvgl_mutex);
+    ESP_LOGI(TAG, "[SD_STARTUP] Consent=%s missing_mask=0x%x",
+             s_sd_startup_choice == 2 ? "provision" : "later", missing);
+    return s_sd_startup_choice == 2;
 }
 
 // ============================================================================
@@ -7892,6 +7962,10 @@ void app_main(void)
     // 500 ms power-on settle before first attempt (blank/fresh cards can be slow)
     vTaskDelay(pdMS_TO_TICKS(500));
 
+    unsigned sd_startup_missing = 0;
+    bool sd_startup_check_done = false;
+    bool sd_startup_provision_requested = false;
+    bool sd_startup_prompt_deferred = false;
     bool sd_mounted   = false;
     bool keep_trying  = true;
     while (!sd_mounted && keep_trying) {
@@ -7907,6 +7981,11 @@ void app_main(void)
 
             if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
                 esp_err_t sd_ret = wifi_wardrive_init_sd_ex(sd_freqs[att], false);
+                if (sd_ret == ESP_OK && !sd_startup_check_done) {
+                    sd_startup_missing = sd_startup_missing_dirs();
+                    sd_startup_check_done = true;
+                    ESP_LOGI(TAG, "[SD_STARTUP] Read-only sentinel mask=0x%x", sd_startup_missing);
+                }
                 xSemaphoreGive(sd_spi_mutex);
 
                 if (sd_ret == ESP_OK) {
@@ -7977,6 +8056,23 @@ void app_main(void)
         }
     }
     
+    if (sd_mounted && !sd_startup_check_done &&
+        xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(5000)) == pdTRUE) {
+        sd_startup_missing = sd_startup_missing_dirs();
+        sd_startup_check_done = true;
+        xSemaphoreGive(sd_spi_mutex);
+    }
+    if (sd_startup_missing) {
+#if defined(CONFIG_BOARD_TOUCH_XPT2046)
+        /* Consent needs calibrated touch; the read-only check still ran at mount. */
+        sd_startup_prompt_deferred = touch_cal_needed || !touch_cal_loaded;
+#endif
+        if (!sd_startup_prompt_deferred) {
+            sd_startup_provision_requested = show_sd_startup_provision_prompt(sd_startup_missing);
+            show_sd_loading_popup("Loading data...");
+        }
+    }
+
     // Load all data from SD into cache
     update_sd_loading_popup("Loading data...");
     if (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -8038,10 +8134,16 @@ void app_main(void)
         run_touch_calibration();
     }
 #endif
+    if (sd_startup_prompt_deferred)
+        sd_startup_provision_requested = show_sd_startup_provision_prompt(sd_startup_missing);
     bool show_home_layout_setup = !g_home_layout_nvs_present;
 
     create_home_ui();
     if (show_home_layout_setup) show_home_layout_popup();
+    if (sd_startup_provision_requested) {
+        sd_prov_pending_after_format = false;
+        sd_prov_pending_start = true;
+    }
     lv_obj_invalidate(lv_scr_act());
     lv_refr_now(NULL);
 
@@ -8067,7 +8169,7 @@ void app_main(void)
                 heap_caps_free(battery_task_stack);
                 battery_task_stack = NULL;
             } else {
-                ESP_LOGI(TAG, "Battery monitor task running (PSRAM stack, 30s refresh)");
+                ESP_LOGI(TAG, "Battery monitor task running (PSRAM stack, 10s refresh)");
             }
         } else {
             ESP_LOGE(TAG, "Failed to allocate battery task stack from PSRAM");
@@ -9905,7 +10007,7 @@ void app_main(void)
 
             // Deferred provision startup: create dialog outside event callback
             // This prevents blocking display rendering when the dialog is created
-            if (sd_prov_pending_start) {
+            if (sd_prov_pending_start && g_home_layout_nvs_present) {
                 ESP_LOGI(TAG, "[DIAG] Deferred provision start detected, creating dialog...");
                 uint64_t t_dialog_start = esp_timer_get_time();
                 sd_prov_pending_start = false;
@@ -42918,7 +43020,14 @@ static void battery_monitor_task(void *arg)
         } else
 #endif
         if (voltage < BATTERY_VOLTAGE_CRITICAL) {
+#if defined(CONFIG_BOARD_WS_C5_28)
+            /* Expander zero/error is not a trustworthy percentage or battery-
+             * presence signal. Keep an honest visible unknown badge. */
+            snprintf(voltage_str, sizeof(voltage_str), "BAT ?");
+            color = BATTERY_COLOR_MID;
+#else
             voltage_str[0] = '\0';
+#endif
         } else {
             int pct = battery_pct_from_voltage(voltage);
             if (pct < 0) pct = 0;
@@ -42940,24 +43049,30 @@ static void battery_monitor_task(void *arg)
             }
         }
 
-        if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-            battery_ensure_blink_timer_locked();
-            last_batt_color = color;
-            batt_color_valid = voltage_str[0] != '\0';
-            batt_is_critical = critical;
-            strncpy(last_voltage_str, voltage_str, sizeof(last_voltage_str) - 1);
-            last_voltage_str[sizeof(last_voltage_str) - 1] = '\0';
-            if (battery_label != NULL && lv_obj_is_valid(battery_label)) {
-                if (!batt_color_valid) {
-                    lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
-                } else {
-                    batt_blink_phase = false;
-                    lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
-                    lv_label_set_text(battery_label, last_voltage_str);
-                    lv_obj_set_style_text_color(battery_label, last_batt_color, 0);
+        /* Retry a contended publication without reacquiring I2C or dropping
+         * the sample for the whole 10s interval. No LVGL calls outside the lock. */
+        for (int publish_attempt = 0; publish_attempt < 20; publish_attempt++) {
+            if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                battery_ensure_blink_timer_locked();
+                last_batt_color = color;
+                batt_color_valid = voltage_str[0] != '\0';
+                batt_is_critical = critical;
+                strncpy(last_voltage_str, voltage_str, sizeof(last_voltage_str) - 1);
+                last_voltage_str[sizeof(last_voltage_str) - 1] = '\0';
+                if (battery_label != NULL && lv_obj_is_valid(battery_label)) {
+                    if (!batt_color_valid) {
+                        lv_obj_add_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+                    } else {
+                        batt_blink_phase = false;
+                        lv_obj_clear_flag(battery_label, LV_OBJ_FLAG_HIDDEN);
+                        lv_label_set_text(battery_label, last_voltage_str);
+                        lv_obj_set_style_text_color(battery_label, last_batt_color, 0);
+                    }
                 }
+                xSemaphoreGive(lvgl_mutex);
+                break;
             }
-            xSemaphoreGive(lvgl_mutex);
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
         vTaskDelay(pdMS_TO_TICKS(BATTERY_UPDATE_INTERVAL_MS));
     }

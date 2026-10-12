@@ -33,6 +33,15 @@
 
 ---
 
+## Development candidate v2.15.86
+
+The eight-board Development/Beta cycle adds startup SD-folder consent,
+completion-owned display batching with subscription-safe watchdog feeding,
+and visible unknown battery status / contended-publication recovery on WS-C5-28.
+Physical rendering and battery acceptance remain outstanding.
+See [startup, display, and battery operator checks](docs/startup-sd-display-regression.md).
+Stable firmware is not promoted by this development cycle.
+
 ## 🎬 Featured Videos
 
 <p align="center">

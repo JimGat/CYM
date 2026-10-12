@@ -36,6 +36,7 @@ static const uint16_t *borrowed;static uint16_t panel[320*480];
 static lv_area_t pending;static uint64_t now;
 static bool doom_ui_exclusive(void){return true;}
 static uint64_t esp_timer_get_time(void){return ++now;}
+static int esp_task_wdt_status(void *task){(void)task;return ESP_OK;}
 static void esp_task_wdt_reset(void){}
 static void vTaskDelay(int t){(void)t;}
 static int xSemaphoreTake(void*h,int t){
@@ -66,7 +67,7 @@ int main(void){
  assert(cym_panel_transport_init()==ESP_OK);
  memset(panel,0x7e,sizeof(panel));uint16_t pixels[320*15];memset(pixels,0,sizeof(pixels));lv_disp_drv_t d={0};
  for(int y=0;y<480;y+=15){lv_area_t a={0,y,319,y+14};dma_waits=0;lvgl_flush_cb(&d,&a,pixels);}
- assert(draws==480);assert(acks==32);assert(releases==32);assert(lock_attempts>=35);
+ assert(draws==96);assert(acks==32);assert(releases==32);assert(lock_attempts>=35);
  for(unsigned i=0;i<320*480;i++)assert(panel[i]==0);
  puts("actual production flush: busy retry, slow DMA ownership, full native coverage PASS");
 }

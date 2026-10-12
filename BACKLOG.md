@@ -14,6 +14,16 @@ Last updated: 2026-09-23.
 
 ## Features (firmware)
 
+- **All-board startup SD sentinels / consent** — DEVELOPMENT CANDIDATE v2.15.86.
+  Three read-only directory checks after initial mount; Later is non-provisioning,
+  Provision reuses non-formatting Validate & Provision. Host consent/geometry tests
+  pass; all-board native gates and device acceptance remain release requirements.
+- **Shared SPI batching/watchdog and WS-C5-28 battery visibility** — DEVELOPMENT
+  CANDIDATE v2.15.86. Owned 4096-byte DMA stage, actual-subscription watchdog guard,
+  honest unknown battery badge, bounded publication retries. Physical speed/readout
+  and ADC accuracy remain unproven. `docs/startup-sd-display-regression.md`.
+
+
 - **WS after-hours selector / reboot-isolated beta** — DEVELOPMENT BETA
   v2.15.80; physical qualification pending. Five Hardware taps opens
   PinZero LABS selector; enabled engine uses consumed one-shot same-image restart,

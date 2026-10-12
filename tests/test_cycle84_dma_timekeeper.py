@@ -57,6 +57,7 @@ static void *spi_bus_dma_memory_alloc(int host,size_t size,unsigned caps){assert
 static bool doom_ui_exclusive(void){return exclusive;}
 static uint64_t esp_timer_get_time(void){now+=20000;return now;}
 static const char *esp_err_to_name(int e){(void)e;return "injected";}
+static int esp_task_wdt_status(void *task){(void)task;return ESP_OK;}
 static void esp_task_wdt_reset(void){assert(++resets<1000);}
 static void esp_restart(void){assert(borrowed&&locked&&!acks&&!releases);longjmp(restart_boundary,1);}
 static void vTaskDelay(int t){(void)t;}
@@ -71,7 +72,7 @@ static void xSemaphoreGive(void*h){(void)h;assert(!borrowed&&locked);locked=fals
 static int esp_lcd_panel_draw_bitmap(void*p,int x1,int y1,int x2,int y2,const void*buf){
  (void)p;assert(!borrowed);draws++;
  if(fail_queue||(fail_on_draw&&draws==fail_on_draw))return ESP_ERR_NO_MEM;
- if(enforce_dma){assert(buf==allocated);assert(!((uintptr_t)buf&63));assert((x2-x1)*(y2-y1)*2<=1024);}
+ if(enforce_dma){assert(buf==allocated);assert(!((uintptr_t)buf&63));assert((x2-x1)*(y2-y1)*2<=4096);}
  pending=(lv_area_t){x1,y1,x2-1,y2-1};borrowed=buf;return 0;
 }
 static void lv_disp_flush_ready(lv_disp_drv_t*d){(void)d;assert(!borrowed);acks++;}
@@ -127,7 +128,7 @@ class DMA(unittest.TestCase):
    exclusive=true;enforce_dma=true;fail_on_draw=2;lv_disp_drv_t d={0};lv_area_t a={0,0,319,14};uint16_t p[320*15];
    for(unsigned i=0;i<320*15;i++)p[i]=i+17;
    lvgl_flush_cb(&d,&a,p);assert(draws==2&&dma_waits==4&&releases==1&&!borrowed&&!locked&&acks==1);
-   for(int x=0;x<320;x++)assert(panel[x]==p[x]);
+   for(int x=0;x<320*6;x++)assert(panel[x]==p[x]);
    fail_on_draw=0;lvgl_flush_cb(&d,&a,p);assert(!borrowed&&!locked&&acks==2);
    for(int y=0;y<15;y++)for(int x=0;x<320;x++)assert(panel[y*320+x]==p[y*320+x]);
    puts("error after completed stripe: no live reuse/release, later successful recovery PASS");}
