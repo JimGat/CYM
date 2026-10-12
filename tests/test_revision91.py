@@ -34,12 +34,12 @@ assert(cym_ui_diag_elapsed(0xfffffff0u,0x10u)==32);return 0;}""")
 #define WS35_EXIO_REG_OUTPUT 3
 #define BOARD_POWER_ENABLE_EXIO 5
 typedef int esp_err_t;
-static void*s_exio_dev=(void*)1;static uint16_t mode_shadow=0xffdc,output_shadow=0xa5e3;
+static void*s_exio_dev=(void*)1;static uint16_t mode_shadow=0x23,output_shadow=0xa5e3;
 static int write_fail,read_fail,mismatch,writes;static uint16_t hardware;
 int i2c_master_transmit(void*h,const uint8_t*p,size_t n,int timeout){assert(h&&n==3&&p[0]==3&&timeout==100);writes++;if(write_fail)return -1;hardware=p[1]|(p[2]<<8);return 0;}
-int i2c_master_transmit_receive(void*h,const uint8_t*p,size_t n,uint8_t*out,size_t len,int timeout){assert(h&&n==1&&p[0]==4&&len==1&&timeout==100);if(read_fail)return -1;*out=(hardware&255)^(mismatch?32:0);return 0;}
+int i2c_master_transmit_receive(void*h,const uint8_t*p,size_t n,uint8_t*out,size_t len,int timeout){assert(h&&n==1&&p[0]==4&&len==2&&timeout==100);if(read_fail)return -1;*out=(hardware&255)^(mismatch?32:0);out[1]=hardware>>8;return 0;}
 """+function+r"""
-int main(void){uint16_t keep=output_shadow&~32;assert(ws_c5_35_audio_amp(false));assert((output_shadow&~32)==keep&&!(hardware&32));assert(ws_c5_35_audio_amp(true));assert((output_shadow&~32)==keep&&(hardware&32));uint16_t before=output_shadow;write_fail=1;assert(!ws_c5_35_audio_amp(false)&&output_shadow==before);write_fail=0;read_fail=1;assert(!ws_c5_35_audio_amp(false)&&!(output_shadow&32));read_fail=0;mismatch=1;assert(!ws_c5_35_audio_amp(true));mismatch=0;assert(ws_c5_35_audio_amp(false));int count=writes;mode_shadow|=32;assert(!ws_c5_35_audio_amp(true)&&writes==count);mode_shadow&=~32;s_exio_dev=0;assert(!ws_c5_35_audio_amp(true)&&writes==count);return 0;}
+int main(void){uint16_t keep=output_shadow&~32;assert(ws_c5_35_audio_amp(false));assert((output_shadow&~32)==keep&&!(hardware&32));assert(ws_c5_35_audio_amp(true));assert((output_shadow&~32)==keep&&(hardware&32));uint16_t before=output_shadow;write_fail=1;assert(!ws_c5_35_audio_amp(false)&&output_shadow==before);write_fail=0;read_fail=1;assert(!ws_c5_35_audio_amp(false)&&!(output_shadow&32));read_fail=0;mismatch=1;assert(!ws_c5_35_audio_amp(true));mismatch=0;assert(ws_c5_35_audio_amp(false));int count=writes;mode_shadow&=~32;assert(!ws_c5_35_audio_amp(true)&&writes==count);mode_shadow|=32;s_exio_dev=0;assert(!ws_c5_35_audio_amp(true)&&writes==count);return 0;}
 """
   self.run_c('amp35',code)
  def test_ws28_production_amp(self):

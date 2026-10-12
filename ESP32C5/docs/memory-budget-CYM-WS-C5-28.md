@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.91 |
+| Version | v2.15.92 |
 | Build date | 2026-10-12 |
 | .iram0.text | 139,158 B (135.9 KB) |
-| .dram0.data | 45,405 B (44.3 KB) |
+| .dram0.data | 45,621 B (44.6 KB) |
 | .dram0.bss  (internal) | 108,000 B (105.5 KB) |
 | .ext_ram.bss  (PSRAM) | 312,392 B (305.1 KB) |
-| App binary size | 3,837,568 B (3747.6 KB) |
+| App binary size | 3,838,272 B (3748.3 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*

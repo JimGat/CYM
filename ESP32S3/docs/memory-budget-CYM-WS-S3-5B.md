@@ -36,13 +36,13 @@ Runtime display allocations (not all represented in linker BSS): two physical 10
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.91 |
+| Version | v2.15.92 |
 | Build date | 2026-10-12 |
 | .iram0.text | 127,279 B (124.3 KB) |
-| .dram0.data | 29,073 B (28.4 KB) |
-| .dram0.bss  (internal) | 83,944 B (82.0 KB) |
+| .dram0.data | 29,289 B (28.6 KB) |
+| .dram0.bss  (internal) | 83,952 B (82.0 KB) |
 | .ext_ram.bss  (PSRAM) | 207,452 B (202.6 KB) |
-| App binary size | 2,819,664 B (2753.6 KB) |
+| App binary size | 2,820,464 B (2754.4 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ## Internal BSS consumers

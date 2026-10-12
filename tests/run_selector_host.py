@@ -75,6 +75,7 @@ static cym_ui_diag host_ui_diag;
 static uint32_t host_diag_clock;
 uint32_t cym_ui_diag_clock(void){return ++host_diag_clock;}
 void cym_ui_diag_record(unsigned kind,uint32_t start){cym_ui_diag_add(&host_ui_diag,kind,cym_ui_diag_elapsed(start,cym_ui_diag_clock()));}
+void cym_ui_diag_work_record(unsigned kind,uint32_t units){cym_ui_diag_work_add(&host_ui_diag,kind,units);}
 int64_t fake_us;
 int task_state,task_starts,task_deletes;
 #include "doom_ui.c"
@@ -302,6 +303,11 @@ int main(int argc,char**argv){
  assert(host_ui_diag.total[CYM_UI_RENDER].count>0&&host_ui_diag.total[CYM_UI_ROTATE].count>0);
  assert(host_ui_diag.total[CYM_UI_ROTATE].us==host_ui_diag.total[CYM_UI_ROTATE].count);
  assert(host_ui_diag.total[CYM_UI_ROTATE].max_us==1);
+ assert(host_ui_diag.work_total[CYM_UI_INVALIDATE].count>0);
+ assert(host_ui_diag.work_total[CYM_UI_DIRTY_AREA].count>0);
+ assert(host_ui_diag.work_total[CYM_UI_RENDER_BAND].count>0);
+ assert(host_ui_diag.work_total[CYM_UI_COVER_VISIT].count>0);
+ assert(host_ui_diag.work_total[CYM_UI_DRAW_VISIT].count>0);
  unsigned render_total=host_ui_diag.total[CYM_UI_RENDER].count;
  cym_ui_diag_reset_window(&host_ui_diag);assert(!host_ui_diag.window[CYM_UI_RENDER].count&&host_ui_diag.total[CYM_UI_RENDER].count==render_total);
  puts("Real LVGL pinned production render/rotation RAM counts+window reset PASS; simulated clock not timing proof");
@@ -310,11 +316,60 @@ int main(int argc,char**argv){
  return 0;
 }
 """
+def normal_navigation_source():
+ text=(ROOT/'ESP32C5/main/main.c').read_text()
+ def function(signature):
+  a=text.index(signature+'\n{');b=text.index('{',a);depth=1;i=b+1
+  while depth:
+   depth+=(text[i]=='{')-(text[i]=='}');i+=1
+  return text[a:i]
+ pre=r"""
+#define CONFIG_BOARD_WS_C5_35 1
+#define COLOR_MATERIAL_TEAL lv_color_hex(0x009688)
+#define COLOR_MATERIAL_ORANGE lv_color_hex(0xff9800)
+#define COLOR_MATERIAL_AMBER lv_color_hex(0xffc107)
+static lv_obj_t *screen_popup,*screen_home_classic_radio,*screen_home_4cat_radio,*timeout_dropdown,*brightness_slider,*brightness_value_label,*orient_dropdown;
+static bool g_home_layout_4cat;static uint8_t brightness_before_popup,screen_brightness_pct=80,screen_orientation;static uint32_t screen_timeout_ms=60000;
+static const bool SCREEN_HOME_LAYOUT_CHOICE[2]={false,true};
+static lv_color_t ui_bg_color(void){return lv_color_hex(0x181818);}
+static lv_color_t ui_panel_color(void){return lv_color_hex(0x252525);}
+static lv_color_t ui_text_color(void){return lv_color_white();}
+static int timeout_ms_to_index(uint32_t ms){(void)ms;return 2;}
+static void set_backlight_percent(unsigned pct){assert(pct==80);}
+static void screen_popup_save_cb(lv_event_t*e){(void)e;} /* NVS/rotation services not exercised here. */
+static void brightness_slider_event_cb(lv_event_t*e){(void)e;}
+static void show_screen_popup_measured(void);
+"""
+ pre+='\n'.join(function(sig) for sig in ['static void screen_home_layout_radio_cb(lv_event_t *e)','static void screen_popup_close_cb(lv_event_t *e)','static void show_screen_popup(void)','static void show_screen_popup_measured(void)'])
+ pre+=r"""
+#undef CONFIG_BOARD_WS_C5_35
+static void normal_navigation_smoke(lv_disp_t*d){
+ for(int rotation=0;rotation<4;rotation++){
+  lv_disp_set_rotation(d,(lv_disp_rot_t)rotation);screen_orientation=rotation;
+  for(int modern=0;modern<2;modern++)for(int cycle=0;cycle<2;cycle++){
+   g_home_layout_4cat=modern;unsigned before=lv_obj_get_child_cnt(lv_scr_act());
+   show_screen_popup();assert(screen_popup);lv_obj_t *first=screen_popup;unsigned constructed=lv_obj_get_child_cnt(lv_scr_act());assert(constructed>=before+1);
+   show_screen_popup();assert(first==screen_popup);
+   assert(lv_obj_get_child_cnt(lv_scr_act())==constructed);
+   assert(lv_obj_has_state(modern?screen_home_4cat_radio:screen_home_classic_radio,LV_STATE_CHECKED));
+   assert(lv_dropdown_get_selected(orient_dropdown)==rotation);
+   lv_refr_now(d);uint32_t count=host_ui_diag.work_total[CYM_UI_RENDER_BAND].count;
+   lv_refr_now(d);assert(host_ui_diag.work_total[CYM_UI_RENDER_BAND].count==count); /* settled popup does not redraw spontaneously */
+   screen_popup_close_cb(NULL);assert(!screen_popup&&!timeout_dropdown&&!brightness_slider);
+   assert(lv_obj_get_child_cnt(lv_scr_act())==before);
+  }
+ }
+ puts("Production Screen popup Classic/Modern repeat/open/no-duplicate/idle/cancel and saved orientation 0/90/180/270 PASS; hardware and NVS save mocked");
+}
+"""
+ return pre
 def run():
  OUT.mkdir(parents=True,exist_ok=True)
  for name,content in STUBS.items():
   p=OUT/'stubs'/name;p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content)
- (OUT/'host.c').write_text(HOST)
+ host=HOST.replace('int main(int argc,char**argv){',normal_navigation_source()+'\nint main(int argc,char**argv){')
+ host=host.replace(' lv_obj_t *screen=lv_scr_act();lv_obj_clean(screen);',' normal_navigation_smoke(display);\n lv_obj_t *screen=lv_scr_act();lv_obj_clean(screen);')
+ (OUT/'host.c').write_text(host)
  flags=['-std=gnu11','-O1','-g','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=malloc','-DLV_MEM_CUSTOM_FREE=free','-DLV_MEM_CUSTOM_REALLOC=realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_16=1','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_18=1','-DLV_FONT_MONTSERRAT_20=1','-I'+str(LVGL),'-I'+str(OUT/'stubs'),'-I'+str(COMP/'include'),'-I'+str(COMP),'-I'+str(ROOT/'ESP32C5/main')]
  diag_src=OUT/'lv_refr.c'
  r=subprocess.run(['python3',str(ROOT/'scripts/lvgl-diag-copy.py'),str(LVGL/'src/core/lv_refr.c'),str(diag_src)],capture_output=True,text=True)

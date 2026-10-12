@@ -850,15 +850,25 @@ static DRAM_ATTR cym_ui_diag s_ui_diag;
 static bool s_ui_diag_normal = true;
 uint32_t cym_ui_diag_clock(void){return (uint32_t)esp_timer_get_time();}
 void cym_ui_diag_record(unsigned kind,uint32_t start){if(!s_ui_diag_normal)return;cym_ui_diag_add(&s_ui_diag,kind,cym_ui_diag_elapsed(start,cym_ui_diag_clock()));}
+void cym_ui_diag_work_record(unsigned kind,uint32_t units)
+{
+    if(s_ui_diag_normal)cym_ui_diag_work_add(&s_ui_diag,kind,units);
+}
 static void cym_ui_diag_report(void)
 {
     static uint64_t last_ms;
     uint64_t now=(uint64_t)esp_timer_get_time()/1000;
     if(now-last_ms<5000)return;
-    static const char *names[CYM_UI_KINDS]={"render","sw_rotate","settings_build","hardware_build","settings_event","hardware_event"};
+    static const char *names[CYM_UI_KINDS]={"render","sw_rotate","settings_build","hardware_build","settings_event","hardware_event","layout","refresh","screen_popup_call"};
     for(unsigned k=0;k<CYM_UI_KINDS;k++){
         cym_ui_span w=s_ui_diag.window[k],t=s_ui_diag.total[k];
         if(w.count)ESP_LOGI("display","UI_DIAG normal kind=%s interval_ms=%llu window_count=%lu window_us=%lu window_max_us=%lu total_count=%lu total_us=%lu lifetime_max_us=%lu elapsed_includes_preemption=1 overlapping_spans=1",names[k],(unsigned long long)(now-last_ms),(unsigned long)w.count,(unsigned long)w.us,(unsigned long)w.max_us,(unsigned long)t.count,(unsigned long)t.us,(unsigned long)t.max_us);
+    }
+    static const char *work_names[CYM_UI_WORK_KINDS]={"invalidate","saved-area","dirty-area","render-band","cover-visit","draw-visit"};
+    for(unsigned i=0;i<CYM_UI_WORK_KINDS;i++){
+        const cym_ui_work *w=&s_ui_diag.work_window[i],*t=&s_ui_diag.work_total[i];
+        if(w->count)ESP_LOGI(TAG,"UI_WORK kind=%s interval_ms=%"PRIu32" count=%"PRIu32" units=%"PRIu32" max_units=%"PRIu32" total_count=%"PRIu32" total_units=%"PRIu32,
+            work_names[i],(uint32_t)(now-last_ms),w->count,w->units,w->max_units,t->count,t->units);
     }
     cym_ui_diag_reset_window(&s_ui_diag);last_ms=now;
 }
@@ -17926,20 +17936,12 @@ void show_function_page(const char *name)
 // TILE-BASED NAVIGATION SYSTEM
 // ============================================================================
 
-// Home button callback - sends UART reboot command and returns to main tiles
+// Home must not send accessory commands on the GPS-owned UART.
 static void home_btn_event_cb(lv_event_t *e)
 {
     (void)e;
-    // Send "reboot" command via UART (GPS UART port)
-    const char *reboot_cmd = "reboot\n";
-#if !defined(CONFIG_BOARD_CYD2USB)
-    uart_write_bytes(GPS_UART_NUM, reboot_cmd, strlen(reboot_cmd));
-#else
-    (void)reboot_cmd; // Classic GPS is RX-only; do not drive CH340/RF-HAT nets.
-#endif
-    ESP_LOGI(TAG, "UART reboot command sent");
-    
-    // Navigate back to main tiles (radio_reset_to_idle called from show_menu)
+    // GPS has no supported ASCII "reboot" navigation contract. Keep the USB
+    // console and show_menu stop-hook/radio cleanup path unchanged.
     nav_to_menu_flag = true;
 }
 
@@ -27430,7 +27432,14 @@ static void screen_popup_recal_cb(lv_event_t *e)
 }
 #endif  // CONFIG_BOARD_TOUCH_XPT2046
 
+static void show_screen_popup_measured(void);
 static void show_screen_popup(void)
+{
+    uint32_t started=cym_ui_diag_clock();
+    show_screen_popup_measured();
+    cym_ui_diag_record(CYM_UI_SCREEN_POPUP,started);
+}
+static void show_screen_popup_measured(void)
 {
     if (screen_popup) return;
     brightness_before_popup = screen_brightness_pct;

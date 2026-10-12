@@ -25,7 +25,7 @@ static const char *TAG = "ws_c5_35";
 // The WS-C5-35 uses a CH32V006 (not the WS-C5-28's CH32V003). The register
 // protocol uses 16-bit little-endian values for mode, output, and input.
 // This adapter drives it with raw I2C — not the WS-C5-28's CH32V003 expander API.
-#define WS35_EXIO_REG_MODE   0x02   // 16-bit direction: 0=output, 1=input per pin
+#define WS35_EXIO_REG_MODE   0x02   // 16-bit direction: 1=output, 0=input per pin
 #define WS35_EXIO_REG_OUTPUT 0x03   // 16-bit output level: 0=low, 1=high per pin
 #define WS35_EXIO_REG_PWM    0x05   // 8-bit PWM duty for backlight
 
@@ -103,11 +103,11 @@ static esp_err_t ws35_init_i2c(void)
 
     // Match the vendor BSP: EXIO0 (touch RST), EXIO1 (LCD RST), and
     // EXIO5 (board power/amp enable) are outputs; EXIO6 remains an input.
-    // The CH32V006 example defines direction bits as 0=output, 1=input.
-    uint16_t mode = 0xFFFF;
-    mode &= ~(1u << BOARD_TOUCH_RESET_EXIO);
-    mode &= ~(1u << BOARD_LCD_RESET_EXIO);
-    mode &= ~(1u << BOARD_POWER_ENABLE_EXIO);
+    // Pinned 04e6134 07_exio and Arduino 01_exio: 1=output, 0=input.
+    uint16_t mode = 0;
+    mode |= (1u << BOARD_TOUCH_RESET_EXIO);
+    mode |= (1u << BOARD_LCD_RESET_EXIO);
+    mode |= (1u << BOARD_POWER_ENABLE_EXIO);
     ESP_RETURN_ON_ERROR(ws35_exio_write16(WS35_EXIO_REG_MODE, mode), TAG, "EXIO mode");
 
     // Vendor sequence is high -> low -> high for both reset lines, with EXIO5
@@ -312,22 +312,23 @@ bool ws_c5_35_touch_read(uint16_t *x,uint16_t *y,bool *touched)
     *touched=ok&&count>0;return ok;
 }
 
-/* Factory Audio_PA_EN/DIS routes EXIO5. Keep the full adapter shadow,
- * including upper bits and LCD/touch reset lines. Vendor component1.0.2
- * documents INPUT04 as one byte;02/03 read APIs are shadows, not I2C reads.
- * Do not alter the accepted boot mode protocol in an audio lifecycle change. */
+/* EXIO5 -> PA_CTRL -> NS4150B enable in the WS35 schematic.
+ * Pinned 04e6134 07_exio uses 16-bit LE mode/output/input, 1=output.
+ * Factory CH32V003 component1.0.2 is 8-pin, not this 16-pin protocol.
+ * INPUT04 remains a required pin-state check, not audibility proof. */
 bool ws_c5_35_audio_amp(bool on)
 {
     const uint16_t mask = 1u << BOARD_POWER_ENABLE_EXIO;
-    if (!s_exio_dev || (mode_shadow & mask)) return false;
+    if (!s_exio_dev || !(mode_shadow & mask)) return false;
     uint16_t next = on ? output_shadow | mask : output_shadow & ~mask;
     uint8_t cmd[3] = {WS35_EXIO_REG_OUTPUT, next & 0xff, next >> 8};
     esp_err_t err = i2c_master_transmit(s_exio_dev, cmd, sizeof(cmd), 100);
     if (err == ESP_OK) output_shadow = next;
-    uint8_t reg = 0x04, pins = 0;
-    esp_err_t read = err == ESP_OK ? i2c_master_transmit_receive(s_exio_dev, &reg, 1, &pins, 1, 100) : err;
+    uint8_t reg = 0x04, raw[2] = {0};
+    esp_err_t read = err == ESP_OK ? i2c_master_transmit_receive(s_exio_dev, &reg, 1, raw, sizeof(raw), 100) : err;
+    uint16_t pins = (uint16_t)raw[0] | ((uint16_t)raw[1] << 8);
     bool verified = err == ESP_OK && read == ESP_OK && !!(pins & mask) == on;
-    ESP_LOGI(TAG, "AUDIO_PA board=WS35 exio=5 requested=%d mode_shadow=%04x output_shadow=%04x pin_read=%02x write_rc=%d read_rc=%d verified=%d audible=unconfirmed", on, mode_shadow, output_shadow, pins, err, read, verified);
+    ESP_LOGI(TAG, "AUDIO_PA board=WS35 exio=5 requested=%d mode_shadow=%04x output_shadow=%04x pin_read=%04x write_rc=%d read_rc=%d verified=%d audible=unconfirmed", on, mode_shadow, output_shadow, pins, err, read, verified);
     return verified;
 }
 
