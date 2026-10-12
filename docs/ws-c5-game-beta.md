@@ -1,6 +1,54 @@
+# Cycle81 uncommitted candidate (v2.15.83)
+
+Parent review/publication required. No audible-sound or physical-FPS claim.
+
+Current gameplay: fixed left directional pad (center dead zone; slide without lift;
+forward/back + left/right turning, independent-axis diagonals), separate large Fire
+and Use on right, slim Menu/OK/Exit bottom row. Aspect-fit game/HUD is between
+controls, not covered by them: WS28 192x120, WS35 320x200. Small corner FPS label
+changes at the five-second PERF boundary; structure/hash/init progress only before
+running. Saved CYM orientation, selector Cancel, Classic/Modern entry and same-image
+one-shot reboot isolation are unchanged.
+
+WS35 FT6336 snapshot now requests two points; WS28 CST3530 requests two from its
+existing bounded multi-contact driver. Main's isolated branch rotates BOTH raw
+points to logical270 and combines masks, suppressing normal single-point LVGL input
+only during worker-owned game mode. Error/Return CYM screens retain one-point LVGL.
+Normal CYM still requests one point. This is source + host proof, not simultaneous
+physical touch qualification. FT6336 zero/failure clears stale points and excludes
+UP/reserved records; a production-driver host test covers these cases.
+
+Audio: engine still owns WAD/sample pointers and mixer. Finite queue stores copied
+256-sample blocks, eight-slot capacity, six-block target (~70ms plus DMA), nonblocking
+engine admission. PCM owner paces via bounded I2S writes at unchanged22050Hz. Empty
+queue emits counted silence; write/queue failures do not silently disable effects.
+Stop requests audio owner, waits for cleanup acknowledgement AND suspended task,
+joins before freeing queue/DMA; timeout retains live handles and prevents UI release.
+No new PA/MCLK/slot/volume guesses, no auto chime, music remains disabled.
+
+Every five seconds AUDIO_DIAG prints cumulative starts/rejected/SAMPLES/nonzero,
+starvation/overruns beside existing write-fault counters. CODEC_DIAG reads startup
+registers01/02/06/0A/12/14/31/32 once (read_mask ff means all readbacks succeeded).
+Fire during an actual level should increase starts and nonzero. Nonzero+successful
+writes but silence points past mixer/queue toward codec clock/format/power/physical
+speaker routing; it is not audible proof. Zero starts -> dispatch/event investigation;
+starts but zero PCM -> mixer/sample/volume investigation. Capture full register values
+before any volume/clock change; current vendor-qualified pins/slots/-30dB preserved.
+
+Performance source changes: copy a stable indexed mailbox snapshot under mutex,
+then scale outside it; precompute source x/y and palette colors (no per-pixel divide/
+color conversion). UI no longer redraws full-width time/status during running.
+Panel/SD clock, native startup clear, completion-owned SPI/DMA unchanged. PERF costs
+are nested/concurrent: never sum tick/audio/scale/panel timers as CPU utilization.
+Physical speed must be measured against cycle81/gameplay-evidence.json, not host FPS.
+
+Validation/evidence and exact current artifacts: /home/dev/ws-c5-35-fixes/cycle81/handoff.md.
+The historical sections below document entry/isolation/vendor provenance, not new
+physical qualification.
+
 # WS-C5 selector and same-image reboot-isolated beta operator manual
 
-Development v2.15.80, built on ESP32-Dev as dev, branch Jimgat_Dev.
+Development candidate v2.15.83, built on ESP32-Dev as dev, branch Jimgat_Dev.
 Use the exact development commit pinned by the Beta flasher for matching source.
 This beta is provided for physical qualification, not hardware sign-off.
 Current-cycle evidence: /home/dev/ws-c5-35-fixes/cycle79/ (cycle80 parent evidence).
@@ -68,7 +116,7 @@ Use equal gameplay windows to compare responsiveness; host timings are not devic
 1. Desktop Chrome/Edge, correct board beta URL:
      https://jimgat.github.io/CYM/beta/?board=ws-c5-28
      https://jimgat.github.io/CYM/beta/?board=ws-c5-35
-   Expected: correct board/version and parent-approved Development pin. Select Development and confirm the displayed v2.15.80 version before flashing.
+   Expected: correct board/version and parent-approved Development pin. Select Development and confirm the displayed v2.15.83 version before flashing.
 2. Separate SD contents:
      https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard
    Copy contents of sdcard/ to FAT32 root, retaining licenses/credits.
@@ -113,7 +161,7 @@ never launched; watchdog/panic also falls back. No NVS erase/repair for intent. 
 uses defaults with WiFi refused instead of erasing saved configuration.
 
 BOOT held at early app entry bypasses independently of SD/display/engine. During
-isolated loop BOOT requests safe Exit. Reset/power-cycle recovers a hard hang: intent
+isolated running gameplay BOOT provides debounced Fire; use bottom Exit to leave. Reset/power-cycle recovers a hard hang: intent
 already consumed. If BOOT+reset enters ROM download mode, release BOOT and reset
 normally; physical strap/button behavior is a bench check, not host evidence.
 Essential display/DMA/mutex failure before usable rendering logs ESSENTIAL_INIT_FAILED;
@@ -176,7 +224,7 @@ Through ssh dev@ESP32-Dev, as dev in the authorized worktree:
   python3 tests/run_doom_engine_host.py --wad .hermes/doom-prototype/fixtures/freedoom-0.13.0/freedoom1.wad --output .hermes/doom-prototype/selector-reboot-engine
   . /home/dev/esp/esp-idf/export.sh
   make -j1 all-boards
-  python3 scripts/verify-dev-packages.py --version v2.15.80 --output /home/dev/ws-c5-35-fixes/cycle79/cycle80-packages.json
+  python3 scripts/verify-dev-packages.py --version v2.15.83 --output /home/dev/ws-c5-35-fixes/cycle81/packages.json
 
 Real engine/WAD host gate: gameplay/ammo/menu/use/turn/confirm/release, three reopens,
 missing-file recovery,24 allocation faults/cancellation, nonzeroSFX PCM, owned=0.
@@ -205,3 +253,6 @@ GPL source must accompany binaries:
   https://raw.githubusercontent.com/JimGat/CYM/<parent-commit>/ESP32C5/docs/manifest.ws-c5-35.json
 License: component NOTICE.md, LICENSE.engine, PROVENANCE.json, native-cym.patch;
 art provenance separately in assets/PROVENANCE.json.
+
+### Physical Fire fallback
+During running gameplay, hold the board BOOT button to Fire while using the touch joystick. The isolated GPIO poll uses the existing board BOOT definition and active-low input with 20 ms debounce; touch Fire and physical Fire are combined independently. BOOT no longer exits the isolated game: use the bottom Exit control (including loading/error recovery). BOOT is ignored for game inputs before engine readiness. Normal CYM behavior and reset/download strap behavior are unchanged; release BOOT before reset/power-on. Real-device simultaneous movement/BOOT Fire, two-finger touch, effects output and FPS remain physical qualification checks.

@@ -10,4 +10,10 @@ void doom_ui_tile_click(void);
 void doom_ui_screen_stop(void);
 bool doom_ui_active(void);
 void doom_ui_request_exit(void);
+
+/* Main-owner two-point logical snapshot; false leaves normal LVGL untouched. */
+bool doom_ui_touch_snapshot(const int *,const int *,unsigned);
+
+/* Debounced physical Fire, active only during isolated running gameplay. */
+void doom_ui_boot_fire(bool);
 #endif

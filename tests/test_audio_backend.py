@@ -28,7 +28,7 @@ typedef struct {int bits,mode;} mock_slot;
 #define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(b,m) {b,m}
 typedef struct {mock_clk clk_cfg;mock_slot slot_cfg;struct {int mclk,bclk,ws,dout,din;} gpio_cfg;} i2s_std_config_t;
 typedef struct {int port,addr;void *bus_handle;} audio_codec_i2c_cfg_t;
-typedef struct {int unused;} audio_codec_ctrl_if_t;
+typedef struct audio_codec_ctrl_if_t {int (*read_reg)(const struct audio_codec_ctrl_if_t*,int,int,void*,int);} audio_codec_ctrl_if_t;
 typedef struct {int sample_rate,channel,bits_per_sample;} esp_codec_dev_sample_info_t;
 typedef struct audio_codec_if_t {int (*mute)(const struct audio_codec_if_t*,bool);int (*enable)(const struct audio_codec_if_t*,bool);int (*set_fs)(const struct audio_codec_if_t*,esp_codec_dev_sample_info_t*);int (*set_vol)(const struct audio_codec_if_t*,float);} audio_codec_if_t;
 typedef struct {const audio_codec_ctrl_if_t *ctrl_if;int codec_mode,pa_pin;bool master_mode,use_mclk;struct {float pa_voltage,codec_dac_voltage;} hw_gain;} es8311_codec_cfg_t;
@@ -48,8 +48,11 @@ HARNESS=r"""#include "backend_stub.h"
 #include "doom_audio.h"
 #include "doom_metrics.h"
 doom_metrics_t doom_metrics;
+#include "doom_audio.c"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 static int seq,fail_at=-1,tx_live,tx_on,ctrl_live,codec_live,amp_on,short_write;
 static audio_codec_ctrl_if_t ci;
 static int op(void){return seq++==fail_at?-1:0;}
@@ -66,7 +69,7 @@ return op();}
 int i2s_channel_enable(i2s_chan_handle_t t){assert(t);if(op())return -1;tx_on=1;return 0;}
 int i2s_channel_disable(i2s_chan_handle_t t){assert(t);if(op())return -1;tx_on=0;return 0;}
 int i2s_del_channel(i2s_chan_handle_t t){assert(t&&!tx_on);if(op())return -1;tx_live=0;return 0;}
-int i2s_channel_write(i2s_chan_handle_t t,const void *p,size_t n,size_t *out,unsigned timeout){assert(t&&tx_on&&p);assert(n<=2206&&timeout==50);*out=short_write?n-2:n;return op();}
+int i2s_channel_write(i2s_chan_handle_t t,const void *p,size_t n,size_t *out,unsigned timeout){assert(t&&tx_on&&p);assert(n==512&&timeout==50);*out=short_write?n-2:n;return op();}
 const audio_codec_ctrl_if_t *audio_codec_new_i2c_ctrl(audio_codec_i2c_cfg_t*c){assert(c->port==0&&c->addr==0x30&&c->bus_handle==&ci);if(op())return NULL;ctrl_live=1;return &ci;}
 static int mute(const audio_codec_if_t*c,bool v){(void)c;(void)v;return op();}
 static int enable(const audio_codec_if_t*c,bool v){(void)c;(void)v;return op();}
@@ -76,22 +79,51 @@ static const audio_codec_if_t co={mute,enable,fs,vol};
 const audio_codec_if_t *es8311_codec_new(es8311_codec_cfg_t*c){assert(c->ctrl_if==&ci&&!c->master_mode&&!c->use_mclk&&c->pa_pin==-1&&c->codec_mode==1);if(op())return NULL;codec_live=1;return &co;}
 int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);codec_live=0;return 0;}
 int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*c){assert(c==&ci);ctrl_live=0;return 0;}
-int main(void){int16_t pcm[1103]={0};assert(!doom_audio_write(pcm,1));
-for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on);}
-seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on);assert(doom_audio_write(pcm,1103));assert(!doom_audio_write(pcm,1104));short_write=1;assert(!doom_audio_write(pcm,2));short_write=0;assert(DM_GET(audio_writes)==2&&DM_GET(audio_waits)==2&&DM_GET(audio_faults)==1);
-fail_at=seq+3;assert(doom_audio_end()!=0);assert(tx_live);fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on);
-puts("PRODUCTION_AUDIO_BACKEND routing, DMA bounds, init/stop failures, retry retention PASS (mock driver, not hardware)");return 0;}
+static void (*task_fn)(void*);
+static int task_state,task_deleted,queue_fail,task_fail,task_block;
+typedef struct mock_queue {unsigned n,head,tail;size_t size;unsigned char data[8][520];} mock_queue;
+QueueHandle_t xQueueCreate(unsigned n,size_t size){assert(n<=8&&size<=520);if(queue_fail)return NULL;mock_queue*q=calloc(1,sizeof(*q));q->size=size;return q;}
+unsigned uxQueueMessagesWaiting(QueueHandle_t q){return q->n;}
+int xQueueSend(QueueHandle_t q,const void*p,int ticks){assert(!ticks);if(q->n==8)return 0;memcpy(q->data[q->tail++%8],p,q->size);q->n++;return 1;}
+int xQueueReceive(QueueHandle_t q,void*p,int ticks){assert(!ticks);if(!q->n)return 0;memcpy(p,q->data[q->head++%8],q->size);q->n--;return 1;}
+void vQueueDelete(QueueHandle_t q){free(q);}
+int xTaskCreate(void(*f)(void*),const char*n,unsigned st,void*a,int pri,TaskHandle_t*h){(void)n;(void)st;(void)a;(void)pri;if(task_fail)return 0;task_fn=f;*h=&task_state;task_state=eRunning;return 1;}
+int eTaskGetState(TaskHandle_t h){assert(h);return task_state;}
+void vTaskDelete(TaskHandle_t h){assert(h&&task_state==eSuspended);task_deleted++;}
+void vTaskSuspend(void*h){(void)h;task_state=eSuspended;}
+void vTaskDelay(int t){(void)t;if(!task_block&&audio_stop&&task_state!=eSuspended)task_fn(NULL);}
+int main(void){int16_t pcm[DOOM_AUDIO_BLOCK];for(unsigned i=0;i<DOOM_AUDIO_BLOCK;i++)pcm[i]=123;
+assert(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK));
+for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);}
+queue_fail=1;assert(!doom_audio_begin());queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
+seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on&&doom_audio_demand()==6);
+unsigned writes=DM_GET(audio_writes);for(unsigned i=0;i<6;i++)assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));assert(!doom_audio_demand());assert(DM_GET(audio_writes)==writes);
+pcm[0]=0;assert(audio_step());assert(DM_GET(audio_nonzero)==DOOM_AUDIO_BLOCK);assert(doom_audio_demand()==1);
+assert(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK+1));
+for(unsigned i=0;i<5;i++)assert(audio_step());assert(audio_step());assert(DM_GET(audio_starved)==1);
+assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));short_write=1;assert(!audio_step());short_write=0;assert(!doom_audio_demand());
+assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);
+assert(doom_audio_begin());
+/* Ack alone is not a join: timeout preserves live task, queue and handles. */
+audio_done=true;task_block=1;assert(doom_audio_end()!=0);assert(audio_task&&audio_queue&&tx_live&&tx_on);task_block=0;audio_done=false;assert(doom_audio_end()==0);
+assert(doom_audio_begin());fail_at=seq+3;assert(doom_audio_end()!=0);assert(tx_live);fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live);
+puts("PRODUCTION_AUDIO_BACKEND both board routes, copied queue/demand, silence starvation, fault/stop/join retention PASS (mock driver, not hardware)");return 0;}
+
 """
 class Backend(unittest.TestCase):
  def test_both_production_backends(self):
   OUT.mkdir(parents=True,exist_ok=True);(OUT/'driver').mkdir(exist_ok=True)
   (OUT/'backend_stub.h').write_text(STUB)
   for p in [OUT/'driver/i2s_std.h',OUT/'esp_codec_dev_defaults.h',OUT/'esp_log.h']:p.write_text('#include "backend_stub.h"\n')
+  (OUT/'freertos').mkdir(exist_ok=True)
+  (OUT/'freertos/FreeRTOS.h').write_text('#pragma once\n#define pdTRUE 1\n#define pdPASS 1\n#define pdMS_TO_TICKS(x) (x)\n')
+  (OUT/'freertos/task.h').write_text('#pragma once\ntypedef void *TaskHandle_t;\nenum{eRunning,eSuspended};\nint xTaskCreate(void(*)(void*),const char*,unsigned,void*,int,TaskHandle_t*);\nint eTaskGetState(TaskHandle_t);\nvoid vTaskDelete(TaskHandle_t);\nvoid vTaskDelay(int);\nvoid vTaskSuspend(void*);\n')
+  (OUT/'freertos/queue.h').write_text('#pragma once\ntypedef struct mock_queue *QueueHandle_t;\nQueueHandle_t xQueueCreate(unsigned,size_t);\nunsigned uxQueueMessagesWaiting(QueueHandle_t);\nint xQueueSend(QueueHandle_t,const void*,int);\nint xQueueReceive(QueueHandle_t,void*,int);\nvoid vQueueDelete(QueueHandle_t);\n')
   (OUT/'harness.c').write_text(HARNESS)
   (OUT/'esp_timer.h').write_text('#include <stdint.h>\nstatic inline int64_t esp_timer_get_time(void){static int64_t us;return us+=2000;}\n')
   for board in ['28','35']:
    exe=OUT/('backend-'+board)
-   cmd=['cc','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fsanitize=address,undefined','-g','-DCONFIG_BOARD_WS_C5_'+board+'=1','-I'+str(OUT),'-I'+str(COMP/'include'),str(OUT/'harness.c'),str(COMP/'doom_audio.c'),'-o',str(exe)]
+   cmd=['cc','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fsanitize=address,undefined','-g','-DCONFIG_BOARD_WS_C5_'+board+'=1','-I'+str(OUT),'-I'+str(COMP/'include'),'-I'+str(COMP),str(OUT/'harness.c'),'-o',str(exe)]
    r=subprocess.run(cmd,capture_output=True,text=True);(OUT/('compile-'+board+'.log')).write_text(r.stdout+r.stderr);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
    r=subprocess.run([str(exe)],capture_output=True,text=True);(OUT/('runtime-'+board+'.log')).write_text(r.stdout+r.stderr);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
 if __name__=='__main__':unittest.main(verbosity=2)

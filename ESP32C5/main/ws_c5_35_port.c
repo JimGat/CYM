@@ -1,4 +1,6 @@
 #include "sdkconfig.h"
+#include <stdint.h>
+#include <stdbool.h>
 #if defined(CONFIG_BOARD_WS_C5_35)
 // Waveshare ESP32-C5-Touch-LCD-3.5 board adapter.
 // ST7796 display (320x480 SPI), FT6336 touch (I2C), CH32V006 IO expander (I2C).
@@ -292,20 +294,19 @@ esp_err_t ws_c5_35_touch_init(void)
 
 // ── Touch read ──────────────────────────────────────────────────────────────
 
-bool ws_c5_35_touch_read(uint16_t *x, uint16_t *y, bool *touched)
+bool ws_c5_35_touch_read_points(uint16_t *x,uint16_t *y,uint8_t *count,uint8_t max)
 {
-    if (!x || !y || !touched || !s_touch) return false;
-    *touched = false;
-
-    uint16_t tp_x[1] = {0}, tp_y[1] = {0};
-    uint8_t tp_cnt = 0;
-    esp_lcd_touch_read_data(s_touch);
-    if (esp_lcd_touch_get_coordinates(s_touch, tp_x, tp_y, NULL, &tp_cnt, 1) && tp_cnt > 0) {
-        *touched = true;
-        *x = tp_x[0];
-        *y = tp_y[0];
-    }
+    if(!x||!y||!count||!s_touch||!max||max>2)return false;
+    *count=0;
+    if(esp_lcd_touch_read_data(s_touch)!=ESP_OK)return false;
+    (void)esp_lcd_touch_get_coordinates(s_touch,x,y,NULL,count,max);
     return true;
+}
+bool ws_c5_35_touch_read(uint16_t *x,uint16_t *y,bool *touched)
+{
+    if(!touched)return false;
+    uint8_t count=0;bool ok=ws_c5_35_touch_read_points(x,y,&count,1);
+    *touched=ok&&count>0;return ok;
 }
 
 // ── Backlight control (CH32V006 PWM) ────────────────────────────────────────
@@ -317,6 +318,7 @@ void ws_c5_35_backlight_set(uint8_t level)
 }
 
 #else
+bool ws_c5_35_touch_read_points(uint16_t *x,uint16_t *y,uint8_t *n,uint8_t max){(void)x;(void)y;(void)max;if(n)*n=0;return false;}
 // Stubs for non-WS-C5-35 builds — ensures file compiles cleanly for all boards.
 #include "ws_c5_35_port.h"
 esp_err_t ws_c5_35_display_init(esp_lcd_panel_handle_t *panel, esp_lcd_panel_io_handle_t *io) { (void)panel; (void)io; return ESP_ERR_NOT_SUPPORTED; }

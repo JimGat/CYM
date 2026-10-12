@@ -127,7 +127,8 @@ void doom_session_request_stop(void){}
 const char *doom_session_error(void){return "host fault";}
 size_t doom_session_owned(void){return 0;}
 size_t doom_session_state_bytes(void){return 0;}
-void doom_session_set_keys(unsigned k){(void)k;}
+static unsigned delivered_keys;
+void doom_session_set_keys(unsigned k){delivered_keys=k;}
 uint16_t doom_session_color565(uint8_t p){return p;}
 static void check_bounds(lv_obj_t *obj){
  for(uint32_t i=0;i<lv_obj_get_child_cnt(obj);i++){
@@ -180,14 +181,37 @@ int main(int argc,char**argv){
   lv_obj_t *obj=lv_obj_get_child(overlay,i);
   if(lv_obj_check_type(obj,&lv_btn_class)){lv_area_t a;lv_obj_get_coords(obj,&a);assert(a.x1>=0&&a.y1>=0&&a.x2<width&&a.y2<height);buttons++;}
  }
- assert(buttons==9);
+ assert(buttons==5);
  char game_path[512];snprintf(game_path,sizeof(game_path),"%s-loading.ppm",argv[3]);capture(game_path);
  uint32_t redraws=ui_updates;fake_us+=250000;update(timer);assert(ui_updates>redraws);
  load_phase=LOAD_HASH;hash_total=100;hash_bytes=25;update(timer);assert(strstr(lv_label_get_text(status),"25% 25/100 B"));
  load_phase=LOAD_INIT;update(timer);assert(strstr(lv_label_get_text(status),"Engine init"));
  /* Regression: real production UI must replace validation text on start. */
  started=true;update(timer);assert(!strstr(lv_label_get_text(status),"Validating"));
- assert(strstr(lv_label_get_text(status),"SFX only"));
+ assert(strstr(lv_label_get_text(status),"fps"));
+ uint32_t stable_updates=ui_updates;fake_us+=1000000;update(timer);assert(ui_updates==stable_updates);
+ int tx[2]={controls.pad.x+controls.pad.w/2,controls.fire.x+8},ty[2]={controls.pad.y+8,controls.fire.y+8};
+ assert(doom_ui_touch_snapshot(tx,ty,2));assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_FIRE));
+ tx[0]=controls.pad.x+4;assert(doom_ui_touch_snapshot(tx,ty,2));assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_LEFT|DOOM_KEY_FIRE));
+ assert(doom_ui_touch_snapshot(tx,ty,0));assert(!delivered_keys);
+ /* Physical Fire combines independently with either touch contact. */
+ doom_ui_boot_fire(true);assert(!delivered_keys);fake_us+=10000;
+ doom_ui_boot_fire(false);assert(!delivered_keys); /* bounce rejected */
+ doom_ui_boot_fire(true);fake_us+=20000;doom_ui_boot_fire(true);
+ assert(delivered_keys==DOOM_KEY_FIRE);
+ assert(doom_ui_touch_snapshot(tx,ty,1));assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_LEFT|DOOM_KEY_FIRE));
+ assert(doom_ui_touch_snapshot(tx,ty,0));assert(delivered_keys==DOOM_KEY_FIRE);
+ assert(doom_ui_touch_snapshot(tx,ty,2));
+ doom_ui_boot_fire(false);fake_us+=20000;doom_ui_boot_fire(false);
+ assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_LEFT|DOOM_KEY_FIRE)); /* touch Fire remains */
+ assert(doom_ui_touch_snapshot(tx,ty,1));assert(delivered_keys==(DOOM_KEY_FORWARD|DOOM_KEY_LEFT));
+ assert(doom_ui_touch_snapshot(tx,ty,0));assert(!delivered_keys);
+ started=false;doom_ui_boot_fire(true);fake_us+=30000;doom_ui_boot_fire(true);assert(!delivered_keys);started=true;
+ /* Test palette copy/scaling with actual production frame callback. */
+ uint8_t pixels[320*200];for(unsigned i=0;i<sizeof(pixels);i++)pixels[i]=(i/320)&255;
+ frame_ready(pixels,NULL);uint32_t before_displayed=displayed;update(timer);assert(displayed==before_displayed+1);
+ assert(surface[0].full==frame_colors[pixels[0]].full);assert(surface[(fit.h-1)*fit.w].full==frame_colors[pixels[scale_y[fit.h-1]*320]].full);
+ update(timer);assert(displayed==before_displayed+1);
  snprintf(game_path,sizeof(game_path),"%s-running.ppm",argv[3]);capture(game_path);
  doom_ui_request_exit();
  done=true;task_state=eRunning;update(timer);assert(worker&&surface&&reboots==1&&task_deletes==0);
@@ -216,7 +240,7 @@ def run():
   if r.returncode:raise RuntimeError(r.stdout+r.stderr)
   im=Image.open(ppm);assert im.size==(w,h)
   for phase in ['loading','running']:
-   Image.open(str(ppm)+'-'+phase+'.ppm').save(Path('/home/dev/ws-c5-35-fixes/cycle79')/(board+'-'+phase+'.png'))
+   Image.open(str(ppm)+'-'+phase+'.ppm').save(Path('/home/dev/ws-c5-35-fixes/cycle81')/(board+'-'+phase+'.png'))
   target=Path('/home/dev/ws-c5-35-fixes')/('selector-preview-'+board+'.png');im.save(target)
   digest=__import__('hashlib').sha256(target.read_bytes()).hexdigest()
   target.with_suffix('.txt').write_text('ACTUAL production-code headless LVGL capture, not a Pillow mockup or hardware photograph. Engine/IDF peripherals mocked. Native logical '+str((w,h))+'. SHA256 '+digest+'\n')

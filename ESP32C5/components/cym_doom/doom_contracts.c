@@ -80,3 +80,33 @@ bool doom_gate_ready(doom_gate g){return g.supported&&g.idle&&g.sd_ready&&g.lice
 
 /* Match the SHA256 of the official private host fixture, not its filename. */
 bool doom_wad_trusted_hash(const uint8_t hash[32]){static const uint8_t trusted[32]={0x73,0x23,0xbc,0xc1,0x68,0xc5,0xa4,0x5f,0xf1,0x07,0x49,0xb3,0x39,0x96,0x0e,0x98,0x31,0x47,0x40,0xa7,0x34,0xc3,0x0d,0x4b,0x9f,0x33,0x37,0x00,0x1f,0x9e,0x70,0x3d};return hash&&memcmp(hash,trusted,sizeof(trusted))==0;}
+
+/* Side controls never cover the native 320x200 HUD. Fixed pad, not a moving
+ * origin: slide through its center to change/release axes without lifting. */
+doom_game_layout doom_game_layout_make(int w,int h){
+ doom_game_layout l={0};if(w<240||w>480||h<200||h>320)return l;
+ int side=w==320?64:80,ph=h==240?112:160,py=(h-28-ph)/2;
+ l.width=w;l.height=h;l.pad=(doom_rect){4,py,side-8,ph};
+ l.fire=(doom_rect){w-side+4,py,side-8,ph/2-4};
+ l.use=(doom_rect){w-side+4,py+ph/2+4,side-8,ph/2-4};
+ l.frame=doom_scale_fit(w-2*side,h-28);l.frame.x+=side;return l;
+}
+static bool inside(doom_rect r,int x,int y){return r.w>0&&r.h>0&&x>=r.x&&y>=r.y&&x-r.x<r.w&&y-r.y<r.h;}
+unsigned doom_game_touch_keys(doom_game_layout l,const int *x,const int *y,unsigned count){
+ if(!x||!y||!l.frame.w||count>2)return 0;
+ unsigned keys=0;
+ for(unsigned i=0;i<count;i++){
+  if(x[i]<0||y[i]<0||x[i]>=l.width||y[i]>=l.height)continue;
+  if(y[i]>=l.height-28){unsigned col=(unsigned)x[i]*3/l.width;keys|=col==0?DOOM_KEY_MENU:col==1?DOOM_KEY_CONFIRM:DOOM_KEY_EXIT;}
+  else if(inside(l.fire,x[i],y[i]))keys|=DOOM_KEY_FIRE;
+  else if(inside(l.use,x[i],y[i]))keys|=DOOM_KEY_USE;
+  else if(inside(l.pad,x[i],y[i])){
+   int dx=x[i]-(l.pad.x+l.pad.w/2),dy=y[i]-(l.pad.y+l.pad.h/2);
+   /* Independent thresholds give diagonals and a fixed central rectangle. */
+   int dzx=l.pad.w/6,dzy=l.pad.h/6;
+   if(dx < -dzx)keys|=DOOM_KEY_LEFT;else if(dx>dzx)keys|=DOOM_KEY_RIGHT;
+   if(dy < -dzy)keys|=DOOM_KEY_FORWARD;else if(dy>dzy)keys|=DOOM_KEY_BACK;
+  }
+ }
+ return keys;
+}

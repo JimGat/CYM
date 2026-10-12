@@ -21,6 +21,10 @@ doom_rect doom_scale_fit(int,int);
 bool doom_scale_point(doom_rect,int,int,int *,int *);
 bool doom_rotate_point(int,int,unsigned,int,int,int *,int *);
 enum {DOOM_KEY_LEFT=1u<<0,DOOM_KEY_FORWARD=1u<<1,DOOM_KEY_RIGHT=1u<<2,DOOM_KEY_BACK=1u<<3,DOOM_KEY_FIRE=1u<<4,DOOM_KEY_USE=1u<<5,DOOM_KEY_MENU=1u<<6,DOOM_KEY_CONFIRM=1u<<7,DOOM_KEY_EXIT=1u<<8};
+/* Isolated game controls use up to two simultaneous logical points. */
+typedef struct {doom_rect frame,pad,fire,use;int width,height;} doom_game_layout;
+doom_game_layout doom_game_layout_make(int,int);
+unsigned doom_game_touch_keys(doom_game_layout,const int *,const int *,unsigned);
 typedef struct {unsigned desired,delivered;} doom_keys;
 void doom_keys_set(doom_keys *,unsigned);
 bool doom_keys_next(doom_keys *,unsigned *,bool *);

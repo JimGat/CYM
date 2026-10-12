@@ -40,12 +40,17 @@ static void cancel_navigation(void){if(navigation_timer){lv_timer_del(navigation
 static lv_obj_t *overlay,*status,*canvas,*status_scroll;
 static lv_timer_t *timer;
 static lv_color_t *surface;
-static uint8_t *mailbox;
+static uint8_t *mailbox,*snapshot;
+static lv_color_t frame_colors[256];
+static uint16_t scale_x[480],scale_y[320];
+static doom_game_layout controls;
 static uint16_t mailbox_palette[256];
 static SemaphoreHandle_t frame_lock;
 static TaskHandle_t worker;
-static bool cancel,done,started,go_home;
-static unsigned held_keys;
+static bool cancel,done,started,go_home,running_view;
+static unsigned held_keys,touch_keys;
+static bool boot_raw,boot_fire;
+static uint32_t boot_changed_ms;
 static uint32_t last_hold_ms,frames,dropped;
 static uint32_t displayed,overwritten,last_sequence,scale_us,ui_updates,ui_last_log,shown_fps10;
 static uint32_t last_frames,last_displayed,last_dropped,last_overwritten,last_ticks,last_tick_us,last_audio_us,last_audio_writes,last_sd_us,last_sd_reads,last_sleep_us,last_frame_us,last_input_events,last_input_sum,last_scale_us,last_ui_updates,last_panel_flushes,last_panel_us;
@@ -95,23 +100,33 @@ static bool join_worker(TaskHandle_t *task, const bool *clean)
     *task = NULL;
     return true;
 }
-static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(!join_worker(&worker,&done))return;if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=0;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
-static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(held_keys&&(uint32_t)(now-last_hold_ms)>250){held_keys=0;doom_session_set_keys(0);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){if(!join_worker(&worker,&done))return;/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(!error_shown){error_shown=true;error_view();}return;}
+static void release_ui(void){/* Done publishes cleanup, not task deletion. Explicit deletion joins before UI free. */if(!join_worker(&worker,&done))return;if(timer){lv_timer_del(timer);timer=NULL;}if(overlay){lv_obj_del(overlay);overlay=NULL;}status=canvas=status_scroll=NULL;free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}worker=NULL;held_keys=touch_keys=0;boot_raw=boot_fire=false;started=false;done=false;doom_trigger_reset(&unlock);heap_marker("UI_RELEASED");}
+static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if(quitting()){doom_session_request_stop();}if(touch_keys&&(uint32_t)(now-last_hold_ms)>250){touch_keys=0;held_keys=boot_fire?DOOM_KEY_FIRE:0;doom_session_set_keys(held_keys);}if(__atomic_load_n(&done,__ATOMIC_ACQUIRE)){if(!join_worker(&worker,&done))return;/* Task has completed its own engine cleanup and will never touch mailbox. */if(quitting()){bool home=go_home;release_ui();if(home&&return_home)return_home();return;}if(!error_shown){error_shown=true;error_view();}return;}
  bool running=__atomic_load_n(&started,__ATOMIC_ACQUIRE);
+ bool new_frame=false;
  if(running&&canvas&&surface&&xSemaphoreTake(frame_lock,0)==pdTRUE){
-  if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED)){uint32_t before=(uint32_t)esp_timer_get_time();
-   for(int y=0;y<fit.h;y++)for(int x=0;x<fit.w;x++){
-    uint8_t i=mailbox[(y*200/fit.h)*320+x*320/fit.w];uint16_t c=mailbox_palette[i];
-    surface[y*fit.w+x]=lv_color_make((uint8_t)((c>>11)<<3),(uint8_t)(((c>>5)&63)<<2),(uint8_t)((c&31)<<3));
-   }
-   __atomic_store_n(&last_sequence,__atomic_load_n(&frames,__ATOMIC_RELAXED),__ATOMIC_RELAXED);displayed++;scale_us+=(uint32_t)esp_timer_get_time()-before;lv_obj_invalidate(canvas);
+  if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED)){
+   memcpy(snapshot,mailbox,320*200);
+   for(unsigned i=0;i<256;i++){uint16_t c=mailbox_palette[i];frame_colors[i]=lv_color_make((uint8_t)((c>>11)<<3),(uint8_t)(((c>>5)&63)<<2),(uint8_t)((c&31)<<3));}
+   __atomic_store_n(&last_sequence,__atomic_load_n(&frames,__ATOMIC_RELAXED),__ATOMIC_RELAXED);new_frame=true;
   }
   xSemaphoreGive(frame_lock);
+ }
+ /* Main-owned snapshot isolates scaling from the engine mailbox mutex.
+  * No worker/snapshot pointer is ever passed to DMA; surface stays main-owned. */
+ if(new_frame){uint32_t before=(uint32_t)esp_timer_get_time();
+  for(int y=0;y<fit.h;y++){const uint8_t *row=snapshot+scale_y[y]*320;lv_color_t *dst=surface+y*fit.w;
+   for(int x=0;x<fit.w;x++)dst[x]=frame_colors[row[scale_x[x]]];}
+  displayed++;scale_us+=(uint32_t)esp_timer_get_time()-before;lv_obj_invalidate(canvas);
  }
  if(status&&!quitting()){
   char text[160];uint32_t elapsed=(now-boot_ms)/1000,p=__atomic_load_n(&load_phase,__ATOMIC_ACQUIRE);
   static const char *markers[]={"[o...]","[.o..]","[..o.]","[...o]"};
-  if(running)snprintf(text,sizeof(text),"SFX only | %lus | %lu.%lu fps",(unsigned long)elapsed,(unsigned long)(shown_fps10/10),(unsigned long)(shown_fps10%10));
+  if(running){
+   if(!running_view){running_view=true;lv_obj_set_pos(status,controls.frame.x,2);lv_obj_set_size(status,96,16);
+   lv_label_set_long_mode(status,LV_LABEL_LONG_CLIP);}
+   snprintf(text,sizeof(text),"%lu.%lu fps",(unsigned long)(shown_fps10/10),(unsigned long)(shown_fps10%10));
+  }
   else if(p==LOAD_HASH){uint32_t n=__atomic_load_n(&hash_bytes,__ATOMIC_ACQUIRE),total=__atomic_load_n(&hash_total,__ATOMIC_ACQUIRE);
    snprintf(text,sizeof(text),"%s Hash %lu%% %lu/%lu B | %lus",markers[(now/250)%4],(unsigned long)(total?(uint64_t)n*100/total:0),(unsigned long)n,(unsigned long)total,(unsigned long)elapsed);
   }else snprintf(text,sizeof(text),"%s %s | %lus | Exit below",markers[(now/250)%4],p==LOAD_INIT?"Engine init":"Structure check",(unsigned long)elapsed);
@@ -121,6 +136,8 @@ static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_
   uint32_t ticks=DM_GET(ticks),tu=DM_GET(tick_us),au=DM_GET(audio_us),aw=DM_GET(audio_writes),su=DM_GET(sd_us),sr=DM_GET(sd_reads),sl=DM_GET(sleep_us),fu=DM_GET(frame_us),ie=DM_GET(input_events),is=DM_GET(input_age_sum);
   ESP_LOGI(TAG,"PERF interval_ms=%lu published=%lu displayed=%lu overwritten=%lu lock_dropped=%lu scale_us=%lu ticks=%lu tick_us=%lu frame_copy_us=%lu sleep_us=%lu sd_reads=%lu sd_us=%lu audio_writes=%lu audio_us=%lu audio_waits_total=%lu audio_faults_total=%lu input_events=%lu input_age_sum_ms=%lu input_age_max_ms=%lu loading_redraws=%lu panel_flushes=%lu panel_us=%lu",
    (unsigned long)(now-ui_last_log),(unsigned long)(__atomic_load_n(&frames,__ATOMIC_RELAXED)-last_frames),(unsigned long)(displayed-last_displayed),(unsigned long)(__atomic_load_n(&overwritten,__ATOMIC_RELAXED)-last_overwritten),(unsigned long)(__atomic_load_n(&dropped,__ATOMIC_RELAXED)-last_dropped),(unsigned long)(scale_us-last_scale_us),(unsigned long)(ticks-last_ticks),(unsigned long)(tu-last_tick_us),(unsigned long)(fu-last_frame_us),(unsigned long)(sl-last_sleep_us),(unsigned long)(sr-last_sd_reads),(unsigned long)(su-last_sd_us),(unsigned long)(aw-last_audio_writes),(unsigned long)(au-last_audio_us),(unsigned long)DM_GET(audio_waits),(unsigned long)DM_GET(audio_faults),(unsigned long)(ie-last_input_events),(unsigned long)(is-last_input_sum),(unsigned long)DM_GET(input_age_max),(unsigned long)(ui_updates-last_ui_updates),(unsigned long)(DM_GET(panel_flushes)-last_panel_flushes),(unsigned long)(DM_GET(panel_us)-last_panel_us));
+  ESP_LOGI(TAG,"AUDIO_DIAG starts=%lu rejected=%lu samples=%lu nonzero=%lu starved=%lu overruns=%lu",
+   (unsigned long)DM_GET(sfx_starts),(unsigned long)DM_GET(sfx_rejected),(unsigned long)DM_GET(audio_samples),(unsigned long)DM_GET(audio_nonzero),(unsigned long)DM_GET(audio_starved),(unsigned long)DM_GET(audio_overruns));
   shown_fps10=(uint32_t)((uint64_t)(displayed-last_displayed)*10000/(now-ui_last_log));ui_last_log=now;last_frames=__atomic_load_n(&frames,__ATOMIC_RELAXED);last_displayed=displayed;last_overwritten=__atomic_load_n(&overwritten,__ATOMIC_RELAXED);last_dropped=__atomic_load_n(&dropped,__ATOMIC_RELAXED);last_scale_us=scale_us;last_ticks=ticks;last_tick_us=tu;last_frame_us=fu;last_sleep_us=sl;last_sd_reads=sr;last_sd_us=su;last_audio_writes=aw;last_audio_us=au;last_input_events=ie;last_input_sum=is;last_ui_updates=ui_updates;last_panel_flushes=DM_GET(panel_flushes);last_panel_us=DM_GET(panel_us);
  }
 }
@@ -132,7 +149,7 @@ static void close_selector(void)
  if(selector_rotate)selector_rotate(false);
  if(selector_back)selector_back();
 }
-void doom_ui_request_exit(void){if(!overlay)return;go_home=true;
+void doom_ui_request_exit(void){if(!overlay)return;go_home=true;held_keys=touch_keys=0;boot_raw=boot_fire=false;
  if(worker){__atomic_store_n(&cancel,true,__ATOMIC_RELEASE);doom_session_set_keys(0);doom_session_request_stop();if(status)lv_label_set_text(status,"Stopping - waiting for engine cleanup...");ESP_LOGI(TAG,"EXIT_REQUESTED");}
  else if(isolated){release_ui();if(return_home)return_home();}
  else close_selector();
@@ -140,7 +157,35 @@ void doom_ui_request_exit(void){if(!overlay)return;go_home=true;
 /* Parent navigation cannot free an engine callback target. Selector owns a
  * dedicated full-screen overlay, and restores live rotation before Settings rebuild. */
 void doom_ui_screen_stop(void){cancel_navigation();if(worker||isolated)doom_ui_request_exit();else if(overlay){release_ui();if(selector_rotate)selector_rotate(false);}}
-static void control_event(lv_event_t *e){unsigned mask=(unsigned)(uintptr_t)lv_event_get_user_data(e);lv_event_code_t code=lv_event_get_code(e);if(code==LV_EVENT_PRESSED||code==LV_EVENT_PRESSING){last_hold_ms=(uint32_t)(esp_timer_get_time()/1000);if(mask==DOOM_KEY_EXIT){doom_ui_request_exit();return;}held_keys=mask;doom_session_set_keys(mask);}else if(code==LV_EVENT_RELEASED||code==LV_EVENT_PRESS_LOST){held_keys=0;doom_session_set_keys(0);}}
+/* Board snapshot path, main LVGL owner only. Normal CYM still reads one
+ * point via LVGL. In isolated running/loading mode consume both points here,
+ * suppress LVGL button events so its single-point releases cannot erase fire. */
+bool doom_ui_touch_snapshot(const int *x,const int *y,unsigned count){
+ if(!isolated||!worker||!canvas||error_shown)return false;
+ unsigned mask=quitting()?0:doom_game_touch_keys(controls,x,y,count);
+ if(mask&DOOM_KEY_EXIT){doom_ui_request_exit();return true;}
+ last_hold_ms=(uint32_t)(esp_timer_get_time()/1000);touch_keys=mask;held_keys=quitting()?0:(touch_keys|(boot_fire?DOOM_KEY_FIRE:0));doom_session_set_keys(held_keys);return true;
+}
+/* Main-owner GPIO poll; no normal-CYM mapping and no startup key injection. */
+void doom_ui_boot_fire(bool pressed){
+ uint32_t now=(uint32_t)(esp_timer_get_time()/1000);
+ if(!isolated||!worker||!canvas||error_shown||!__atomic_load_n(&started,__ATOMIC_ACQUIRE)||quitting()){
+  boot_raw=boot_fire=false;boot_changed_ms=now;
+  if(quitting())touch_keys=held_keys=0;
+  return;
+ }
+ if(pressed!=boot_raw){boot_raw=pressed;boot_changed_ms=now;}
+ if((uint32_t)(now-boot_changed_ms)>=20)boot_fire=boot_raw;
+ held_keys=touch_keys|(boot_fire?DOOM_KEY_FIRE:0);doom_session_set_keys(held_keys);
+}
+static void control_event(lv_event_t *e){
+ /* Fallback for host events; hardware isolated game snapshots bypass LVGL. */
+ unsigned mask=(unsigned)(uintptr_t)lv_event_get_user_data(e);lv_event_code_t code=lv_event_get_code(e);
+ if(code==LV_EVENT_PRESSED||code==LV_EVENT_PRESSING){last_hold_ms=(uint32_t)(esp_timer_get_time()/1000);if(mask==DOOM_KEY_EXIT){doom_ui_request_exit();return;}touch_keys|=mask;}
+ else if(code==LV_EVENT_RELEASED||code==LV_EVENT_PRESS_LOST)touch_keys&=~mask;
+ else return;
+ held_keys=touch_keys|(boot_fire?DOOM_KEY_FIRE:0);doom_session_set_keys(held_keys);
+}
 static lv_obj_t *button(lv_obj_t *p,const char *text,int x,int y,int w,int h,lv_event_cb_t cb,void *data){lv_obj_t *b=lv_btn_create(p);lv_obj_set_pos(b,x,y);lv_obj_set_size(b,w,h);lv_obj_t *l=lv_label_create(b);lv_obj_set_style_text_font(l,&lv_font_montserrat_16,0);lv_label_set_text(l,text);lv_obj_center(l);lv_obj_add_event_cb(b,cb,LV_EVENT_ALL,data);return b;}
 static void error_return_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED)doom_ui_request_exit();}
 static void error_view(void)
@@ -157,13 +202,27 @@ static void error_view(void)
  button(overlay,"Return CYM",4,h-52,w-8,44,error_return_event,NULL);
  ESP_LOGW(TAG,"GAME_BOOT_ERROR intent_consumed=1 error=%s",worker_status);
 }
-static void launch_game(void){if(!isolated){lv_label_set_text(status,"Game startup requires reboot isolation");return;}int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);lv_obj_set_size(overlay,w,h);fit=doom_scale_fit(w,h-138);if(!fit.w||!fit.h)return;heap_marker("CONTINUE");surface=heap_caps_calloc((size_t)fit.w*fit.h,sizeof(*surface),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);mailbox=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);frame_lock=xSemaphoreCreateMutex();if(!surface||!mailbox||!frame_lock){free(surface);surface=NULL;free(mailbox);mailbox=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}lv_label_set_text(status,"Insufficient memory for game surface");return;}lv_obj_clean(overlay);status_scroll=lv_obj_create(overlay);lv_obj_set_pos(status_scroll,0,0);lv_obj_set_size(status_scroll,w,48);lv_obj_set_scroll_dir(status_scroll,LV_DIR_VER);lv_obj_set_style_pad_all(status_scroll,4,0);status=lv_label_create(status_scroll);lv_label_set_text(status,"Validating assets...");lv_obj_set_width(status,lv_pct(100));lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);canvas=lv_canvas_create(overlay);lv_canvas_set_buffer(canvas,surface,fit.w,fit.h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(canvas,fit.x,48+fit.y);
- static const char *labels[]={"Left","Move","Right","Back","Fire","Use","Menu","OK","Exit"};static const unsigned masks[]={DOOM_KEY_LEFT,DOOM_KEY_FORWARD,DOOM_KEY_RIGHT,DOOM_KEY_BACK,DOOM_KEY_FIRE,DOOM_KEY_USE,DOOM_KEY_MENU,DOOM_KEY_CONFIRM,DOOM_KEY_EXIT};for(unsigned i=0;i<9;i++){int x=(int)(i%3)*w/3;button(overlay,labels[i],x,h-90+(int)(i/3)*30,w/3,29,control_event,(void *)(uintptr_t)masks[i]);}
- cancel=done=started=go_home=error_shown=false;frames=dropped=0;shown_fps10=0;displayed=overwritten=last_sequence=scale_us=ui_updates=0;
+static void launch_game(void){if(!isolated){lv_label_set_text(status,"Game startup requires reboot isolation");return;}int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);lv_obj_set_size(overlay,w,h);controls=doom_game_layout_make(w,h);fit=controls.frame;if(!fit.w||!fit.h)return;heap_marker("CONTINUE");surface=heap_caps_calloc((size_t)fit.w*fit.h,sizeof(*surface),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);mailbox=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);snapshot=heap_caps_calloc(320*200,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);frame_lock=xSemaphoreCreateMutex();if(!surface||!mailbox||!snapshot||!frame_lock){free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;if(frame_lock){vSemaphoreDelete(frame_lock);frame_lock=NULL;}lv_label_set_text(status,"Insufficient memory for game surface");return;}lv_obj_clean(overlay);status_scroll=NULL;
+ status=lv_label_create(overlay);lv_obj_set_pos(status,controls.frame.x,2);lv_obj_set_width(status,fit.w);lv_obj_set_style_text_color(status,lv_color_hex(0xd9efff),0);
+ lv_label_set_long_mode(status,LV_LABEL_LONG_WRAP);lv_obj_set_style_text_font(status,&lv_font_montserrat_12,0);lv_label_set_text(status,"Validating assets...");
+ canvas=lv_canvas_create(overlay);lv_canvas_set_buffer(canvas,surface,fit.w,fit.h,LV_IMG_CF_TRUE_COLOR);lv_obj_set_pos(canvas,fit.x,fit.y);
+ for(int x=0;x<fit.w;x++)scale_x[x]=x*320/fit.w;
+ for(int y=0;y<fit.h;y++)scale_y[y]=y*200/fit.h;
+ lv_obj_t *pad=lv_obj_create(overlay);lv_obj_remove_style_all(pad);lv_obj_set_pos(pad,controls.pad.x,controls.pad.y);lv_obj_set_size(pad,controls.pad.w,controls.pad.h);
+ lv_obj_set_style_bg_color(pad,lv_color_hex(0x162d42),0);lv_obj_set_style_bg_opa(pad,LV_OPA_COVER,0);lv_obj_set_style_radius(pad,12,0);lv_obj_clear_flag(pad,LV_OBJ_FLAG_SCROLLABLE);
+ static const char *directions[]={"FWD","<  >","BACK"};
+ for(unsigned i=0;i<3;i++){lv_obj_t *l=lv_label_create(pad);lv_obj_set_style_text_font(l,&lv_font_montserrat_12,0);lv_obj_set_style_text_color(l,lv_color_hex(0xd9efff),0);lv_label_set_text(l,directions[i]);lv_obj_align(l,LV_ALIGN_TOP_MID,0,8+(int)i*(controls.pad.h-28)/2);}
+ lv_obj_t *center=lv_obj_create(pad);lv_obj_remove_style_all(center);lv_obj_set_pos(center,controls.pad.w/2-controls.pad.w/6,controls.pad.h/2-controls.pad.h/6);lv_obj_set_size(center,controls.pad.w/3,controls.pad.h/3);lv_obj_set_style_border_width(center,1,0);lv_obj_set_style_border_color(center,lv_color_hex(0x59aec8),0);lv_obj_clear_flag(center,LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_SCROLLABLE);
+ doom_rect r=controls.fire;lv_obj_t *fire=button(overlay,"Fire",r.x,r.y,r.w,r.h,control_event,(void *)(uintptr_t)DOOM_KEY_FIRE);lv_obj_set_style_pad_all(fire,0,0);
+ r=controls.use;lv_obj_t *use=button(overlay,"Use",r.x,r.y,r.w,r.h,control_event,(void *)(uintptr_t)DOOM_KEY_USE);lv_obj_set_style_pad_all(use,0,0);
+ static const char *labels[]={"Menu","OK","Exit"};static const unsigned masks[]={DOOM_KEY_MENU,DOOM_KEY_CONFIRM,DOOM_KEY_EXIT};
+ for(unsigned i=0;i<3;i++){lv_obj_t *b=button(overlay,labels[i],(int)i*w/3,h-28,w/3,28,control_event,(void *)(uintptr_t)masks[i]);lv_obj_set_style_pad_all(b,0,0);}
+
+ cancel=done=started=go_home=error_shown=running_view=false;frames=dropped=0;shown_fps10=0;displayed=overwritten=last_sequence=scale_us=ui_updates=0;
  boot_ms=cooperate_ms=ui_last_log=(uint32_t)(esp_timer_get_time()/1000);
  load_phase=LOAD_STRUCTURE;hash_bytes=hash_total=0;memset(&doom_metrics,0,sizeof(doom_metrics));
  last_frames=last_displayed=last_dropped=last_overwritten=last_ticks=last_tick_us=last_audio_us=last_audio_writes=last_sd_us=last_sd_reads=last_sleep_us=last_frame_us=last_input_events=last_input_sum=last_scale_us=last_ui_updates=last_panel_flushes=last_panel_us=0;
- held_keys=0;timer=lv_timer_create(update,33,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
+ held_keys=touch_keys=0;boot_raw=boot_fire=false;boot_changed_ms=boot_ms;timer=lv_timer_create(update,20,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
 /* No game allocator exists on the normal selector/license path. Art is flash
  * indexed data; these screens and decoder cache die in reboot, not live handover. */
 static void back_event(lv_event_t *e){if(lv_event_get_code(e)==LV_EVENT_CLICKED&&!isolated)close_selector();}

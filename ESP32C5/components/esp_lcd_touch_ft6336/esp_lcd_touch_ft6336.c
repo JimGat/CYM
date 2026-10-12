@@ -87,6 +87,8 @@ err:
 
 static esp_err_t ft6336_read_data(esp_lcd_touch_handle_t tp)
 {
+    /* Clear the previous snapshot even on zero contacts or failed I2C. */
+    portENTER_CRITICAL(&tp->data.lock);tp->data.points=0;portEXIT_CRITICAL(&tp->data.lock);
     uint8_t points = 0;
     esp_err_t err = ft6336_i2c_read(tp, FT6336_REG_TOUCH_POINTS, &points, 1);
     ESP_RETURN_ON_ERROR(err, TAG, "I2C read points");
@@ -94,16 +96,20 @@ static esp_err_t ft6336_read_data(esp_lcd_touch_handle_t tp)
     points &= 0x0F;
     if (points == 0) return ESP_OK;
     if (points > 2) points = 2;
+    if (points > CONFIG_ESP_LCD_TOUCH_MAX_POINTS) points = CONFIG_ESP_LCD_TOUCH_MAX_POINTS;
 
     uint8_t data[12];
     err = ft6336_i2c_read(tp, FT6336_REG_P1_XH, data, 6 * points);
     ESP_RETURN_ON_ERROR(err, TAG, "I2C read coords");
 
     portENTER_CRITICAL(&tp->data.lock);
-    tp->data.points = points;
+    tp->data.points = 0;
     for (size_t i = 0; i < points; i++) {
-        tp->data.coords[i].x = (((uint16_t)data[i * 6 + 0] & 0x0f) << 8) | data[i * 6 + 1];
-        tp->data.coords[i].y = (((uint16_t)data[i * 6 + 2] & 0x0f) << 8) | data[i * 6 + 3];
+        unsigned event=data[i*6]>>6;
+        if(event==1||event==3)continue; /* UP/reserved are not held contacts. */
+        unsigned slot=tp->data.points++;
+        tp->data.coords[slot].x = (((uint16_t)data[i * 6 + 0] & 0x0f) << 8) | data[i * 6 + 1];
+        tp->data.coords[slot].y = (((uint16_t)data[i * 6 + 2] & 0x0f) << 8) | data[i * 6 + 3];
     }
     portEXIT_CRITICAL(&tp->data.lock);
     return ESP_OK;

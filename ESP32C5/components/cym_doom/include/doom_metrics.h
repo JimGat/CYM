@@ -6,6 +6,7 @@
 typedef struct {
  uint32_t ticks,tick_us,sleep_us,sd_reads,sd_us,frame_us,panel_flushes,panel_us;
  uint32_t audio_writes,audio_us,audio_waits,audio_faults;
+ uint32_t audio_samples,audio_nonzero,audio_starved,audio_overruns,sfx_starts,sfx_rejected;
  uint32_t input_ms,input_events,input_age_sum,input_age_max;
 } doom_metrics_t;
 extern doom_metrics_t doom_metrics;

@@ -19,3 +19,6 @@ void ws_c5_35_backlight_set(uint8_t level);
 // Existing adapter-owned bus; no second I2C port/bus is created.
 i2c_master_bus_handle_t ws_c5_35_i2c_bus(void);
 esp_err_t ws_c5_35_battery_read(bool *present, uint16_t *millivolts);
+
+/* Isolated owner reads at most two points in one driver snapshot. */
+bool ws_c5_35_touch_read_points(uint16_t *,uint16_t *,uint8_t *,uint8_t);

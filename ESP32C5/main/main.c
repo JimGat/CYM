@@ -98,6 +98,7 @@ LV_IMG_DECLARE(deedee_img);
 #include "board_hal.h"
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
 #include "doom_ui.h"
+#include "doom_contracts.h"
 #include "game_mode.h"
 #include "storage_gate.h"
 static bool doom_prototype_idle(void);
@@ -7426,7 +7427,7 @@ static void game_isolated_main(void)
     esp_err_t sd=wifi_wardrive_init_sd_ex(BOARD_SD_SPI_FREQ_HZ/1000,false);sd_mounted_lazy=sd==ESP_OK;
     doom_ui_boot_start(doom_prototype_home,sd_mounted_lazy);
     for(;;){
-        if(gpio_get_level(BOOT_BTN_GPIO)==0)doom_ui_request_exit();
+        doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
         if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){lv_timer_handler();xSemaphoreGive(lvgl_mutex);}
         esp_task_wdt_reset();vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -10292,6 +10293,28 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         return;
     }
 
+#if CONFIG_BOARD_WS_C5_28 || CONFIG_BOARD_WS_C5_35
+    if(doom_ui_exclusive()){
+        uint16_t px[2]={0},py[2]={0};uint8_t n=0;
+#if CONFIG_BOARD_WS_C5_35
+        (void)ws_c5_35_touch_read_points(px,py,&n,2);
+#else
+        if(esp_lcd_touch_read_data(touch_handle)==ESP_OK)
+            (void)esp_lcd_touch_get_coordinates(touch_handle,px,py,NULL,&n,2);
+#endif
+        int lx[2]={0},ly[2]={0};unsigned valid=0;
+        for(unsigned i=0;i<n&&i<2;i++){
+            if(doom_rotate_point(LCD_H_RES,LCD_V_RES,3,px[i],py[i],&lx[valid],&ly[valid]))valid++;
+        }
+        if(doom_ui_touch_snapshot(lx,ly,valid)){
+            data->state=LV_INDEV_STATE_RELEASED;touch_pressed_flag=false;return;
+        }
+        /* Error/recovery screens retain ordinary one-point LVGL ownership. */
+        if(n){data->point.x=px[0];data->point.y=py[0];data->state=LV_INDEV_STATE_PRESSED;}
+        else data->state=LV_INDEV_STATE_RELEASED;
+        return;
+    }
+#endif
     const int64_t now_ms = esp_timer_get_time() / 1000;
     bool touched = false;
     uint16_t touch_x = 0, touch_y = 0;
