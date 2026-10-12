@@ -61,12 +61,13 @@ static int esp_task_wdt_status(void *task){(void)task;return ESP_OK;}
 static void esp_task_wdt_reset(void){assert(++resets<1000);}
 static void esp_restart(void){assert(borrowed&&locked&&!acks&&!releases);longjmp(restart_boundary,1);}
 static void vTaskDelay(int t){(void)t;}
+static void host_completion(void);
 static int xSemaphoreTake(void*h,int t){
  if(h==sd_spi_mutex){lock_attempts++;if(bus_busy)return 0;assert(!locked);locked=true;return 1;}
  if(!t)return 0;
  dma_waits++;assert(borrowed);if(never_complete||dma_waits%4)return 0;
  for(int y=pending.y1;y<=pending.y2;y++)for(int x=pending.x1;x<=pending.x2;x++)panel[y*320+x]=*borrowed++;
- borrowed=NULL;return 1;
+ borrowed=NULL;host_completion();return 1;
 }
 static void xSemaphoreGive(void*h){(void)h;assert(!borrowed&&locked);locked=false;releases++;}
 static int esp_lcd_panel_draw_bitmap(void*p,int x1,int y1,int x2,int y2,const void*buf){
@@ -82,7 +83,10 @@ class DMA(unittest.TestCase):
   main=(ROOT/'ESP32C5/main/main.c').read_text();helper=(ROOT/'ESP32C5/main/game_panel_transport.h').read_text()
   init='cym_panel_transport_init();' if 'cym_panel_transport_init' in helper else ''
   metrics='#include "'+str(ROOT/'ESP32C5/components/cym_doom/include/doom_metrics.h')+'"\ndoom_metrics_t doom_metrics;\n'
-  return TRANSPORT+metrics+helper+function(main,'void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p)\n{'),init
+  diag='#include "'+str(ROOT/'ESP32C5/main/display_diagnostics.h')+'"\n'
+  helper=helper.replace('#include "display_diagnostics.h"','')
+  completion='static void host_completion(void){cym_diag_isr(&s_display_channel,(uint32_t)esp_timer_get_time());}\n'
+  return TRANSPORT+metrics+diag+helper+completion+function(main,'void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_p)\n{'),init
  def test_failed_enqueue_normal_and_exclusive_without_completion(self):
   code,init=self.code()
   print(exercise('enqueue',code+'\nint main(void){'+init+r"""

@@ -53,37 +53,40 @@ static bool boot_raw,boot_fire;
 static uint32_t boot_changed_ms;
 static uint32_t last_hold_ms,frames,dropped;
 static uint32_t displayed,overwritten,last_sequence,scale_us,ui_updates,ui_last_log,shown_fps10;
+static doom_io_metrics_t last_io[DM_IO_PHASES];
 static uint32_t last_frames,last_displayed,last_dropped,last_overwritten,last_ticks,last_tick_us,last_audio_us,last_audio_writes,last_sd_us,last_sd_reads,last_sleep_us,last_frame_us,last_input_events,last_input_sum,last_scale_us,last_ui_updates,last_panel_flushes,last_panel_us;
 /* Worker publishes numeric state only. Main owns all animation and text. */
 enum { LOAD_STRUCTURE,LOAD_HASH,LOAD_INIT,LOAD_RUNNING };
 static uint32_t load_phase,hash_bytes,hash_total,boot_ms,cooperate_ms;
 static void cooperate(void){uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if((uint32_t)(now-cooperate_ms)>=20){vTaskDelay(1);cooperate_ms=(uint32_t)(esp_timer_get_time()/1000);}}
-static void phase(uint32_t p,const char *marker){__atomic_store_n(&load_phase,p,__ATOMIC_RELEASE);ESP_LOGI(TAG,"%s elapsed_ms=%lu",marker,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));}
+static void phase(uint32_t p,const char *marker){__atomic_store_n(&doom_metrics.io_phase,p==LOAD_INIT?DM_IO_INIT:p==LOAD_RUNNING?DM_IO_RUNNING:DM_IO_VALIDATION,__ATOMIC_RELAXED);__atomic_store_n(&load_phase,p,__ATOMIC_RELEASE);ESP_LOGI(TAG,"%s elapsed_ms=%lu",marker,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));}
 static doom_rect fit;
 #define ASSET_URL "https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard"
 #define ASSET_HELP "\n\nGet official Freedoom Phase 1 v0.13.0:\n" ASSET_URL "\n\nCopy the contents of sdcard/ to the FAT32 SD root. Required: doom/doom1.wad (runtime /sdcard/doom/doom1.wad). License and credits accompany the separate SD assets."
 static char worker_status[768];
 _Static_assert(sizeof(worker_status) > sizeof(ASSET_HELP) + 128, "Asset instructions must not truncate");
 static bool quitting(void){return __atomic_load_n(&cancel,__ATOMIC_ACQUIRE);}
-static bool transport_take(void){return sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;}
-static void transport_give(void){xSemaphoreGive(sd_spi_mutex);}
-static bool bounded_read(void *ctx,uint64_t off,void *dst,size_t n){if(quitting()||off>INT32_MAX||!transport_take())return false;FILE *f=ctx;bool ok=fseek(f,(long)off,SEEK_SET)==0&&fread(dst,1,n,f)==n;transport_give();cooperate();return ok;}
+static uint32_t validation_wait,validation_hold,validation_hold_us;
+static bool transport_take(void){uint32_t before=(uint32_t)esp_timer_get_time();bool ok=sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;validation_hold=(uint32_t)esp_timer_get_time();validation_wait=validation_hold-before;if(!ok)dm_io_record(DM_IO_VALIDATION,DM_IO_STAT,validation_wait,0,0,true);return ok;}
+static void transport_give(void){validation_hold_us=(uint32_t)esp_timer_get_time()-validation_hold;xSemaphoreGive(sd_spi_mutex);}
+static void validation_observed(unsigned op,uint32_t bytes,bool failed){dm_io_record(DM_IO_VALIDATION,op,validation_wait,validation_hold_us,bytes,failed);}
+static bool bounded_read(void *ctx,uint64_t off,void *dst,size_t n){if(quitting()||off>INT32_MAX||!transport_take())return false;FILE *f=ctx;size_t got=0;bool ok=fseek(f,(long)off,SEEK_SET)==0&&(got=fread(dst,1,n,f))==n;transport_give();validation_observed(DM_IO_READ,(uint32_t)got,!ok);cooperate();return ok;}
 static void heap_marker(const char *phase){ESP_LOGI(TAG,"%s free_psram=%lu largest_psram=%lu free_internal=%lu",phase,(unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));}
 /* Known-content allowlist avoids accepting arbitrary hostile lump internals
  * into the legacy renderer. Hash in fixed chunks, one shared-bus lock per read.
  * No mount, directory creation, write, download or user-SD maintenance occurs.
  */
-static bool validate_asset(void){FILE *f=NULL;uint64_t size=0;if(!transport_take()){snprintf(worker_status,sizeof(worker_status),"SD transport busy");return false;}struct stat st;if(stat(WAD_PATH,&st)==0&&st.st_size>0){size=(uint64_t)st.st_size;f=fopen(WAD_PATH,"rb");}transport_give();if(!f){snprintf(worker_status,sizeof(worker_status),"Missing WAD: /sdcard/doom/doom1.wad" ASSET_HELP);return false;}
+static bool validate_asset(void){FILE *f=NULL;uint64_t size=0;if(!transport_take()){snprintf(worker_status,sizeof(worker_status),"SD transport busy");return false;}struct stat st;if(stat(WAD_PATH,&st)==0&&st.st_size>0){size=(uint64_t)st.st_size;f=fopen(WAD_PATH,"rb");}transport_give();validation_observed(DM_IO_OPEN,0,!f);if(!f){snprintf(worker_status,sizeof(worker_status),"Missing WAD: /sdcard/doom/doom1.wad" ASSET_HELP);return false;}
  phase(LOAD_STRUCTURE,"STRUCTURE_BEGIN");
  doom_wad_result result=doom_wad_validate(bounded_read,f,size);
  ESP_LOGI(TAG,"STRUCTURE_END result=%d elapsed_ms=%lu",result,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));bool valid=result==DOOM_WAD_OK;psa_hash_operation_t hash=PSA_HASH_OPERATION_INIT;uint8_t digest[32],chunk[4096];size_t digest_n=0;
  if(valid){__atomic_store_n(&hash_total,(uint32_t)size,__ATOMIC_RELEASE);phase(LOAD_HASH,"HASH_BEGIN");uint32_t hash_start=(uint32_t)(esp_timer_get_time()/1000);valid=psa_crypto_init()==PSA_SUCCESS&&psa_hash_setup(&hash,PSA_ALG_SHA_256)==PSA_SUCCESS;for(uint64_t off=0;valid&&off<size;){size_t n=size-off<sizeof(chunk)?(size_t)(size-off):sizeof(chunk);valid=bounded_read(f,off,chunk,n)&&psa_hash_update(&hash,chunk,n)==PSA_SUCCESS;if(valid){off+=n;__atomic_store_n(&hash_bytes,(uint32_t)off,__ATOMIC_RELEASE);}cooperate();}if(valid)valid=psa_hash_finish(&hash,digest,sizeof(digest),&digest_n)==PSA_SUCCESS&&digest_n==32&&doom_wad_trusted_hash(digest);psa_hash_abort(&hash);ESP_LOGI(TAG,"HASH_END bytes=%lu total=%lu hash_ms=%lu trusted=%d",(unsigned long)__atomic_load_n(&hash_bytes,__ATOMIC_ACQUIRE),(unsigned long)size,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-hash_start),valid);}
  /* Never surrender file ownership on transport failure; cancellation remains
   * pending and UI stays intact until close succeeds and worker signals done. */
- while(!transport_take())vTaskDelay(pdMS_TO_TICKS(20));fclose(f);transport_give();if(!valid)snprintf(worker_status,sizeof(worker_status),"Invalid/unsupported WAD. Use official Freedoom 0.13.0 Phase 1." ASSET_HELP);return valid;
+ while(!transport_take())vTaskDelay(pdMS_TO_TICKS(20));int close_rc=fclose(f);transport_give();validation_observed(DM_IO_CLOSE,0,close_rc!=0);if(!valid)snprintf(worker_status,sizeof(worker_status),"Invalid/unsupported WAD. Use official Freedoom 0.13.0 Phase 1." ASSET_HELP);return valid;
 }
 static void frame_ready(const uint8_t *pixels,void *unused){(void)unused;if(xSemaphoreTake(frame_lock,pdMS_TO_TICKS(5))==pdTRUE){memcpy(mailbox,pixels,320*200);for(unsigned i=0;i<256;i++)mailbox_palette[i]=doom_session_color565((uint8_t)i);if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED))__atomic_fetch_add(&overwritten,1,__ATOMIC_RELAXED);__atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);xSemaphoreGive(frame_lock);}else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);}
-static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{phase(LOAD_INIT,"INIT_BEGIN");doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){phase(LOAD_RUNNING,"INIT_END");__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
+static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{phase(LOAD_INIT,"INIT_BEGIN");doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){phase(LOAD_RUNNING,"INIT_END");__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());__atomic_store_n(&doom_metrics.io_phase,DM_IO_CLEANUP,__ATOMIC_RELAXED);while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
 heap_marker("WORKER_CLEAN");ESP_LOGI(TAG,"ENGINE_JOIN_READY frames=%lu dropped=%lu owned=%lu",(unsigned long)frames,(unsigned long)dropped,(unsigned long)doom_session_owned());/* Last worker access is publishing done. No UI/buffer access after this store. */__atomic_store_n(&done,true,__ATOMIC_RELEASE);vTaskSuspend(NULL);for(;;)vTaskDelay(pdMS_TO_TICKS(1000));}
 /* Joining uses the FreeRTOS task lifecycle, not merely an arbitrary delay. UI
  * waits for done (all engine resources gone) then checks task deletion before
@@ -133,6 +136,72 @@ static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_
   if(strcmp(lv_label_get_text(status),text)){lv_label_set_text(status,text);ui_updates++;}
  }
  if((uint32_t)(now-ui_last_log)>=5000){
+  doom_io_metrics_t current_io[DM_IO_PHASES];
+  for(unsigned i=0;i<DM_IO_PHASES;i++){
+   current_io[i].opens=DM_IO_GET(i,opens);
+   current_io[i].closes=DM_IO_GET(i,closes);
+   current_io[i].reads=DM_IO_GET(i,reads);
+   current_io[i].seeks=DM_IO_GET(i,seeks);
+   current_io[i].tells=DM_IO_GET(i,tells);
+   current_io[i].stats=DM_IO_GET(i,stats);
+   current_io[i].bytes=DM_IO_GET(i,bytes);
+   current_io[i].failures=DM_IO_GET(i,failures);
+   current_io[i].admission_us=DM_IO_GET(i,admission_us);
+   current_io[i].hold_us=DM_IO_GET(i,hold_us);
+   current_io[i].admission_max_us=DM_IO_GET(i,admission_max_us);
+   current_io[i].hold_max_us=DM_IO_GET(i,hold_max_us);
+  }
+  ESP_LOGI(TAG,"ENGINE_IO_DIAG interval_ms=%lu phase=%lu VALIDATION=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu INIT=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu RUNNING=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu CLEANUP=%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu",
+   (unsigned long)(now-ui_last_log),(unsigned long)DM_GET(io_phase),
+   (unsigned long)(current_io[0].opens-last_io[0].opens),
+   (unsigned long)(current_io[0].closes-last_io[0].closes),
+   (unsigned long)(current_io[0].reads-last_io[0].reads),
+   (unsigned long)(current_io[0].seeks-last_io[0].seeks),
+   (unsigned long)(current_io[0].tells-last_io[0].tells),
+   (unsigned long)(current_io[0].stats-last_io[0].stats),
+   (unsigned long)(current_io[0].bytes-last_io[0].bytes),
+   (unsigned long)(current_io[0].failures-last_io[0].failures),
+   (unsigned long)(current_io[0].admission_us-last_io[0].admission_us),
+   (unsigned long)(current_io[0].hold_us-last_io[0].hold_us),
+   (unsigned long)current_io[0].admission_max_us,
+   (unsigned long)current_io[0].hold_max_us,
+   (unsigned long)(current_io[1].opens-last_io[1].opens),
+   (unsigned long)(current_io[1].closes-last_io[1].closes),
+   (unsigned long)(current_io[1].reads-last_io[1].reads),
+   (unsigned long)(current_io[1].seeks-last_io[1].seeks),
+   (unsigned long)(current_io[1].tells-last_io[1].tells),
+   (unsigned long)(current_io[1].stats-last_io[1].stats),
+   (unsigned long)(current_io[1].bytes-last_io[1].bytes),
+   (unsigned long)(current_io[1].failures-last_io[1].failures),
+   (unsigned long)(current_io[1].admission_us-last_io[1].admission_us),
+   (unsigned long)(current_io[1].hold_us-last_io[1].hold_us),
+   (unsigned long)current_io[1].admission_max_us,
+   (unsigned long)current_io[1].hold_max_us,
+   (unsigned long)(current_io[2].opens-last_io[2].opens),
+   (unsigned long)(current_io[2].closes-last_io[2].closes),
+   (unsigned long)(current_io[2].reads-last_io[2].reads),
+   (unsigned long)(current_io[2].seeks-last_io[2].seeks),
+   (unsigned long)(current_io[2].tells-last_io[2].tells),
+   (unsigned long)(current_io[2].stats-last_io[2].stats),
+   (unsigned long)(current_io[2].bytes-last_io[2].bytes),
+   (unsigned long)(current_io[2].failures-last_io[2].failures),
+   (unsigned long)(current_io[2].admission_us-last_io[2].admission_us),
+   (unsigned long)(current_io[2].hold_us-last_io[2].hold_us),
+   (unsigned long)current_io[2].admission_max_us,
+   (unsigned long)current_io[2].hold_max_us,
+   (unsigned long)(current_io[3].opens-last_io[3].opens),
+   (unsigned long)(current_io[3].closes-last_io[3].closes),
+   (unsigned long)(current_io[3].reads-last_io[3].reads),
+   (unsigned long)(current_io[3].seeks-last_io[3].seeks),
+   (unsigned long)(current_io[3].tells-last_io[3].tells),
+   (unsigned long)(current_io[3].stats-last_io[3].stats),
+   (unsigned long)(current_io[3].bytes-last_io[3].bytes),
+   (unsigned long)(current_io[3].failures-last_io[3].failures),
+   (unsigned long)(current_io[3].admission_us-last_io[3].admission_us),
+   (unsigned long)(current_io[3].hold_us-last_io[3].hold_us),
+   (unsigned long)current_io[3].admission_max_us,
+   (unsigned long)current_io[3].hold_max_us);
+  memcpy(last_io,current_io,sizeof(last_io));
   uint32_t ticks=DM_GET(ticks),tu=DM_GET(tick_us),au=DM_GET(audio_us),aw=DM_GET(audio_writes),su=DM_GET(sd_us),sr=DM_GET(sd_reads),sl=DM_GET(sleep_us),fu=DM_GET(frame_us),ie=DM_GET(input_events),is=DM_GET(input_age_sum);
   ESP_LOGI(TAG,"PERF interval_ms=%lu published=%lu displayed=%lu overwritten=%lu lock_dropped=%lu scale_us=%lu ticks=%lu tick_us=%lu frame_copy_us=%lu sleep_us=%lu sd_reads=%lu sd_us=%lu audio_writes=%lu audio_us=%lu audio_waits_total=%lu audio_faults_total=%lu input_events=%lu input_age_sum_ms=%lu input_age_max_ms=%lu loading_redraws=%lu panel_flushes=%lu panel_us=%lu",
    (unsigned long)(now-ui_last_log),(unsigned long)(__atomic_load_n(&frames,__ATOMIC_RELAXED)-last_frames),(unsigned long)(displayed-last_displayed),(unsigned long)(__atomic_load_n(&overwritten,__ATOMIC_RELAXED)-last_overwritten),(unsigned long)(__atomic_load_n(&dropped,__ATOMIC_RELAXED)-last_dropped),(unsigned long)(scale_us-last_scale_us),(unsigned long)(ticks-last_ticks),(unsigned long)(tu-last_tick_us),(unsigned long)(fu-last_frame_us),(unsigned long)(sl-last_sleep_us),(unsigned long)(sr-last_sd_reads),(unsigned long)(su-last_sd_us),(unsigned long)(aw-last_audio_writes),(unsigned long)(au-last_audio_us),(unsigned long)DM_GET(audio_waits),(unsigned long)DM_GET(audio_faults),(unsigned long)(ie-last_input_events),(unsigned long)(is-last_input_sum),(unsigned long)DM_GET(input_age_max),(unsigned long)(ui_updates-last_ui_updates),(unsigned long)(DM_GET(panel_flushes)-last_panel_flushes),(unsigned long)(DM_GET(panel_us)-last_panel_us));
@@ -220,7 +289,7 @@ static void launch_game(void){if(!isolated){lv_label_set_text(status,"Game start
 
  cancel=done=started=go_home=error_shown=running_view=false;frames=dropped=0;shown_fps10=0;displayed=overwritten=last_sequence=scale_us=ui_updates=0;
  boot_ms=cooperate_ms=ui_last_log=(uint32_t)(esp_timer_get_time()/1000);
- load_phase=LOAD_STRUCTURE;hash_bytes=hash_total=0;memset(&doom_metrics,0,sizeof(doom_metrics));
+ load_phase=LOAD_STRUCTURE;hash_bytes=hash_total=0;memset(&doom_metrics,0,sizeof(doom_metrics));memset(last_io,0,sizeof(last_io));
  last_frames=last_displayed=last_dropped=last_overwritten=last_ticks=last_tick_us=last_audio_us=last_audio_writes=last_sd_us=last_sd_reads=last_sleep_us=last_frame_us=last_input_events=last_input_sum=last_scale_us=last_ui_updates=last_panel_flushes=last_panel_us=0;
  held_keys=touch_keys=0;boot_raw=boot_fire=false;boot_changed_ms=boot_ms;timer=lv_timer_create(update,20,NULL);if(!timer){lv_label_set_text(status,"Cannot allocate game timer");free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}if(xTaskCreate(engine_worker,"cym_doom",24576,NULL,2,&worker)!=pdPASS){worker=NULL;lv_timer_del(timer);timer=NULL;lv_label_set_text(status,"Cannot allocate game worker");free(surface);surface=NULL;free(mailbox);mailbox=NULL;free(snapshot);snapshot=NULL;vSemaphoreDelete(frame_lock);frame_lock=NULL;lv_obj_del(canvas);canvas=NULL;return;}ESP_LOGI(TAG,"LAUNCH_REQUESTED path=%s",WAD_PATH);}
 /* No game allocator exists on the normal selector/license path. Art is flash

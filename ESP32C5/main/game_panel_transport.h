@@ -5,6 +5,7 @@
  */
 #ifndef CYM_GAME_PANEL_TRANSPORT_H
 #define CYM_GAME_PANEL_TRANSPORT_H
+#include "display_diagnostics.h"
 #define CYM_PANEL_STAGE_BYTES 4096
 static void *s_panel_stage;
 
@@ -32,40 +33,72 @@ static inline esp_err_t cym_panel_transfer(esp_lcd_panel_handle_t panel,
                                            const void *pixels, bool wait_bus)
 {
     const int width = x2 - x1;
-    if (!s_panel_stage || !pixels || width <= 0 || y2 <= y1)
+    cym_display_diag *diag = &s_display_diag[wait_bus ? 1 : 0];
+    cym_diag_callback_begin(diag, width > 0 ? width : 0, y2 > y1 ? y2-y1 : 0,
+                            CYM_PANEL_STAGE_BYTES, (uint32_t)esp_timer_get_time());
+    if (!s_panel_stage || !pixels || width <= 0 || y2 <= y1) {
+        cym_diag_callback_end(diag, false, (uint32_t)esp_timer_get_time());
         return ESP_ERR_INVALID_ARG;
+    }
     const size_t row_bytes = (size_t)width * sizeof(lv_color_t);
-    if (row_bytes > CYM_PANEL_STAGE_BYTES) return ESP_ERR_INVALID_ARG;
+    if (row_bytes > CYM_PANEL_STAGE_BYTES) {
+        cym_diag_callback_end(diag, false, (uint32_t)esp_timer_get_time());
+        return ESP_ERR_INVALID_ARG;
+    }
+    uint32_t admission_start = (uint32_t)esp_timer_get_time();
+    unsigned admission_attempts = 0, admission_rejects = 0;
     bool locked = false;
     if (sd_spi_mutex) {
         const unsigned attempts = wait_bus ? 100 : 1;
         for (unsigned i = 0; i < attempts; i++) {
+            admission_attempts++;
             if (xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(wait_bus ? 20 : 5)) == pdTRUE) {
                 locked = true;
                 break;
             }
+            admission_rejects++;
             cym_panel_watchdog_feed();
         }
-        if (!locked) return ESP_ERR_TIMEOUT;
+        if (!locked) {
+            cym_diag_admission(diag, admission_attempts, admission_rejects,
+                               (uint32_t)esp_timer_get_time() - admission_start);
+            cym_diag_callback_end(diag, false, (uint32_t)esp_timer_get_time());
+            return ESP_ERR_TIMEOUT;
+        }
     }
+    cym_diag_admission(diag, admission_attempts, admission_rejects,
+                       (uint32_t)esp_timer_get_time() - admission_start);
     const unsigned char *source = pixels;
     esp_err_t err = ESP_OK;
     for (int y = y1; y < y2;) {
         int rows = CYM_PANEL_STAGE_BYTES / row_bytes;
         if (rows > y2 - y) rows = y2 - y;
         const size_t bytes = row_bytes * rows;
+        uint32_t copy_start = (uint32_t)esp_timer_get_time();
         memcpy(s_panel_stage, source, bytes);
+        cym_diag_copy(diag, (uint32_t)esp_timer_get_time() - copy_start);
         xSemaphoreTake(flush_done_sem, 0);
         /* Each stripe fits every SPI adapter's max_transfer_sz (>=4096).
          * Thus this call queues ONE color transaction: error means no borrowed
          * color memory, unlike a partially queued multi-transaction frame.
          * Internal SRAM on these SoCs needs pointer alignment, not padded TX
          * lengths. Send exact odd RGB565 widths; never add pixels to the panel. */
+        uint32_t token = cym_diag_prepare(&s_display_channel);
+        uint32_t draw_start = (uint32_t)esp_timer_get_time();
         err = esp_lcd_panel_draw_bitmap(panel, x1, y, x2, y + rows, s_panel_stage);
-        if (err != ESP_OK) break;  /* no completion exists; no forever retry */
+        uint32_t draw_return = (uint32_t)esp_timer_get_time();
+        cym_diag_draw(diag, draw_return - draw_start, err == ESP_OK);
+        if (err != ESP_OK) {
+            __atomic_store_n(&s_display_channel.pending, 0, __ATOMIC_RELEASE);
+            break;  /* no completion exists; no forever retry */
+        }
+        uint32_t wait_start = (uint32_t)esp_timer_get_time();
         bool completed = false;
         for (unsigned i = 0; i < 100; i++) {
             if (xSemaphoreTake(flush_done_sem, pdMS_TO_TICKS(20)) == pdTRUE) {
+                uint32_t resumed = (uint32_t)esp_timer_get_time();
+                cym_diag_resume(diag, &s_display_channel, token, draw_start,
+                                draw_return, resumed, resumed - wait_start);
                 completed = true;
                 break;
             }
@@ -85,6 +118,7 @@ static inline esp_err_t cym_panel_transfer(esp_lcd_panel_handle_t panel,
         cym_panel_watchdog_feed();
     }
     if (locked) xSemaphoreGive(sd_spi_mutex);
+    cym_diag_callback_end(diag, err == ESP_OK, (uint32_t)esp_timer_get_time());
     return err;
 }
 

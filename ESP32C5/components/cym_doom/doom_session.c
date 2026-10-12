@@ -7,7 +7,12 @@
  */
 #include "doom_session.h"
 #include "doom_metrics.h"
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+doom_metrics_t DRAM_ATTR doom_metrics;
+#else
 doom_metrics_t doom_metrics;
+#endif
 #include "doom_contracts.h"
 #include "doomgeneric.h"
 #include "w_file.h"
@@ -117,23 +122,33 @@ void *q=realloc(p,n);
 #endif
 if(!q)doom_engine_fail("Engine realloc failed");owned[i]=q;return q;}doom_engine_fail("Unregistered engine realloc");}
 /* Every VFS operation unlocks transport BEFORE returning to the engine. */
-static bool io_lock(void){
+static uint32_t io_admission_us,io_hold_start,io_hold_us;
+static unsigned io_phase_sample;
+static bool io_lock(unsigned op){
+    uint32_t before=metric_us();
+    io_phase_sample=DM_GET(io_phase);
+    bool admitted;
 #ifdef ESP_PLATFORM
-    return sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;
+    admitted=sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;
 #else
-    return true;
+    admitted=true;
 #endif
+    io_hold_start=metric_us();io_admission_us=io_hold_start-before;
+    if(!admitted)dm_io_record(io_phase_sample,op,io_admission_us,0,0,true);
+    return admitted;
 }
 static void io_unlock(void){
+    io_hold_us=metric_us()-io_hold_start;
 #ifdef ESP_PLATFORM
     xSemaphoreGive(sd_spi_mutex);
 #endif
 }
-FILE *doom_owned_fopen(const char *p,const char *mode){check_stop();if(!p||strcmp(p,wad_path)||(strcmp(mode,"rb")&&strcmp(mode,"r")))return NULL;if(file_n==16)doom_engine_fail("File registry full");if(!io_lock())doom_engine_fail("SD transport busy");FILE *f=fopen(p,mode);io_unlock();if(f)files[file_n++]=f;return f;}
-int doom_owned_fclose(FILE *f){if(!f)return 0;for(unsigned i=0;i<file_n;i++)if(files[i]==f){if(!io_lock())doom_engine_fail("SD close transport busy");int rc=fclose(f);io_unlock();files[i]=files[--file_n];return rc;}doom_engine_fail("Unregistered engine file close");}
-size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){check_stop();if(s&&n>SIZE_MAX/s)doom_engine_fail("File read overflow");if(!io_lock())doom_engine_fail("SD read transport busy");uint32_t before=metric_us();size_t result=fread(p,s,n,f);io_unlock();DM_ADD(sd_reads,1);DM_ADD(sd_us,metric_us()-before);return result;}
-int doom_owned_fseek(FILE *f,long off,int whence){check_stop();if(!io_lock())doom_engine_fail("SD seek transport busy");int rc=fseek(f,off,whence);io_unlock();return rc;}
-long doom_owned_ftell(FILE *f){if(!io_lock())doom_engine_fail("SD tell transport busy");long result=ftell(f);io_unlock();return result;}
+static void io_observed(unsigned op,uint32_t bytes,bool failed){dm_io_record(io_phase_sample,op,io_admission_us,io_hold_us,bytes,failed);}
+FILE *doom_owned_fopen(const char *p,const char *mode){check_stop();if(!p||strcmp(p,wad_path)||(strcmp(mode,"rb")&&strcmp(mode,"r")))return NULL;if(file_n==16)doom_engine_fail("File registry full");if(!io_lock(DM_IO_OPEN))doom_engine_fail("SD transport busy");FILE *f=fopen(p,mode);io_unlock();io_observed(DM_IO_OPEN,0,!f);if(f)files[file_n++]=f;return f;}
+int doom_owned_fclose(FILE *f){if(!f)return 0;for(unsigned i=0;i<file_n;i++)if(files[i]==f){if(!io_lock(DM_IO_CLOSE))doom_engine_fail("SD close transport busy");int rc=fclose(f);io_unlock();io_observed(DM_IO_CLOSE,0,rc!=0);files[i]=files[--file_n];return rc;}doom_engine_fail("Unregistered engine file close");}
+size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){check_stop();if(s&&n>SIZE_MAX/s)doom_engine_fail("File read overflow");if(!io_lock(DM_IO_READ))doom_engine_fail("SD read transport busy");uint32_t before=metric_us();size_t result=fread(p,s,n,f);io_unlock();io_observed(DM_IO_READ,(uint32_t)(result*s),ferror(f)!=0);DM_ADD(sd_reads,1);DM_ADD(sd_us,metric_us()-before);return result;}
+int doom_owned_fseek(FILE *f,long off,int whence){check_stop();if(!io_lock(DM_IO_SEEK))doom_engine_fail("SD seek transport busy");int rc=fseek(f,off,whence);io_unlock();io_observed(DM_IO_SEEK,0,rc!=0);return rc;}
+long doom_owned_ftell(FILE *f){if(!io_lock(DM_IO_TELL))doom_engine_fail("SD tell transport busy");long result=ftell(f);io_unlock();io_observed(DM_IO_TELL,0,result<0);return result;}
 int doom_owned_forbidden(const char *p){(void)p;doom_engine_fail("Host shell/SD write disabled in prototype");}
 int doom_owned_rename(const char *p,const char *q){(void)q;return doom_owned_forbidden(p);}
 char *doom_owned_getenv(const char *name){(void)name;return NULL;}
@@ -164,7 +179,7 @@ const char *doom_session_error(void){return error_text;}
  * invoked on partially initialized globals, and no atexit callback is called.
  */
 extern int doom_sound_stop(void);
-int doom_session_stop(void){if(armed||!same_owner())return -1;/* Drop all borrowed sample pointers and disable DMA before engine reclamation. */if(doom_sound_stop()!=0){snprintf(error_text,sizeof(error_text),"Audio cleanup busy - ownership retained");return -1;}while(file_n){FILE *f=files[file_n-1];if(!io_lock()){snprintf(error_text,sizeof(error_text),"SD cleanup busy - ownership retained");return -1;}fclose(f);io_unlock();--file_n;}
+int doom_session_stop(void){if(armed||!same_owner())return -1;/* Drop all borrowed sample pointers and disable DMA before engine reclamation. */if(doom_sound_stop()!=0){snprintf(error_text,sizeof(error_text),"Audio cleanup busy - ownership retained");return -1;}while(file_n){FILE *f=files[file_n-1];if(!io_lock(DM_IO_CLOSE)){snprintf(error_text,sizeof(error_text),"SD cleanup busy - ownership retained");return -1;}int rc=fclose(f);io_unlock();io_observed(DM_IO_CLOSE,0,rc!=0);--file_n;}
 while(owned_n)free(owned[--owned_n]);free(owned);owned=NULL;if(state){snapshot_state(true);free(state);state=NULL;}active=false;memset(&keys,0,sizeof(keys));desired_keys=0;__atomic_store_n(&stop_requested,false,__ATOMIC_RELEASE);return 0;}
 static void create(void){static char *argv[]={"cym-doom","-iwad",wad_path,"-nomusic","-warp","1","1",NULL};doom_engine_tables_init();doomgeneric_Create(7,argv);}
 int doom_session_start(const char *path){if(active||armed||!path||strlen(path)>=sizeof(wad_path))return -1;
@@ -196,7 +211,7 @@ void DG_SetWindowTitle(const char *title){printf("[CYM_DOOM] TITLE %s\n",title);
 void DG_PaletteLoad(const void *data){const uint8_t *p=data;for(unsigned i=0;i<256;i++)palette[i]=(uint16_t)(((p[i*3]>>3)<<11)|((p[i*3+1]>>2)<<5)|(p[i*3+2]>>3));}
 uint16_t DG_PaletteColor565(uint8_t i){return palette[i];}
 uint16_t doom_session_color565(uint8_t i){return palette[i];}
-int DG_FileExists(const char *path){if(strcmp(path,wad_path))return 0;if(!io_lock())doom_engine_fail("SD stat transport busy");struct stat s;int rc=stat(path,&s);io_unlock();return rc==0;}
+int DG_FileExists(const char *path){if(strcmp(path,wad_path))return 0;if(!io_lock(DM_IO_STAT))doom_engine_fail("SD stat transport busy");struct stat s;int rc=stat(path,&s);io_unlock();io_observed(DM_IO_STAT,0,rc!=0);return rc==0;}
 void *DG_FileOpen(const char *p){return doom_owned_fopen(p,"rb");}
 void DG_FileClose(void *p){if(p)doom_owned_fclose(p);}
 size_t DG_FileRead(void *f,void *buf,size_t n){return doom_owned_fread(buf,1,n,f);}

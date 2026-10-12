@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.86 |
+| Version | v2.15.89 |
 | Build date | 2026-10-12 |
-| .iram0.text | 135,752 B (132.6 KB) |
-| .dram0.data | 44,525 B (43.5 KB) |
-| .dram0.bss  (internal) | 103,968 B (101.5 KB) |
+| .iram0.text | 135,876 B (132.7 KB) |
+| .dram0.data | 45,221 B (44.2 KB) |
+| .dram0.bss  (internal) | 104,496 B (102.0 KB) |
 | .ext_ram.bss  (PSRAM) | 312,392 B (305.1 KB) |
-| App binary size | 3,790,368 B (3701.5 KB) |
+| App binary size | 3,797,136 B (3708.1 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -25,10 +25,10 @@
 | Library / object | Internal BSS |
 |-----------------|-------------|
 | `libcym_doom_engine.a` | 98,082 B (95.8 KB) |
-| `libmain.a` | 63,537 B (62.0 KB) |
+| `libmain.a` | 63,921 B (62.4 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
-| `libcym_doom.a` | 5,052 B (4.9 KB) |
+| `libcym_doom.a` | 5,156 B (5.0 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |
 | `liblwip.a` | 3,940 B (3.8 KB) |
 | `libieee802154.a` | 3,590 B (3.5 KB) |

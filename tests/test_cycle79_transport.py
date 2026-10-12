@@ -39,12 +39,13 @@ static uint64_t esp_timer_get_time(void){return ++now;}
 static int esp_task_wdt_status(void *task){(void)task;return ESP_OK;}
 static void esp_task_wdt_reset(void){}
 static void vTaskDelay(int t){(void)t;}
+static void host_completion(void);
 static int xSemaphoreTake(void*h,int t){
  if(h==sd_spi_mutex)return ++lock_attempts>3;
  if(!t)return 0;
  if(++dma_waits<4)return 0;
  for(int y=pending.y1;y<=pending.y2;y++)for(int x=pending.x1;x<=pending.x2;x++)panel[y*320+x]=*borrowed++;
- borrowed=NULL;return 1;
+ borrowed=NULL;host_completion();return 1;
 }
 static void xSemaphoreGive(void*h){(void)h;assert(!borrowed);releases++;}
 static int esp_lcd_panel_draw_bitmap(void*p,int x1,int y1,int x2,int y2,const void*buf){(void)p;assert(!borrowed);pending=(lv_area_t){x1,y1,x2-1,y2-1};borrowed=buf;draws++;return 0;}
@@ -62,7 +63,8 @@ class Transport(unittest.TestCase):
   helper=ROOT/'ESP32C5/main/game_panel_transport.h'
   inc='#include "'+str(helper)+'"\n' if helper.exists() else ''
   metrics='#include "'+str(ROOT/'ESP32C5/components/cym_doom/include/doom_metrics.h')+'"\ndoom_metrics_t doom_metrics;\n'
-  code=PRE+metrics+inc+fn+r"""
+  completion="static void host_completion(void){cym_diag_isr(&s_display_channel,(uint32_t)esp_timer_get_time());}\n"
+  code=PRE+metrics+inc+completion+fn+r"""
 int main(void){
  assert(cym_panel_transport_init()==ESP_OK);
  memset(panel,0x7e,sizeof(panel));uint16_t pixels[320*15];memset(pixels,0,sizeof(pixels));lv_disp_drv_t d={0};

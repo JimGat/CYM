@@ -845,6 +845,7 @@ static hosyond_s3_35_display_t s_hosyond_display;
 static SemaphoreHandle_t lvgl_mutex = NULL;
 SemaphoreHandle_t sd_spi_mutex = NULL;  // Mutex for SD/SPI access (shared with display) - used by attack_handshake.c
 static SemaphoreHandle_t flush_done_sem = NULL;  // Binary semaphore: ISR signals DMA done, task calls lv_disp_flush_ready
+#include "display_diagnostics_report.h"
 #if !defined(CONFIG_BOARD_HOSYOND_S3_35) && !defined(CONFIG_BOARD_WS_S3_5B)
 #include "game_panel_transport.h"
 #endif
@@ -7502,7 +7503,13 @@ static void game_isolated_main(void)
     doom_ui_boot_start(doom_prototype_home,sd_mounted_lazy);
     for(;;){
         doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
-        if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){lv_timer_handler();xSemaphoreGive(lvgl_mutex);}
+        if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){
+            uint32_t before=(uint32_t)esp_timer_get_time(),cb=s_display_diag[1].callback_us;
+            lv_timer_handler();
+            cym_diag_handler(&s_display_diag[1],(uint32_t)esp_timer_get_time()-before,s_display_diag[1].callback_us-cb);
+            xSemaphoreGive(lvgl_mutex);
+        }
+        cym_display_diag_report();
         esp_task_wdt_reset();vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -9993,9 +10000,12 @@ void app_main(void)
             // Monitor LVGL handler execution to detect hangs
             uint64_t lvgl_call_us = esp_timer_get_time();
             ESP_LOGD(TAG, "[MAIN_LOOP] Entering first lv_timer_handler() at %llu us", lvgl_call_us);
+            uint32_t diagnostic_cb_us = s_display_diag[0].callback_us;
             sleep_ms = lv_timer_handler();
             uint64_t lvgl_return_us = esp_timer_get_time();
             uint64_t lvgl_elapsed_us = lvgl_return_us - lvgl_call_us;
+            cym_diag_handler(&s_display_diag[0], (uint32_t)lvgl_elapsed_us,
+                             s_display_diag[0].callback_us - diagnostic_cb_us);
             if (lvgl_elapsed_us > 100000) {  // Log if handler took > 100ms
                 ESP_LOGW(TAG, "[MAIN_LOOP] LONG lv_timer_handler() took %llu us (%.1f ms)", lvgl_elapsed_us, (float)lvgl_elapsed_us / 1000.0f);
                 // Additional risk detection: if render time exceeds 500ms, we're approaching WDT danger zone
@@ -10017,9 +10027,12 @@ void app_main(void)
                 // Force immediate render of the new dialog before yielding
                 uint64_t t_render_start = esp_timer_get_time();
                 ESP_LOGD(TAG, "[MAIN_LOOP] Entering second lv_timer_handler() for dialog render at %llu us", t_render_start);
+                diagnostic_cb_us = s_display_diag[0].callback_us;
                 sleep_ms = lv_timer_handler();
                 uint64_t t_render_done = esp_timer_get_time();
                 uint64_t dialog_handler_us = t_render_done - t_render_start;
+                cym_diag_handler(&s_display_diag[0], (uint32_t)dialog_handler_us,
+                                 s_display_diag[0].callback_us - diagnostic_cb_us);
                 if (dialog_handler_us > 100000) {
                     ESP_LOGW(TAG, "[MAIN_LOOP] LONG dialog lv_timer_handler() took %llu us (%.1f ms)", dialog_handler_us, (float)dialog_handler_us / 1000.0f);
                 }
@@ -10036,6 +10049,8 @@ void app_main(void)
 
             xSemaphoreGive(lvgl_mutex);
         }
+
+        cym_display_diag_report();
 
         // Reset watchdog again after releasing mutex
         uint64_t wdt_after_us = esp_timer_get_time();
@@ -10278,6 +10293,7 @@ static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t io,
     // NOT from this ISR. Calling it here invokes _lv_disp_refr_timer() from ISR which
     // corrupts LVGL's already_running guard and silently kills all timer processing.
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    cym_diag_isr(&s_display_channel, (uint32_t)esp_timer_get_time());
     xSemaphoreGiveFromISR(flush_done_sem, &xHigherPriorityTaskWoken);
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     return false;
