@@ -17,7 +17,8 @@ STUB=r"""#ifndef AUDIO_BACKEND_STUB_H
 #define I2S_SLOT_MODE_MONO 1
 #define ESP_CODEC_DEV_WORK_MODE_DAC 1
 #define ES8311_CODEC_DEFAULT_ADDR 0x30
-#define ESP_LOGI(...) ((void)0)
+void backend_log(const char *tag,const char *fmt,...);
+#define ESP_LOGI backend_log
 #define ESP_LOGE(...) ((void)0)
 typedef void *i2s_chan_handle_t;
 typedef struct {int dma_desc_num,dma_frame_num;bool auto_clear;} i2s_chan_config_t;
@@ -55,6 +56,10 @@ doom_metrics_t doom_metrics;
 #include <string.h>
 static int seq,fail_at=-1,tx_live,tx_on,ctrl_live,codec_live,amp_on,short_write;
 static int read_fail,bad_reg,muted,codec_enabled;
+static float observed_volume;static unsigned started_logs;
+#include <stdarg.h>
+void backend_log(const char*tag,const char*fmt,...){(void)tag;char line[1024];va_list ap;va_start(ap,fmt);vsnprintf(line,sizeof(line),fmt,ap);va_end(ap);
+if(strstr(line,"AUDIO_STARTED")){assert(strstr(line,"volume_db=-15"));assert(!strstr(line,"volume_db=-30"));assert(strstr(line,"audible=unconfirmed"));assert(observed_volume==-15.0f);assert(amp_on&&codec_enabled&&!muted&&tx_on&&audio_task&&audio_queue);started_logs++;}}
 static int read_reg(const audio_codec_ctrl_if_t*c,int reg,int width,void*out,int len){(void)c;assert(width==1&&len==1);if(read_fail)return -1;
 unsigned v=0;switch(reg){case 0x00:v=0x80;break;case 0x01:v=0xbf;break;case 0x02:v=0x18;break;case 0x06:v=3;break;case 0x09:case 0x0a:v=0x0c;break;case 0x0d:v=1;break;case 0x14:v=0x1a;break;case 0x32:v=0x8a;break;case 0x37:v=8;break;}if(reg==0x12)v=codec_enabled?0:2;if(reg==0x14)v=codec_enabled?0x1a:0;if(reg==0x31)v=muted?0x60:0;if(reg==bad_reg)v^=0x40;*(unsigned char*)out=v;return 0;}
 static audio_codec_ctrl_if_t ci={read_reg};
@@ -77,7 +82,7 @@ const audio_codec_ctrl_if_t *audio_codec_new_i2c_ctrl(audio_codec_i2c_cfg_t*c){a
 static int mute(const audio_codec_if_t*c,bool v){(void)c;if(op())return -1;muted=v;return 0;}
 static int enable(const audio_codec_if_t*c,bool v){(void)c;if(op())return -1;codec_enabled=v;return 0;}
 static int fs(const audio_codec_if_t*c,esp_codec_dev_sample_info_t*f){(void)c;assert(f->sample_rate==22050&&f->bits_per_sample==16&&f->channel==1);return op();}
-static int vol(const audio_codec_if_t*c,float db){(void)c;assert(db==-30.0f);return op();}
+static int vol(const audio_codec_if_t*c,float db){(void)c;assert(db==-15.0f);assert(muted&&!codec_enabled&&!amp_on&&!tx_on);observed_volume=db;return op();}
 static const audio_codec_if_t co={mute,enable,fs,vol};
 const audio_codec_if_t *es8311_codec_new(es8311_codec_cfg_t*c){assert(c->hw_gain.pa_voltage==3.3f&&c->hw_gain.codec_dac_voltage==3.3f);assert(c->ctrl_if==&ci&&!c->master_mode&&!c->use_mclk&&c->pa_pin==-1&&c->codec_mode==1);if(op())return NULL;codec_live=1;return &co;}
 int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);codec_live=0;return 0;}
@@ -101,7 +106,7 @@ for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_
 read_fail=1;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);read_fail=0;
 for(int reg=0;reg<=0x37;reg++){if(reg==0||reg==1||reg==2||reg==6||reg==9||reg==0x0d||reg==0x12||reg==0x14||reg==0x31||reg==0x37){bad_reg=reg;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);}}bad_reg=-1;
 queue_fail=1;assert(!doom_audio_begin());queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
-seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on&&doom_audio_demand()==6);
+seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on&&doom_audio_demand()==6&&started_logs>0);
 unsigned writes=DM_GET(audio_writes);for(unsigned i=0;i<6;i++)assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));assert(!doom_audio_demand());assert(DM_GET(audio_writes)==writes);
 pcm[0]=0;assert(audio_step());assert(DM_GET(audio_nonzero)==DOOM_AUDIO_BLOCK);assert(doom_audio_demand()==1);
 assert(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK+1));

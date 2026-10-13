@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster - HackerBox CYD (experimental)",
-  "version": "v2.15.92",
-  "build": "v2.15.92",
+  "version": "v2.15.93",
+  "build": "v2.15.93",
   "chipFamily": "ESP32",
   "parts": [
     {

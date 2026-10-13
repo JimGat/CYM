@@ -28856,6 +28856,17 @@ static bool maidenhead6(double lat, double lon, char out[7])
 }
 
 // 1 Hz UI update timer for NTP Clock dashboard
+/* Clock labels are copied by LVGL; compare content, not buffer addresses.
+ * Read the live object so screen recreation never inherits a stale cache. */
+static void clock_label_set_text_if_changed(lv_obj_t *label, const char *text)
+{
+    if (!label || !text) return;
+    const char *current = lv_label_get_text(label);
+    if (!current || strcmp(current, text) != 0) {
+        lv_label_set_text(label, text);
+    }
+}
+
 static void clock_ui_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
@@ -28879,7 +28890,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
             default: break;
             }
         }
-        lv_label_set_text(s_ntp_source_lbl, badge);
+        clock_label_set_text_if_changed(s_ntp_source_lbl, badge);
         lv_color_t c = lv_color_hex(0xFF5252);  // red default
         if (have_snap && snap.source == CYM_TIME_GPS_LOCKED) c = lv_color_hex(0x69F0AE);
         else if (have_snap && snap.source == CYM_TIME_RTC_HOLDOVER) c = lv_color_hex(0xFFD740);
@@ -28897,7 +28908,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         gmtime_r(&display_epoch, &dt);
         char tbuf[16];
         snprintf(tbuf, sizeof(tbuf), "%02d:%02d:%02d", dt.tm_hour, dt.tm_min, dt.tm_sec);
-        lv_label_set_text(s_ntp_time_lbl, tbuf);
+        clock_label_set_text_if_changed(s_ntp_time_lbl, tbuf);
     }
     if (s_ntp_date_lbl && have_snap) {
         time_t display_epoch = snap.utc.tv_sec + (int32_t)g_clock_offset_minutes * 60;
@@ -28905,7 +28916,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         gmtime_r(&display_epoch, &dt);
         char dbuf[32];
         snprintf(dbuf, sizeof(dbuf), "%04d-%02d-%02d", dt.tm_year + 1900, dt.tm_mon + 1, dt.tm_mday);
-        lv_label_set_text(s_ntp_date_lbl, dbuf);
+        clock_label_set_text_if_changed(s_ntp_date_lbl, dbuf);
     }
     if (s_clock_maidenhead_lbl) {
         char grid[7];
@@ -28913,9 +28924,9 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
             maidenhead6(current_gps.latitude, current_gps.longitude, grid)) {
             char gbuf[24];
             snprintf(gbuf, sizeof(gbuf), "Grid: %s", grid);
-            lv_label_set_text(s_clock_maidenhead_lbl, gbuf);
+            clock_label_set_text_if_changed(s_clock_maidenhead_lbl, gbuf);
         } else {
-            lv_label_set_text(s_clock_maidenhead_lbl,
+            clock_label_set_text_if_changed(s_clock_maidenhead_lbl,
                               BOARD_TIME_HAS_GPS_UART ?
                               "Grid: waiting for GPS fix" : "Grid: unavailable");
         }
@@ -28927,7 +28938,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         int m_off = abs(g_clock_offset_minutes % 60);
         char obuf[40];
         snprintf(obuf, sizeof(obuf), "DISPLAY UTC%+d:%02d - NTP UTC", h_off, m_off);
-        lv_label_set_text(s_ntp_offset_lbl, obuf);
+        clock_label_set_text_if_changed(s_ntp_offset_lbl, obuf);
     }
 
     // IP / hostname / service
@@ -28936,11 +28947,11 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
             char ibuf[40];
             snprintf(ibuf, sizeof(ibuf), s_clock_mode == CLOCK_MODE_AP_NTP ?
                      "AP IP: %s" : "DHCP IP: %s", s_ntp_ip_str);
-            lv_label_set_text(s_ntp_ip_lbl, ibuf);
+            clock_label_set_text_if_changed(s_ntp_ip_lbl, ibuf);
         } else if (s_ntp_wifi_failed) {
-            lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: OFFLINE");
+            clock_label_set_text_if_changed(s_ntp_ip_lbl, "DHCP IP: OFFLINE");
         } else {
-            lv_label_set_text(s_ntp_ip_lbl, "DHCP IP: connecting...");
+            clock_label_set_text_if_changed(s_ntp_ip_lbl, "DHCP IP: connecting...");
         }
     }
     if (s_ntp_network_lbl) {
@@ -28959,18 +28970,18 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
             else if (s_ntp_public_state == NTP_PUBLIC_SKIPPED_GPS) status = "Public NTP: skipped (GPS lock)";
             snprintf(nbuf, sizeof(nbuf), "%s", status);
         }
-        lv_label_set_text(s_ntp_network_lbl, nbuf);
+        clock_label_set_text_if_changed(s_ntp_network_lbl, nbuf);
     }
     if (s_ntp_host_lbl) {
 #if BOARD_TIME_HAS_MDNS
-        lv_label_set_text(s_ntp_host_lbl, s_ntp_mdns_ok ?
+        clock_label_set_text_if_changed(s_ntp_host_lbl, s_ntp_mdns_ok ?
             "Hostname: cym-ntp.local" : "Hostname: mDNS failed");
 #else
-        lv_label_set_text(s_ntp_host_lbl, "Hostname: mDNS not available");
+        clock_label_set_text_if_changed(s_ntp_host_lbl, "Hostname: mDNS not available");
 #endif
     }
     if (s_ntp_service_lbl) {
-        lv_label_set_text(s_ntp_service_lbl, s_ntp_udp_ok ?
+        clock_label_set_text_if_changed(s_ntp_service_lbl, s_ntp_udp_ok ?
             "NTP: UDP/123 SERVING" : "NTP: OFFLINE");
     }
     if (s_ntp_retry_btn) {
@@ -28983,7 +28994,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         char rbuf[64];
         snprintf(rbuf, sizeof(rbuf), "Reliability: %s",
                  have_snap ? cym_timekeeper_reliability_name(snap.reliability) : "Untrusted");
-        lv_label_set_text(s_clock_reliability_lbl, rbuf);
+        clock_label_set_text_if_changed(s_clock_reliability_lbl, rbuf);
     }
     if (s_clock_caps_lbl) {
         char cbuf[112];
@@ -28991,7 +29002,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
                  BOARD_TIME_HAS_RTC ? "RTC: fitted" : "RTC: not fitted",
                  BOARD_TIME_HAS_GPS_UART ? "GPS: UART available" : "GPS: not supported",
                  (have_snap && snap.gps_rtc_trusted) ? "trusted" : "unqualified");
-        lv_label_set_text(s_clock_caps_lbl, cbuf);
+        clock_label_set_text_if_changed(s_clock_caps_lbl, cbuf);
     }
     if (s_ntp_age_lbl && have_snap) {
         char abuf[48];
@@ -29016,7 +29027,7 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         } else {
             snprintf(abuf, sizeof(abuf), "Source: --");
         }
-        lv_label_set_text(s_ntp_age_lbl, abuf);
+        clock_label_set_text_if_changed(s_ntp_age_lbl, abuf);
     }
     if (s_ntp_uncert_lbl && have_snap) {
         char ubuf[32];
@@ -29027,14 +29038,14 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
         } else {
             snprintf(ubuf, sizeof(ubuf), "Estimated uncertainty: --");
         }
-        lv_label_set_text(s_ntp_uncert_lbl, ubuf);
+        clock_label_set_text_if_changed(s_ntp_uncert_lbl, ubuf);
     }
     if (s_ntp_req_lbl) {
         cym_ntp_server_stats_t stats;
         cym_ntp_server_get_stats(&stats);
         char rbuf[32];
         snprintf(rbuf, sizeof(rbuf), "NTP requests: %lu", (unsigned long)stats.valid_requests);
-        lv_label_set_text(s_ntp_req_lbl, rbuf);
+        clock_label_set_text_if_changed(s_ntp_req_lbl, rbuf);
     }
 }
 

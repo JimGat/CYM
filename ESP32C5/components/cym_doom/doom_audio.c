@@ -17,6 +17,7 @@ static const audio_codec_ctrl_if_t *ctrl;
 static const audio_codec_if_t *codec;
 static bool enabled;
 #define RATE 22050
+static const float GAME_AUDIO_VOLUME_DB = -15.0f;
 #define QUEUE_TARGET 6u
 static QueueHandle_t audio_queue;
 static TaskHandle_t audio_task;
@@ -111,7 +112,7 @@ bool doom_audio_begin(void){
   .pa_pin=-1,.master_mode=false,.use_mclk=false,.hw_gain={.pa_voltage=3.3,.codec_dac_voltage=3.3}};
  codec=es8311_codec_new(&ec);if(!codec)goto fail;
  esp_codec_dev_sample_info_t fs={.sample_rate=RATE,.channel=1,.bits_per_sample=16};
- if(codec->set_fs(codec,&fs)!=0||codec->mute(codec,true)!=0||codec->set_vol(codec,-30.0f)!=0)goto fail;
+ if(codec->set_fs(codec,&fs)!=0||codec->mute(codec,true)!=0||codec->set_vol(codec,GAME_AUDIO_VOLUME_DB)!=0)goto fail;
  if(i2s_channel_enable(tx)!=ESP_OK)goto fail;enabled=true;
  if(codec->enable(codec,true)!=0||codec->mute(codec,false)!=0)goto fail;
  /* Read the actual DAC input09, not only ADC output0a. Driver can report
@@ -125,7 +126,7 @@ bool doom_audio_begin(void){
  ESP_LOGI("CYM_DOOM","I2S_DIAG board=%s TX_ONLY no_mclk rate=%d bits=%d slot_bits=%d slot_mask=%d mono=%d bclk=%d lrclk=%d dout=%d pa_supply=3.3 dac_supply=3.3 configured_clocks_not_wire_measurement",AUDIO_BOARD,RATE,(int)cfg.slot_cfg.data_bit_width,(int)cfg.slot_cfg.slot_bit_width,(int)cfg.slot_cfg.slot_mask,(int)cfg.slot_cfg.slot_mode,BCLK,LRCLK,DOUT);
  audio_queue=xQueueCreate(8,sizeof(audio_block));if(!audio_queue)goto fail;
  if(xTaskCreate(audio_worker,"cym_pcm",4096,NULL,3,&audio_task)!=pdPASS){audio_task=NULL;goto fail;}
- ESP_LOGI("CYM_DOOM","AUDIO_STARTED configuration_verified audible=unconfirmed ES8311 rate=%d BCLK=%d LRCLK=%d DOUT=%d volume_db=-30 SFX_ONLY",RATE,BCLK,LRCLK,DOUT);
+ ESP_LOGI("CYM_DOOM","AUDIO_STARTED configuration_verified audible=unconfirmed ES8311 rate=%d BCLK=%d LRCLK=%d DOUT=%d volume_db=%.0f SFX_ONLY",RATE,BCLK,LRCLK,DOUT,(double)GAME_AUDIO_VOLUME_DB);
  return true;
 fail:
  ESP_LOGE("CYM_DOOM","AUDIO_INIT_FAILED ES8311/I2S/PA - exit and reboot");
