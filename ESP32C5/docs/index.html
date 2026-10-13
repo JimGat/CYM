@@ -487,12 +487,13 @@
         "hackerbox-cyd": {
           label: "HackerBox CYD",
           chip: "ESP32", soc: "ESP32",
-          desc: "Dev only. Amberjack 0131 display/calibration candidate; hardware validation pending.",
+          desc: "HackerBox Amberjack 0131 Classic CYD. Owner-promoted; shown by default. Firmware currently available in the Development channel.",
           binDir: "binaries-hackerbox-cyd",
           appBin: "CYM-HackerBox-CYD.bin",
           fullBin: "CYM-HackerBox-CYD-full.bin",
           manifest: "docs/manifest.hackerbox-cyd.json",
-          bootOffset: "0x1000", beta: true,
+          bootOffset: "0x1000", beta: false,
+          stableAvailable: false, // no HackerBox artifacts have been published to main yet
         },
         "cyd-2432s028": {
           label:   "CYD-2432S028",
@@ -548,7 +549,7 @@
       // added to BOARDS above stays hidden from the selector until either it's
       // added here or a visitor passes ?beta=1 (see betaUnlock below), which shows
       // every board BOARDS defines regardless of this list.
-      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35"];
+      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35", "hackerbox-cyd"];
 
       // Hidden opt-in: ?beta=1 in the URL starts the flasher on the Dev channel
       // (instead of Stable) and unlocks every board BOARDS defines, not just
@@ -565,7 +566,7 @@
 
       const state = {
         manifest:          null,
-        channel:           betaUnlock ? "dev" : "stable",
+        channel:           betaUnlock || BOARDS[initialBoard].stableAvailable === false ? "dev" : "stable",
         board:             initialBoard,
         port:             null,
         onDisconnect:     null,
@@ -582,7 +583,7 @@
         lastPort:         null,
       };
 
-      const PAGE_VERSION    = "2.14.2"; // add experimental WS-S3-5B target
+      const PAGE_VERSION    = "2.14.3"; // board-class groups and HackerBox default visibility
       const CONNECT_TIMEOUT_MS   = 20000;
       const monitorEncoder  = new TextEncoder();
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1078,7 +1079,7 @@
 
       // ── Channel / Board switching ─────────────────────────────────────────────
       const switchChannel = (ch) => {
-        if (BOARDS[state.board]?.beta) ch = "dev";
+        if (BOARDS[state.board]?.beta || BOARDS[state.board]?.stableAvailable === false) ch = "dev";
         if (ch === state.channel) return;
         state.channel  = ch;
         state.manifest = null;
@@ -1094,7 +1095,7 @@
       const switchBoard = (board) => {
         if (board === state.board) return;
         state.board    = board;
-        if (BOARDS[board]?.beta) {
+        if (BOARDS[board]?.beta || BOARDS[board]?.stableAvailable === false) {
           state.channel = "dev";
           document.querySelectorAll("[data-ch]").forEach(b => b.classList.toggle("active", b.dataset.ch === "dev"));
           ui.devWarning.style.display = "";
@@ -1112,15 +1113,30 @@
       // the currently-selected board carries that flag.
       const renderBoardButtons = () => {
         const ids = betaUnlock ? Object.keys(BOARDS) : DEFAULT_BOARD_IDS.filter(id => BOARDS[id]);
-        ui.boardSelectorRow.querySelectorAll("[data-board]").forEach(b => b.remove());
-        ids.forEach(id => {
-          const board = BOARDS[id];
-          const btn = document.createElement("button");
-          btn.className = "sel-btn" + (id === state.board ? " active" : "");
-          btn.dataset.board = id;
-          btn.textContent = board.label + (board.beta ? " (Dev Only — Not Stable)" : "");
-          btn.addEventListener("click", () => switchBoard(id));
-          ui.boardSelectorRow.appendChild(btn);
+        ui.boardSelectorRow.querySelectorAll(".board-class-group").forEach(g => g.remove());
+        const classes = [ ["ESP32", "ESP32 Wroom"], ["ESP32-S3", "ESP32-S3"], ["ESP32-C5", "ESP32-C5"] ];
+        classes.forEach(([chip, label]) => {
+          const members = ids.filter(id => BOARDS[id].chip === chip)
+            .sort((a, b) => BOARDS[a].label.localeCompare(BOARDS[b].label, "en", { sensitivity: "base" }));
+          if (!members.length) return;
+          const group = document.createElement("div");
+          group.className = "board-class-group";
+          group.dataset.boardClass = label;
+          group.style = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;width:100%;";
+          const heading = document.createElement("span");
+          heading.className = "selector-label";
+          heading.textContent = label;
+          group.appendChild(heading);
+          members.forEach(id => {
+            const board = BOARDS[id];
+            const btn = document.createElement("button");
+            btn.className = "sel-btn" + (id === state.board ? " active" : "");
+            btn.dataset.board = id;
+            btn.textContent = board.label + (board.beta ? " (Dev Only — Not Stable)" : "");
+            btn.addEventListener("click", () => switchBoard(id));
+            group.appendChild(btn);
+          });
+          ui.boardSelectorRow.appendChild(group);
         });
       };
 

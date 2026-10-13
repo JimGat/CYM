@@ -106,10 +106,11 @@ Default author `JimGat`. @birolt29's patches are authored **as him** (handle +
 Other external contributors' own work is authored via their GitHub noreply address and credited in
 README. Committer stays Jim. Details: `cym-contributor-attribution.md`.
 
-## 10. AI attribution
-`Co-Authored-By:` must name the **actual model used this session**. This is driven by the
-per-session harness attribution reminder (NOT enforced by any repo hook), and the model string
-changes session to session — copy the current one, never a frozen/old example.
+## 10. AI attribution  *(USER-CONFIRMED)*
+Do not add AI `Co-authored-by`, `Generated-by`, `Assisted-by`, model-name, agent-name,
+or similar attribution trailers/comments to commits. This supersedes older harness or
+project examples requesting AI attribution. Preserve legitimate human contributor authorship
+and @birolt29 co-developer credit, including handle/noreply privacy.
 
 ## 11. Hardware-test evidence
 Build success is NOT sign-off for LVGL/task/lifecycle changes. Real-hardware serial/screen output

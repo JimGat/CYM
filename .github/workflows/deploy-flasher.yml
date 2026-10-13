@@ -127,8 +127,6 @@ jobs:
           from pathlib import Path
           page = Path('_site/beta/index.html')
           text = page.read_text()
-          text = text.replace('const betaUnlock = urlParams.get("beta") === "1";',
-                              'const betaUnlock = true; // isolated Beta deployment')
           assert '"hackerbox-cyd"' in text
           import os, re
           sha = os.environ['GITHUB_SHA']
@@ -138,28 +136,10 @@ jobs:
           text = text.replace(old, 'const BRANCH = { stable: "main", dev: "' + sha + '" };')
           text = text.replace('binaries fetched live from the <code>Jimgat_Dev</code> branch.',
                               'binaries pinned to verified development commit <code>' + sha + '</code>.')
+          Path('_site/index.html').write_text(text)
+          text = text.replace('const betaUnlock = urlParams.get("beta") === "1";',
+                              'const betaUnlock = true; // isolated Beta deployment')
           page.write_text(text)
-          PY
-
-      - name: Promote tested board selector metadata only
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          source = Path('ESP32C5/docs/index.html').read_text()
-          page = Path('_site/index.html')
-          stable = page.read_text()
-          pattern = r'        "ws-c5-35": \{.*?\n        \},'
-          entry = re.search(pattern, source, re.S).group(0)
-          assert 'beta:    false' in entry
-          stable, count = re.subn(pattern, lambda _: entry, stable, count=1, flags=re.S)
-          assert count == 1
-          match = re.search(r'const DEFAULT_BOARD_IDS = (\[[^;]+\]);', stable)
-          import json
-          ids = json.loads(match.group(1))
-          if 'ws-c5-35' not in ids: ids.append('ws-c5-35')
-          stable = stable[:match.start(1)] + json.dumps(ids) + stable[match.end(1):]
-          page.write_text(stable)
           PY
 
       - name: Setup Pages

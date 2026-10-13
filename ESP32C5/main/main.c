@@ -161,6 +161,7 @@ static uint8_t s_game_prior_orientation;
 #include "led_strip.h"
 #include "wifi_scanner.h"
 #include "wifi_sniffer.h"
+#include "observer_memory.h"
 #include "wifi_attacks.h"
 #include "wifi_wardrive.h"
 #include "attack_handshake.h"
@@ -11186,10 +11187,11 @@ static void sniffer_start_btn_cb(lv_event_t *e)
         sniffer_task_active = true;
         sniffer_start_time = (uint32_t)(esp_timer_get_time() / 1000);  // Record start time for delayed sorting
         
-        // Create sniffer task with PSRAM stack (16KB to avoid stack overflow during cleanup)
-        sniffer_task_stack = (StackType_t *)heap_caps_malloc(16384 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+        // Create board-selected stack (16KB to avoid stack overflow during cleanup)
+        unsigned sniffer_stack_bytes = observer_stack_bytes(16384);
+        sniffer_task_stack = (StackType_t *)heap_caps_malloc(sniffer_stack_bytes, observer_heap_caps());
         if (sniffer_task_stack != NULL) {
-            sniffer_task_handle = xTaskCreateStatic(sniffer_task, "sniffer", 16384, NULL, 
+            sniffer_task_handle = xTaskCreateStatic(sniffer_task, "sniffer", sniffer_stack_bytes, NULL,
                 5, sniffer_task_stack, &sniffer_task_buffer);
             if (sniffer_task_handle == NULL) {
                 ESP_LOGE(TAG, "Failed to create sniffer task");
@@ -11197,14 +11199,14 @@ static void sniffer_start_btn_cb(lv_event_t *e)
                 sniffer_task_stack = NULL;
                 sniffer_task_active = false;
             } else {
-                ESP_LOGI(TAG, "Sniffer task created with PSRAM stack");
+                ESP_LOGI(TAG, "Sniffer task created with board-selected stack");
                 // Update button to show STOP
                 lv_label_set_text(lv_obj_get_child(sniffer_start_btn, 0), "Stop");
                 lv_obj_set_style_bg_color(sniffer_start_btn, COLOR_MATERIAL_RED, LV_STATE_DEFAULT);
                 lv_obj_set_style_bg_color(sniffer_start_btn, lv_color_lighten(COLOR_MATERIAL_RED, 30), LV_STATE_PRESSED);
             }
         } else {
-            ESP_LOGE(TAG, "Failed to allocate sniffer task stack from PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate observer task stack");
             sniffer_task_active = false;
         }
     }
@@ -11367,9 +11369,10 @@ static void sniffer_rescan_cb(lv_event_t *e)
     // Restart sniffer
     sniffer_task_active = true;
     sniffer_start_time = (uint32_t)(esp_timer_get_time() / 1000);  // Record start time for delayed sorting
-    sniffer_task_stack = (StackType_t *)heap_caps_malloc(16384 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+    unsigned sniffer_stack_bytes = observer_stack_bytes(16384);
+    sniffer_task_stack = (StackType_t *)heap_caps_malloc(sniffer_stack_bytes, observer_heap_caps());
     if (sniffer_task_stack != NULL) {
-        sniffer_task_handle = xTaskCreateStatic(sniffer_task, "sniffer", 16384, NULL, 
+        sniffer_task_handle = xTaskCreateStatic(sniffer_task, "sniffer", sniffer_stack_bytes, NULL,
             5, sniffer_task_stack, &sniffer_task_buffer);
         if (sniffer_task_handle == NULL) {
             ESP_LOGE(TAG, "Failed to create sniffer task");
@@ -11379,6 +11382,9 @@ static void sniffer_rescan_cb(lv_event_t *e)
         } else {
             ESP_LOGI(TAG, "Sniffer restarted with fresh data");
         }
+    } else {
+        sniffer_task_active = false;
+        ESP_LOGE(TAG, "Observer rescan stopped: task stack allocation failed");
     }
 }
 
@@ -12152,9 +12158,10 @@ static void sniffer_yes_btn_cb(lv_event_t *e)
         sniffer_task_active = true;
         sniffer_start_time = (uint32_t)(esp_timer_get_time() / 1000);  // Record start time for delayed sorting
         
-        sniffer_task_stack = (StackType_t *)heap_caps_malloc(8192 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+        unsigned sniffer_stack_bytes = observer_stack_bytes(8192);
+        sniffer_task_stack = (StackType_t *)heap_caps_malloc(sniffer_stack_bytes, observer_heap_caps());
         if (sniffer_task_stack != NULL) {
-            sniffer_task_handle = xTaskCreateStatic(sniffer_task, "sniffer", 8192, NULL, 
+            sniffer_task_handle = xTaskCreateStatic(sniffer_task, "sniffer", sniffer_stack_bytes, NULL,
                 5, sniffer_task_stack, &sniffer_task_buffer);
             if (sniffer_task_handle == NULL) {
                 ESP_LOGE(TAG, "Failed to create sniffer task");
@@ -12162,11 +12169,11 @@ static void sniffer_yes_btn_cb(lv_event_t *e)
                 sniffer_task_stack = NULL;
                 sniffer_task_active = false;
             } else {
-                ESP_LOGI(TAG, "Sniffer task created with PSRAM stack");
+                ESP_LOGI(TAG, "Sniffer task created with board-selected stack");
                 update_sniffer_button_ui();
             }
         } else {
-            ESP_LOGE(TAG, "Failed to allocate sniffer task stack from PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate observer task stack");
             sniffer_task_active = false;
         }
     }
@@ -51137,11 +51144,20 @@ static void show_wscope_screen(void) {
         wsc_w    = WSCOPE_W;
         wsc_wf_h = WSCOPE_WF_H;
     }
-    wsc_cvh = WSCOPE_SPEC_H + 1 + wsc_wf_h;      // 201 portrait / 153 landscape
+    wsc_wf_h = observer_waterfall_rows(wsc_wf_h);
+    wsc_cvh = WSCOPE_SPEC_H + 1 + wsc_wf_h;
 
     int buf_px = wsc_w * wsc_cvh;
-    wscope_buf = heap_caps_calloc(buf_px, sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-    if (!wscope_buf) { ESP_LOGE(TAG, "WiFiScope: PSRAM fail"); return; }
+    wscope_buf = heap_caps_calloc(buf_px, sizeof(lv_color_t), observer_heap_caps());
+    if (!wscope_buf) {
+        wscope_active = false;
+        ESP_LOGE(TAG, "WiFiScope: canvas allocation failed (%d bytes)",
+                 (int)(buf_px * sizeof(lv_color_t)));
+        lv_obj_t *error = lv_label_create(function_page);
+        lv_label_set_text(error, "WiFi Scope stopped\nNot enough free memory");
+        lv_obj_center(error);
+        return;
+    }
 
     wscope_canvas = lv_canvas_create(function_page);
     lv_canvas_set_buffer(wscope_canvas, wscope_buf, wsc_w, wsc_cvh, LV_IMG_CF_TRUE_COLOR);
@@ -51176,9 +51192,19 @@ static void show_wscope_screen(void) {
     lv_label_set_text(band_lbl, "Band: 2.4GHz");
     lv_obj_center(band_lbl);
     lv_obj_set_style_text_font(band_lbl, &lv_font_montserrat_12, 0);
+#if defined(CONFIG_IDF_TARGET_ESP32C5)
     lv_obj_add_event_cb(band_btn, wscope_band_toggle_cb, LV_EVENT_CLICKED, band_lbl);
+#else
+    // Wroom and S3 radios support 2.4 GHz only.
+    lv_obj_add_state(band_btn, LV_STATE_DISABLED);
+#endif
 
-    xTaskCreate(wscope_task, "wscope", 3072, NULL, 5, &wscope_task_handle);
+    if (xTaskCreate(wscope_task, "wscope", 3072, NULL, 5, &wscope_task_handle) != pdPASS) {
+        wscope_active = false;
+        lv_label_set_text(wscope_status_lbl, "STOPPED: task allocation failed");
+        ESP_LOGE(TAG, "WiFiScope: task allocation failed");
+        return;
+    }
     wscope_ui_timer = lv_timer_create(wscope_ui_timer_cb, 100, NULL);
 }
 

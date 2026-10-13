@@ -37,14 +37,14 @@ class WsC535ProfileContract(unittest.TestCase):
         p = text("ESP32C5/components/board_hal/include/boards/ws_c5_35.h")
         for macro, value in {
             "BOARD_HAS_PSRAM": 1, "BOARD_HAS_SD": 1,
-            "BOARD_HAS_GPS": 0, "BOARD_HAS_BATTERY_ADC": 1,
+            "BOARD_HAS_GPS": 1, "BOARD_HAS_BATTERY_ADC": 1,
             "BOARD_HAS_AUDIO": 0, "BOARD_HAS_RGB_LED": 0,
-            "BOARD_TIME_HAS_RTC": 1, "BOARD_TIME_HAS_GPS_UART": 0,
+            "BOARD_TIME_HAS_RTC": 1, "BOARD_TIME_HAS_GPS_UART": 1,
             "BOARD_TIME_ESTIMATE_CHARACTERIZED": 0,
         }.items():
             self.assertRegex(p, rf"#define\s+{macro}\s+{value}\b", macro)
-        self.assertNotIn("BOARD_GPS_TX", p)
-        self.assertNotIn("BOARD_GPS_RX", p)
+        self.assertRegex(p, r"BOARD_GPS_TX_GPIO\s+11\b")
+        self.assertRegex(p, r"BOARD_GPS_RX_GPIO\s+12\b")
 
     def test_selection_defaults_and_build_entry_points(self):
         k = text("ESP32C5/components/board_hal/Kconfig")
@@ -115,14 +115,14 @@ class WsC535AdapterContract(unittest.TestCase):
 class WsC535PackagingContract(unittest.TestCase):
     def test_version_is_shared_for_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.94")', text(rel), rel)
+            self.assertIn('set(PROJECT_VER "v2.15.95")', text(rel), rel)
 
     def test_dedicated_package_and_manifest(self):
         c = text("ESP32C5/CMakeLists.txt")
         self.assertRegex(c, re.compile(r"CONFIG_BOARD_WS_C5_35.*?binaries-ws-c5-35.*?CYM-WS-C5-35.*?32MB", re.S))
         manifest = json.loads(text("ESP32C5/docs/manifest.ws-c5-35.json"))
         self.assertIn("WS-C5-35", manifest["name"])
-        self.assertEqual(manifest["version"], "v2.15.94")
+        self.assertEqual(manifest["version"], "v2.15.95")
         self.assertEqual({p["offset"] for p in manifest["parts"]}, {0x2000, 0x8000, 0x10000})
         self.assertTrue(all("binaries-ws-c5-35" in p["path"] for p in manifest["parts"]))
 
@@ -137,7 +137,7 @@ class WsC535PackagingContract(unittest.TestCase):
             self.assertIn(token, board)
         defaults = re.search(r"const DEFAULT_BOARD_IDS = \[(.*?)\]", f).group(1)
         self.assertIn("ws-c5-35", defaults)
-        self.assertIn('const PAGE_VERSION    = "2.14.2"', f)
+        self.assertIn('const PAGE_VERSION    = "2.14.3"', f)
         w = text(".github/workflows/deploy-flasher.yml")
         for token in ("manifest.ws-c5-35.json", "binaries-ws-c5-35", "CYM-WS-C5-35-full.bin"):
             self.assertIn(token, w)

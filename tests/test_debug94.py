@@ -9,7 +9,7 @@ class Debug94(unittest.TestCase):
  def test_owner_switch_exists(self):
   self.assertIn("hardware_debug_sync",(ROOT/"ESP32C5/main/main.c").read_text())
  def test_approved_audio_target(self):
-  self.assertIn("GAME_AUDIO_VOLUME_DB = -3.0f",(ROOT/"ESP32C5/components/cym_doom/doom_audio.c").read_text())
+  self.assertIn("GAME_AUDIO_VOLUME_DB = 9.0f",(ROOT/"ESP32C5/components/cym_doom/doom_audio.c").read_text())
 
 STUB=r"""#pragma once
 #include <stdint.h>

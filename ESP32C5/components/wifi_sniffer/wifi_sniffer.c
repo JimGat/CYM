@@ -1,4 +1,5 @@
 #include "wifi_sniffer.h"
+#include "observer_memory.h"
 #include "wifi_scanner.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -11,7 +12,7 @@
 
 static const char *TAG = "wifi_sniffer";
 
-// Sniffer state - large buffers dynamically allocated in PSRAM to save internal RAM
+// Sniffer state - large buffers dynamically allocated in board-selected memory to save internal RAM
 static sniffer_ap_t *sniffer_aps = NULL;
 static int sniffer_ap_count = 0;
 static probe_request_t *probe_requests = NULL;
@@ -38,6 +39,7 @@ static sniffer_new_client_cb_t sniffer_new_client_cb = NULL;
 static const uint8_t channel_list[] = {
     // 2.4 GHz (1-13)
     1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13,
+ #if defined(CONFIG_IDF_TARGET_ESP32C5)
     // 5 GHz UNII-1 (36-48)
     36, 40, 44, 48,
     // 5 GHz UNII-2A (52-64)
@@ -46,6 +48,7 @@ static const uint8_t channel_list[] = {
     100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
     // 5 GHz UNII-3 (149-165)
     149, 153, 157, 161, 165
+ #endif
 };
 static const int channel_list_size = sizeof(channel_list) / sizeof(channel_list[0]);
 
@@ -440,25 +443,25 @@ esp_err_t wifi_sniffer_start(void) {
         return ESP_ERR_INVALID_STATE;
     }
     
-    // Allocate buffers in PSRAM if not already allocated
+    // Allocate buffers in board-selected memory if not already allocated
     if (sniffer_aps == NULL) {
-        sniffer_aps = (sniffer_ap_t *)heap_caps_calloc(MAX_SNIFFER_APS, sizeof(sniffer_ap_t), MALLOC_CAP_SPIRAM);
+        sniffer_aps = (sniffer_ap_t *)heap_caps_calloc(MAX_SNIFFER_APS, sizeof(sniffer_ap_t), observer_heap_caps());
         if (sniffer_aps == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate sniffer_aps in PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate sniffer_aps in board-selected memory");
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "Allocated %d bytes for sniffer_aps in PSRAM", MAX_SNIFFER_APS * sizeof(sniffer_ap_t));
+        ESP_LOGI(TAG, "Allocated %d bytes for sniffer_aps in board-selected memory", MAX_SNIFFER_APS * sizeof(sniffer_ap_t));
     }
     
     if (probe_requests == NULL) {
-        probe_requests = (probe_request_t *)heap_caps_calloc(MAX_PROBE_REQUESTS, sizeof(probe_request_t), MALLOC_CAP_SPIRAM);
+        probe_requests = (probe_request_t *)heap_caps_calloc(MAX_PROBE_REQUESTS, sizeof(probe_request_t), observer_heap_caps());
         if (probe_requests == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate probe_requests in PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate probe_requests in board-selected memory");
             heap_caps_free(sniffer_aps);
             sniffer_aps = NULL;
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "Allocated %d bytes for probe_requests in PSRAM", MAX_PROBE_REQUESTS * sizeof(probe_request_t));
+        ESP_LOGI(TAG, "Allocated %d bytes for probe_requests in board-selected memory", MAX_PROBE_REQUESTS * sizeof(probe_request_t));
     }
     
     // Clear previous data
@@ -749,23 +752,23 @@ esp_err_t wifi_sniffer_start_noscan(void) {
     
     ESP_LOGI(TAG, "Starting sniffer without reset (noscan mode)...");
     
-    // Allocate buffers in PSRAM if not already allocated
+    // Allocate buffers in board-selected memory if not already allocated
     if (sniffer_aps == NULL) {
-        sniffer_aps = (sniffer_ap_t *)heap_caps_calloc(MAX_SNIFFER_APS, sizeof(sniffer_ap_t), MALLOC_CAP_SPIRAM);
+        sniffer_aps = (sniffer_ap_t *)heap_caps_calloc(MAX_SNIFFER_APS, sizeof(sniffer_ap_t), observer_heap_caps());
         if (sniffer_aps == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate sniffer_aps in PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate sniffer_aps in board-selected memory");
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "Allocated %d bytes for sniffer_aps in PSRAM", MAX_SNIFFER_APS * sizeof(sniffer_ap_t));
+        ESP_LOGI(TAG, "Allocated %d bytes for sniffer_aps in board-selected memory", MAX_SNIFFER_APS * sizeof(sniffer_ap_t));
     }
     
     if (probe_requests == NULL) {
-        probe_requests = (probe_request_t *)heap_caps_calloc(MAX_PROBE_REQUESTS, sizeof(probe_request_t), MALLOC_CAP_SPIRAM);
+        probe_requests = (probe_request_t *)heap_caps_calloc(MAX_PROBE_REQUESTS, sizeof(probe_request_t), observer_heap_caps());
         if (probe_requests == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate probe_requests in PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate probe_requests in board-selected memory");
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "Allocated %d bytes for probe_requests in PSRAM", MAX_PROBE_REQUESTS * sizeof(probe_request_t));
+        ESP_LOGI(TAG, "Allocated %d bytes for probe_requests in board-selected memory", MAX_PROBE_REQUESTS * sizeof(probe_request_t));
     }
     
     // NOTE: Do NOT clear sniffer_ap_count or probe_request_count - preserve existing data
@@ -859,14 +862,14 @@ esp_err_t wifi_sniffer_dog_start(void) {
     
     ESP_LOGI(TAG, "Starting SnifferDog...");
     
-    // Allocate probe_requests buffer in PSRAM if not already allocated
+    // Allocate probe_requests buffer in board-selected memory if not already allocated
     if (probe_requests == NULL) {
-        probe_requests = (probe_request_t *)heap_caps_calloc(MAX_PROBE_REQUESTS, sizeof(probe_request_t), MALLOC_CAP_SPIRAM);
+        probe_requests = (probe_request_t *)heap_caps_calloc(MAX_PROBE_REQUESTS, sizeof(probe_request_t), observer_heap_caps());
         if (probe_requests == NULL) {
-            ESP_LOGE(TAG, "Failed to allocate probe_requests in PSRAM");
+            ESP_LOGE(TAG, "Failed to allocate probe_requests in board-selected memory");
             return ESP_ERR_NO_MEM;
         }
-        ESP_LOGI(TAG, "Allocated %d bytes for probe_requests in PSRAM", MAX_PROBE_REQUESTS * sizeof(probe_request_t));
+        ESP_LOGI(TAG, "Allocated %d bytes for probe_requests in board-selected memory", MAX_PROBE_REQUESTS * sizeof(probe_request_t));
     }
     
     // Clear previous data

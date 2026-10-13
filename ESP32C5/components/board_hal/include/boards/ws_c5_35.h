@@ -67,21 +67,27 @@
 // not fully programmed until hardware-validated.
 #define BOARD_PMIC_I2C_ADDR  0x34
 
-// ── GPS - disabled (UART exposed but not wired) ─────────────────────────
-// BOARD_GPS_UART_NUM is required by wifi_common.h unconditionally.
-// TX/RX pins are not defined - board_hal.h defaults them to -1.
+// ── External UART GPS (owner qualification candidate) ──────────────────────
+// J3 pin24 = GPIO11 TX, pin26 = GPIO12 RX; cross to module RX/TX.
+// Camera must remain unused; actual R56/R59 UART routing needs board verification.
+// WS35 console is native USB Serial/JTAG only, not the expansion UART.
 #define BOARD_GPS_UART_NUM   1
+#define BOARD_GPS_TX_GPIO    11
+#define BOARD_GPS_RX_GPIO    12
+#define BOARD_GPS_TX         BOARD_GPS_TX_GPIO
+#define BOARD_GPS_RX         BOARD_GPS_RX_GPIO
 
 // ── Boot button ──────────────────────────────────────────────────────────────
 #define BOARD_BOOT_BTN_GPIO  28
 
 // ── Capability flags (experimental — conservative) ───────────────────────────
 // Capabilities present on the board but NOT yet enabled in CYM firmware
-// (GPS, audio, sensors, camera) are explicitly set to 0.
+// (audio, sensors, camera) are explicitly set to 0.
+// External UART GPS is enabled for owner-requested hardware qualification.
 // RTC/battery are enabled for owner-requested qualification; measurements unverified.
 #define BOARD_HAS_PSRAM      1
 #define BOARD_HAS_SD         1
-#define BOARD_HAS_GPS        0
+#define BOARD_HAS_GPS        1
 #define BOARD_HAS_BATTERY_ADC 1  // AXP2101 telemetry, NOT ESP32 GPIO ADC
 #define BOARD_HAS_AUDIO      0
 #define BOARD_HAS_RGB_LED    0
@@ -95,9 +101,11 @@
 #define BOARD_TIME_HAS_RTC                    1
 #define BOARD_RTC_I2C_ADDR   0x51
 #define BOARD_TIME_RTC_DRIFT_PPM              50
-#define BOARD_TIME_HAS_GPS_UART               0
+#define BOARD_TIME_HAS_GPS_UART               1
 #define BOARD_TIME_HAS_MDNS                   1
 #define BOARD_TIME_RTOS_DRIFT_PPM             100
+#define BOARD_TIME_GPS_RTC_UNCERTAINTY_US     2000000
+#define BOARD_TIME_GPS_RTC_DRIFT_PPM           100
 #define BOARD_TIME_NTP_UNCERTAINTY_US          250000
 #define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
 

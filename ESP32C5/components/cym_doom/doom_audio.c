@@ -18,7 +18,7 @@ static const audio_codec_ctrl_if_t *ctrl;
 static const audio_codec_if_t *codec;
 static bool enabled;
 #define RATE 22050
-static const float GAME_AUDIO_VOLUME_DB = -3.0f;
+static const float GAME_AUDIO_VOLUME_DB = 9.0f;
 #define QUEUE_TARGET 6u
 static QueueHandle_t audio_queue;
 static TaskHandle_t audio_task;

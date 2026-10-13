@@ -27,11 +27,18 @@ extern "C" {
 #define MAX_SCAN_RESULTS  16
 #endif
 #define MAX_PROBES 200
+#if CONFIG_BOARD_HAS_PSRAM
 #define MAX_CLIENTS_PER_AP 50
-#define MAX_TARGET_BSSIDS 50
-#define MAX_WHITELIST_ENTRIES 150
 #define MAX_SNIFFER_APS 100
 #define MAX_PROBE_REQUESTS 200
+#else
+// Bounded Classic observer working set; buffers + task fit without PSRAM.
+#define MAX_CLIENTS_PER_AP 8
+#define MAX_SNIFFER_APS 8
+#define MAX_PROBE_REQUESTS 16
+#endif
+#define MAX_TARGET_BSSIDS 50
+#define MAX_WHITELIST_ENTRIES 150
 #define DNS_PORT 53
 #define DNS_MAX_PACKET_SIZE 512
 #define MAX_HTML_FILES 20

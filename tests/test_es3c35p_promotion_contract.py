@@ -105,7 +105,7 @@ class PromotionContract(unittest.TestCase):
 
     def test_release_version_and_four_board_gate(self):
         for project in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v2.15.94")', text(project))
+            self.assertIn('set(PROJECT_VER "v2.15.95")', text(project))
         makefile = text("Makefile")
         self.assertIn(
             "all-boards: nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 cyd-2432s028 hosyond-s3-35",
@@ -128,7 +128,7 @@ class PromotionContract(unittest.TestCase):
         self.assertIn('fullBin: "CYM-hosyond-s3-35-full.bin"', flasher)
         self.assertIn('id="dlFull"', flasher)
         self.assertIn(
-            'const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35"]',
+            'const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35", "hackerbox-cyd"]',
             flasher,
         )
         self.assertIn("parts.map(p => ({", flasher)
