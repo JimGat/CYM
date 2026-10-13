@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster - Pancake-C5 Development Channel v2.15.93",
-  "version": "v2.15.96",
-  "build": "v2.15.96",
+  "version": "v2.15.97",
+  "build": "v2.15.97",
   "chipFamily": "ESP32-C5",
   "parts": [
     {

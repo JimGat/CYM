@@ -10,7 +10,7 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v2.15.96 |
+| Version | v2.15.97 |
 | Build date | 2026-10-13 |
 | .iram0.text | 139,120 B (135.9 KB) |
 | .dram0.data | 45,521 B (44.5 KB) |

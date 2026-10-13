@@ -72581,14 +72581,24 @@ static bool ws_c5_28_audio_amp(bool on)
     uint32_t dir = 0, output = 0, pins = 0;
     esp_err_t err = esp_io_expander_set_dir(s_io_expander, mask, IO_EXPANDER_OUTPUT);
     if (err == ESP_OK) err = esp_io_expander_set_level(s_io_expander, mask, on ? 1 : 0);
-    /* Installed CH32V003 protocol: accepted direction/output shadows, input04
-     * is physical pin read. API preserves every other direction/output bit. */
+    /* The CH32V003 is a separate MCU: accepted writes/shadows do not prove
+     * its input sample has caught up. Allow bounded settling, never substitute
+     * the output shadow for pin readback or retry a failed I2C operation. */
     if (err == ESP_OK) err = s_io_expander->read_direction_reg(s_io_expander, &dir);
     if (err == ESP_OK) err = s_io_expander->read_output_reg(s_io_expander, &output);
-    if (err == ESP_OK) err = s_io_expander->read_input_reg(s_io_expander, &pins);
+    unsigned pin_reads = 0, settle_ms = 0;
+    while (err == ESP_OK && pin_reads < 11) {
+        err = s_io_expander->read_input_reg(s_io_expander, &pins);
+        ++pin_reads;
+        if (err != ESP_OK || !!(pins & mask) == on) break;
+        if (pin_reads < 11) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            settle_ms += 10;
+        }
+    }
     bool dir_out = s_io_expander->config.flags.dir_out_bit_zero ? !(dir & mask) : !!(dir & mask);
     bool verified = err == ESP_OK && dir_out && !!(output & mask) == on && !!(pins & mask) == on;
-    ESP_LOGI(TAG, "AUDIO_PA board=WS28 exio=3 requested=%d direction_shadow=%02lx output_shadow=%02lx pin_read=%02lx rc=%d verified=%d audible=unconfirmed", on, (unsigned long)dir, (unsigned long)output, (unsigned long)pins, err, verified);
+    ESP_LOGI(TAG, "AUDIO_PA board=WS28 exio=3 requested=%d direction_shadow=%02lx output_shadow=%02lx pin_read=%02lx rc=%d verified=%d pin_reads=%u settle_ms=%u audible=unconfirmed", on, (unsigned long)dir, (unsigned long)output, (unsigned long)pins, err, verified, pin_reads, settle_ms);
     return verified;
 }
 #endif

@@ -51,6 +51,8 @@ int main(void){uint16_t keep=output_shadow&~32;assert(ws_c5_35_audio_amp(false))
 #define ESP_LOGI(...) ((void)0)
 #define IO_EXPANDER_PIN_NUM_3 8
 #define IO_EXPANDER_OUTPUT 1
+#define pdMS_TO_TICKS(x) (x)
+void vTaskDelay(unsigned ms){assert(ms==10);}
 typedef int esp_err_t;
 typedef struct handle H;struct handle{struct{struct{int dir_out_bit_zero;}flags;}config;int(*read_direction_reg)(H*,uint32_t*);int(*read_output_reg)(H*,uint32_t*);int(*read_input_reg)(H*,uint32_t*);};
 static uint32_t dir=0xa3,out=0xd7;static int step,fail_at=-1,mismatch;
