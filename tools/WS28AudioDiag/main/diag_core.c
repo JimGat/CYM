@@ -1,5 +1,9 @@
 #include "diag_core.h"
 #include <math.h>
+int64_t diag_window_remaining_us(int64_t start, int64_t now, int64_t duration) {
+ int64_t elapsed=now-start;
+ return elapsed>=duration ? 0 : duration-elapsed;
+}
 void diag_pcm(int16_t *out, size_t count, unsigned offset) {
  for(size_t i=0;i<count;i++) {
   unsigned pos=offset+(unsigned)i;
@@ -11,7 +15,7 @@ void diag_pcm(int16_t *out, size_t count, unsigned offset) {
  }
 }
 int diag_run(int (*step)(void *, enum diag_op), void *ctx) {
- const enum diag_op ops[]={DIAG_OFF,DIAG_DIRECTION,DIAG_SAMPLE,DIAG_ON,DIAG_SAMPLE,DIAG_OFF,DIAG_SAMPLE,DIAG_INIT,DIAG_ON,DIAG_TONE};
+ const enum diag_op ops[]={DIAG_OFF,DIAG_DIRECTION,DIAG_SAMPLE,DIAG_HOLD_OFF,DIAG_ON,DIAG_SAMPLE,DIAG_HOLD_ON,DIAG_OFF,DIAG_SAMPLE,DIAG_HOLD_OFF,DIAG_INIT,DIAG_ON,DIAG_TONE};
  int result=0;
  for(size_t i=0;i<sizeof(ops)/sizeof(ops[0]);i++) if(step(ctx,ops[i])!=0){result=-1;break;}
  /* Two independent attempts: never skip cleanup because off failed. */

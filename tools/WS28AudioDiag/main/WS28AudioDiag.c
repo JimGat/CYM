@@ -58,6 +58,27 @@ static int samples(void) {
  }
  return result; /* mismatch alone is evidence, never a success claim or gate */
 }
+static int meter_window(bool on) {
+ const unsigned seconds=on?DIAG_HOLD_ON_SECONDS:DIAG_HOLD_OFF_SECONDS;
+ const int64_t duration=(int64_t)seconds*1000000;
+ const int64_t start=esp_timer_get_time();
+ const char *phase=on?"ON":"OFF";
+ printf("METER_WINDOW BEGIN phase=%s duration_s=%u expected_EXIO3=%u codec_initialized=0 electrical_verified=0 measure_PA_CTRL_to_GND_DC_volts\n",phase,seconds,on?1u:0u);
+ while(diag_window_remaining_us(start,esp_timer_get_time(),duration)>0) {
+  const int64_t cycle=esp_timer_get_time();
+  uint8_t reg=0x04,raw=0;
+  int rc=i2c_master_transmit_receive(ch32,&reg,1,&raw,1,100);
+  int64_t remaining=diag_window_remaining_us(start,esp_timer_get_time(),duration);
+  printf("METER_WINDOW phase=%s remaining_ms=%" PRId64 " rc=%d raw=%02x requested_output=%02x sensed_EXIO3=%u amp_input_matches_request=%d electrical_verified=0\n",phase,remaining/1000,rc,raw,requested,(raw>>3)&1,rc==0&&((raw^requested)&8)==0);
+  if(rc){printf("METER_WINDOW ABORT phase=%s read_rc=%d cleanup_OFF_next=1\n",phase,rc);return rc;}
+  remaining=diag_window_remaining_us(start,esp_timer_get_time(),duration);
+  int64_t wait=1000000-(esp_timer_get_time()-cycle);
+  if(wait>remaining)wait=remaining;
+  if(wait>0)vTaskDelay(pdMS_TO_TICKS((wait+999)/1000));
+ }
+ printf("METER_WINDOW END phase=%s elapsed_us=%" PRId64 " electrical_verified=0\n",phase,esp_timer_get_time()-start);
+ return 0;
+}
 static int init_audio(void) {
  i2s_chan_config_t ch=I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,I2S_ROLE_MASTER);
  ch.dma_desc_num=4;ch.dma_frame_num=256;ch.auto_clear=true;
@@ -124,6 +145,8 @@ static int step(void *ctx,enum diag_op op) {
   case DIAG_OFF:{int rc=amp(false);if(rc)locked=true;return rc;}
   case DIAG_DIRECTION:{uint8_t b[]={0x02,0x0b};return status("CH32_requested_direction_0b",i2c_master_transmit(ch32,b,2,100));}
   case DIAG_SAMPLE:return samples();
+  case DIAG_HOLD_OFF:return meter_window(false);
+  case DIAG_HOLD_ON:return meter_window(true);
   case DIAG_ON:return amp(true);
   case DIAG_INIT:return init_audio();
   case DIAG_TONE:return tone();
@@ -134,13 +157,13 @@ static int step(void *ctx,enum diag_op op) {
 static void run(void) {
  if(locked){printf("repeat_locked cleanup_or_off_failure reboot_required audible=unconfirmed\n");return;}
  ctrl_faults=0;int64_t start=esp_timer_get_time();
- printf("WS28AudioDiag v0.1.1 BEGIN masks=requests_not_readback audible=unconfirmed\n");
+ printf("WS28AudioDiag v0.1.2 BEGIN masks=requests_not_readback audible=unconfirmed\n");
  int rc=diag_run(step,NULL);
- printf("END rc=%d ctrl_faults=%u cleanup_locked=%d elapsed_us=%" PRId64 " audible=unconfirmed owner_listening_required\n",rc,ctrl_faults,locked,esp_timer_get_time()-start);
+ printf("END rc=%d ctrl_faults=%u cleanup_locked=%d elapsed_us=%" PRId64 " audible=unconfirmed console_only_supported=1\n",rc,ctrl_faults,locked,esp_timer_get_time()-start);
 }
 void app_main(void) {
  setvbuf(stdout,NULL,_IOLBF,0);
- printf("WS28AudioDiag v0.1.1 primary_USB_Serial_JTAG grace=4000ms audible=unconfirmed\n");
+ printf("WS28AudioDiag v0.1.2 primary_USB_Serial_JTAG grace=4000ms audible=unconfirmed\n");
  vTaskDelay(pdMS_TO_TICKS(4000));
  i2c_master_bus_config_t bc={.i2c_port=0,.sda_io_num=0,.scl_io_num=1,.clk_source=I2C_CLK_SRC_DEFAULT,.glitch_ignore_cnt=7,.flags.enable_internal_pullup=true};
  int rc=status("i2c_bus_new",i2c_new_master_bus(&bc,&bus));if(rc)return;

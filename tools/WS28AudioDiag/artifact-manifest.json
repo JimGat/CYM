@@ -1,5 +1,5 @@
 {
-  "version": "v0.1.1",
+  "version": "v0.1.2",
   "target": "esp32c5",
   "hardware_validated": false,
   "audible": "unconfirmed",
@@ -11,16 +11,28 @@
     {
       "file": "WS28AudioDiag-app.bin",
       "offset": "0x10000",
-      "size_bytes": 215456,
-      "sha256": "76eb506ead7ceb77d5ca3f0335ec0c2d512645cbfb2f31d1115fadbebde383f7"
+      "size_bytes": 216480,
+      "sha256": "241177b24211bbbe518d98bf39a6e0c3d69b7f36ac403f7fbf3132a62d7de226"
     },
     {
       "file": "WS28AudioDiag-full.bin",
       "offset": "0x0000",
-      "size_bytes": 280992,
-      "sha256": "6998e46e5e866d24f5019040e5d634500ed362bd20c02acdaf464c8ebda966d2"
+      "size_bytes": 282016,
+      "sha256": "23b286ad5c819fe2453d950d0f330beaedf90d1de2c3c70bce8bbb63b6852f13"
     }
   ],
   "console_hardware_validated": false,
-  "console_software_verification": "VFS_SUPPORT_IO and USB Serial/JTAG stdout symbols present in compiled ELF"
+  "console_software_verification": "VFS_SUPPORT_IO and USB Serial/JTAG stdout symbols present in compiled ELF",
+  "measurement_windows": {
+    "off_before_seconds": 5,
+    "on_seconds": 15,
+    "off_after_seconds": 5,
+    "before_codec_i2s_init": true,
+    "physical_voltage_verified": false
+  },
+  "software_tests": {
+    "tests_passed": 3,
+    "policy_fault_positions": 16,
+    "window_deadline_and_ordering": true
+  }
 }

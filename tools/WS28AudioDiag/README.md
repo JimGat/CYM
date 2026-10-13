@@ -1,4 +1,4 @@
-# WS28AudioDiag v0.1.1 — standalone diagnostic
+# WS28AudioDiag v0.1.2 — standalone diagnostic
 
 Approved plan: host-test pure bounded PCM and abort/cleanup policy first (RED
 then GREEN), implement synchronous single-owner adapter, build independent
@@ -21,7 +21,7 @@ Console-only testing is supported: no speaker is required to capture CH32,
 codec/I2S, PCM and cleanup results. Audible=unconfirmed always; listening
 and physical measurements remain separate hardware acceptance gates.
 
-v0.1.1 explicitly links VFS and USB Serial/JTAG stdout instead of relying
+v0.1.1 introduced explicit linking of VFS and USB Serial/JTAG stdout instead of relying
 on the minimal ROM-backed stdout path. A compiled-config/ELF regression
 test guards the primary USB console and rejects UART-console selection.
 
@@ -59,8 +59,10 @@ python -m esptool --chip esp32c5 --port PORT write-flash 0x10000 WS28AudioDiag-a
 
 Open the PRIMARY USB-C serial console, then reset. The LCD is intentionally
 not initialized: a blank screen is expected. After four seconds expect BEGIN,
-CH32 samples, codec I2C results, PCM write/summary, cleanup and END. Listen
-for one quiet 440 Hz tone lasting 1.5 seconds. Short BOOT press repeats.
+CH32 samples and OFF/ON/OFF meter windows, then codec I2C results, PCM
+write/summary, cleanup and END. No speaker is needed. If one is connected,
+the optional listening check is a quiet 440 Hz tone lasting 1.5 seconds.
+Short BOOT press repeats.
 If repeat_locked appears, save the log and reset; do not force repeat.
 Send the complete startup-to-END log. With no speaker connected, report
 that explicitly; do not infer audible sound from successful PCM writes.
@@ -80,6 +82,32 @@ Artifact offsets, byte counts and hashes are in artifact-manifest.json.
 
 Software qualification: two host tests (PCM/policy and project contract),
 plus one compiled configuration/ELF USB-console-path regression test;
-13 injected policy operation-fault positions; real ESP-IDF 6.0 build on
+16 injected policy operation-fault positions; real ESP-IDF 6.0 build on
 ESP32-Dev. Hardware adapter fault execution, electrical PA state, codec
 clocks and audibility still require owner testing. Production is unchanged.
+
+## v0.1.2 PA_CTRL meter windows (no speaker needed)
+Before codec/I2S initialization: OFF samples + 5-second OFF window,
+ON samples + 15-second ON window, OFF samples + 5-second OFF window.
+Console prints METER_WINDOW BEGIN/remaining_ms/END and a CH32 input sample
+approximately once per second. Each window uses a monotonic deadline,
+not accumulated delays; a failed read aborts to independent OFF cleanup.
+Input mismatch is logged, not converted into physical voltage verification.
+The existing bounded tone and cleanup follow the meter phase unchanged.
+A short BOOT press after END repeats the entire sequence.
+
+Use a high-impedance meter in DC VOLTS mode, black probe to board GND,
+red probe to a positively identified EXIO3/PA_CTRL node from the schematic.
+Do NOT probe speaker outputs as PA_CTRL. Do not use current/resistance mode
+on a powered board, short adjacent pads, modify resistors, or guess a pad
+from a photograph. Attach probes with power disconnected when practical,
+then power/reset with the serial console open. If PA_CTRL is not safely
+accessible, collect the console only and report voltage not measured.
+
+Record OFF-before, ON, and OFF-after voltage alongside the console phase.
+A real low/high/low transition with fixed input f7 points toward an input
+sensing/protocol issue; a persistently low voltage points toward the output
+control/routing/expander behavior. Neither result alone qualifies gameplay.
+Software tests cover window ordering before audio init, deadline expiration,
+and cleanup/off attempts across all 16 policy failure positions. Physical
+voltage behavior for v0.1.2 remains unverified until owner measurement.
