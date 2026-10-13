@@ -134,13 +134,13 @@ static int step(void *ctx,enum diag_op op) {
 static void run(void) {
  if(locked){printf("repeat_locked cleanup_or_off_failure reboot_required audible=unconfirmed\n");return;}
  ctrl_faults=0;int64_t start=esp_timer_get_time();
- printf("WS28AudioDiag v0.1.0 BEGIN masks=requests_not_readback audible=unconfirmed\n");
+ printf("WS28AudioDiag v0.1.1 BEGIN masks=requests_not_readback audible=unconfirmed\n");
  int rc=diag_run(step,NULL);
  printf("END rc=%d ctrl_faults=%u cleanup_locked=%d elapsed_us=%" PRId64 " audible=unconfirmed owner_listening_required\n",rc,ctrl_faults,locked,esp_timer_get_time()-start);
 }
 void app_main(void) {
  setvbuf(stdout,NULL,_IOLBF,0);
- printf("WS28AudioDiag v0.1.0 primary_USB_Serial_JTAG grace=4000ms audible=unconfirmed\n");
+ printf("WS28AudioDiag v0.1.1 primary_USB_Serial_JTAG grace=4000ms audible=unconfirmed\n");
  vTaskDelay(pdMS_TO_TICKS(4000));
  i2c_master_bus_config_t bc={.i2c_port=0,.sda_io_num=0,.scl_io_num=1,.clk_source=I2C_CLK_SRC_DEFAULT,.glitch_ignore_cnt=7,.flags.enable_internal_pullup=true};
  int rc=status("i2c_bus_new",i2c_new_master_bus(&bc,&bus));if(rc)return;

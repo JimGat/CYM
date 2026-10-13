@@ -1,4 +1,4 @@
-# WS28AudioDiag v0.1.0 — standalone diagnostic
+# WS28AudioDiag v0.1.1 — standalone diagnostic
 
 Approved plan: host-test pure bounded PCM and abort/cleanup policy first (RED
 then GREEN), implement synchronous single-owner adapter, build independent
@@ -17,7 +17,13 @@ One automatic run after 4s primary USB-C Serial/JTAG connection grace;
 GPIO28 BOOT short press repeats. No UART console or secondary console.
 All runs attempt amp off and codec/I2S cleanup. Cleanup faults print and
 latch repeat lockout; no forced task deletion or live DMA free.
-Audible=unconfirmed always; owner listening is the acceptance gate.
+Console-only testing is supported: no speaker is required to capture CH32,
+codec/I2S, PCM and cleanup results. Audible=unconfirmed always; listening
+and physical measurements remain separate hardware acceptance gates.
+
+v0.1.1 explicitly links VFS and USB Serial/JTAG stdout instead of relying
+on the minimal ROM-backed stdout path. A compiled-config/ELF regression
+test guards the primary USB console and rejects UART-console selection.
 
 Existing .97 output-mode input remained 0x03 after requesting on 0x0b;
 battery removal did not resolve it. No hardware-tested successful gameplay
@@ -56,7 +62,8 @@ not initialized: a blank screen is expected. After four seconds expect BEGIN,
 CH32 samples, codec I2C results, PCM write/summary, cleanup and END. Listen
 for one quiet 440 Hz tone lasting 1.5 seconds. Short BOOT press repeats.
 If repeat_locked appears, save the log and reset; do not force repeat.
-Send the complete BEGIN-to-END log and say whether the tone was audible.
+Send the complete startup-to-END log. With no speaker connected, report
+that explicitly; do not infer audible sound from successful PCM writes.
 
 Interpretation:
 - Tone heard despite input mismatch: output sensing is unsuitable as a
@@ -72,6 +79,7 @@ not use it for the settings-preserving test; it can erase NVS/phy sectors.
 Artifact offsets, byte counts and hashes are in artifact-manifest.json.
 
 Software qualification: two host tests (PCM/policy and project contract),
+plus one compiled configuration/ELF USB-console-path regression test;
 13 injected policy operation-fault positions; real ESP-IDF 6.0 build on
 ESP32-Dev. Hardware adapter fault execution, electrical PA state, codec
 clocks and audibility still require owner testing. Production is unchanged.
