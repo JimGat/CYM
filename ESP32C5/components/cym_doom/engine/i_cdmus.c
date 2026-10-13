@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 1993-2008 Raven Software
@@ -94,7 +95,7 @@ void I_CDMusPrintStartup(void)
 #ifdef ORIGCODE
     if (cd_name != NULL)
     {
-        printf("I_CDMusInit: Using CD-ROM drive: %s\n", cd_name);
+        CYM_GAME_DEBUG_PRINTF("I_CDMusInit: Using CD-ROM drive: %s\n", cd_name);
     }
 
     if (startup_error != NULL)

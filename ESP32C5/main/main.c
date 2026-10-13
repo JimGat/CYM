@@ -4,6 +4,9 @@
 #include "dexter_img.h"
 #include "lvgl.h"
 #include "sd_error_handler.h"
+#include "debug_settings.h"
+#define CYM_DEBUG_LOGD(...) do { if(cym_debug_enabled()) ESP_LOGD(__VA_ARGS__); } while(0)
+#define CYM_DEBUG_LOGI(...) do { if(cym_debug_enabled()) ESP_LOGI(__VA_ARGS__); } while(0)
 
 LV_FONT_DECLARE(lv_extra_symbols);
 /* Mutable Montserrat copies with lv_extra_symbols chained as .fallback.
@@ -848,15 +851,26 @@ static SemaphoreHandle_t flush_done_sem = NULL;  // Binary semaphore: ISR signal
 #include "ui_diagnostics.h"
 static DRAM_ATTR cym_ui_diag s_ui_diag;
 static bool s_ui_diag_normal = true;
-uint32_t cym_ui_diag_clock(void){return (uint32_t)esp_timer_get_time();}
-void cym_ui_diag_record(unsigned kind,uint32_t start){if(!s_ui_diag_normal)return;cym_ui_diag_add(&s_ui_diag,kind,cym_ui_diag_elapsed(start,cym_ui_diag_clock()));}
+static void cym_ui_diag_transition(void)
+{
+    static uint32_t generation;
+    uint32_t current=cym_debug_generation();
+    if(current!=generation){generation=current;cym_ui_diag_reset_window(&s_ui_diag);}
+}
+uint32_t cym_ui_diag_clock(void){return cym_debug_enabled()?(uint32_t)esp_timer_get_time():0;}
+void cym_ui_diag_record(unsigned kind,uint32_t start){cym_ui_diag_transition();if(!s_ui_diag_normal||!start||!cym_debug_enabled())return;cym_ui_diag_add(&s_ui_diag,kind,cym_ui_diag_elapsed(start,cym_ui_diag_clock()));}
 void cym_ui_diag_work_record(unsigned kind,uint32_t units)
 {
-    if(s_ui_diag_normal)cym_ui_diag_work_add(&s_ui_diag,kind,units);
+    cym_ui_diag_transition();
+    if(s_ui_diag_normal&&cym_debug_enabled())cym_ui_diag_work_add(&s_ui_diag,kind,units);
 }
 static void cym_ui_diag_report(void)
 {
     static uint64_t last_ms;
+    static uint32_t generation;
+    uint32_t current=cym_debug_generation();
+    if(current!=generation){generation=current;cym_ui_diag_transition();last_ms=(uint64_t)esp_timer_get_time()/1000;return;}
+    if(!cym_debug_enabled())return;
     uint64_t now=(uint64_t)esp_timer_get_time()/1000;
     if(now-last_ms<5000)return;
     static const char *names[CYM_UI_KINDS]={"render","sw_rotate","settings_build","hardware_build","settings_event","hardware_event","layout","refresh","screen_popup_call"};
@@ -5189,6 +5203,7 @@ void go_dark_disable(void)
 
 
 void print_memory_stats(void) {
+    if(!cym_debug_enabled())return;
     // Heap info
     ESP_LOGI("MEM", "=== HEAP STATUS ===");
     ESP_LOGI("MEM", "Free heap: %lu bytes", esp_get_free_heap_size());
@@ -7561,7 +7576,7 @@ static void game_isolated_main(void)
             /* Priority3 equals PCM, above engine2; actual SPI waits block.
              * Positive delay on EVERY loop and >=50ms after each presentation
              * guarantee lower-priority engine/idle time. No mutex held here. */
-            doom_ui_native_step();cym_display_diag_report();
+            doom_ui_native_step();cym_display_diag_report();cym_debug_memory_report();
             esp_task_wdt_reset();vTaskDelay(DOOM_NATIVE_BLOCK_TICKS);continue;
         }
         doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
@@ -7578,7 +7593,7 @@ static void game_isolated_main(void)
                 ESP_LOGI("CYM_DOOM","NATIVE_OWNER effective_priority=%u",(unsigned)uxTaskPriorityGet(NULL));
             }
         }
-        cym_display_diag_report();
+        cym_display_diag_report();cym_debug_memory_report();
         esp_task_wdt_reset();vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -7597,17 +7612,21 @@ void app_main(void)
     // RAM got commanded back DOWN to 9600 — while the UI, loaded later, still claimed
     // 115200. NVS init is a few ms, so GPS still starts essentially at boot.
     esp_err_t nvs_ret = nvs_flash_init();
+    (void)cym_debug_load();
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
-    if(game_early_consume(nvs_ret)==GAME_DOOM){game_isolated_main();return;}
+    if(game_early_consume(nvs_ret)==GAME_DOOM){(void)cym_debug_console_start();game_isolated_main();return;}
     /* Mode-intent failures never authorize erasing saved CYM config. */
     if(nvs_ret!=ESP_OK){ESP_LOGE(TAG,"NVS unavailable; degraded normal CYM, config preserved. No erase.");}
 #else
     if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES || nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         nvs_ret = nvs_flash_init();
+        (void)cym_debug_load();
     }
     ESP_ERROR_CHECK(nvs_ret);
 #endif
+
+    (void)cym_debug_console_start();
 
     // Passive observation store: 8192-record PSRAM ring buffer (OBS_STORE_DEFAULT_CAPACITY —
     // see obs_store.h for why 512 was too small for a real OT Air Survey session)
@@ -8230,7 +8249,7 @@ void app_main(void)
     // This bounded single-reader design is NOT a claim of hardware boot qualification.
     if (init_gps_uart() != ESP_OK) ESP_LOGE(TAG, "Classic GPS init failed; UART absent");
 #endif
-    ESP_LOGI(TAG, "[DIAG] System ready - final memory state");
+    CYM_DEBUG_LOGI(TAG, "[DIAG] System ready - final memory state");
     check_heap_integrity("Before main loop");
     print_memory_stats();
     
@@ -10068,7 +10087,7 @@ void app_main(void)
 
             // Monitor LVGL handler execution to detect hangs
             uint64_t lvgl_call_us = esp_timer_get_time();
-            ESP_LOGD(TAG, "[MAIN_LOOP] Entering first lv_timer_handler() at %llu us", lvgl_call_us);
+            CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] Entering first lv_timer_handler() at %llu us", lvgl_call_us);
             uint32_t diagnostic_cb_us = s_display_diag[0].callback_us;
             sleep_ms = lv_timer_handler();
             uint64_t lvgl_return_us = esp_timer_get_time();
@@ -10087,15 +10106,15 @@ void app_main(void)
             // Deferred provision startup: create dialog outside event callback
             // This prevents blocking display rendering when the dialog is created
             if (sd_prov_pending_start && g_home_layout_nvs_present) {
-                ESP_LOGI(TAG, "[DIAG] Deferred provision start detected, creating dialog...");
+                CYM_DEBUG_LOGI(TAG, "[DIAG] Deferred provision start detected, creating dialog...");
                 uint64_t t_dialog_start = esp_timer_get_time();
                 sd_prov_pending_start = false;
                 show_sd_provision_running_screen(sd_prov_pending_after_format);
                 uint64_t t_dialog_created = esp_timer_get_time();
-                ESP_LOGI(TAG, "[DIAG] Dialog created in %lld us", t_dialog_created - t_dialog_start);
+                CYM_DEBUG_LOGI(TAG, "[DIAG] Dialog created in %lld us", t_dialog_created - t_dialog_start);
                 // Force immediate render of the new dialog before yielding
                 uint64_t t_render_start = esp_timer_get_time();
-                ESP_LOGD(TAG, "[MAIN_LOOP] Entering second lv_timer_handler() for dialog render at %llu us", t_render_start);
+                CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] Entering second lv_timer_handler() for dialog render at %llu us", t_render_start);
                 diagnostic_cb_us = s_display_diag[0].callback_us;
                 sleep_ms = lv_timer_handler();
                 uint64_t t_render_done = esp_timer_get_time();
@@ -10105,7 +10124,7 @@ void app_main(void)
                 if (dialog_handler_us > 100000) {
                     ESP_LOGW(TAG, "[MAIN_LOOP] LONG dialog lv_timer_handler() took %llu us (%.1f ms)", dialog_handler_us, (float)dialog_handler_us / 1000.0f);
                 }
-                ESP_LOGI(TAG, "[DIAG] First render took %lld us", t_render_done - t_render_start);
+                CYM_DEBUG_LOGI(TAG, "[DIAG] First render took %lld us", t_render_done - t_render_start);
             }
 
             // Check for SD write errors and show modal if needed
@@ -10114,17 +10133,17 @@ void app_main(void)
             // Reset watchdog INSIDE mutex to catch long rendering operations
             uint64_t wdt_inside_us = esp_timer_get_time();
             esp_task_wdt_reset();
-            ESP_LOGD(TAG, "[MAIN_LOOP] Watchdog reset inside mutex at %llu us", wdt_inside_us);
+            CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] Watchdog reset inside mutex at %llu us", wdt_inside_us);
 
             xSemaphoreGive(lvgl_mutex);
         }
 
-        cym_display_diag_report();cym_ui_diag_report();
+        cym_display_diag_report();cym_ui_diag_report();cym_debug_memory_report();
 
         // Reset watchdog again after releasing mutex
         uint64_t wdt_after_us = esp_timer_get_time();
         esp_task_wdt_reset();
-        ESP_LOGD(TAG, "[MAIN_LOOP] Watchdog reset after mutex release at %llu us", wdt_after_us);
+        CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] Watchdog reset after mutex release at %llu us", wdt_after_us);
 
         // Free the provision task's static PSRAM stack from main-task context.
         // No stack cleanup in main loop. The 4KB PSRAM stack is reclaimed by
@@ -10134,7 +10153,7 @@ void app_main(void)
         // Process pending karma saves (with SPI mutex to avoid display conflicts)
         uint64_t sd_spi_try_us = esp_timer_get_time();
         if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-            ESP_LOGD(TAG, "[MAIN_LOOP] Acquired sd_spi_mutex at %llu us", sd_spi_try_us);
+            CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] Acquired sd_spi_mutex at %llu us", sd_spi_try_us);
             wifi_attacks_process_pending_saves();
 
             /* Phase 4: periodic OT survey flush — writes obs.jsonl to SD card.
@@ -10306,7 +10325,7 @@ void app_main(void)
 
             xSemaphoreGive(sd_spi_mutex);
         } else {
-            ESP_LOGD(TAG, "[MAIN_LOOP] sd_spi_mutex timeout (10ms) at %llu us", sd_spi_try_us);
+            CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] sd_spi_mutex timeout (10ms) at %llu us", sd_spi_try_us);
         }
 
 #if defined(CONFIG_BOARD_CYD2USB) && BOARD_HAS_GPS
@@ -10378,7 +10397,7 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
         static uint32_t last_prov_flush_log = 0;
         uint32_t now_ms = (uint32_t)(esp_timer_get_time() / 1000);
         if (now_ms - last_prov_flush_log > 500) {  // Log max once per 500ms to avoid spam
-            ESP_LOGI(TAG, "[FLUSH-PROV] Call #%u, area: (%d,%d)-(%d,%d), height=%d",
+            CYM_DEBUG_LOGI(TAG, "[FLUSH-PROV] Call #%u, area: (%d,%d)-(%d,%d), height=%d",
                      flush_call_count, area->x1, area->y1, area->x2, area->y2,
                      area->y2 - area->y1);
             last_prov_flush_log = now_ms;
@@ -10547,7 +10566,7 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
      * shared GPIO2 touch MISO into a spurious corner press). The read above still ran, so the
      * ghost is logged for diagnosis, but we drop it here so it never fires a button. */
     if (touched && (esp_timer_get_time() / 1000) < g_radio_settle_until_ms) {
-        ESP_LOGD(TAG, "touch ignored during radio-settle window (%u,%u)", touch_x, touch_y);
+        CYM_DEBUG_LOGD(TAG, "touch ignored during radio-settle window (%u,%u)", touch_x, touch_y);
         touched = false;
     }
 
@@ -13499,7 +13518,7 @@ static int wdp_ble_gap_body(struct ble_gap_event *event, void *arg)
 
     wdp_ble_count = cnt + 1;
     if (g_wd_radio_mode == WD_RADIO_BLE_ONLY) {
-        ESP_LOGD(TAG, "[WDP] BLE-only: detected device #%d: %02X:%02X:%02X:%02X:%02X:%02X RSSI=%d",
+        CYM_DEBUG_LOGD(TAG, "[WDP] BLE-only: detected device #%d: %02X:%02X:%02X:%02X:%02X:%02X RSSI=%d",
                  cnt + 1, dev->mac[5], dev->mac[4], dev->mac[3],
                  dev->mac[2], dev->mac[1], dev->mac[0], dev->rssi);
     }
@@ -14662,6 +14681,7 @@ static void handshake_stop(void)
 // Call at any key transition to track what is consuming internal SRAM.
 static void log_heap_stats(const char *where)
 {
+    if(!cym_debug_enabled())return;
     size_t int_free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t int_min   = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     size_t int_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
@@ -15142,7 +15162,7 @@ static void wardrive_promisc_task(void *pvParameters) {
         if (!current_gps.valid) {
             if (g_gps_last_known.valid) {
                 // Hold last-known position — continue scanning without pausing
-                ESP_LOGD(TAG, "[WDP] GPS fix lost; holding last-known (%.6f, %.6f, acc %.0fm)",
+                CYM_DEBUG_LOGD(TAG, "[WDP] GPS fix lost; holding last-known (%.6f, %.6f, acc %.0fm)",
                          (double)g_gps_last_known.latitude, (double)g_gps_last_known.longitude,
                          (double)GPS_STALE_ACCURACY_M);
             } else {
@@ -28334,6 +28354,31 @@ static void hw_options_tile_event_cb_measured(lv_event_t *e)
         show_nmrfhat_settings_screen();
 }
 
+/* Hardware objects and timer belong exclusively to the main LVGL owner.
+ * Serial publishes atomic state only; polling never queues stale object pointers. */
+static lv_obj_t *s_hardware_debug_switch,*s_hardware_debug_status;
+static lv_timer_t *s_hardware_debug_timer;
+static void hardware_debug_sync(lv_timer_t *timer)
+{
+    (void)timer;
+    if(!s_hardware_debug_switch)return;
+    if(cym_debug_enabled())lv_obj_add_state(s_hardware_debug_switch,LV_STATE_CHECKED);
+    else lv_obj_clear_state(s_hardware_debug_switch,LV_STATE_CHECKED);
+}
+static void hardware_debug_stop(void)
+{
+    if(s_hardware_debug_timer){lv_timer_del(s_hardware_debug_timer);s_hardware_debug_timer=NULL;}
+    s_hardware_debug_switch=NULL;s_hardware_debug_status=NULL;
+}
+static void hardware_debug_event(lv_event_t *e)
+{
+    if(lv_event_get_code(e)!=LV_EVENT_VALUE_CHANGED)return;
+    bool enabled=lv_obj_has_state(lv_event_get_target(e),LV_STATE_CHECKED);
+    esp_err_t rc=cym_debug_set(enabled);
+    hardware_debug_sync(NULL);
+    if(s_hardware_debug_status)lv_label_set_text(s_hardware_debug_status,
+        rc==ESP_OK?"Saved - immediate, no reboot":"Save failed - setting unchanged");
+}
 static void show_hardware_options_screen_measured(void);
 static void show_hardware_options_screen(void)
 {
@@ -28344,10 +28389,11 @@ static void show_hardware_options_screen(void)
 static void show_hardware_options_screen_measured(void)
 {
     create_function_page_base("Hardware Options");
+    g_screen_stop_fn = hardware_debug_stop;
     apply_menu_bg();
 
     lv_obj_t *tiles = lv_obj_create(function_page);
-    lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 40);
+    lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 90);
     lv_obj_align(tiles, LV_ALIGN_TOP_MID, 0, 32);
     lv_obj_set_style_bg_opa(tiles, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(tiles, 0, 0);
@@ -28359,6 +28405,22 @@ static void show_hardware_options_screen_measured(void)
 
     create_tile(tiles, LV_SYMBOL_CHARGE,    "Power\nMode",  COLOR_MATERIAL_RED,     hw_options_tile_event_cb, "Power Mode");
     create_tile(tiles, MY_SYMBOL_TOWER,     "NM-RF-HAT",   lv_color_hex(0x607D8B), hw_options_tile_event_cb, "NM-RF-HAT");
+    lv_obj_t *row=lv_obj_create(function_page);
+    lv_obj_set_size(row,lv_pct(100),78);lv_obj_align(row,LV_ALIGN_BOTTOM_MID,0,0);
+    lv_obj_set_style_pad_all(row,6,0);lv_obj_clear_flag(row,LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *label=lv_label_create(row);lv_label_set_text(label,"Debug diagnostics");
+    lv_obj_set_style_text_font(label,&lv_font_montserrat_12,0);lv_obj_align(label,LV_ALIGN_TOP_LEFT,0,4);
+    s_hardware_debug_switch=lv_switch_create(row);lv_obj_set_size(s_hardware_debug_switch,44,24);
+    lv_obj_align(s_hardware_debug_switch,LV_ALIGN_TOP_RIGHT,0,0);
+    lv_obj_add_event_cb(s_hardware_debug_switch,hardware_debug_event,LV_EVENT_VALUE_CHANGED,NULL);
+    s_hardware_debug_status=lv_label_create(row);lv_label_set_text(s_hardware_debug_status,"Saved across reboot; default OFF");
+    lv_obj_set_width(s_hardware_debug_status,lv_pct(100));lv_label_set_long_mode(s_hardware_debug_status,LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_hardware_debug_status,&lv_font_montserrat_12,0);
+    lv_obj_align(s_hardware_debug_status,LV_ALIGN_BOTTOM_LEFT,0,0);
+    hardware_debug_sync(NULL);
+    s_hardware_debug_timer=lv_timer_create(hardware_debug_sync,200,NULL);
+    if(!s_hardware_debug_timer){ESP_LOGE(TAG,"Hardware debug sync timer allocation failed");lv_label_set_text(s_hardware_debug_status,"Sync unavailable - reopen Hardware");}
+
 
 }
 
@@ -29784,7 +29846,7 @@ static void sd_prov_line_cb(void *arg)
         lv_textarea_add_text(sd_provision_log_ta, "\n");
 
         uint64_t cb_end_us = esp_timer_get_time();
-        ESP_LOGD(TAG, "[PROV_LINE_CB] Text added in %llu us", cb_end_us - cb_start_us);
+        CYM_DEBUG_LOGD(TAG, "[PROV_LINE_CB] Text added in %llu us", cb_end_us - cb_start_us);
     } else {
         ESP_LOGW(TAG, "[PROV_LINE_CB] Textarea is NULL!");
     }
@@ -29880,7 +29942,7 @@ static void sd_prov_done_cb(void *arg)
 #define PROV_TAKE_MUTEX() \
     ({ \
         bool _got = (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(10000)) == pdTRUE); \
-        if (_got) ESP_LOGD(TAG, "[PROV_MUTEX] Acquired"); \
+        if (_got) CYM_DEBUG_LOGD(TAG, "[PROV_MUTEX] Acquired"); \
         else ESP_LOGW(TAG, "[PROV_MUTEX] TIMEOUT after 10s"); \
         _got; \
     })
@@ -29907,7 +29969,7 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
     struct stat st;
     bool exists = (stat(item->path, &st) == 0);
     uint64_t stat_ms = (esp_timer_get_time() - stat_start) / 1000;
-    ESP_LOGD(TAG, "[PROV_STAT] Item %d: stat() took %lld ms, exists=%d", idx, stat_ms, exists);
+    CYM_DEBUG_LOGD(TAG, "[PROV_STAT] Item %d: stat() took %lld ms, exists=%d", idx, stat_ms, exists);
 
     // If already exists, we're done with this item
     if (exists) {
@@ -29921,7 +29983,7 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
         }
         (*ok_count)++;
         uint64_t item_ms = (esp_timer_get_time() - item_start_us) / 1000;
-        ESP_LOGD(TAG, "[PROV_ITEM] %d: Complete in %lld ms", idx, item_ms);
+        CYM_DEBUG_LOGD(TAG, "[PROV_ITEM] %d: Complete in %lld ms", idx, item_ms);
         return;
     }
 
@@ -29942,10 +30004,10 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
         if (f) {
             if (item->content && item->content[0]) {
                 size_t written = fwrite(item->content, 1, strlen(item->content), f);
-                ESP_LOGD(TAG, "[PROV_FWRITE] Item %d: wrote %u bytes", idx, (unsigned)written);
+                CYM_DEBUG_LOGD(TAG, "[PROV_FWRITE] Item %d: wrote %u bytes", idx, (unsigned)written);
             }
             fclose(f);
-            ESP_LOGD(TAG, "[PROV_FWRITE] Item %d: file closed", idx);
+            CYM_DEBUG_LOGD(TAG, "[PROV_FWRITE] Item %d: file closed", idx);
         } else {
             err = errno;
             ESP_LOGW(TAG, "[PROV_FOPEN] Item %d: errno=%d (%s)", idx, err, strerror(err));
@@ -29954,7 +30016,7 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
     uint64_t op_ms = (esp_timer_get_time() - op_start) / 1000;
 
     xSemaphoreGive(sd_spi_mutex);  // Release BEFORE LVGL / yield
-    ESP_LOGD(TAG, "[PROV_OP] Item %d: %s took %lld ms, err=%d", idx, op_type, op_ms, err);
+    CYM_DEBUG_LOGD(TAG, "[PROV_OP] Item %d: %s took %lld ms, err=%d", idx, op_type, op_ms, err);
 
     // Queue result to batch instead of posting immediately
     if (err == 0) {
@@ -29977,7 +30039,7 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
 
     uint64_t item_ms = (esp_timer_get_time() - item_start_us) / 1000;
     uint64_t elapsed_total_ms = (esp_timer_get_time() - task_start_us) / 1000;
-    ESP_LOGD(TAG, "[PROV_ITEM] %d: Complete in %lld ms (total elapsed %lld ms)",
+    CYM_DEBUG_LOGD(TAG, "[PROV_ITEM] %d: Complete in %lld ms (total elapsed %lld ms)",
              idx, item_ms, elapsed_total_ms);
 }
 
@@ -30016,7 +30078,7 @@ static void sd_provision_task(void *pvParams)
         PROV_POST("Formatting SD card...\n\nScreen will freeze\nuntil complete.\nPlease wait...");
         uint64_t delay1_start = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS(500));  // let message render
-        ESP_LOGD(TAG, "[SD_PROV_FORMAT] Pre-format delay: %lld ms",
+        CYM_DEBUG_LOGD(TAG, "[SD_PROV_FORMAT] Pre-format delay: %lld ms",
                  (esp_timer_get_time() - delay1_start) / 1000);
 
         if (!PROV_TAKE_MUTEX()) {
@@ -30041,7 +30103,7 @@ static void sd_provision_task(void *pvParams)
 
         uint64_t delay2_start = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS(500));  // card settle
-        ESP_LOGD(TAG, "[SD_PROV_FORMAT] Post-format delay: %lld ms",
+        CYM_DEBUG_LOGD(TAG, "[SD_PROV_FORMAT] Post-format delay: %lld ms",
                  (esp_timer_get_time() - delay2_start) / 1000);
 
         if (fr != ESP_OK) {
@@ -30054,7 +30116,7 @@ static void sd_provision_task(void *pvParams)
         PROV_POST("Format OK!\nRemounting...");
         uint64_t delay3_start = esp_timer_get_time();
         vTaskDelay(pdMS_TO_TICKS(300));
-        ESP_LOGD(TAG, "[SD_PROV_FORMAT] Pre-remount delay: %lld ms",
+        CYM_DEBUG_LOGD(TAG, "[SD_PROV_FORMAT] Pre-remount delay: %lld ms",
                  (esp_timer_get_time() - delay3_start) / 1000);
 
         if (!PROV_TAKE_MUTEX()) {
@@ -30141,7 +30203,7 @@ static void sd_provision_task(void *pvParams)
                     if (xQueueSend(sd_prov_queue, upd, 0) != pdTRUE) {
                         ESP_LOGW(TAG, "[PROV_BATCH] Queue full or invalid, dropping batch");
                     } else {
-                        ESP_LOGD(TAG, "[PROV_BATCH] Queued successfully");
+                        CYM_DEBUG_LOGD(TAG, "[PROV_BATCH] Queued successfully");
                     }
                     free(upd);
                 } else {
@@ -30158,7 +30220,7 @@ static void sd_provision_task(void *pvParams)
         // Yield to main loop frequently to prevent watchdog starvation.
         // Main loop processes queue items during these yields.
         if (i % 5 == 0 || flush_by_time || flush_by_count || flush_at_end) {
-            ESP_LOGD(TAG, "[PROV_ITEM] %d: Yielding...", i);
+            CYM_DEBUG_LOGD(TAG, "[PROV_ITEM] %d: Yielding...", i);
             vTaskDelay(pdMS_TO_TICKS(200));
         }
     }
@@ -30235,10 +30297,10 @@ static void show_sd_provision_running_screen(bool after_format)
 
     sd_provision_active = true;
     const char *title = after_format ? "Format + Provision" : "Validate & Provision";
-    ESP_LOGD(TAG, "[PROV_SCREEN] Screen title: %s", title);
+    CYM_DEBUG_LOGD(TAG, "[PROV_SCREEN] Screen title: %s", title);
 
     create_function_page_base(title);
-    ESP_LOGD(TAG, "[PROV_SCREEN] Base screen created");
+    CYM_DEBUG_LOGD(TAG, "[PROV_SCREEN] Base screen created");
 
     // Create a scrollable textarea for live provision log
     // Shows progress as items are created: "  ++  /sdcard/lab/handshakes"
@@ -30254,7 +30316,7 @@ static void show_sd_provision_running_screen(bool after_format)
     lv_obj_set_style_border_color(sd_provision_log_ta, ui_border_color(), 0);
     lv_obj_set_style_pad_all(sd_provision_log_ta, 4, 0);
     lv_obj_clear_flag(sd_provision_log_ta, LV_OBJ_FLAG_CLICKABLE);
-    ESP_LOGD(TAG, "[PROV_SCREEN] Textarea created");
+    CYM_DEBUG_LOGD(TAG, "[PROV_SCREEN] Textarea created");
 
     // Bottom bar: status label (left) + back button (right), flex row
     lv_obj_t *bottom_bar = lv_obj_create(function_page);
@@ -30558,26 +30620,26 @@ static void sd_tree_populate(const char *path);
 static void sd_dir_btn_cb(lv_event_t *e)
 {
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] ===== BUTTON CLICK =====");
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] Current state: cwd='%s', dir_count=%d", s_sd_tree_cwd, s_sd_dir_count);
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] Button idx=%d (count=%d)", idx, s_sd_dir_count);
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] ===== BUTTON CLICK =====");
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Current state: cwd='%s', dir_count=%d", s_sd_tree_cwd, s_sd_dir_count);
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Button idx=%d (count=%d)", idx, s_sd_dir_count);
 
     // Dump all stored paths
     for (int i = 0; i < s_sd_dir_count && i < 10; i++) {
-        ESP_LOGI(TAG, "[SD_TREE_DEBUG]   paths[%d]='%s' (len=%zu)", i, s_sd_dir_paths[i], strlen(s_sd_dir_paths[i]));
+        CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG]   paths[%d]='%s' (len=%zu)", i, s_sd_dir_paths[i], strlen(s_sd_dir_paths[i]));
     }
     if (s_sd_dir_count > 10) {
-        ESP_LOGI(TAG, "[SD_TREE_DEBUG]   ... and %d more paths", s_sd_dir_count - 10);
+        CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG]   ... and %d more paths", s_sd_dir_count - 10);
     }
 
     if (idx >= 0 && idx < s_sd_dir_count) {
-        ESP_LOGI(TAG, "[SD_TREE_DEBUG] NAVIGATE: paths[%d]='%s' (len=%zu, addr=%p)",
+        CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] NAVIGATE: paths[%d]='%s' (len=%zu, addr=%p)",
                  idx, s_sd_dir_paths[idx], strlen(s_sd_dir_paths[idx]), (void*)&s_sd_dir_paths[idx]);
         sd_tree_populate(s_sd_dir_paths[idx]);
     } else {
         ESP_LOGW(TAG, "[SD_TREE_DEBUG] INVALID INDEX: idx=%d out of range [0,%d)", idx, s_sd_dir_count);
     }
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] ===== END BUTTON CLICK =====");
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] ===== END BUTTON CLICK =====");
 }
 
 static void sd_tree_up_cb(lv_event_t *e)
@@ -30600,27 +30662,27 @@ static void sd_tree_up_cb(lv_event_t *e)
 
 static void sd_tree_populate(const char *path)
 {
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] sd_tree_populate() called with path='%s'", path ? path : "NULL");
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] sd_tree_populate() called with path='%s'", path ? path : "NULL");
     strncpy(s_sd_tree_cwd, path, sizeof(s_sd_tree_cwd) - 1);
     s_sd_tree_cwd[sizeof(s_sd_tree_cwd) - 1] = '\0';
     s_sd_dir_count = 0;
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] After copy to cwd: cwd='%s' (len=%zu)", s_sd_tree_cwd, strlen(s_sd_tree_cwd));
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] After copy to cwd: cwd='%s' (len=%zu)", s_sd_tree_cwd, strlen(s_sd_tree_cwd));
 
     /* Update path label — strip /sdcard prefix for display */
     if (s_sd_path_lbl) {
         const char *disp = s_sd_tree_cwd;
-        ESP_LOGI(TAG, "[SD_TREE_DEBUG] Label prep: s_sd_tree_cwd='%s' (len=%zu)", s_sd_tree_cwd, strlen(s_sd_tree_cwd));
+        CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Label prep: s_sd_tree_cwd='%s' (len=%zu)", s_sd_tree_cwd, strlen(s_sd_tree_cwd));
         if (strncmp(disp, SD_TREE_ROOT, strlen(SD_TREE_ROOT)) == 0) {
-            ESP_LOGI(TAG, "[SD_TREE_DEBUG] Stripping /sdcard (len=%zu) from disp", strlen(SD_TREE_ROOT));
+            CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Stripping /sdcard (len=%zu) from disp", strlen(SD_TREE_ROOT));
             disp += strlen(SD_TREE_ROOT);
         }
         const char *label_text = disp[0] ? disp : "/";
-        ESP_LOGI(TAG, "[SD_TREE_DEBUG] SETTING LABEL TEXT: '%s' (len=%zu, ptr=%p)", label_text, strlen(label_text), (void*)label_text);
+        CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] SETTING LABEL TEXT: '%s' (len=%zu, ptr=%p)", label_text, strlen(label_text), (void*)label_text);
 
         // Extra check: verify label object is valid
         if (lv_obj_is_valid(s_sd_path_lbl)) {
             lv_label_set_text(s_sd_path_lbl, label_text);
-            ESP_LOGI(TAG, "[SD_TREE_DEBUG] Label set successfully");
+            CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Label set successfully");
         } else {
             ESP_LOGW(TAG, "[SD_TREE_DEBUG] WARNING: label object is INVALID!");
         }
@@ -30641,7 +30703,7 @@ static void sd_tree_populate(const char *path)
     }
 
     DIR *dir = opendir(s_sd_tree_cwd);
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] opendir('%s') => handle=%p", s_sd_tree_cwd, (void*)dir);
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] opendir('%s') => handle=%p", s_sd_tree_cwd, (void*)dir);
     if (!dir) {
         xSemaphoreGive(sd_spi_mutex);
         lv_obj_t *e = lv_label_create(s_sd_tree_list);
@@ -30660,7 +30722,7 @@ static void sd_tree_populate(const char *path)
         struct dirent *entry;
         int entry_num = 0;
         while ((entry = readdir(dir)) != NULL) {
-            ESP_LOGI(TAG, "[SD_TREE_DEBUG] readdir[%d] returned: name='%s' type=%d",
+            CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] readdir[%d] returned: name='%s' type=%d",
                      entry_num, entry->d_name, entry->d_type);
             entry_num++;
 
@@ -30707,7 +30769,7 @@ static void sd_tree_populate(const char *path)
             }
 
             if (strcmp(entry->d_name, "pcap") == 0 || strcmp(entry->d_name, "lab") == 0) {
-                ESP_LOGI(TAG, "[SD_TREE_DEBUG] Entry: name='%s' path='%s' => child='%s'",
+                CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Entry: name='%s' path='%s' => child='%s'",
                          entry->d_name, s_sd_tree_cwd, child);
             }
 
@@ -30750,12 +30812,12 @@ static void sd_tree_populate(const char *path)
                 lv_label_set_text(lbl, text);
                 lv_obj_set_style_text_color(lbl, lv_color_make(255, 210, 0), 0);
                 if (s_sd_dir_count < SD_TREE_MAX_DIRS) {
-                    ESP_LOGI(TAG, "[SD_TREE_DEBUG] Adding dir[%d]: child='%s' (from path='%s' + name='%s')",
+                    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Adding dir[%d]: child='%s' (from path='%s' + name='%s')",
                              s_sd_dir_count, child, path, entry->d_name);
                     strncpy(s_sd_dir_paths[s_sd_dir_count], child,
                             sizeof(s_sd_dir_paths[0]) - 1);
                     s_sd_dir_paths[s_sd_dir_count][sizeof(s_sd_dir_paths[0]) - 1] = '\0';
-                    ESP_LOGI(TAG, "[SD_TREE_DEBUG] Stored in paths[%d]: '%s'", s_sd_dir_count, s_sd_dir_paths[s_sd_dir_count]);
+                    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] Stored in paths[%d]: '%s'", s_sd_dir_count, s_sd_dir_paths[s_sd_dir_count]);
                     lv_obj_add_event_cb(row, sd_dir_btn_cb, LV_EVENT_CLICKED,
                                         (void *)(intptr_t)s_sd_dir_count);
                     s_sd_dir_count++;
@@ -30788,13 +30850,13 @@ static void sd_tree_populate(const char *path)
 static void show_sd_tree_screen(void)
 {
     // Reset globals to prevent stale data from previous visits
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] show_sd_tree_screen() called, resetting globals");
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] show_sd_tree_screen() called, resetting globals");
     memset(s_sd_tree_cwd, 0, sizeof(s_sd_tree_cwd));
     s_sd_tree_list = NULL;
     s_sd_path_lbl = NULL;
     s_sd_dir_count = 0;
     memset(s_sd_dir_paths, 0, sizeof(s_sd_dir_paths));
-    ESP_LOGI(TAG, "[SD_TREE_DEBUG] After reset: cwd='%s' dir_count=%d", s_sd_tree_cwd, s_sd_dir_count);
+    CYM_DEBUG_LOGI(TAG, "[SD_TREE_DEBUG] After reset: cwd='%s' dir_count=%d", s_sd_tree_cwd, s_sd_dir_count);
 
     create_function_page_base("SD File Tree");
 
@@ -38652,7 +38714,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     vTaskDelay(pdMS_TO_TICKS(30));
     uint64_t after_delay_us = esp_timer_get_time();
     st->started = false;
-    ESP_LOGD(TAG, "[SPAM] pkt%d stopped adv, delayed %.1f ms", ble_spam_count, (after_delay_us - stop_time_us) / 1000.0);
+    CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d stopped adv, delayed %.1f ms", ble_spam_count, (after_delay_us - stop_time_us) / 1000.0);
 
     // Generate random address (controller accepts set_addr only when stopped/configured)
     ble_addr_t rnd_addr;
@@ -38661,7 +38723,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         // (minted on packet 1, reused on packets 2-4)
         rnd_addr.type = BLE_ADDR_RANDOM;  // Explicitly set type before copy
         memcpy(rnd_addr.val, st->samsung_burst_mac.val, 6);
-        ESP_LOGD(TAG, "[SPAM] pkt%d using burst MAC (count=%d)", ble_spam_count, st->samsung_burst_count);
+        CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d using burst MAC (count=%d)", ble_spam_count, st->samsung_burst_count);
     } else {
         // Normal per-packet randomization for all other modes
         // Use static-random (nrpa=0) not NRPA (nrpa=1) — ble_gap_ext_adv_set_addr requires top bits 11
@@ -38671,10 +38733,10 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
             return;
         }
         uint8_t top_bits = rnd_addr.val[5] & 0xC0;
-        ESP_LOGD(TAG, "[SPAM] pkt%d generated random MAC (type_bits=%02x, expect 0xc0)", ble_spam_count, top_bits);
+        CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d generated random MAC (type_bits=%02x, expect 0xc0)", ble_spam_count, top_bits);
     }
 
-    ESP_LOGD(TAG, "[SPAM] pkt%d calling set_addr with MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+    CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d calling set_addr with MAC: %02x:%02x:%02x:%02x:%02x:%02x",
              ble_spam_count, rnd_addr.val[0], rnd_addr.val[1], rnd_addr.val[2],
              rnd_addr.val[3], rnd_addr.val[4], rnd_addr.val[5]);
     int addr_rc = ble_gap_ext_adv_set_addr(BLE_SPAM_ADV_INSTANCE, &rnd_addr);
@@ -38858,7 +38920,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
     }
 
     // Set payload (now that instance is stopped and address is fresh)
-    ESP_LOGD(TAG, "[SPAM] pkt%d calling set_data (payload_len=%d)", ble_spam_count, os_mbuf_len(om));
+    CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d calling set_data (payload_len=%d)", ble_spam_count, os_mbuf_len(om));
     rc = ble_gap_ext_adv_set_data(BLE_SPAM_ADV_INSTANCE, om);
     if (rc != 0) {
         // NimBLE always frees om internally on any path (success or failure). Do NOT double-free.
@@ -38867,11 +38929,11 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         ble_spam_abort("Payload configuration failed; exit screen");
         return;
     } else {
-        ESP_LOGD(TAG, "[SPAM] pkt%d set_data OK", ble_spam_count);
+        CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d set_data OK", ble_spam_count);
     }
 
     // Start advertising with fresh payload and random MAC (seen as new device by phones)
-    ESP_LOGD(TAG, "[SPAM] pkt%d calling start (instance=%d)", ble_spam_count, BLE_SPAM_ADV_INSTANCE);
+    CYM_DEBUG_LOGD(TAG, "[SPAM] pkt%d calling start (instance=%d)", ble_spam_count, BLE_SPAM_ADV_INSTANCE);
     rc = ble_gap_ext_adv_start(BLE_SPAM_ADV_INSTANCE, 0, 0);
     if (rc != 0) {
         ESP_LOGW(TAG, "[SPAM] advertising start failed: rc=%d", rc);
@@ -43488,7 +43550,7 @@ static bool ensure_ble_mode(void)
             ESP_LOGI(TAG, "Initializing BLE (NimBLE)...");
             ESP_LOGI(TAG, "DMA free before BLE init: %lu bytes (need ~18KB for BLE ctrl)",
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
-            heap_caps_print_heap_info(MALLOC_CAP_DMA);
+            if(cym_debug_enabled())heap_caps_print_heap_info(MALLOC_CAP_DMA);
             {
             esp_err_t ret = bt_nimble_init();
             if (ret != ESP_OK) {
@@ -67995,7 +68057,7 @@ static void s_ots_load_allowlist(void)
     FILE *f = fopen("/sdcard/lab/otsurvey/allowlist.json", "r");
     if (!f) {
         xSemaphoreGive(sd_spi_mutex);
-        ESP_LOGD(TAG, "[OTS] no allowlist file — proceeding without labels");
+        CYM_DEBUG_LOGD(TAG, "[OTS] no allowlist file — proceeding without labels");
         return;
     }
 
@@ -72515,7 +72577,8 @@ static const char *game_record_reboot(void)
     if(owner){storage_gate_thaw();s_game_reboot_frozen=false;return owner;}
     if(!storage_gate_freeze()){storage_gate_thaw();s_game_reboot_frozen=false;return "SD open file / filesystem operation";}
     /* File-server service itself is refused, so no new external PUT can arrive.
-     * No console is started by app_main. Deferred provision/survey/snapshot/UI
+     * Only the debug-setting console is started by app_main (no SD/radio actions).
+     * Deferred provision/survey/snapshot/UI
      * starts are main-owner and cannot run inside this synchronous transaction. */
     if(!sd_spi_mutex || xSemaphoreTake(sd_spi_mutex,0)!=pdTRUE){storage_gate_thaw();s_game_reboot_frozen=false;return "SD transport operation";}
     owner=game_storage_blocker();

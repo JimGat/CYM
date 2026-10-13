@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 1993-2008 Raven Software
@@ -1897,7 +1898,7 @@ void M_LoadDefaults (void)
     if (i)
     {
 	doom_defaults.filename = myargv[i+1];
-	printf ("	default file: %s\n",doom_defaults.filename);
+	CYM_GAME_DEBUG_PRINTF ("	default file: %s\n",doom_defaults.filename);
     }
     else
     {
@@ -1905,7 +1906,7 @@ void M_LoadDefaults (void)
             = M_StringJoin(configdir, default_main_config, NULL);
     }
 
-    printf("saving config in %s\n", doom_defaults.filename);
+    CYM_GAME_DEBUG_PRINTF("saving config in %s\n", doom_defaults.filename);
 
     //!
     // @arg <file>
@@ -1919,7 +1920,7 @@ void M_LoadDefaults (void)
     if (i)
     {
         extra_defaults.filename = myargv[i+1];
-        printf("        extra configuration file: %s\n", 
+        CYM_GAME_DEBUG_PRINTF("        extra configuration file: %s\n", 
                extra_defaults.filename);
     }
     else
@@ -2071,7 +2072,7 @@ void M_SetConfigDir(char *dir)
 
     if (strcmp(configdir, "") != 0)
     {
-        printf("Using %s for configuration and saves\n", configdir);
+        CYM_GAME_DEBUG_PRINTF("Using %s for configuration and saves\n", configdir);
     }
 
     // Make the directory if it doesn't already exist:
@@ -2119,7 +2120,7 @@ char *M_GetSaveGameDir(char *iwadname)
 
         M_MakeDirectory(savegamedir);
 
-        printf ("Using %s for savegames\n", savegamedir);
+        CYM_GAME_DEBUG_PRINTF ("Using %s for savegames\n", savegamedir);
 #endif
     }
 

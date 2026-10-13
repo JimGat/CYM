@@ -10,6 +10,8 @@ set(C5_MAIN "${CMAKE_CURRENT_SOURCE_DIR}/../../ESP32C5/main")
 
 idf_component_register(
     SRCS
+        "${C5_MAIN}/debug_settings.c"
+        "${C5_MAIN}/debug_console.c"
         "${C5_MAIN}/attack_handshake.c"
         "${C5_MAIN}/xpt2046.c"
         "${C5_MAIN}/lvgl_memory.c"
@@ -29,7 +31,7 @@ idf_component_register(
         "${C5_MAIN}/chameleon_t55xx.c"
     INCLUDE_DIRS
         "${C5_MAIN}"
-    REQUIRES mbedtls
+    REQUIRES esp_driver_usb_serial_jtag mbedtls
         heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi board_hal
         espressif__esp_lcd_ili9341
         cym_timekeeper

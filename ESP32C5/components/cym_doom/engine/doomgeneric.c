@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 #ifdef ARDUINO
 #include <esp_heap_caps.h>
 #endif
@@ -25,7 +26,7 @@ void D_DoomMain (void);
 
 void doomgeneric_Create(int argc, char **argv)
 {
-	printf("DG_Create()\n");
+	CYM_GAME_DEBUG_PRINTF("DG_Create()\n");
 	// save arguments
     myargc = argc;
     myargv = argv;
@@ -82,7 +83,7 @@ static size_t dg_mark;
 #define DG_STEP(name) \
 	do { \
 		size_t now = DG_PSRAM_FREE(); \
-		printf("[shutdown] %-18s freed %8d bytes\n", name, (int)(now - dg_mark)); \
+		CYM_GAME_DEBUG_PRINTF("[shutdown] %-18s freed %8d bytes\n", name, (int)(now - dg_mark)); \
 		dg_mark = now; \
 	} while (0)
 #else

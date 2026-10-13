@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -123,7 +124,7 @@ static void LoadGameSettings(net_gamesettings_t *settings)
 
     if (lowres_turn)
     {
-        printf("NOTE: Turning resolution is reduced; this is probably "
+        CYM_GAME_DEBUG_PRINTF("NOTE: Turning resolution is reduced; this is probably "
                "because there is a client recording a Vanilla demo.\n");
     }
 
@@ -252,10 +253,10 @@ void D_CheckNetGame (void)
     D_StartNetGame(&settings, NULL);
     LoadGameSettings(&settings);
 
-    DEH_printf("startskill %i  deathmatch: %i  startmap: %i  startepisode: %i\n",
+    CYM_GAME_DEBUG_DEH_PRINTF("startskill %i  deathmatch: %i  startmap: %i  startepisode: %i\n",
                startskill, deathmatch, startmap, startepisode);
 
-    DEH_printf("player %i of %i (%i nodes)\n",
+    CYM_GAME_DEBUG_DEH_PRINTF("player %i of %i (%i nodes)\n",
                consoleplayer+1, settings.num_players, settings.num_players);
 
     // Show players here; the server might have specified a time limit
@@ -266,15 +267,15 @@ void D_CheckNetGame (void)
 
         if (timelimit == 20 && M_CheckParm("-avg"))
         {
-            DEH_printf("Austin Virtual Gaming: Levels will end "
+            CYM_GAME_DEBUG_DEH_PRINTF("Austin Virtual Gaming: Levels will end "
                            "after 20 minutes\n");
         }
         else
         {
-            DEH_printf("Levels will end after %d minute", timelimit);
+            CYM_GAME_DEBUG_DEH_PRINTF("Levels will end after %d minute", timelimit);
             if (timelimit > 1)
-                printf("s");
-            printf(".\n");
+                CYM_GAME_DEBUG_PRINTF("s");
+            CYM_GAME_DEBUG_PRINTF(".\n");
         }
     }
 }

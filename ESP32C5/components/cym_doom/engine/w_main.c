@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -57,7 +58,7 @@ doom_boolean W_ParseCommandLine(void)
 
             filename = D_TryFindWADByName(myargv[p]);
 
-            printf(" merging %s\n", filename);
+            CYM_GAME_DEBUG_PRINTF(" merging %s\n", filename);
             W_MergeFile(filename);
         }
     }
@@ -85,7 +86,7 @@ doom_boolean W_ParseCommandLine(void)
 
             filename = D_TryFindWADByName(myargv[p]);
 
-            printf(" performing NWT-style merge of %s\n", filename);
+            CYM_GAME_DEBUG_PRINTF(" performing NWT-style merge of %s\n", filename);
             W_NWTDashMerge(filename);
         }
     }
@@ -112,7 +113,7 @@ doom_boolean W_ParseCommandLine(void)
 
             filename = D_TryFindWADByName(myargv[p]);
 
-            printf(" merging flats from %s\n", filename);
+            CYM_GAME_DEBUG_PRINTF(" merging flats from %s\n", filename);
             W_NWTMergeFile(filename, W_NWT_MERGE_FLATS);
         }
     }
@@ -136,7 +137,7 @@ doom_boolean W_ParseCommandLine(void)
             modifiedgame = true;
             filename = D_TryFindWADByName(myargv[p]);
 
-            printf(" merging sprites from %s\n", filename);
+            CYM_GAME_DEBUG_PRINTF(" merging sprites from %s\n", filename);
             W_NWTMergeFile(filename, W_NWT_MERGE_SPRITES);
         }
     }
@@ -160,7 +161,7 @@ doom_boolean W_ParseCommandLine(void)
 
             filename = D_TryFindWADByName(myargv[p]);
 
-            printf(" merging sprites and flats from %s\n", filename);
+            CYM_GAME_DEBUG_PRINTF(" merging sprites and flats from %s\n", filename);
             W_NWTMergeFile(filename, W_NWT_MERGE_SPRITES | W_NWT_MERGE_FLATS);
         }
     }
@@ -186,7 +187,7 @@ doom_boolean W_ParseCommandLine(void)
 
             filename = D_TryFindWADByName(myargv[p]);
 
-            printf(" adding %s\n", filename);
+            CYM_GAME_DEBUG_PRINTF(" adding %s\n", filename);
 	    W_AddFile(filename);
         }
     }

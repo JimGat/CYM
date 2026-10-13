@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
  /*
 
  Copyright(C) 2005-2014 Simon Howard
@@ -359,7 +360,7 @@ void StatDump(void)
 
     if (i > 0)
     {
-        printf("Statistics captured for %i level(s)\n", num_captured_stats);
+        CYM_GAME_DEBUG_PRINTF("Statistics captured for %i level(s)\n", num_captured_stats);
 
         // We actually know what the real gamemission is, but this has
         // to match the output from statdump.exe.

@@ -78,6 +78,7 @@ static void vTaskPrioritySet(void *t,unsigned p){(void)t;assert(!handler_active&
 static unsigned uxTaskPriorityGet(void *t){(void)t;return priority;}
 static void doom_ui_native_step(void){assert(priority==3&&!handler_active);native_calls++;}
 static void cym_display_diag_report(void){}
+static void cym_debug_memory_report(void){}
 static void esp_task_wdt_reset(void){}
 static void vTaskDelay(unsigned ticks){assert(ticks>0);blocks++;pcm_steps++;engine_steps++;if(blocks==20)longjmp(finish,1);}
 static void run(void){

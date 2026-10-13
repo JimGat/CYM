@@ -24,6 +24,7 @@ static void esp_restart(void){abort();}
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
+#define CYM_DEBUG_LOGI(...) ((void)0)
 typedef int esp_err_t;
 typedef void *esp_lcd_panel_handle_t;
 typedef uint16_t lv_color_t;

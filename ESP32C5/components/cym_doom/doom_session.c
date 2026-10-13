@@ -1,3 +1,4 @@
+#include "debug_gate.h"
 /* Private silent native embedding. The caller MUST be the sole engine worker.
  * No LVGL, ISR, asynchronous callback or foreign task may enter this module.
  * Full mutable engine state is captured before Create, restored after raw owned
@@ -40,11 +41,24 @@ extern unsigned char _doom_common_start[], _doom_common_end[];
 extern unsigned char __doom_state_start[],__doom_state_end[];
 #endif
 static uint32_t metric_us(void){
+ if(!cym_debug_enabled())return 0;
 #ifdef ESP_PLATFORM
  return (uint32_t)esp_timer_get_time();
 #else
  struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint32_t)((uint64_t)t.tv_sec*1000000+t.tv_nsec/1000);
 #endif
+}
+static uint32_t metric_delta(uint32_t start,uint32_t end)
+{
+#ifdef ESP_PLATFORM
+ /* Disabled clocks use zero; transitions must not underflow optional counters. */
+ if(!start||!end)return 0;
+#endif
+ return end-start;
+}
+static uint32_t metric_elapsed(uint32_t start)
+{
+ return metric_delta(start,metric_us());
 }
 void doom_engine_tables_init(void);
 #define OWN_MAX 4096
@@ -133,12 +147,12 @@ static bool io_lock(unsigned op){
 #else
     admitted=true;
 #endif
-    io_hold_start=metric_us();io_admission_us=io_hold_start-before;
+    io_hold_start=metric_us();io_admission_us=metric_delta(before,io_hold_start);
     if(!admitted)dm_io_record(io_phase_sample,op,io_admission_us,0,0,true);
     return admitted;
 }
 static void io_unlock(void){
-    io_hold_us=metric_us()-io_hold_start;
+    io_hold_us=metric_elapsed(io_hold_start);
 #ifdef ESP_PLATFORM
     xSemaphoreGive(sd_spi_mutex);
 #endif
@@ -207,7 +221,7 @@ struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint32_t)((uint64_t)
 #endif
 }
 int DG_GetKey(int *pressed,unsigned char *key){unsigned bit;bool down;static const unsigned char map[]={KEY_LEFTARROW,KEY_UPARROW,KEY_RIGHTARROW,KEY_DOWNARROW,KEY_FIRE,KEY_USE,KEY_ESCAPE,KEY_ENTER,KEY_ESCAPE};doom_keys_set(&keys,__atomic_load_n(&desired_keys,__ATOMIC_ACQUIRE));if(!doom_keys_next(&keys,&bit,&down))return 0;uint32_t age=DG_GetTicksMs()-DM_GET(input_ms);DM_ADD(input_events,1);DM_ADD(input_age_sum,age);dm_input_max(age);unsigned i=0;while((1u<<i)!=bit)i++;*pressed=down;*key=map[i];return 1;}
-void DG_SetWindowTitle(const char *title){printf("[CYM_DOOM] TITLE %s\n",title);}
+void DG_SetWindowTitle(const char *title){CYM_GAME_DEBUG_PRINTF("[CYM_DOOM] TITLE %s\n",title);}
 void DG_PaletteLoad(const void *data){const uint8_t *p=data;for(unsigned i=0;i<256;i++)palette[i]=(uint16_t)(((p[i*3]>>3)<<11)|((p[i*3+1]>>2)<<5)|(p[i*3+2]>>3));}
 uint16_t DG_PaletteColor565(uint8_t i){return palette[i];}
 uint16_t doom_session_color565(uint8_t i){return palette[i];}

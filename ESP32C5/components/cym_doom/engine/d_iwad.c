@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 2005-2014 Simon Howard
 //
@@ -429,7 +430,7 @@ static char *CheckDirectoryHasIWAD(char *dir, char *iwadname)
         filename = M_StringJoin(dir, DIR_SEPARATOR_S, iwadname, NULL);
     }
 
-    printf("Trying IWAD file:%s\n", filename);
+    CYM_GAME_DEBUG_PRINTF("Trying IWAD file:%s\n", filename);
 
     if (M_FileExists(filename))
     {
@@ -735,7 +736,7 @@ char *D_FindIWAD(int mask, GameMission_t *mission)
     {
         // Search through the list and look for an IWAD
 
-        printf("-iwad not specified, trying a few iwad names\n");
+        CYM_GAME_DEBUG_PRINTF("-iwad not specified, trying a few iwad names\n");
 
         result = NULL;
 

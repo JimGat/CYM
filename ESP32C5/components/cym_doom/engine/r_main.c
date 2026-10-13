@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -767,21 +768,21 @@ void R_ExecuteSetViewSize (void)
 void R_Init (void)
 {
     R_InitData ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitPointToAngle ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitTables ();
     // viewwidth / viewheight / detailLevel are set by the defaults
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
 
     R_SetViewSize (screenblocks, detailLevel);
     R_InitPlanes ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitLightTables ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitSkyMap ();
     R_InitTranslationTables ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
 	
     framecount = 0;
 }

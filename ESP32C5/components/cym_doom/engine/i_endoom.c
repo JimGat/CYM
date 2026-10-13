@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 2005-2014 Simon Howard
 //
@@ -90,7 +91,7 @@ void I_Endoom(byte *endoom_data)
     // move cursor to bottom
     // there's a direct call for moving cursor somewhere but this is simpler to write
     for (y = 0; y < ENDOOM_H; y++) {
-        puts("\n");
+        CYM_GAME_DEBUG_PUTS("\n");
     }
 
     // allegro exit should have been run already and so we should be in text mode again

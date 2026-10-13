@@ -9,6 +9,8 @@ endif()
 
 idf_component_register(
     SRCS
+        "${C5_MAIN}/debug_settings.c"
+        "${C5_MAIN}/debug_console.c"
         "${C5_MAIN}/attack_handshake.c"
         "${C5_MAIN}/xpt2046.c"
         "${C5_MAIN}/lvgl_memory.c"
@@ -30,7 +32,7 @@ idf_component_register(
     INCLUDE_DIRS
         "${C5_MAIN}"
         "."
-    REQUIRES mbedtls
+    REQUIRES esp_driver_usb_serial_jtag mbedtls
         esp_mm heap driver esp_event console bt esp_adc esp-tls esp_http_server esp_wifi
         board_hal esp_lcd_st77922 esp_lcd esp_timer freertos log nvs_flash fatfs
         sdmmc lvgl led_strip

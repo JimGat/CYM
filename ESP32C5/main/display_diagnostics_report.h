@@ -7,6 +7,10 @@ static void cym_display_diag_report(void)
 {
     static uint64_t last_ms;
     static cym_display_diag last[2];
+    static uint32_t generation;
+    uint32_t current=cym_debug_generation();
+    if(current!=generation){generation=current;last_ms=(uint64_t)esp_timer_get_time()/1000;memcpy(last,s_display_diag,sizeof(last));return;}
+    if(!cym_debug_enabled())return;
     uint64_t now=(uint64_t)esp_timer_get_time()/1000;
     /* First window starts at boot, matching all early transport counters. */
     if(now-last_ms<5000)return;

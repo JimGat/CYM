@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -707,7 +708,7 @@ int main(int argc, char *argv[])
 
     if (argc != 3)
     {
-        printf("Usage: %s <musfile> <midfile>\n", argv[0]);
+        CYM_GAME_DEBUG_PRINTF("Usage: %s <musfile> <midfile>\n", argv[0]);
         exit(-1);
     }
 

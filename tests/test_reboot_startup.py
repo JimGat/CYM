@@ -9,7 +9,7 @@ class StartupIsolation(unittest.TestCase):
   self.assertLess(app.index('nvs_flash_init()'),branch)
   for call in ('obs_store_init(','ot_radio_init(','esp_timer_start_periodic(s_survey_flush_tmr','init_gps_uart(','wifi_cli_init() : nvs_ret','nvs_settings_load(','gw_init(','cham_init(','xQueueCreate(','honeypair_init(','blueduck_init(','wp_init(','show_splash_screen(','wifi_attacks_init_portal_html_buffer(','sd_cache_init('):
    self.assertLess(branch,app.index(call),call)
-  self.assertIn('{game_isolated_main();return;}',app)
+  self.assertIn('{(void)cym_debug_console_start();game_isolated_main();return;}',app)
  def test_allowlist_suppresses_normal_timers_workers_and_radios(self):
   s=(ROOT/'ESP32C5/main/main.c').read_text();f=s[s.index('static void game_isolated_main(void)\n{'):s.index('void app_main(void)\n{')]
   for forbidden in ('wifi_cli_init(','nvs_settings_load(','cym_timekeeper_init(','obs_store_init(','ot_radio_init(','gps_task','shot_save','gw_init(','cham_init(','honeypair_init(','blueduck_init(','wp_init(','show_splash_screen(','screen_idle_timer','sd_cache_init(','load_whitelist','sd_lazy_mount_task','survey_flush','xTaskCreate','nimble','esp_wifi_'):

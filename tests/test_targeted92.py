@@ -63,6 +63,9 @@ assert(d.work_window[0].count==2@@d.work_window[0].units==4821@@d.work_window[0]
 #include <inttypes.h>
 #include <stdarg.h>
 static cym_ui_diag s_ui_diag;static uint64_t now_us;static unsigned lines;
+static bool cym_debug_enabled(void){return true;}
+static uint32_t cym_debug_generation(void){return 0;}
+static void cym_ui_diag_transition(void){}
 #define TAG "test"
 static uint64_t esp_timer_get_time(void){return now_us;}
 static void log_line(const char*tag,const char*fmt,...){(void)tag;char b[1000];va_list ap;va_start(ap,fmt);vsnprintf(b,sizeof(b),fmt,ap);va_end(ap);assert(!strstr(b,"(null)"));lines++;}

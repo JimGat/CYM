@@ -101,8 +101,8 @@
     {
       "path": "engine/d_iwad.c",
       "upstream_sha256": "51f10ee432eeee0bc8c5e5dbfe23c41639acdd1f93191ddb4d8c0b1b8e017c17",
-      "source_sha256": "51f10ee432eeee0bc8c5e5dbfe23c41639acdd1f93191ddb4d8c0b1b8e017c17",
-      "modified": false
+      "source_sha256": "6562ff181fa305c37ece1e4f4d8fa6af4ffb113418cfdd473dd4a600d2c777cf",
+      "modified": true
     },
     {
       "path": "engine/d_iwad.h",
@@ -113,8 +113,8 @@
     {
       "path": "engine/d_loop.c",
       "upstream_sha256": "a7fd974a73d08e887accefd84336524d47e3962e9717f8fc73815dbe48de5b5c",
-      "source_sha256": "a7fd974a73d08e887accefd84336524d47e3962e9717f8fc73815dbe48de5b5c",
-      "modified": false
+      "source_sha256": "1a9705a7e8b236abf71ec4321d254000cd5acd8e7c29f6951278e59e4172f92b",
+      "modified": true
     },
     {
       "path": "engine/d_loop.h",
@@ -125,7 +125,7 @@
     {
       "path": "engine/d_main.c",
       "upstream_sha256": "6f3333949bc72b2182737e3f9d13c4a800b530aaf997be7860a7a69bd8344ece",
-      "source_sha256": "00cb809a354de2e85005012d615af4305a767bc4f7b46cbc920037d88f60c0b7",
+      "source_sha256": "f35692de95ac1e3529602057f877cff51186056cb1e79ddd93f24484f3ae3738",
       "modified": true
     },
     {
@@ -149,8 +149,8 @@
     {
       "path": "engine/d_net.c",
       "upstream_sha256": "7bec37670e170f64e58661f10d1ee49df4ba451e42f65659dabd4eee8a790648",
-      "source_sha256": "7bec37670e170f64e58661f10d1ee49df4ba451e42f65659dabd4eee8a790648",
-      "modified": false
+      "source_sha256": "26130982f9dc50501a8d7bd356bcd913b626095cfe4c72ab26faea9b2b77ff28",
+      "modified": true
     },
     {
       "path": "engine/d_player.h",
@@ -227,8 +227,8 @@
     {
       "path": "engine/doomgeneric.c",
       "upstream_sha256": "9778d7dde7a56727036af873da4878030adbee95278918d3e53859e7018f4109",
-      "source_sha256": "9778d7dde7a56727036af873da4878030adbee95278918d3e53859e7018f4109",
-      "modified": false
+      "source_sha256": "76c3120aea9f1c8304bf396c8136ac4e386a547ea6143a5f48a71a16881e37ae",
+      "modified": true
     },
     {
       "path": "engine/doomgeneric.h",
@@ -359,8 +359,8 @@
     {
       "path": "engine/i_cdmus.c",
       "upstream_sha256": "6573cbb850e268671c21f9278fd0f3a5bb3c4bd31801e2231c649a334145902a",
-      "source_sha256": "6573cbb850e268671c21f9278fd0f3a5bb3c4bd31801e2231c649a334145902a",
-      "modified": false
+      "source_sha256": "826f8c0c9a7bb64bacd71f0cf7f11fb7f3861d21854779bd895cb8c99b611859",
+      "modified": true
     },
     {
       "path": "engine/i_cdmus.h",
@@ -371,8 +371,8 @@
     {
       "path": "engine/i_endoom.c",
       "upstream_sha256": "4fd3d8b7b8959512b6742cb922b3a637f137ab64dd00c1811f146a18db80b590",
-      "source_sha256": "4fd3d8b7b8959512b6742cb922b3a637f137ab64dd00c1811f146a18db80b590",
-      "modified": false
+      "source_sha256": "6e765b10d8171d695334c378d04ad7de586ff0a230ef6b087d2ed0429e906232",
+      "modified": true
     },
     {
       "path": "engine/i_endoom.h",
@@ -389,8 +389,8 @@
     {
       "path": "engine/i_joystick.c",
       "upstream_sha256": "cbdbb8f1fb9c29693dc476a0dd460f8c28ffd81c91e9a78cb234675b50f19916",
-      "source_sha256": "cbdbb8f1fb9c29693dc476a0dd460f8c28ffd81c91e9a78cb234675b50f19916",
-      "modified": false
+      "source_sha256": "caf28435df56c03e3c468d3b503e528d641fc18b490fa98a4e8ff189ce3ff1ca",
+      "modified": true
     },
     {
       "path": "engine/i_joystick.h",
@@ -401,8 +401,8 @@
     {
       "path": "engine/i_scale.c",
       "upstream_sha256": "ebc6b3252e05871208b7c015dbeab9f357e5a06990ec5f4cb90b00f3feee03a6",
-      "source_sha256": "ebc6b3252e05871208b7c015dbeab9f357e5a06990ec5f4cb90b00f3feee03a6",
-      "modified": false
+      "source_sha256": "72fcc8333b0c42e360cf556601f373045fd30a4f49f8d8fb77d1fb80eae1ab6c",
+      "modified": true
     },
     {
       "path": "engine/i_scale.h",
@@ -431,7 +431,7 @@
     {
       "path": "engine/i_system.c",
       "upstream_sha256": "5d709cb3a7cdac272cda9f247098b2189ef2ec0e94a2d313acf7484ca7e1fc78",
-      "source_sha256": "232d3663221513617c063d64b30f929f311af732fd6da453a134f25cec3c2ca8",
+      "source_sha256": "4dd3e3000409453c2e7deca6c3c3982f49b5c5d8baf3a139860f22cc3978efe7",
       "modified": true
     },
     {
@@ -455,8 +455,8 @@
     {
       "path": "engine/i_video.c",
       "upstream_sha256": "e3fc0b4a188371df343f20619273e5f255ba7f7936a7aea8dc77419a06181210",
-      "source_sha256": "e3fc0b4a188371df343f20619273e5f255ba7f7936a7aea8dc77419a06181210",
-      "modified": false
+      "source_sha256": "427f756e66ca2ff035ae2c2c596031341c924d02de45c6aaba78050e696642a8",
+      "modified": true
     },
     {
       "path": "engine/i_video.h",
@@ -479,8 +479,8 @@
     {
       "path": "engine/m_argv.c",
       "upstream_sha256": "c30dff27cb3e1b6ca5ab99ed38b7be9f6a68b7c7822ddbf1789e8d281efe0938",
-      "source_sha256": "c30dff27cb3e1b6ca5ab99ed38b7be9f6a68b7c7822ddbf1789e8d281efe0938",
-      "modified": false
+      "source_sha256": "2d7ecf0ee00f4dd1d7b3732a8efc78bba8d20f055ed8b91db7a2ce47d1ec4af3",
+      "modified": true
     },
     {
       "path": "engine/m_argv.h",
@@ -515,8 +515,8 @@
     {
       "path": "engine/m_config.c",
       "upstream_sha256": "167270cedda43ff421486b60dfded4f3b9f6079c3446315d61ded87e2eb59f22",
-      "source_sha256": "167270cedda43ff421486b60dfded4f3b9f6079c3446315d61ded87e2eb59f22",
-      "modified": false
+      "source_sha256": "438205485920254dd0868f3085c40e6f651458369f2347024a22b482de20e552",
+      "modified": true
     },
     {
       "path": "engine/m_config.h",
@@ -599,8 +599,8 @@
     {
       "path": "engine/mus2mid.c",
       "upstream_sha256": "d8a9222af77d13b53f9bf68fb3456a7adaecfe8a541ac3dcc0f4d971d176f290",
-      "source_sha256": "d8a9222af77d13b53f9bf68fb3456a7adaecfe8a541ac3dcc0f4d971d176f290",
-      "modified": false
+      "source_sha256": "3cd704db1010ace3d37825e08c937454774b326922c0f4db614237b7410f3426",
+      "modified": true
     },
     {
       "path": "engine/mus2mid.h",
@@ -857,8 +857,8 @@
     {
       "path": "engine/r_data.c",
       "upstream_sha256": "ee4d55b9cb0888a8522f7b8378283ece7e8bab482e5a4dfae588d4cf17db858d",
-      "source_sha256": "ee4d55b9cb0888a8522f7b8378283ece7e8bab482e5a4dfae588d4cf17db858d",
-      "modified": false
+      "source_sha256": "166d950938329dfb2412fba2f68d4bd7be1b76678cbcf2ab8f251c0d4cc8e965",
+      "modified": true
     },
     {
       "path": "engine/r_data.h",
@@ -893,8 +893,8 @@
     {
       "path": "engine/r_main.c",
       "upstream_sha256": "aff2dd5a096cf8ed022ccda24f9f32a89d73af07e8324a1160d6c944cad0a27e",
-      "source_sha256": "aff2dd5a096cf8ed022ccda24f9f32a89d73af07e8324a1160d6c944cad0a27e",
-      "modified": false
+      "source_sha256": "108a1631279ecfaf19276b343b43600e67e26feae7d5802dae640c75565bc0f6",
+      "modified": true
     },
     {
       "path": "engine/r_main.h",
@@ -1019,8 +1019,8 @@
     {
       "path": "engine/statdump.c",
       "upstream_sha256": "79ab0c3af80f05e01df1f80f37d4e3902387f9a69acf50118e763d3a46302761",
-      "source_sha256": "79ab0c3af80f05e01df1f80f37d4e3902387f9a69acf50118e763d3a46302761",
-      "modified": false
+      "source_sha256": "70dbe9a9742f8b48d867855f9ec355b67bfcb94b6a328d603a332c9c2379d828",
+      "modified": true
     },
     {
       "path": "engine/statdump.h",
@@ -1091,8 +1091,8 @@
     {
       "path": "engine/w_main.c",
       "upstream_sha256": "09693a234cd7b110a3fd2d4d746b5242f6d121c882240b548c289209df5ad14d",
-      "source_sha256": "09693a234cd7b110a3fd2d4d746b5242f6d121c882240b548c289209df5ad14d",
-      "modified": false
+      "source_sha256": "5b5bf13ad1f39ac161b0593249ee735ae3161367b2e87b96941c233c158781cf",
+      "modified": true
     },
     {
       "path": "engine/w_main.h",
@@ -1109,8 +1109,8 @@
     {
       "path": "engine/w_wad.c",
       "upstream_sha256": "23886ea0e60d3cb75a1ceb826712e580d772a153ac910434feda0457702a1407",
-      "source_sha256": "23886ea0e60d3cb75a1ceb826712e580d772a153ac910434feda0457702a1407",
-      "modified": false
+      "source_sha256": "c1c31091a7d8e78e254580ed2a12dd4f42a90ae6a24c8d0ccf0ef418a3aea8a7",
+      "modified": true
     },
     {
       "path": "engine/w_wad.h",
@@ -1133,7 +1133,7 @@
     {
       "path": "engine/z_zone.c",
       "upstream_sha256": "42028126f78638347564e02abd005455a422b678669c38ba808109f9e385f0e1",
-      "source_sha256": "5aae5b1ab8f3a3c9498633d278f89887b8eac7ada11fe2e9bd11082e27cf8859",
+      "source_sha256": "4d8887cafcbaff665731e2c7cfc2a59abbbfdd429a0e3e65b3706ac19b441356",
       "modified": true
     },
     {

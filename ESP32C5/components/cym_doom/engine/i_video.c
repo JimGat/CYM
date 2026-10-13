@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 // Emacs style mode select   -*- C++ -*- 
 //-----------------------------------------------------------------------------
 //
@@ -420,7 +421,7 @@ int I_GetPaletteIndex (int r, int g, int b)
     int i;
     col_t color;
 
-    printf("I_GetPaletteIndex\n");
+    CYM_GAME_DEBUG_PRINTF("I_GetPaletteIndex\n");
 
     best = 0;
     best_diff = INT_MAX;

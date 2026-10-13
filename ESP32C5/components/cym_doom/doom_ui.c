@@ -1,3 +1,4 @@
+#include "debug_gate.h"
 /* Touch-only lab launcher. ALL LVGL calls occur on CYM's main LVGL owner.
  * Worker owns engine + SD validation only. The fixed mailbox drops frames
  * rather than blocking engine/display, and never lends a worker buffer to DMA.
@@ -66,7 +67,7 @@ static uint32_t last_frames,last_displayed,last_dropped,last_overwritten,last_ti
 enum { LOAD_STRUCTURE,LOAD_HASH,LOAD_INIT,LOAD_RUNNING };
 static uint32_t load_phase,hash_bytes,hash_total,boot_ms,cooperate_ms;
 static void cooperate(void){uint32_t now=(uint32_t)(esp_timer_get_time()/1000);if((uint32_t)(now-cooperate_ms)>=20){vTaskDelay(1);cooperate_ms=(uint32_t)(esp_timer_get_time()/1000);}}
-static void phase(uint32_t p,const char *marker){__atomic_store_n(&doom_metrics.io_phase,p==LOAD_INIT?DM_IO_INIT:p==LOAD_RUNNING?DM_IO_RUNNING:DM_IO_VALIDATION,__ATOMIC_RELAXED);__atomic_store_n(&load_phase,p,__ATOMIC_RELEASE);ESP_LOGI(TAG,"%s elapsed_ms=%lu",marker,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));}
+static void phase(uint32_t p,const char *marker){__atomic_store_n(&doom_metrics.io_phase,p==LOAD_INIT?DM_IO_INIT:p==LOAD_RUNNING?DM_IO_RUNNING:DM_IO_VALIDATION,__ATOMIC_RELAXED);__atomic_store_n(&load_phase,p,__ATOMIC_RELEASE);if(cym_debug_enabled())ESP_LOGI(TAG,"%s elapsed_ms=%lu",marker,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));}
 static doom_rect fit;
 #define ASSET_URL "https://github.com/JimGat/CYM-SD-Assets/tree/feature/doom-sd-assets/sdcard"
 #define ASSET_HELP "\n\nGet official Freedoom Phase 1 v0.13.0:\n" ASSET_URL "\n\nCopy the contents of sdcard/ to the FAT32 SD root. Required: doom/doom1.wad (runtime /sdcard/doom/doom1.wad). License and credits accompany the separate SD assets."
@@ -74,11 +75,11 @@ static char worker_status[768];
 _Static_assert(sizeof(worker_status) > sizeof(ASSET_HELP) + 128, "Asset instructions must not truncate");
 static bool quitting(void){return __atomic_load_n(&cancel,__ATOMIC_ACQUIRE);}
 static uint32_t validation_wait,validation_hold,validation_hold_us;
-static bool transport_take(void){uint32_t before=(uint32_t)esp_timer_get_time();bool ok=sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;validation_hold=(uint32_t)esp_timer_get_time();validation_wait=validation_hold-before;if(!ok)dm_io_record(DM_IO_VALIDATION,DM_IO_STAT,validation_wait,0,0,true);return ok;}
+static bool transport_take(void){uint32_t before=cym_debug_enabled()?(uint32_t)esp_timer_get_time():0;bool ok=sd_spi_mutex&&xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(2000))==pdTRUE;validation_hold=(uint32_t)esp_timer_get_time();validation_wait=validation_hold-before;if(!ok)dm_io_record(DM_IO_VALIDATION,DM_IO_STAT,validation_wait,0,0,true);return ok;}
 static void transport_give(void){validation_hold_us=(uint32_t)esp_timer_get_time()-validation_hold;xSemaphoreGive(sd_spi_mutex);}
 static void validation_observed(unsigned op,uint32_t bytes,bool failed){dm_io_record(DM_IO_VALIDATION,op,validation_wait,validation_hold_us,bytes,failed);}
 static bool bounded_read(void *ctx,uint64_t off,void *dst,size_t n){if(quitting()||off>INT32_MAX||!transport_take())return false;FILE *f=ctx;size_t got=0;bool ok=fseek(f,(long)off,SEEK_SET)==0&&(got=fread(dst,1,n,f))==n;transport_give();validation_observed(DM_IO_READ,(uint32_t)got,!ok);cooperate();return ok;}
-static void heap_marker(const char *phase){ESP_LOGI(TAG,"%s free_psram=%lu largest_psram=%lu free_internal=%lu",phase,(unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));}
+static void heap_marker(const char *phase){if(!cym_debug_enabled())return;ESP_LOGI(TAG,"%s free_psram=%lu largest_psram=%lu free_internal=%lu largest_internal=%lu",phase,(unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),(unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),(unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));}
 /* Known-content allowlist avoids accepting arbitrary hostile lump internals
  * into the legacy renderer. Hash in fixed chunks, one shared-bus lock per read.
  * No mount, directory creation, write, download or user-SD maintenance occurs.
@@ -86,14 +87,25 @@ static void heap_marker(const char *phase){ESP_LOGI(TAG,"%s free_psram=%lu large
 static bool validate_asset(void){FILE *f=NULL;uint64_t size=0;if(!transport_take()){snprintf(worker_status,sizeof(worker_status),"SD transport busy");return false;}struct stat st;if(stat(WAD_PATH,&st)==0&&st.st_size>0){size=(uint64_t)st.st_size;f=fopen(WAD_PATH,"rb");}transport_give();validation_observed(DM_IO_OPEN,0,!f);if(!f){snprintf(worker_status,sizeof(worker_status),"Missing WAD: /sdcard/doom/doom1.wad" ASSET_HELP);return false;}
  phase(LOAD_STRUCTURE,"STRUCTURE_BEGIN");
  doom_wad_result result=doom_wad_validate(bounded_read,f,size);
- ESP_LOGI(TAG,"STRUCTURE_END result=%d elapsed_ms=%lu",result,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));bool valid=result==DOOM_WAD_OK;psa_hash_operation_t hash=PSA_HASH_OPERATION_INIT;uint8_t digest[32],chunk[4096];size_t digest_n=0;
- if(valid){__atomic_store_n(&hash_total,(uint32_t)size,__ATOMIC_RELEASE);phase(LOAD_HASH,"HASH_BEGIN");uint32_t hash_start=(uint32_t)(esp_timer_get_time()/1000);valid=psa_crypto_init()==PSA_SUCCESS&&psa_hash_setup(&hash,PSA_ALG_SHA_256)==PSA_SUCCESS;for(uint64_t off=0;valid&&off<size;){size_t n=size-off<sizeof(chunk)?(size_t)(size-off):sizeof(chunk);valid=bounded_read(f,off,chunk,n)&&psa_hash_update(&hash,chunk,n)==PSA_SUCCESS;if(valid){off+=n;__atomic_store_n(&hash_bytes,(uint32_t)off,__ATOMIC_RELEASE);}cooperate();}if(valid)valid=psa_hash_finish(&hash,digest,sizeof(digest),&digest_n)==PSA_SUCCESS&&digest_n==32&&doom_wad_trusted_hash(digest);psa_hash_abort(&hash);ESP_LOGI(TAG,"HASH_END bytes=%lu total=%lu hash_ms=%lu trusted=%d",(unsigned long)__atomic_load_n(&hash_bytes,__ATOMIC_ACQUIRE),(unsigned long)size,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-hash_start),valid);}
+ if(cym_debug_enabled())ESP_LOGI(TAG,"STRUCTURE_END result=%d elapsed_ms=%lu",result,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-boot_ms));bool valid=result==DOOM_WAD_OK;psa_hash_operation_t hash=PSA_HASH_OPERATION_INIT;uint8_t digest[32],chunk[4096];size_t digest_n=0;
+ if(valid){__atomic_store_n(&hash_total,(uint32_t)size,__ATOMIC_RELEASE);phase(LOAD_HASH,"HASH_BEGIN");uint32_t hash_start=cym_debug_enabled()?(uint32_t)(esp_timer_get_time()/1000):0;valid=psa_crypto_init()==PSA_SUCCESS&&psa_hash_setup(&hash,PSA_ALG_SHA_256)==PSA_SUCCESS;for(uint64_t off=0;valid&&off<size;){size_t n=size-off<sizeof(chunk)?(size_t)(size-off):sizeof(chunk);valid=bounded_read(f,off,chunk,n)&&psa_hash_update(&hash,chunk,n)==PSA_SUCCESS;if(valid){off+=n;__atomic_store_n(&hash_bytes,(uint32_t)off,__ATOMIC_RELEASE);}cooperate();}if(valid)valid=psa_hash_finish(&hash,digest,sizeof(digest),&digest_n)==PSA_SUCCESS&&digest_n==32&&doom_wad_trusted_hash(digest);psa_hash_abort(&hash);if(cym_debug_enabled())ESP_LOGI(TAG,"HASH_END bytes=%lu total=%lu hash_ms=%lu trusted=%d",(unsigned long)__atomic_load_n(&hash_bytes,__ATOMIC_ACQUIRE),(unsigned long)size,(unsigned long)((uint32_t)(esp_timer_get_time()/1000)-hash_start),valid);}
  /* Never surrender file ownership on transport failure; cancellation remains
   * pending and UI stays intact until close succeeds and worker signals done. */
  while(!transport_take())vTaskDelay(pdMS_TO_TICKS(20));int close_rc=fclose(f);transport_give();validation_observed(DM_IO_CLOSE,0,close_rc!=0);if(!valid)snprintf(worker_status,sizeof(worker_status),"Invalid/unsupported WAD. Use official Freedoom 0.13.0 Phase 1." ASSET_HELP);return valid;
 }
 static void frame_ready(const uint8_t *pixels,void *unused){(void)unused;if(xSemaphoreTake(frame_lock,pdMS_TO_TICKS(5))==pdTRUE){memcpy(mailbox,pixels,320*200);for(unsigned i=0;i<256;i++)mailbox_palette[i]=doom_session_color565((uint8_t)i);if(__atomic_load_n(&frames,__ATOMIC_RELAXED)!=__atomic_load_n(&last_sequence,__ATOMIC_RELAXED))__atomic_fetch_add(&overwritten,1,__ATOMIC_RELAXED);__atomic_fetch_add(&frames,1,__ATOMIC_RELAXED);xSemaphoreGive(frame_lock);}else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);}
-static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{phase(LOAD_INIT,"INIT_BEGIN");doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){phase(LOAD_RUNNING,"INIT_END");__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());__atomic_store_n(&doom_metrics.io_phase,DM_IO_CLEANUP,__ATOMIC_RELAXED);while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
+static void worker_debug_memory(void)
+{
+ static uint32_t generation;static uint64_t last_ms;
+ uint32_t current=cym_debug_generation();
+ if(current!=generation){generation=current;last_ms=(uint64_t)esp_timer_get_time()/1000;return;}
+ if(!cym_debug_enabled())return;
+ uint64_t now=(uint64_t)esp_timer_get_time()/1000;
+ if(now-last_ms<5000)return;last_ms=now;
+ heap_marker("ENGINE_MEMORY");
+ ESP_LOGI(TAG,"ENGINE_STACK owner_hwm=%u",(unsigned)uxTaskGetStackHighWaterMark(NULL));
+}
+static void engine_worker(void *unused){(void)unused;heap_marker("WORKER_BEGIN");snprintf(worker_status,sizeof(worker_status),"Validating assets...");bool valid=validate_asset();if(valid&&!quitting()){doom_gate g={.supported=true,.idle=true,.sd_ready=true,.licensed=true,.assets_valid=true,.psram_free=heap_caps_get_free_size(MALLOC_CAP_SPIRAM),.psram_largest=heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)};if(!doom_gate_ready(g))snprintf(worker_status,sizeof(worker_status),"Not enough PSRAM: need 6 MiB contiguous + overhead.");else{phase(LOAD_INIT,"INIT_BEGIN");doom_session_set_frame(frame_ready,NULL);int rc=doom_session_start(WAD_PATH);if(!rc){phase(LOAD_RUNNING,"INIT_END");__atomic_store_n(&started,true,__ATOMIC_RELEASE);ESP_LOGI(TAG,"ENGINE_STARTED state_bytes=%lu",(unsigned long)doom_session_state_bytes());snprintf(worker_status,sizeof(worker_status),"Running - SFX only");while(!quitting()&&!rc){rc=doom_session_tick();worker_debug_memory();vTaskDelay(1);}}if(rc&&!quitting())snprintf(worker_status,sizeof(worker_status),"Engine fault: %.120s",doom_session_error());__atomic_store_n(&doom_metrics.io_phase,DM_IO_CLEANUP,__ATOMIC_RELAXED);while(doom_session_stop()!=0)vTaskDelay(pdMS_TO_TICKS(20));}}
 heap_marker("WORKER_CLEAN");ESP_LOGI(TAG,"ENGINE_JOIN_READY frames=%lu dropped=%lu owned=%lu",(unsigned long)frames,(unsigned long)dropped,(unsigned long)doom_session_owned());/* Last worker access is publishing done. No UI/buffer access after this store. */__atomic_store_n(&done,true,__ATOMIC_RELEASE);vTaskSuspend(NULL);for(;;)vTaskDelay(pdMS_TO_TICKS(1000));}
 /* Joining uses the FreeRTOS task lifecycle, not merely an arbitrary delay. UI
  * waits for done (all engine resources gone) then checks task deletion before
@@ -124,10 +136,10 @@ static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_
  }
  /* Main-owned snapshot isolates scaling from the engine mailbox mutex.
   * No worker/snapshot pointer is ever passed to DMA; surface stays main-owned. */
- if(new_frame){uint32_t before=(uint32_t)esp_timer_get_time();
+ if(new_frame){uint32_t before=cym_debug_enabled()?(uint32_t)esp_timer_get_time():0;
   for(int y=0;y<fit.h;y++){const uint8_t *row=snapshot+scale_y[y]*320;lv_color_t *dst=surface+y*fit.w;
    for(int x=0;x<fit.w;x++)dst[x]=frame_colors[row[scale_x[x]]];}
-  displayed++;scale_us+=(uint32_t)esp_timer_get_time()-before;lv_obj_invalidate(canvas);
+  displayed++;if(before&&cym_debug_enabled())scale_us+=(uint32_t)esp_timer_get_time()-before;lv_obj_invalidate(canvas);
  }
  if(status&&!quitting()&&!native_state.active&&!(native_buffer&&running)){
   char text[160];uint32_t elapsed=(now-boot_ms)/1000,p=__atomic_load_n(&load_phase,__ATOMIC_ACQUIRE);
@@ -142,7 +154,33 @@ static void update(lv_timer_t *t){(void)t;uint32_t now=(uint32_t)(esp_timer_get_
   }else snprintf(text,sizeof(text),"%s %s | %lus | Exit below",markers[(now/250)%4],p==LOAD_INIT?"Engine init":"Structure check",(unsigned long)elapsed);
   if(strcmp(lv_label_get_text(status),text)){lv_label_set_text(status,text);ui_updates++;}
  }
- if((uint32_t)(now-ui_last_log)>=5000){
+ static uint32_t debug_generation;
+ uint32_t debug_current=cym_debug_generation();
+ if(debug_current!=debug_generation){
+  debug_generation=debug_current;ui_last_log=now;
+  last_frames=__atomic_load_n(&frames,__ATOMIC_RELAXED);last_displayed=displayed;
+  last_overwritten=__atomic_load_n(&overwritten,__ATOMIC_RELAXED);last_dropped=__atomic_load_n(&dropped,__ATOMIC_RELAXED);
+  last_scale_us=scale_us;last_ticks=DM_GET(ticks);last_tick_us=DM_GET(tick_us);last_frame_us=DM_GET(frame_us);
+  last_sleep_us=DM_GET(sleep_us);last_sd_reads=DM_GET(sd_reads);last_sd_us=DM_GET(sd_us);
+  last_audio_writes=DM_GET(audio_writes);last_audio_us=DM_GET(audio_us);last_input_events=DM_GET(input_events);last_input_sum=DM_GET(input_age_sum);
+  last_ui_updates=ui_updates;last_panel_flushes=DM_GET(panel_flushes);last_panel_us=DM_GET(panel_us);
+  /* Relaxed per-field snapshots are observational, not ownership proof. */
+  for(unsigned i=0;i<DM_IO_PHASES;i++){
+   last_io[i].opens=DM_IO_GET(i,opens);
+   last_io[i].closes=DM_IO_GET(i,closes);
+   last_io[i].reads=DM_IO_GET(i,reads);
+   last_io[i].seeks=DM_IO_GET(i,seeks);
+   last_io[i].tells=DM_IO_GET(i,tells);
+   last_io[i].stats=DM_IO_GET(i,stats);
+   last_io[i].bytes=DM_IO_GET(i,bytes);
+   last_io[i].failures=DM_IO_GET(i,failures);
+   last_io[i].admission_us=DM_IO_GET(i,admission_us);
+   last_io[i].hold_us=DM_IO_GET(i,hold_us);
+   last_io[i].admission_max_us=DM_IO_GET(i,admission_max_us);
+   last_io[i].hold_max_us=DM_IO_GET(i,hold_max_us);
+  }
+ }
+ if(cym_debug_enabled()&&(uint32_t)(now-ui_last_log)>=5000){
   doom_io_metrics_t current_io[DM_IO_PHASES];
   for(unsigned i=0;i<DM_IO_PHASES;i++){
    current_io[i].opens=DM_IO_GET(i,opens);
@@ -252,16 +290,19 @@ void doom_ui_native_step(void)
    xSemaphoreGive(frame_lock);
   }
   if(native_pending){
-   uint32_t before=(uint32_t)esp_timer_get_time();
+   uint32_t before=cym_debug_enabled()?(uint32_t)esp_timer_get_time():0;
    if(doom_native_viewport(&native_state,snapshot,snapshot_palette,native_send,native_poll,NULL,now)){displayed++;native_pending=false;}
-   scale_us+=(uint32_t)esp_timer_get_time()-before;
+   if(before&&cym_debug_enabled())scale_us+=(uint32_t)esp_timer_get_time()-before;
    /* Cadence is from actual RETURN after final completion, not start time.
     * Failure also backs off; stale mailbox publications are safely replaced. */
    native_state.last_finish_ms=(uint32_t)(esp_timer_get_time()/1000);
   }
  }
  now=(uint32_t)(esp_timer_get_time()/1000);
- if((uint32_t)(now-native_report_ms)>=5000){
+ static uint32_t native_debug_generation;
+ uint32_t native_debug_current=cym_debug_generation();
+ if(native_debug_current!=native_debug_generation){native_debug_generation=native_debug_current;native_report_ms=now;native_report_completed=native_state.completed;native_report_failed=native_state.failed;}
+ if(cym_debug_enabled()&&(uint32_t)(now-native_report_ms)>=5000){
   ESP_LOGI(TAG,"NATIVE_PRESENT interval_ms=%lu completed_viewports=%lu failed_viewports=%lu completed_total=%lu owner_priority=%u block_ticks=%u",
    (unsigned long)(now-native_report_ms),(unsigned long)(native_state.completed-native_report_completed),
    (unsigned long)(native_state.failed-native_report_failed),(unsigned long)native_state.completed,

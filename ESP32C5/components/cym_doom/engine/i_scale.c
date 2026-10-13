@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -374,12 +375,12 @@ static void I_InitStretchTables(byte *palette)
     // mix 80%  =  stretch_tables[0] used backwards
     // mix 100% =  just write line 2
 
-    printf("I_InitStretchTables: Generating lookup tables..");
+    CYM_GAME_DEBUG_PRINTF("I_InitStretchTables: Generating lookup tables..");
     fflush(stdout);
     stretch_tables[0] = GenerateStretchTable(palette, 20);
-    printf(".."); fflush(stdout);
+    CYM_GAME_DEBUG_PRINTF(".."); fflush(stdout);
     stretch_tables[1] = GenerateStretchTable(palette, 40);
-    puts("");
+    CYM_GAME_DEBUG_PUTS("");
 }
 
 // Create 50%/50% table for 800x600 squash mode
@@ -391,10 +392,10 @@ static void I_InitSquashTable(byte *palette)
         return;
     }
 
-    printf("I_InitSquashTable: Generating lookup table..");
+    CYM_GAME_DEBUG_PRINTF("I_InitSquashTable: Generating lookup table..");
     fflush(stdout);
     half_stretch_table = GenerateStretchTable(palette, 50);
-    puts("");
+    CYM_GAME_DEBUG_PUTS("");
 }
 
 // Destroy the scaling lookup tables. This should only ever be called
@@ -408,7 +409,7 @@ void I_ResetScaleTables(byte *palette)
         Z_Free(stretch_tables[0]);
         Z_Free(stretch_tables[1]);
 
-        printf("I_ResetScaleTables: Regenerating lookup tables..\n");
+        CYM_GAME_DEBUG_PRINTF("I_ResetScaleTables: Regenerating lookup tables..\n");
         stretch_tables[0] = GenerateStretchTable(palette, 20);
         stretch_tables[1] = GenerateStretchTable(palette, 40);
     }
@@ -417,7 +418,7 @@ void I_ResetScaleTables(byte *palette)
     {
         Z_Free(half_stretch_table);
 
-        printf("I_ResetScaleTables: Regenerating lookup table..\n");
+        CYM_GAME_DEBUG_PRINTF("I_ResetScaleTables: Regenerating lookup table..\n");
 
         half_stretch_table = GenerateStretchTable(palette, 50);
     }

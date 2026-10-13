@@ -105,6 +105,8 @@ doom_metrics_t doom_metrics;
 static uint32_t clock_us;static bool busy,held;static void *sd_spi_mutex=(void*)1;
 static unsigned file_n;static FILE *files[16];static char wad_path[]="fixture";
 static uint32_t metric_us(void){return clock_us;}
+static uint32_t metric_delta(uint32_t start,uint32_t end){return end-start;}
+static uint32_t metric_elapsed(uint32_t start){return metric_delta(start,metric_us());}
 static void check_stop(void){}
 static void doom_engine_fail(const char *s){(void)s;abort();}
 static int xSemaphoreTake(void*p,int ticks){assert(p==sd_spi_mutex&&ticks==2000&&!held);clock_us+=30;if(busy)return 0;held=true;return 1;}
@@ -133,6 +135,8 @@ int main(void){__atomic_store_n(&doom_metrics.io_phase,DM_IO_INIT,__ATOMIC_RELAX
   code=PREFIX+r"""
 #include <stdarg.h>
 static uint64_t now;static unsigned logs;
+static bool cym_debug_enabled(void){return true;}
+static uint32_t cym_debug_generation(void){return 0;}
 static uint64_t esp_timer_get_time(void){return now;}
 static void host_log(const char*t,const char*f,...){(void)t;logs++;va_list ap;va_start(ap,f);vprintf(f,ap);puts("");va_end(ap);}
 #define ESP_LOGI host_log

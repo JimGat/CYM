@@ -1,6 +1,227 @@
+--- a/engine/d_iwad.c
++++ b/engine/d_iwad.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 2005-2014 Simon Howard
+ //
+@@ -429,7 +430,7 @@
+         filename = M_StringJoin(dir, DIR_SEPARATOR_S, iwadname, NULL);
+     }
+ 
+-    printf("Trying IWAD file:%s\n", filename);
++    CYM_GAME_DEBUG_PRINTF("Trying IWAD file:%s\n", filename);
+ 
+     if (M_FileExists(filename))
+     {
+@@ -735,7 +736,7 @@
+     {
+         // Search through the list and look for an IWAD
+ 
+-        printf("-iwad not specified, trying a few iwad names\n");
++        CYM_GAME_DEBUG_PRINTF("-iwad not specified, trying a few iwad names\n");
+ 
+         result = NULL;
+ 
+--- a/engine/d_loop.c
++++ b/engine/d_loop.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -260,7 +261,7 @@
+ 
+     // disconnected from server
+ 
+-    printf("Disconnected from server.\n");
++    CYM_GAME_DEBUG_PRINTF("Disconnected from server.\n");
+ }
+ 
+ //
+@@ -538,7 +539,7 @@
+                     NET_AddrToString(addr));
+         }
+ 
+-        printf("D_InitNetGame: Connected to %s\n", NET_AddrToString(addr));
++        CYM_GAME_DEBUG_PRINTF("D_InitNetGame: Connected to %s\n", NET_AddrToString(addr));
+ 
+         // Wait for launch message received from server.
+ 
 --- a/engine/d_main.c
 +++ b/engine/d_main.c
-@@ -1563,7 +1563,7 @@
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -421,7 +422,7 @@
+ //
+ void D_DoomLoop (void)
+ {
+-    printf("Entering Doom Loop\n");
++    CYM_GAME_DEBUG_PRINTF("Entering Doom Loop\n");
+     if (bfgedition &&
+         (demorecording || (gameaction == ga_playdemo) || netgame))
+     {
+@@ -708,7 +709,7 @@
+ 
+     for (i = 0; i < arrlen(packs); ++i)
+     {
+-        printf("\t%s\n", packs[i].name);
++        CYM_GAME_DEBUG_PRINTF("\t%s\n", packs[i].name);
+     }
+ 
+     I_Error("Unknown mission pack name: %s", pack_name);
+@@ -868,7 +869,7 @@
+ {
+     wad_file_t *handle;
+ 
+-    printf(" adding %s\n", filename);
++    CYM_GAME_DEBUG_PRINTF(" adding %s\n", filename);
+     handle = W_AddFile(filename);
+ 
+     return handle != NULL;
+@@ -911,14 +912,14 @@
+ 
+         if (deh_s != copyright_banners[i])
+         {
+-            printf("%s", deh_s);
++            CYM_GAME_DEBUG_PRINTF("%s", deh_s);
+ 
+             // Make sure the modified banner always ends in a newline character.
+             // If it doesn't, add a newline.  This fixes av.wad.
+ 
+             if (deh_s[strlen(deh_s) - 1] != '\n')
+             {
+-                printf("\n");
++                CYM_GAME_DEBUG_PRINTF("\n");
+             }
+         }
+     }
+@@ -976,7 +977,7 @@
+ 
+             for (i=0; gameversions[i].description != NULL; ++i)
+             {
+-                printf("\t%s (%s)\n", gameversions[i].cmdline,
++                CYM_GAME_DEBUG_PRINTF("\t%s (%s)\n", gameversions[i].cmdline,
+                         gameversions[i].description);
+             }
+             
+@@ -1054,7 +1055,7 @@
+     {
+         if (gameversions[i].version == gameversion)
+         {
+-            printf("Emulating the behavior of the "
++            CYM_GAME_DEBUG_PRINTF("Emulating the behavior of the "
+                    "'%s' executable.\n", gameversions[i].description);
+             break;
+         }
+@@ -1161,7 +1162,7 @@
+ //
+ void D_DoomMain (void)
+ {
+-    printf("D_DoomMain()\n");
++    CYM_GAME_DEBUG_PRINTF("D_DoomMain()\n");
+     int p;
+     char file[256];
+     char demolumpname[9];
+@@ -1175,7 +1176,7 @@
+ 
+     I_PrintBanner(PACKAGE_STRING);
+ 
+-    DEH_printf("Z_Init: Init zone memory allocation daemon. \n");
++    CYM_GAME_DEBUG_DEH_PRINTF("Z_Init: Init zone memory allocation daemon. \n");
+     Z_Init ();
+ 
+ #ifdef FEATURE_MULTIPLAYER
+@@ -1188,7 +1189,7 @@
+ 
+     if (M_CheckParm("-dedicated") > 0)
+     {
+-        printf("Dedicated server mode.\n");
++        CYM_GAME_DEBUG_PRINTF("Dedicated server mode.\n");
+         NET_DedicatedServer();
+ 
+         // Never returns
+@@ -1294,7 +1295,7 @@
+ 	deathmatch = 2;
+ 
+     if (devparm)
+-	DEH_printf(D_DEVSTR);
++	CYM_GAME_DEBUG_DEH_PRINTF(D_DEVSTR);
+     
+     // find which dir to use for config files
+ 
+@@ -1310,7 +1311,7 @@
+ 
+     if (M_ParmExists("-cdrom"))
+     {
+-        printf(D_CDROM);
++        CYM_GAME_DEBUG_PRINTF(D_CDROM);
+ 
+         M_SetConfigDir("c:\\doomdata\\");
+     }
+@@ -1342,7 +1343,7 @@
+ 	    scale = 10;
+ 	if (scale > 400)
+ 	    scale = 400;
+-        DEH_printf("turbo scale: %i%%\n", scale);
++        CYM_GAME_DEBUG_DEH_PRINTF("turbo scale: %i%%\n", scale);
+ 	forwardmove[0] = forwardmove[0]*scale/100;
+ 	forwardmove[1] = forwardmove[1]*scale/100;
+ 	sidemove[0] = sidemove[0]*scale/100;
+@@ -1350,11 +1351,11 @@
+     }
+     
+     // init subsystems
+-    DEH_printf("V_Init: allocate screens.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("V_Init: allocate screens.\n");
+     V_Init ();
+ 
+     // Load configuration files before initialising other subsystems.
+-    DEH_printf("M_LoadDefaults: Load system defaults.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("M_LoadDefaults: Load system defaults.\n");
+     M_SetConfigFilenames("default.cfg", PROGRAM_PREFIX "doom.cfg");
+     D_BindVariables();
+     M_LoadDefaults();
+@@ -1375,7 +1376,7 @@
+ 
+     modifiedgame = false;
+ 
+-    DEH_printf("W_Init: Init WADfiles.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("W_Init: Init WADfiles.\n");
+     D_AddFile(iwadfile);
+ #if ORIGCODE
+     numiwadlumps = numlumps;
+@@ -1413,7 +1414,7 @@
+ 
+     if (W_CheckNumForName("dmenupic") >= 0)
+     {
+-        printf("BFG Edition: Using workarounds as needed.\n");
++        CYM_GAME_DEBUG_PRINTF("BFG Edition: Using workarounds as needed.\n");
+         bfgedition = true;
+ 
+         // BFG Edition changes the names of the secret levels to
+@@ -1507,7 +1508,7 @@
+             M_StringCopy(demolumpname, myargv[p + 1], sizeof(demolumpname));
+         }
+ 
+-        printf("Playing demo %s.\n", file);
++        CYM_GAME_DEBUG_PRINTF("Playing demo %s.\n", file);
+     }
+ 
+     I_AtExit((atexit_func_t) G_CheckDemoStatus, true);
+@@ -1538,7 +1539,7 @@
+             }
+         }
+ 
+-        printf("  loaded %i DEHACKED lumps from PWAD files.\n", loaded);
++        CYM_GAME_DEBUG_PRINTF("  loaded %i DEHACKED lumps from PWAD files.\n", loaded);
+     }
+ #endif
+ 
+@@ -1563,7 +1564,7 @@
      {
  	// These are the lumps that will be checked in IWAD,
  	// if any one is not present, execution will be aborted.
@@ -9,6 +230,144 @@
  	{
  	    "e2m1","e2m2","e2m3","e2m4","e2m5","e2m6","e2m7","e2m8","e2m9",
  	    "e3m1","e3m3","e3m3","e3m4","e3m5","e3m6","e3m7","e3m8","e3m9",
+@@ -1607,7 +1608,7 @@
+         I_PrintDivider();
+     }
+ 
+-    DEH_printf("I_Init: Setting up machine state.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("I_Init: Setting up machine state.\n");
+     I_CheckIsScreensaver();
+     I_InitTimer();
+     I_InitJoystick();
+@@ -1615,7 +1616,7 @@
+     I_InitMusic();
+ 
+ #ifdef FEATURE_MULTIPLAYER
+-    printf ("NET_Init: Init network subsystem.\n");
++    CYM_GAME_DEBUG_PRINTF ("NET_Init: Init network subsystem.\n");
+     NET_Init ();
+ #endif
+ 
+@@ -1757,27 +1758,27 @@
+         startloadgame = -1;
+     }
+ 
+-    DEH_printf("M_Init: Init miscellaneous info.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("M_Init: Init miscellaneous info.\n");
+     M_Init ();
+ 
+-    DEH_printf("R_Init: Init DOOM refresh daemon - ");
++    CYM_GAME_DEBUG_DEH_PRINTF("R_Init: Init DOOM refresh daemon - ");
+     R_Init ();
+ 
+-    DEH_printf("\nP_Init: Init Playloop state.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("\nP_Init: Init Playloop state.\n");
+     P_Init ();
+ 
+-    DEH_printf("S_Init: Setting up sound.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("S_Init: Setting up sound.\n");
+     S_Init (sfxVolume * 8, musicVolume * 8);
+ 
+-    DEH_printf("D_CheckNetGame: Checking network game status.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("D_CheckNetGame: Checking network game status.\n");
+     D_CheckNetGame ();
+ 
+     PrintGameVersion();
+ 
+-    DEH_printf("HU_Init: Setting up heads up display.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("HU_Init: Setting up heads up display.\n");
+     HU_Init ();
+ 
+-    DEH_printf("ST_Init: Init status bar.\n");
++    CYM_GAME_DEBUG_DEH_PRINTF("ST_Init: Init status bar.\n");
+     ST_Init ();
+ 
+     // If Doom II without a MAP01 lump, this is a store demo.
+@@ -1790,7 +1791,7 @@
+     if (M_CheckParmWithArgs("-statdump", 1))
+     {
+         I_AtExit(StatDump, true);
+-        DEH_printf("External statistics registered.\n");
++        CYM_GAME_DEBUG_DEH_PRINTF("External statistics registered.\n");
+     }
+ 
+     //!
+@@ -1814,7 +1815,7 @@
+     {
+ 		singledemo = true;              // quit after one demo
+ 		G_DeferedPlayDemo (demolumpname);
+-        printf("Init MainLoop playdemo\n");
++        CYM_GAME_DEBUG_PRINTF("Init MainLoop playdemo\n");
+ 		D_DoomLoop ();
+         return;
+     }
+@@ -1823,7 +1824,7 @@
+     if (p)
+     {
+ 		G_TimeDemo (demolumpname);
+-        printf("Init MainLoop timedemo\n");
++        CYM_GAME_DEBUG_PRINTF("Init MainLoop timedemo\n");
+ 		D_DoomLoop ();
+         return;
+     }
+@@ -1841,7 +1842,7 @@
+ 		else
+ 			D_StartTitle ();                // start up intro loop
+     }
+-    printf("Init MainLoop\n");
++    CYM_GAME_DEBUG_PRINTF("Init MainLoop\n");
+     D_DoomLoop ();
+ }
+ 
+--- a/engine/d_net.c
++++ b/engine/d_net.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -123,7 +124,7 @@
+ 
+     if (lowres_turn)
+     {
+-        printf("NOTE: Turning resolution is reduced; this is probably "
++        CYM_GAME_DEBUG_PRINTF("NOTE: Turning resolution is reduced; this is probably "
+                "because there is a client recording a Vanilla demo.\n");
+     }
+ 
+@@ -252,10 +253,10 @@
+     D_StartNetGame(&settings, NULL);
+     LoadGameSettings(&settings);
+ 
+-    DEH_printf("startskill %i  deathmatch: %i  startmap: %i  startepisode: %i\n",
++    CYM_GAME_DEBUG_DEH_PRINTF("startskill %i  deathmatch: %i  startmap: %i  startepisode: %i\n",
+                startskill, deathmatch, startmap, startepisode);
+ 
+-    DEH_printf("player %i of %i (%i nodes)\n",
++    CYM_GAME_DEBUG_DEH_PRINTF("player %i of %i (%i nodes)\n",
+                consoleplayer+1, settings.num_players, settings.num_players);
+ 
+     // Show players here; the server might have specified a time limit
+@@ -266,15 +267,15 @@
+ 
+         if (timelimit == 20 && M_CheckParm("-avg"))
+         {
+-            DEH_printf("Austin Virtual Gaming: Levels will end "
++            CYM_GAME_DEBUG_DEH_PRINTF("Austin Virtual Gaming: Levels will end "
+                            "after 20 minutes\n");
+         }
+         else
+         {
+-            DEH_printf("Levels will end after %d minute", timelimit);
++            CYM_GAME_DEBUG_DEH_PRINTF("Levels will end after %d minute", timelimit);
+             if (timelimit > 1)
+-                printf("s");
+-            printf(".\n");
++                CYM_GAME_DEBUG_PRINTF("s");
++            CYM_GAME_DEBUG_PRINTF(".\n");
+         }
+     }
+ }
 --- a/engine/doomfeatures.h
 +++ b/engine/doomfeatures.h
 @@ -32,7 +32,7 @@
@@ -20,6 +379,63 @@
  
  #endif /* #ifndef DOOM_FEATURES_H */
  
+--- a/engine/doomgeneric.c
++++ b/engine/doomgeneric.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ #ifdef ARDUINO
+ #include <esp_heap_caps.h>
+ #endif
+@@ -25,7 +26,7 @@
+ 
+ void doomgeneric_Create(int argc, char **argv)
+ {
+-	printf("DG_Create()\n");
++	CYM_GAME_DEBUG_PRINTF("DG_Create()\n");
+ 	// save arguments
+     myargc = argc;
+     myargv = argv;
+@@ -82,7 +83,7 @@
+ #define DG_STEP(name) \
+ 	do { \
+ 		size_t now = DG_PSRAM_FREE(); \
+-		printf("[shutdown] %-18s freed %8d bytes\n", name, (int)(now - dg_mark)); \
++		CYM_GAME_DEBUG_PRINTF("[shutdown] %-18s freed %8d bytes\n", name, (int)(now - dg_mark)); \
+ 		dg_mark = now; \
+ 	} while (0)
+ #else
+--- a/engine/i_cdmus.c
++++ b/engine/i_cdmus.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 1993-2008 Raven Software
+@@ -94,7 +95,7 @@
+ #ifdef ORIGCODE
+     if (cd_name != NULL)
+     {
+-        printf("I_CDMusInit: Using CD-ROM drive: %s\n", cd_name);
++        CYM_GAME_DEBUG_PRINTF("I_CDMusInit: Using CD-ROM drive: %s\n", cd_name);
+     }
+ 
+     if (startup_error != NULL)
+--- a/engine/i_endoom.c
++++ b/engine/i_endoom.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 2005-2014 Simon Howard
+ //
+@@ -90,7 +91,7 @@
+     // move cursor to bottom
+     // there's a direct call for moving cursor somewhere but this is simpler to write
+     for (y = 0; y < ENDOOM_H; y++) {
+-        puts("\n");
++        CYM_GAME_DEBUG_PUTS("\n");
+     }
+ 
+     // allegro exit should have been run already and so we should be in text mode again
 --- a/engine/i_input.c
 +++ b/engine/i_input.c
 @@ -247,7 +247,7 @@
@@ -31,6 +447,76 @@
          {
              key = shiftxform[key];
          }
+--- a/engine/i_joystick.c
++++ b/engine/i_joystick.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 2005-2014 Simon Howard
+ //
+@@ -161,7 +162,7 @@
+ 
+     // Initialized okay!
+ 
+-    printf("I_InitJoystick: %s\n", SDL_JoystickName(joystick_index));
++    CYM_GAME_DEBUG_PRINTF("I_InitJoystick: %s\n", SDL_JoystickName(joystick_index));
+ 
+     I_AtExit(I_ShutdownJoystick, true);
+ #endif
+--- a/engine/i_scale.c
++++ b/engine/i_scale.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -374,12 +375,12 @@
+     // mix 80%  =  stretch_tables[0] used backwards
+     // mix 100% =  just write line 2
+ 
+-    printf("I_InitStretchTables: Generating lookup tables..");
++    CYM_GAME_DEBUG_PRINTF("I_InitStretchTables: Generating lookup tables..");
+     fflush(stdout);
+     stretch_tables[0] = GenerateStretchTable(palette, 20);
+-    printf(".."); fflush(stdout);
++    CYM_GAME_DEBUG_PRINTF(".."); fflush(stdout);
+     stretch_tables[1] = GenerateStretchTable(palette, 40);
+-    puts("");
++    CYM_GAME_DEBUG_PUTS("");
+ }
+ 
+ // Create 50%/50% table for 800x600 squash mode
+@@ -391,10 +392,10 @@
+         return;
+     }
+ 
+-    printf("I_InitSquashTable: Generating lookup table..");
++    CYM_GAME_DEBUG_PRINTF("I_InitSquashTable: Generating lookup table..");
+     fflush(stdout);
+     half_stretch_table = GenerateStretchTable(palette, 50);
+-    puts("");
++    CYM_GAME_DEBUG_PUTS("");
+ }
+ 
+ // Destroy the scaling lookup tables. This should only ever be called
+@@ -408,7 +409,7 @@
+         Z_Free(stretch_tables[0]);
+         Z_Free(stretch_tables[1]);
+ 
+-        printf("I_ResetScaleTables: Regenerating lookup tables..\n");
++        CYM_GAME_DEBUG_PRINTF("I_ResetScaleTables: Regenerating lookup tables..\n");
+         stretch_tables[0] = GenerateStretchTable(palette, 20);
+         stretch_tables[1] = GenerateStretchTable(palette, 40);
+     }
+@@ -417,7 +418,7 @@
+     {
+         Z_Free(half_stretch_table);
+ 
+-        printf("I_ResetScaleTables: Regenerating lookup table..\n");
++        CYM_GAME_DEBUG_PRINTF("I_ResetScaleTables: Regenerating lookup table..\n");
+ 
+         half_stretch_table = GenerateStretchTable(palette, 50);
+     }
 --- a/engine/i_sound.c
 +++ b/engine/i_sound.c
 @@ -18,7 +18,7 @@
@@ -62,7 +548,12 @@
  #endif
 --- a/engine/i_system.c
 +++ b/engine/i_system.c
-@@ -18,6 +18,7 @@
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -18,6 +19,7 @@
  
  
  #include <stdlib.h>
@@ -70,7 +561,7 @@
  #include <stdio.h>
  #include <string.h>
  
-@@ -116,7 +117,7 @@
+@@ -116,7 +118,7 @@
  
          *size = default_ram * 1024 * 1024;
  
@@ -79,7 +570,34 @@
  
          // Failed to allocate?  Reduce zone size until we reach a size
          // that is acceptable.
-@@ -243,236 +244,15 @@
+@@ -157,7 +159,7 @@
+ 
+     zonemem = AutoAllocMemory(size, default_ram, min_ram);
+ 
+-    printf("zone memory: %p, %x allocated for zone\n", 
++    CYM_GAME_DEBUG_PRINTF("zone memory: %p, %x allocated for zone\n", 
+            zonemem, *size);
+ 
+     return zonemem;
+@@ -171,7 +173,7 @@
+     for (i=0; i<spaces; ++i)
+         putchar(' ');
+ 
+-    puts(msg);
++    CYM_GAME_DEBUG_PUTS(msg);
+ }
+ 
+ void I_PrintDivider(void)
+@@ -192,7 +194,7 @@
+     I_PrintBanner(gamedescription);
+     I_PrintDivider();
+     
+-    printf(
++    CYM_GAME_DEBUG_PRINTF(
+     " " PACKAGE_NAME " is free software, covered by the GNU General Public\n"
+     " License.  There is NO warranty; not even for MERCHANTABILITY or FITNESS\n"
+     " FOR A PARTICULAR PURPOSE. You are welcome to change and distribute\n"
+@@ -243,236 +245,15 @@
  // I_Quit
  //
  
@@ -325,6 +843,22 @@
  }
  
  //
+--- a/engine/i_video.c
++++ b/engine/i_video.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ // Emacs style mode select   -*- C++ -*- 
+ //-----------------------------------------------------------------------------
+ //
+@@ -420,7 +421,7 @@
+     int i;
+     col_t color;
+ 
+-    printf("I_GetPaletteIndex\n");
++    CYM_GAME_DEBUG_PRINTF("I_GetPaletteIndex\n");
+ 
+     best = 0;
+     best_diff = INT_MAX;
 --- a/engine/info.c
 +++ b/engine/info.c
 @@ -26,6 +26,7 @@
@@ -391,6 +925,111 @@
 +void doom_engine_tables_init(void);
  
  #endif
+--- a/engine/m_argv.c
++++ b/engine/m_argv.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -91,13 +92,13 @@
+ 
+     if (handle == NULL)
+     {
+-        printf ("\nNo such response file!");
++        CYM_GAME_DEBUG_PRINTF ("\nNo such response file!");
+ #if ORIGCODE
+         exit(1);
+ #endif
+     }
+ 
+-    printf("Found response file %s!\n", response_filename);
++    CYM_GAME_DEBUG_PRINTF("Found response file %s!\n", response_filename);
+ 
+     size = M_FileLength(handle);
+ 
+@@ -218,11 +219,11 @@
+     // Disabled - Vanilla Doom does not do this.
+     // Display arguments
+ 
+-    printf("%d command-line args:\n", myargc);
++    CYM_GAME_DEBUG_PRINTF("%d command-line args:\n", myargc);
+ 
+     for (k=1; k<myargc; k++)
+     {
+-        printf("'%s'\n", myargv[k]);
++        CYM_GAME_DEBUG_PRINTF("'%s'\n", myargv[k]);
+     }
+ #endif
+ #endif
+--- a/engine/m_config.c
++++ b/engine/m_config.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 1993-2008 Raven Software
+@@ -1897,7 +1898,7 @@
+     if (i)
+     {
+ 	doom_defaults.filename = myargv[i+1];
+-	printf ("	default file: %s\n",doom_defaults.filename);
++	CYM_GAME_DEBUG_PRINTF ("	default file: %s\n",doom_defaults.filename);
+     }
+     else
+     {
+@@ -1905,7 +1906,7 @@
+             = M_StringJoin(configdir, default_main_config, NULL);
+     }
+ 
+-    printf("saving config in %s\n", doom_defaults.filename);
++    CYM_GAME_DEBUG_PRINTF("saving config in %s\n", doom_defaults.filename);
+ 
+     //!
+     // @arg <file>
+@@ -1919,7 +1920,7 @@
+     if (i)
+     {
+         extra_defaults.filename = myargv[i+1];
+-        printf("        extra configuration file: %s\n", 
++        CYM_GAME_DEBUG_PRINTF("        extra configuration file: %s\n", 
+                extra_defaults.filename);
+     }
+     else
+@@ -2071,7 +2072,7 @@
+ 
+     if (strcmp(configdir, "") != 0)
+     {
+-        printf("Using %s for configuration and saves\n", configdir);
++        CYM_GAME_DEBUG_PRINTF("Using %s for configuration and saves\n", configdir);
+     }
+ 
+     // Make the directory if it doesn't already exist:
+@@ -2119,7 +2120,7 @@
+ 
+         M_MakeDirectory(savegamedir);
+ 
+-        printf ("Using %s for savegames\n", savegamedir);
++        CYM_GAME_DEBUG_PRINTF ("Using %s for savegames\n", savegamedir);
+ #endif
+     }
+ 
+--- a/engine/mus2mid.c
++++ b/engine/mus2mid.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -707,7 +708,7 @@
+ 
+     if (argc != 3)
+     {
+-        printf("Usage: %s <musfile> <midfile>\n", argv[0]);
++        CYM_GAME_DEBUG_PRINTF("Usage: %s <musfile> <midfile>\n", argv[0]);
+         exit(-1);
+     }
+ 
 --- a/engine/p_setup.c
 +++ b/engine/p_setup.c
 @@ -775,9 +775,9 @@
@@ -405,6 +1044,105 @@
      }
      else
      {
+--- a/engine/r_data.c
++++ b/engine/r_data.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -352,7 +353,7 @@
+     {
+ 	if (!patchcount[x])
+ 	{
+-	    printf ("R_GenerateLookup: column without a patch (%s)\n",
++	    CYM_GAME_DEBUG_PRINTF ("R_GenerateLookup: column without a patch (%s)\n",
+ 		    texture->name);
+ 	    return;
+ 	}
+@@ -544,18 +545,18 @@
+ 
+     if (I_ConsoleStdout())
+     {
+-        printf("[");
++        CYM_GAME_DEBUG_PRINTF("[");
+         for (i = 0; i < temp3 + 9; i++)
+-            printf(" ");
+-        printf("]");
++            CYM_GAME_DEBUG_PRINTF(" ");
++        CYM_GAME_DEBUG_PRINTF("]");
+         for (i = 0; i < temp3 + 10; i++)
+-            printf("\b");
++            CYM_GAME_DEBUG_PRINTF("\b");
+     }
+ 	
+     for (i=0 ; i<numtextures ; i++, directory++)
+     {
+ 	if (!(i&63))
+-	    printf (".");
++	    CYM_GAME_DEBUG_PRINTF (".");
+ 
+ 	if (i == numtextures1)
+ 	{
+@@ -672,7 +673,7 @@
+     for (i=0 ; i< numspritelumps ; i++)
+     {
+ 	if (!(i&63))
+-	    printf (".");
++	    CYM_GAME_DEBUG_PRINTF (".");
+ 
+ 	patch = W_CacheLumpNum (firstspritelump+i, PU_CACHE);
+ 	spritewidth[i] = SHORT(patch->width)<<FRACBITS;
+@@ -725,11 +726,11 @@
+         }
+     }
+     R_InitTextures ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitFlats ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitSpriteLumps ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitColormaps ();
+ }
+ 
+--- a/engine/r_main.c
++++ b/engine/r_main.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -767,21 +768,21 @@
+ void R_Init (void)
+ {
+     R_InitData ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitPointToAngle ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitTables ();
+     // viewwidth / viewheight / detailLevel are set by the defaults
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+ 
+     R_SetViewSize (screenblocks, detailLevel);
+     R_InitPlanes ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitLightTables ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+     R_InitSkyMap ();
+     R_InitTranslationTables ();
+-    printf (".");
++    CYM_GAME_DEBUG_PRINTF (".");
+ 	
+     framecount = 0;
+ }
 --- a/engine/r_segs.c
 +++ b/engine/r_segs.c
 @@ -396,7 +396,10 @@
@@ -437,6 +1175,22 @@
      if (!count)
  	return;
  		
+--- a/engine/statdump.c
++++ b/engine/statdump.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+  /*
+ 
+  Copyright(C) 2005-2014 Simon Howard
+@@ -359,7 +360,7 @@
+ 
+     if (i > 0)
+     {
+-        printf("Statistics captured for %i level(s)\n", num_captured_stats);
++        CYM_GAME_DEBUG_PRINTF("Statistics captured for %i level(s)\n", num_captured_stats);
+ 
+         // We actually know what the real gamemission is, but this has
+         // to match the output from statdump.exe.
 --- a/engine/w_file.c
 +++ b/engine/w_file.c
 @@ -25,11 +25,7 @@
@@ -451,9 +1205,91 @@
  
  /*
  #ifdef _WIN32
+--- a/engine/w_main.c
++++ b/engine/w_main.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -57,7 +58,7 @@
+ 
+             filename = D_TryFindWADByName(myargv[p]);
+ 
+-            printf(" merging %s\n", filename);
++            CYM_GAME_DEBUG_PRINTF(" merging %s\n", filename);
+             W_MergeFile(filename);
+         }
+     }
+@@ -85,7 +86,7 @@
+ 
+             filename = D_TryFindWADByName(myargv[p]);
+ 
+-            printf(" performing NWT-style merge of %s\n", filename);
++            CYM_GAME_DEBUG_PRINTF(" performing NWT-style merge of %s\n", filename);
+             W_NWTDashMerge(filename);
+         }
+     }
+@@ -112,7 +113,7 @@
+ 
+             filename = D_TryFindWADByName(myargv[p]);
+ 
+-            printf(" merging flats from %s\n", filename);
++            CYM_GAME_DEBUG_PRINTF(" merging flats from %s\n", filename);
+             W_NWTMergeFile(filename, W_NWT_MERGE_FLATS);
+         }
+     }
+@@ -136,7 +137,7 @@
+             modifiedgame = true;
+             filename = D_TryFindWADByName(myargv[p]);
+ 
+-            printf(" merging sprites from %s\n", filename);
++            CYM_GAME_DEBUG_PRINTF(" merging sprites from %s\n", filename);
+             W_NWTMergeFile(filename, W_NWT_MERGE_SPRITES);
+         }
+     }
+@@ -160,7 +161,7 @@
+ 
+             filename = D_TryFindWADByName(myargv[p]);
+ 
+-            printf(" merging sprites and flats from %s\n", filename);
++            CYM_GAME_DEBUG_PRINTF(" merging sprites and flats from %s\n", filename);
+             W_NWTMergeFile(filename, W_NWT_MERGE_SPRITES | W_NWT_MERGE_FLATS);
+         }
+     }
+@@ -186,7 +187,7 @@
+ 
+             filename = D_TryFindWADByName(myargv[p]);
+ 
+-            printf(" adding %s\n", filename);
++            CYM_GAME_DEBUG_PRINTF(" adding %s\n", filename);
+ 	    W_AddFile(filename);
+         }
+     }
+--- a/engine/w_wad.c
++++ b/engine/w_wad.c
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -208,7 +209,7 @@
+ 
+     if (wad_file == NULL)
+     {
+-		printf (" couldn't open %s\n", filename);
++		CYM_GAME_DEBUG_PRINTF (" couldn't open %s\n", filename);
+ 		return NULL;
+     }
+ 
 --- a/engine/z_zone.c
 +++ b/engine/z_zone.c
-@@ -19,6 +19,7 @@
+@@ -1,3 +1,4 @@
++#include "../include/debug_gate.h"
+ //
+ // Copyright(C) 1993-1996 Id Software, Inc.
+ // Copyright(C) 2005-2014 Simon Howard
+@@ -19,6 +20,7 @@
  
  #include "z_zone.h"
  #include "i_system.h"
@@ -461,3 +1297,23 @@
  #include "doomtype.h"
  
  
+@@ -347,16 +349,16 @@
+ {
+     memblock_t*	block;
+ 	
+-    printf ("zone size: %i  location: %p\n",
++    CYM_GAME_DEBUG_PRINTF ("zone size: %i  location: %p\n",
+ 	    mainzone->size,mainzone);
+     
+-    printf ("tag range: %i to %i\n",
++    CYM_GAME_DEBUG_PRINTF ("tag range: %i to %i\n",
+ 	    lowtag, hightag);
+ 	
+     for (block = mainzone->blocklist.next ; ; block = block->next)
+     {
+ 	if (block->tag >= lowtag && block->tag <= hightag)
+-	    printf ("block:%p    size:%7i    user:%p    tag:%3i\n",
++	    CYM_GAME_DEBUG_PRINTF ("block:%p    size:%7i    user:%p    tag:%3i\n",
+ 		    block, block->size, block->user, block->tag);
+ 		
+ 	if (block->next == &mainzone->blocklist)

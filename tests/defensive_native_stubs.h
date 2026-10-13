@@ -118,3 +118,5 @@ static int ble_gap_ext_adv_set_data(int n,struct os_mbuf *o){(void)n;(void)o;ret
 struct ble_gap_disc_desc {const uint8_t *data;uint8_t length_data;ble_addr_t addr;int8_t rssi;};
 struct ble_gap_ext_disc_desc {const uint8_t *data;uint16_t length_data;ble_addr_t addr;int8_t rssi;};
 struct ble_gap_event {int type;struct ble_gap_disc_desc disc;struct ble_gap_ext_disc_desc ext_disc;};
+
+#define CYM_DEBUG_LOGD(...) ((void)0)

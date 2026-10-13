@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -91,13 +92,13 @@ static void LoadResponseFile(int argv_index)
 
     if (handle == NULL)
     {
-        printf ("\nNo such response file!");
+        CYM_GAME_DEBUG_PRINTF ("\nNo such response file!");
 #if ORIGCODE
         exit(1);
 #endif
     }
 
-    printf("Found response file %s!\n", response_filename);
+    CYM_GAME_DEBUG_PRINTF("Found response file %s!\n", response_filename);
 
     size = M_FileLength(handle);
 
@@ -218,11 +219,11 @@ static void LoadResponseFile(int argv_index)
     // Disabled - Vanilla Doom does not do this.
     // Display arguments
 
-    printf("%d command-line args:\n", myargc);
+    CYM_GAME_DEBUG_PRINTF("%d command-line args:\n", myargc);
 
     for (k=1; k<myargc; k++)
     {
-        printf("'%s'\n", myargv[k]);
+        CYM_GAME_DEBUG_PRINTF("'%s'\n", myargv[k]);
     }
 #endif
 #endif

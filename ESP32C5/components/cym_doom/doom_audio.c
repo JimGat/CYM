@@ -1,3 +1,4 @@
+#include "debug_gate.h"
 /* Routing verified against Waveshare vendor BSPs, not guessed from WS35.
  * ES8311 slave DAC, BCLK-derived clock, no microphone or second I2C bus.
  * Engine owns mixer/WAD; a finite copied-PCM worker owns writes. Stop joins it.
@@ -17,7 +18,7 @@ static const audio_codec_ctrl_if_t *ctrl;
 static const audio_codec_if_t *codec;
 static bool enabled;
 #define RATE 22050
-static const float GAME_AUDIO_VOLUME_DB = -15.0f;
+static const float GAME_AUDIO_VOLUME_DB = -3.0f;
 #define QUEUE_TARGET 6u
 static QueueHandle_t audio_queue;
 static TaskHandle_t audio_task;
@@ -28,13 +29,13 @@ typedef struct {int16_t pcm[DOOM_AUDIO_BLOCK];} audio_block;
 static bool audio_step(void){
  audio_block b;
  if(xQueueReceive(audio_queue,&b,0)!=pdTRUE){memset(&b,0,sizeof(b));DM_ADD(audio_starved,1);}
- size_t written=0;uint32_t before=(uint32_t)esp_timer_get_time();
+ size_t written=0;uint32_t before=cym_debug_enabled()?(uint32_t)esp_timer_get_time():0;
  bool ok=i2s_channel_write(tx,b.pcm,sizeof(b.pcm),&written,50)==ESP_OK&&written==sizeof(b.pcm);
- uint32_t elapsed=(uint32_t)esp_timer_get_time()-before;
+ uint32_t elapsed=before&&cym_debug_enabled()?(uint32_t)esp_timer_get_time()-before:0;
  DM_ADD(audio_writes,1);DM_ADD(audio_us,elapsed);
  if(elapsed>=1000)DM_ADD(audio_waits,1);
- if(ok){unsigned nonzero=0;for(unsigned i=0;i<DOOM_AUDIO_BLOCK;i++)nonzero+=b.pcm[i]!=0;DM_ADD(audio_samples,DOOM_AUDIO_BLOCK);DM_ADD(audio_nonzero,nonzero);}
- else{DM_ADD(audio_faults,1);__atomic_store_n(&audio_failed,true,__ATOMIC_RELEASE);}
+ if(ok){unsigned nonzero=0;bool measure=cym_debug_enabled();for(unsigned i=0;measure&&i<DOOM_AUDIO_BLOCK;i++)nonzero+=b.pcm[i]!=0;DM_ADD(audio_samples,DOOM_AUDIO_BLOCK);DM_ADD(audio_nonzero,nonzero);}
+ else{ESP_LOGE("CYM_DOOM","AUDIO_WRITE_FAILED driver/short write; output stopped");DM_ADD(audio_faults,1);__atomic_store_n(&audio_failed,true,__ATOMIC_RELEASE);}
  return ok;
 }
 static void audio_worker(void *unused){(void)unused;
@@ -85,8 +86,8 @@ int doom_audio_end(void){
    if(ctrl->read_reg(ctrl,0x31,1,&r31,1)==0)mask|=4;
   }
   bool off_verified=mask==7&&r12==2&&r14==0&&(r31&0x60)==0x60;
-  if(!off_verified)ok=false;
-  ESP_LOGI("CYM_DOOM","CODEC_STOP_DIAG board=%s read_mask=%x reg12=%02x reg14=%02x reg31=%02x muted_powerdown_verified=%d",AUDIO_BOARD,mask,r12,r14,r31,off_verified);
+  if(!off_verified){ESP_LOGE("CYM_DOOM","AUDIO_STOP_FAILED codec powerdown readback");ok=false;}
+  if(cym_debug_enabled())ESP_LOGI("CYM_DOOM","CODEC_STOP_DIAG board=%s read_mask=%x reg12=%02x reg14=%02x reg31=%02x muted_powerdown_verified=%d",AUDIO_BOARD,mask,r12,r14,r31,off_verified);
  }
  if(enabled){if(i2s_channel_disable(tx)!=ESP_OK)return -1;enabled=false;}
  if(tx){if(i2s_del_channel(tx)!=ESP_OK)return -1;tx=NULL;}
@@ -120,10 +121,10 @@ bool doom_audio_begin(void){
  uint8_t regs[12]={0};const int addresses[]={0x00,0x01,0x02,0x06,0x09,0x0a,0x0d,0x12,0x14,0x31,0x32,0x37};unsigned read_mask=0;
  for(unsigned i=0;i<12;i++)if(ctrl->read_reg&&ctrl->read_reg(ctrl,addresses[i],1,&regs[i],1)==0)read_mask|=1u<<i;
  bool verified=read_mask==0xfff && !(regs[0]&0x40) && regs[1]==0xbf && regs[2]==0x18 && regs[3]==0x03 && (regs[4]&0x7f)==0x0c && regs[6]==0x01 && regs[7]==0 && regs[8]==0x1a && !(regs[9]&0x60) && regs[10]!=0 && regs[11]==0x08;
- ESP_LOGI("CYM_DOOM","CODEC_DIAG board=%s read_mask=%03x reg00=%02x reg01=%02x reg02=%02x reg06=%02x reg09=%02x reg0a=%02x reg0d=%02x reg12=%02x reg14=%02x reg31=%02x reg32=%02x reg37=%02x configuration_verified=%d audible=unconfirmed",AUDIO_BOARD,read_mask,regs[0],regs[1],regs[2],regs[3],regs[4],regs[5],regs[6],regs[7],regs[8],regs[9],regs[10],regs[11],verified);
+ if(cym_debug_enabled())ESP_LOGI("CYM_DOOM","CODEC_DIAG board=%s read_mask=%03x reg00=%02x reg01=%02x reg02=%02x reg06=%02x reg09=%02x reg0a=%02x reg0d=%02x reg12=%02x reg14=%02x reg31=%02x reg32=%02x reg37=%02x configuration_verified=%d audible=unconfirmed",AUDIO_BOARD,read_mask,regs[0],regs[1],regs[2],regs[3],regs[4],regs[5],regs[6],regs[7],regs[8],regs[9],regs[10],regs[11],verified);
  if(!verified){ESP_LOGE("CYM_DOOM","AUDIO_NOT_READY board=%s reason=codec_readback",AUDIO_BOARD);goto fail;}
  if(!cym_game_audio_amp(true)){ESP_LOGE("CYM_DOOM","AUDIO_NOT_READY board=%s reason=amp_pin_readback",AUDIO_BOARD);goto fail;}
- ESP_LOGI("CYM_DOOM","I2S_DIAG board=%s TX_ONLY no_mclk rate=%d bits=%d slot_bits=%d slot_mask=%d mono=%d bclk=%d lrclk=%d dout=%d pa_supply=3.3 dac_supply=3.3 configured_clocks_not_wire_measurement",AUDIO_BOARD,RATE,(int)cfg.slot_cfg.data_bit_width,(int)cfg.slot_cfg.slot_bit_width,(int)cfg.slot_cfg.slot_mask,(int)cfg.slot_cfg.slot_mode,BCLK,LRCLK,DOUT);
+ if(cym_debug_enabled())ESP_LOGI("CYM_DOOM","I2S_DIAG board=%s TX_ONLY no_mclk rate=%d bits=%d slot_bits=%d slot_mask=%d mono=%d bclk=%d lrclk=%d dout=%d pa_supply=3.3 dac_supply=3.3 configured_clocks_not_wire_measurement",AUDIO_BOARD,RATE,(int)cfg.slot_cfg.data_bit_width,(int)cfg.slot_cfg.slot_bit_width,(int)cfg.slot_cfg.slot_mask,(int)cfg.slot_cfg.slot_mode,BCLK,LRCLK,DOUT);
  audio_queue=xQueueCreate(8,sizeof(audio_block));if(!audio_queue)goto fail;
  if(xTaskCreate(audio_worker,"cym_pcm",4096,NULL,3,&audio_task)!=pdPASS){audio_task=NULL;goto fail;}
  ESP_LOGI("CYM_DOOM","AUDIO_STARTED configuration_verified audible=unconfirmed ES8311 rate=%d BCLK=%d LRCLK=%d DOUT=%d volume_db=%.0f SFX_ONLY",RATE,BCLK,LRCLK,DOUT,(double)GAME_AUDIO_VOLUME_DB);

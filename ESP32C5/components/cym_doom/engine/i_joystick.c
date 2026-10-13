@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 2005-2014 Simon Howard
 //
@@ -161,7 +162,7 @@ void I_InitJoystick(void)
 
     // Initialized okay!
 
-    printf("I_InitJoystick: %s\n", SDL_JoystickName(joystick_index));
+    CYM_GAME_DEBUG_PRINTF("I_InitJoystick: %s\n", SDL_JoystickName(joystick_index));
 
     I_AtExit(I_ShutdownJoystick, true);
 #endif

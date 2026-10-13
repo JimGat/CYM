@@ -1,3 +1,4 @@
+#include "../include/debug_gate.h"
 //
 // Copyright(C) 1993-1996 Id Software, Inc.
 // Copyright(C) 2005-2014 Simon Howard
@@ -352,7 +353,7 @@ void R_GenerateLookup (int texnum)
     {
 	if (!patchcount[x])
 	{
-	    printf ("R_GenerateLookup: column without a patch (%s)\n",
+	    CYM_GAME_DEBUG_PRINTF ("R_GenerateLookup: column without a patch (%s)\n",
 		    texture->name);
 	    return;
 	}
@@ -544,18 +545,18 @@ void R_InitTextures (void)
 
     if (I_ConsoleStdout())
     {
-        printf("[");
+        CYM_GAME_DEBUG_PRINTF("[");
         for (i = 0; i < temp3 + 9; i++)
-            printf(" ");
-        printf("]");
+            CYM_GAME_DEBUG_PRINTF(" ");
+        CYM_GAME_DEBUG_PRINTF("]");
         for (i = 0; i < temp3 + 10; i++)
-            printf("\b");
+            CYM_GAME_DEBUG_PRINTF("\b");
     }
 	
     for (i=0 ; i<numtextures ; i++, directory++)
     {
 	if (!(i&63))
-	    printf (".");
+	    CYM_GAME_DEBUG_PRINTF (".");
 
 	if (i == numtextures1)
 	{
@@ -672,7 +673,7 @@ void R_InitSpriteLumps (void)
     for (i=0 ; i< numspritelumps ; i++)
     {
 	if (!(i&63))
-	    printf (".");
+	    CYM_GAME_DEBUG_PRINTF (".");
 
 	patch = W_CacheLumpNum (firstspritelump+i, PU_CACHE);
 	spritewidth[i] = SHORT(patch->width)<<FRACBITS;
@@ -725,11 +726,11 @@ void R_InitData (void)
         }
     }
     R_InitTextures ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitFlats ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitSpriteLumps ();
-    printf (".");
+    CYM_GAME_DEBUG_PRINTF (".");
     R_InitColormaps ();
 }
 
