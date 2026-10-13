@@ -62093,8 +62093,18 @@ static void s_lf_poll_timer(lv_timer_t *t)
 }
 
 /* ── LF read: stop hook ── */
+/* Every popup owner cancels before replacement or screen teardown. */
+static void s_clone_close_timer_cancel(void)
+{
+    if (s_clone_close_tmr) {
+        lv_timer_del(s_clone_close_tmr);
+        s_clone_close_tmr = NULL;
+    }
+}
+
 static void cham_lf_read_stop(void)
 {
+    s_clone_close_timer_cancel();
     /* Cancel any in-flight BLE command so LF scan / clone callbacks cannot fire
      * into freed LVGL objects after this screen is torn down. */
     cham_cancel_pending();
@@ -62140,7 +62150,7 @@ static void cham_lf_read_stop(void)
  * only consumes s_sm_needs_refresh when the Slots screen is open, not here). */
 static void s_clone_autoclose_cb(lv_timer_t *t)
 {
-    (void)t;
+    if (t != s_clone_close_tmr) return;  /* never close a newer popup */
     s_clone_close_tmr = NULL;   /* repeat_count=1 → LVGL deletes this timer on return */
     if (s_clone_popup && lv_obj_is_valid(s_clone_popup)) lv_obj_del(s_clone_popup);
     s_clone_popup = NULL;
@@ -62155,7 +62165,7 @@ static void s_clone_on_saved(bool ok, const uint8_t *data, uint16_t dlen)
         lv_label_set_text(s_clone_status_lbl, "Loaded to slot!");
         lv_obj_set_style_text_color(s_clone_status_lbl, lv_color_hex(0x66BB6A), 0);
         s_sm_needs_refresh = true; /* Slots screen reloads on next open */
-        if (s_clone_close_tmr) { lv_timer_del(s_clone_close_tmr); s_clone_close_tmr = NULL; }
+        s_clone_close_timer_cancel();
         s_clone_close_tmr = lv_timer_create(s_clone_autoclose_cb, 1400, NULL);
         if (s_clone_close_tmr) lv_timer_set_repeat_count(s_clone_close_tmr, 1);
     } else {
@@ -62280,6 +62290,7 @@ static void s_clone_slot_btn_cb(lv_event_t *e)
 /* Close button callback for the clone popup */
 static void s_clone_close_cb(lv_event_t *e)
 {
+    s_clone_close_timer_cancel();
     (void)e;
     /* Closing is cancellation, not permission for an invisible multi-chunk write. */
     cham_cancel_pending();
@@ -62291,6 +62302,7 @@ static void s_clone_close_cb(lv_event_t *e)
  * parent should be function_page (deleted with the screen). */
 static void s_lf_show_clone_picker(lv_obj_t *parent)
 {
+    s_clone_close_timer_cancel();
     if (s_clone_popup) { lv_obj_del(s_clone_popup); s_clone_popup = NULL; s_clone_status_lbl = NULL; }
 
     s_clone_popup = lv_obj_create(parent);
@@ -63092,7 +63104,13 @@ static void s_clone_hf_send_next_chunk(void)
         int max_blocks = CHAM_MFC_CHUNK_BLOCKS;
         uint16_t cap = cham_max_cmd_payload();
         int cap_blocks = (cap > 1) ? (int)((cap - 1) / 16) : 0;
-        if (cap_blocks < 1) cap_blocks = 1;
+        if (cap_blocks < 1) {
+            lv_label_set_text(s_clone_status_lbl, "ATT MTU too small - reconnect");
+            free(s_clone_hf_buf);
+            s_clone_hf_buf = NULL;
+            s_clone_hf_buf_len = 0;
+            return;
+        }
         if (cap_blocks < max_blocks) max_blocks = cap_blocks;
         int this_chunk = (remaining > max_blocks) ? max_blocks : remaining;
         uint16_t plen = (uint16_t)(1 + this_chunk * 16);
@@ -63119,7 +63137,13 @@ static void s_clone_hf_send_next_chunk(void)
         int max_pages = CHAM_NTAG_CHUNK_PAGES;
         uint16_t cap = cham_max_cmd_payload();
         int cap_pages = (cap > 2) ? (int)((cap - 2) / 4) : 0;
-        if (cap_pages < 1) cap_pages = 1;
+        if (cap_pages < 1) {
+            lv_label_set_text(s_clone_status_lbl, "ATT MTU too small - reconnect");
+            free(s_clone_hf_buf);
+            s_clone_hf_buf = NULL;
+            s_clone_hf_buf_len = 0;
+            return;
+        }
         if (cap_pages < max_pages) max_pages = cap_pages;
         int this_chunk = (remaining > max_pages) ? max_pages : remaining;
         uint16_t plen = (uint16_t)(2 + this_chunk * 4);
@@ -63297,6 +63321,7 @@ static void s_fb_close_cb(lv_event_t *e)
 /* Tap a file in the browser — parse it and start the clone chain */
 static void s_fb_file_tap_cb(lv_event_t *e)
 {
+    s_clone_close_timer_cancel();
     const char *path = (const char *)lv_event_get_user_data(e);
     if (!path || s_fb_target_slot < 0) {
         if (s_fb_popup) { lv_obj_del(s_fb_popup); s_fb_popup = NULL; }
@@ -63541,7 +63566,7 @@ static void s_sm_long_press_cb(lv_event_t *e)
 static void cham_slots_stop(void)
 {
     cham_cancel_pending();
-    if (s_clone_close_tmr){ lv_timer_del(s_clone_close_tmr); s_clone_close_tmr = NULL; }
+    s_clone_close_timer_cancel();
     if (s_sm_tmr)        { lv_timer_del(s_sm_tmr);         s_sm_tmr         = NULL; }
     if (s_sm_confirm_pop){ lv_obj_del(s_sm_confirm_pop);   s_sm_confirm_pop = NULL; }
     if (s_fb_popup)      { lv_obj_del(s_fb_popup);         s_fb_popup       = NULL; }
@@ -63631,7 +63656,7 @@ static void s_cards_long_press_cb(lv_event_t *e);
 static void cham_saved_cards_stop(void)
 {
     cham_cancel_pending();
-    if (s_clone_close_tmr)  { lv_timer_del(s_clone_close_tmr);  s_clone_close_tmr  = NULL; }
+    s_clone_close_timer_cancel();
     if (s_cards_tmr)        { lv_timer_del(s_cards_tmr);        s_cards_tmr        = NULL; }
     if (s_cards_confirm)    { lv_obj_del(s_cards_confirm);      s_cards_confirm    = NULL; }
     if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup);   s_cards_slot_popup = NULL; }
@@ -63755,6 +63780,7 @@ static void s_cards_long_press_cb(lv_event_t *e)
 /* ── Click-to-load: tap a file → slot picker → parse → clone chain ── */
 static void s_cards_slot_pick_cb(lv_event_t *e)
 {
+    s_clone_close_timer_cancel();
     int slot = (int)(intptr_t)lv_event_get_user_data(e);
     if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup); s_cards_slot_popup = NULL; }
     if (s_cards_load_path[0] == '\0') return;

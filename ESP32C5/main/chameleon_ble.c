@@ -46,6 +46,7 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_att.h"
+#include "host/ble_l2cap.h"
 #include "host/ble_uuid.h"
 #include "host/ble_hs_adv.h"
 #include "host/ble_store.h"
@@ -118,7 +119,7 @@ static uint16_t s_svc_end     = 0;
 static uint16_t s_tx_val_hdl  = 0;   /* TX char value handle (notify) */
 static uint16_t s_rx_val_hdl  = 0;   /* RX char value handle (write) */
 static uint16_t s_cccd_hdl    = 0;   /* CCCD handle (tx_val_hdl + 1) */
-static uint16_t s_att_mtu     = 0;   /* negotiated ATT MTU (0 = not yet; treat as 23) */
+static volatile uint16_t s_att_mtu     = 0;   /* negotiated ATT MTU (0 = not yet; treat as 23) */
 
 /* Volatile event flags set by NimBLE callbacks, consumed in cham_poll() */
 static volatile bool s_ev_connected    = false;
@@ -509,8 +510,11 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
         /* Larger ATT MTU lets a full MFC/NTAG load chunk fit in ONE write.
          * Without this the link stays at the 23-byte default and the ~491-byte
          * first chunk is never delivered (GH #24). */
-        s_att_mtu = event->mtu.value;
-        ESP_LOGI(TAG, "MTU negotiated: %u", s_att_mtu);
+        if (event->mtu.conn_handle == s_conn_handle &&
+            event->mtu.channel_id == BLE_L2CAP_CID_ATT && event->mtu.value >= 23) {
+            s_att_mtu = event->mtu.value;
+            ESP_LOGI(TAG, "MTU negotiated: %u", s_att_mtu);
+        }
         break;
 
     case BLE_GAP_EVENT_NOTIFY_RX:
@@ -1258,16 +1262,10 @@ bool cham_poll(void)
  * chunk to this so the frame is delivered in one write (GH #24). */
 uint16_t cham_max_cmd_payload(void)
 {
-    /* Read the live negotiated ATT MTU: robust across a bond-reuse reconnect
-     * where ble_gattc_exchange_mtu returns EALREADY and no MTU event re-fires,
-     * yet the link already carries the larger MTU. Fall back to the event value,
-     * then to the 23-byte default. */
-    uint16_t mtu = 0;
-    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        mtu = ble_att_mtu(s_conn_handle);
-    }
-    if (s_att_mtu > mtu) mtu = s_att_mtu;
-    if (mtu < 23) mtu = 23;   /* BLE_ATT_MTU_DFLT */
-    int cap = (int)mtu - 3 - 10;
-    return cap > 0 ? (uint16_t)cap : 0;
+    if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) return 0;
+    /* The live ATT bearer is authoritative, including bond-reuse reconnects.
+     * Use the validated event cache only when the live query is unavailable. */
+    uint16_t mtu = ble_att_mtu(s_conn_handle);
+    if (mtu < 23) mtu = s_att_mtu >= 23 ? s_att_mtu : 23;
+    return (uint16_t)(mtu - 3 - 10);
 }
