@@ -61489,6 +61489,7 @@ static void s_cham_hf_tile_cb(lv_event_t *e)
  * Declared here (before the stop hook and clone functions that reference them). */
 static lv_obj_t *s_clone_popup      = NULL;
 static lv_obj_t *s_clone_status_lbl = NULL;
+static lv_timer_t *s_clone_close_tmr = NULL;  /* one-shot: auto-close the "Loaded!" popup */
 static int        s_clone_slot       = -1;
 static uint16_t   s_clone_tag_type;          /* TagSpecificType: 100=EM410X, 200=HID */
 static uint8_t    s_clone_sense;             /* CHAM_SENSE_LF/HF */
@@ -62134,14 +62135,29 @@ static void cham_lf_read_stop(void)
  */
 
 /* Step 4 — SAVE_SETTINGS response */
+/* One-shot: dismiss the clone-progress popup a moment after a successful load so
+ * the user isn't left staring at a popup that never closes (the Slot-Manager poll
+ * only consumes s_sm_needs_refresh when the Slots screen is open, not here). */
+static void s_clone_autoclose_cb(lv_timer_t *t)
+{
+    (void)t;
+    s_clone_close_tmr = NULL;   /* repeat_count=1 → LVGL deletes this timer on return */
+    if (s_clone_popup && lv_obj_is_valid(s_clone_popup)) lv_obj_del(s_clone_popup);
+    s_clone_popup = NULL;
+    s_clone_status_lbl = NULL;
+}
+
 static void s_clone_on_saved(bool ok, const uint8_t *data, uint16_t dlen)
 {
     (void)data; (void)dlen;
     if (!s_clone_status_lbl) return;
     if (ok) {
-        lv_label_set_text(s_clone_status_lbl, "Loaded! Slot list refreshing...");
+        lv_label_set_text(s_clone_status_lbl, "Loaded to slot!");
         lv_obj_set_style_text_color(s_clone_status_lbl, lv_color_hex(0x66BB6A), 0);
-        s_sm_needs_refresh = true; /* tell slot manager poll timer to reload */
+        s_sm_needs_refresh = true; /* Slots screen reloads on next open */
+        if (s_clone_close_tmr) { lv_timer_del(s_clone_close_tmr); s_clone_close_tmr = NULL; }
+        s_clone_close_tmr = lv_timer_create(s_clone_autoclose_cb, 1400, NULL);
+        if (s_clone_close_tmr) lv_timer_set_repeat_count(s_clone_close_tmr, 1);
     } else {
         lv_label_set_text(s_clone_status_lbl, "Save failed - try again");
         lv_obj_set_style_text_color(s_clone_status_lbl, lv_color_hex(0xEF9A9A), 0);
@@ -63071,7 +63087,14 @@ static void s_clone_hf_send_next_chunk(void)
     if (s_clone_hf_is_mfc) {
         /* MFC: cmd 4000 payload = [startBlock, block0(16B), block1(16B), ...] */
         int remaining = s_clone_hf_chunk_total - s_clone_hf_chunk_idx;
-        int this_chunk = (remaining > CHAM_MFC_CHUNK_BLOCKS) ? CHAM_MFC_CHUNK_BLOCKS : remaining;
+        /* Bound the chunk so the whole frame fits one write on the negotiated
+         * ATT MTU (GH #24): payload = 1 start-block byte + blocks*16. */
+        int max_blocks = CHAM_MFC_CHUNK_BLOCKS;
+        uint16_t cap = cham_max_cmd_payload();
+        int cap_blocks = (cap > 1) ? (int)((cap - 1) / 16) : 0;
+        if (cap_blocks < 1) cap_blocks = 1;
+        if (cap_blocks < max_blocks) max_blocks = cap_blocks;
+        int this_chunk = (remaining > max_blocks) ? max_blocks : remaining;
         uint16_t plen = (uint16_t)(1 + this_chunk * 16);
         uint8_t *chunk = (uint8_t *)malloc(plen);
         if (!chunk) { lv_label_set_text(s_clone_status_lbl, "Out of memory"); return; }
@@ -63091,7 +63114,14 @@ static void s_clone_hf_send_next_chunk(void)
     } else {
         /* NTAG: cmd 4022 payload = [start_page, count, page_data...] */
         int remaining = s_clone_hf_chunk_total - s_clone_hf_chunk_idx;
-        int this_chunk = (remaining > CHAM_NTAG_CHUNK_PAGES) ? CHAM_NTAG_CHUNK_PAGES : remaining;
+        /* Bound the chunk to the negotiated ATT MTU (GH #24):
+         * payload = 1 start-page + 1 count + pages*4. */
+        int max_pages = CHAM_NTAG_CHUNK_PAGES;
+        uint16_t cap = cham_max_cmd_payload();
+        int cap_pages = (cap > 2) ? (int)((cap - 2) / 4) : 0;
+        if (cap_pages < 1) cap_pages = 1;
+        if (cap_pages < max_pages) max_pages = cap_pages;
+        int this_chunk = (remaining > max_pages) ? max_pages : remaining;
         uint16_t plen = (uint16_t)(2 + this_chunk * 4);
         uint8_t *chunk = (uint8_t *)malloc(plen);
         if (!chunk) { lv_label_set_text(s_clone_status_lbl, "Out of memory"); return; }
@@ -63511,6 +63541,7 @@ static void s_sm_long_press_cb(lv_event_t *e)
 static void cham_slots_stop(void)
 {
     cham_cancel_pending();
+    if (s_clone_close_tmr){ lv_timer_del(s_clone_close_tmr); s_clone_close_tmr = NULL; }
     if (s_sm_tmr)        { lv_timer_del(s_sm_tmr);         s_sm_tmr         = NULL; }
     if (s_sm_confirm_pop){ lv_obj_del(s_sm_confirm_pop);   s_sm_confirm_pop = NULL; }
     if (s_fb_popup)      { lv_obj_del(s_fb_popup);         s_fb_popup       = NULL; }
@@ -63600,6 +63631,7 @@ static void s_cards_long_press_cb(lv_event_t *e);
 static void cham_saved_cards_stop(void)
 {
     cham_cancel_pending();
+    if (s_clone_close_tmr)  { lv_timer_del(s_clone_close_tmr);  s_clone_close_tmr  = NULL; }
     if (s_cards_tmr)        { lv_timer_del(s_cards_tmr);        s_cards_tmr        = NULL; }
     if (s_cards_confirm)    { lv_obj_del(s_cards_confirm);      s_cards_confirm    = NULL; }
     if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup);   s_cards_slot_popup = NULL; }
@@ -63800,7 +63832,9 @@ static void s_cards_click_cb(lv_event_t *e)
     /* Show slot picker popup */
     if (s_cards_slot_popup) { lv_obj_del(s_cards_slot_popup); s_cards_slot_popup = NULL; }
     s_cards_slot_popup = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(s_cards_slot_popup, 220, 120);
+    /* Height holds the title + 2 button rows (bottom ~86) + the bottom-aligned
+     * Cancel without overlap (GH #24 sibling: Cancel sat over slots 5-8). */
+    lv_obj_set_size(s_cards_slot_popup, 220, 140);
     lv_obj_align(s_cards_slot_popup, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(s_cards_slot_popup, lv_color_hex(0x1A1A2E), 0);
     lv_obj_set_style_border_color(s_cards_slot_popup, lv_color_hex(0x7B1FA2), 0);

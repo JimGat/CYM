@@ -119,3 +119,10 @@ bool cham_send_cmd(uint16_t cmd, const uint8_t *data, uint16_t dlen,
  */
 bool cham_send_cmd_ex(uint16_t cmd, const uint8_t *data, uint16_t dlen,
                       cham_cmd_result_cb_t cb, int64_t timeout_us);
+
+/*
+ * Max DATA payload (bytes) that fits in a single cham_send_cmd write on the
+ * current link (negotiated ATT MTU minus ATT + Chameleon frame overhead).
+ * Chunked writers (slot load) must bound each chunk to this. 0 = link too small.
+ */
+uint16_t cham_max_cmd_payload(void);
