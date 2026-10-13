@@ -5,6 +5,7 @@
 #include "lvgl.h"
 #include "sd_error_handler.h"
 #include "debug_settings.h"
+#include "gps_rx_ws35.h"
 #define CYM_DEBUG_LOGD(...) do { if(cym_debug_enabled()) ESP_LOGD(__VA_ARGS__); } while(0)
 #define CYM_DEBUG_LOGI(...) do { if(cym_debug_enabled()) ESP_LOGI(__VA_ARGS__); } while(0)
 
@@ -1303,6 +1304,14 @@ static void gps_classic_poll(void);
 #endif
 static bool nmea_checksum_valid(const char *sentence);
 static esp_err_t init_gps_uart(void);
+/* WS35 task owns RX. Wardrive observes GPS snapshots without stealing UART bytes. */
+static int gps_uart_consumer_read(void *data, uint32_t size, TickType_t wait){
+#if defined(CONFIG_BOARD_WS_C5_35)
+ (void)data;(void)size;if(wait)vTaskDelay(wait);return 0;
+#else
+ return uart_read_bytes(GPS_UART_NUM,data,size,wait);
+#endif
+}
 static bool parse_gps_nmea(const char *nmea_sentence);
 static void gps_task(void *arg);
 static void gps_set_update_rate_hz(int hz);  // defined near GPS impl; used earlier in wardrive task
@@ -5351,7 +5360,7 @@ static bool wait_for_gps_fix(int timeout_seconds) {
             return false;
         }
         
-        int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(1000));
+        int len = gps_uart_consumer_read( (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(1000));
         if (len > 0) {
             wardrive_gps_buffer[len] = '\0';
             char* line = strtok(wardrive_gps_buffer, "\r\n");
@@ -14862,7 +14871,7 @@ static void wardrive_promisc_task(void *pvParameters) {
             ESP_LOGI(TAG, "Waiting for GPS fix...");
             while (wardrive_active && !current_gps.valid) {
 #if !defined(CONFIG_BOARD_CYD2USB)
-                int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
+                int len = gps_uart_consumer_read( (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
                 if (len > 0) {
                     wardrive_gps_buffer[len] = '\0';
                     char *line = strtok(wardrive_gps_buffer, "\r\n");
@@ -15158,7 +15167,7 @@ static void wardrive_promisc_task(void *pvParameters) {
         }
 
 #if !defined(CONFIG_BOARD_CYD2USB)
-        int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(50));
+        int len = gps_uart_consumer_read( (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(50));
         if (len > 0) {
             wardrive_gps_buffer[len] = '\0';
             char *line = strtok(wardrive_gps_buffer, "\r\n");
@@ -15178,7 +15187,7 @@ static void wardrive_promisc_task(void *pvParameters) {
                 esp_wifi_set_promiscuous(false);
                 while (wardrive_active && !current_gps.valid) {
 #if !defined(CONFIG_BOARD_CYD2USB)
-                    int len = uart_read_bytes(GPS_UART_NUM, (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
+                    int len = gps_uart_consumer_read( (uint8_t*)wardrive_gps_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
                     if (len > 0) {
                         wardrive_gps_buffer[len] = '\0';
                         char *l = strtok(wardrive_gps_buffer, "\r\n");
@@ -42140,7 +42149,7 @@ static volatile uint32_t g_gga_parses = 0;
 // is computed here so it is always correct regardless of the body string.
 static void gps_send_pcas(const char *body)
 {
-#if defined(CONFIG_BOARD_CYD2USB)
+#if defined(CONFIG_BOARD_CYD2USB) || defined(CONFIG_BOARD_WS_C5_35)
     return; // no output matrix attachment and no UART TX on Classic
 #endif
 
@@ -42170,7 +42179,7 @@ static int s_gps_applied_hz = 1;
 // No-op (no UART traffic) when the requested rate equals the current rate.
 static void gps_set_update_rate_hz(int hz)
 {
-#if defined(CONFIG_BOARD_CYD2USB)
+#if defined(CONFIG_BOARD_CYD2USB) || defined(CONFIG_BOARD_WS_C5_35)
     (void)hz; return; // no PCAS/PMTK/UBX rate writes on Classic
 #endif
 
@@ -42211,7 +42220,7 @@ static int s_gps_applied_baud = 9600;
 // that are not u-blox see this as noise between NMEA sentences and drop it.
 static void gps_send_ubx(uint8_t cls, uint8_t id, const uint8_t *payload, uint16_t len)
 {
-#if defined(CONFIG_BOARD_CYD2USB)
+#if defined(CONFIG_BOARD_CYD2USB) || defined(CONFIG_BOARD_WS_C5_35)
     return; // no output matrix attachment and no UART TX on Classic
 #endif
 
@@ -42283,7 +42292,7 @@ static bool gps_probe_nmea(int baud, int window_ms)
     char frame[256]; size_t used = 0;
     uint8_t chunk[128];
     while (esp_timer_get_time() < end) {
-        int n = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), pdMS_TO_TICKS(100));
+        int n = gps_uart_consumer_read( chunk, sizeof(chunk), pdMS_TO_TICKS(100));
         if (n < 0) return false;
         for (int i = 0; i < n; ++i) {
             char c = (char)chunk[i];
@@ -42307,7 +42316,7 @@ static bool gps_probe_nmea(int baud, int window_ms)
 	int64_t end = esp_timer_get_time() + (int64_t)window_ms * 1000;
 	char buf[256];
 	while (esp_timer_get_time() < end) {
-		int n = uart_read_bytes(GPS_UART_NUM, (uint8_t *)buf, sizeof(buf) - 1, pdMS_TO_TICKS(100));
+		int n = gps_uart_consumer_read( (uint8_t *)buf, sizeof(buf) - 1, pdMS_TO_TICKS(100));
 		for (int i = 0; i + 1 < n; i++)
 			if (buf[i] == '$' && buf[i + 1] == 'G') return true; // $GPxxx / $GNxxx
 	}
@@ -42376,6 +42385,12 @@ static void gps_autodetect_and_sync(void)
 // Only 9600 and 115200 are offered (38400 was measured to silently stay at 1 Hz).
 static bool gps_apply_baud_live(int target)
 {
+#if defined(CONFIG_BOARD_WS_C5_35)
+    if(uart_set_baudrate(GPS_UART_NUM,target)!=ESP_OK)return false;
+    s_gps_applied_baud=target;
+    ESP_LOGI(TAG,"GPS_RX_LOCAL_BAUD board=WS35 baud=%d module_not_reconfigured=1",target);
+    return true;
+#endif
 #if defined(CONFIG_BOARD_CYD2USB)
     (void)target; return false; // RX-only: UI must not claim a commanded baud change
 #endif
@@ -42453,7 +42468,7 @@ static void gps_classic_poll(void)
     static int64_t window_end = 0;
     const int bauds[] = { g_wd_gps_baud, 115200, 38400, 9600 };
     uint8_t chunk[128];
-    int n = uart_read_bytes(GPS_UART_NUM, chunk, sizeof(chunk), 0);
+    int n = gps_uart_consumer_read( chunk, sizeof(chunk), 0);
     if (n < 0) { ESP_LOGW(TAG, "Classic GPS UART read error"); return; }
     for (int i = 0; i < n; ++i) {
         char c = (char)chunk[i];
@@ -42493,7 +42508,26 @@ static void gps_classic_poll(void)
 
 static esp_err_t init_gps_uart(void)
 {
-#if defined(CONFIG_BOARD_CYD2USB)
+#if defined(CONFIG_BOARD_WS_C5_35)
+    gps_load_baud_setting();
+    uart_config_t gps_rx_only_ws35={.baud_rate=g_wd_gps_baud,.data_bits=UART_DATA_8_BITS,
+        .parity=UART_PARITY_DISABLE,.stop_bits=UART_STOP_BITS_1,
+        .flow_ctrl=UART_HW_FLOWCTRL_DISABLE,.source_clk=UART_SCLK_DEFAULT};
+    esp_err_t err=gpio_reset_pin(GPS_TX_PIN);
+    if(err==ESP_OK)err=gpio_set_direction(GPS_TX_PIN,GPIO_MODE_INPUT);
+    if(err==ESP_OK)err=gpio_reset_pin(GPS_RX_PIN);
+    if(err==ESP_OK)err=gpio_set_direction(GPS_RX_PIN,GPIO_MODE_INPUT);
+    if(err!=ESP_OK)return err;
+    err=uart_driver_install(GPS_UART_NUM,GPS_BUF_SIZE*2,0,0,NULL,0);
+    if(err!=ESP_OK)return err;
+    err=uart_param_config(GPS_UART_NUM,&gps_rx_only_ws35);
+    if(err==ESP_OK)err=uart_set_pin(GPS_UART_NUM,UART_PIN_NO_CHANGE,GPS_RX_PIN,UART_PIN_NO_CHANGE,UART_PIN_NO_CHANGE);
+    if(err!=ESP_OK){uart_driver_delete(GPS_UART_NUM);return err;}
+    s_gps_applied_baud=g_wd_gps_baud;
+    ESP_LOGI(TAG,"GPS_RX_OWNER board=WS35 uart=%d rx=%d tx_detached=%d baud=%d reader=monitor config_writes=0 console=primary_USB input_level=%d routing=GPIO_matrix hardware_unqualified=1",
+        GPS_UART_NUM,GPS_RX_PIN,GPS_TX_PIN,s_gps_applied_baud,gpio_get_level(GPS_RX_PIN));
+    return ESP_OK;
+#elif defined(CONFIG_BOARD_CYD2USB)
 
 	gps_load_baud_setting();   // must precede gps_autodetect_and_sync()
 	uart_config_t uart_config = {
@@ -42781,14 +42815,29 @@ static void gps_task(void *arg)
 	static uint16_t s_dbg_gga     = 0;   // [GPSDBG] GGA (position) sentences per window
 	static uint16_t s_dbg_rmc     = 0;   // [GPSDBG] RMC (time/speed) sentences per window
 	static char     s_dbg_line[80] = "";
+#if defined(CONFIG_BOARD_WS_C5_35)
+    gps_rx_ws35_t ws35_rx={0};
+    uint32_t raw_total=0,raw_chunks=0;
+    char raw_preview[49]={0};
+#endif
 	for (;;) {
 		int len = uart_read_bytes(GPS_UART_NUM, (uint8_t *)gps_rx_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
 		if (len > 0) {
 			g_gps_uart_data_seen = true;   // at least one byte received — module is wired up
 			s_dbg_bytes += (uint32_t)len;  // [GPSDBG] throughput accounting
-			gps_rx_buffer[len] = '\0';
-			char *line = strtok(gps_rx_buffer, "\r\n");
-			while (line != NULL) {
+#if defined(CONFIG_BOARD_WS_C5_35)
+            raw_total+=(uint32_t)len;raw_chunks++;
+            size_t shown=(size_t)len<48?(size_t)len:48;
+            for(size_t j=0;j<shown;j++)raw_preview[j]=(gps_rx_buffer[j]>=32&&gps_rx_buffer[j]<=126)?gps_rx_buffer[j]:'.';
+            raw_preview[shown]=0;
+            for(int offset=0;offset<len;offset++){
+                if(!gps_rx_ws35_push(&ws35_rx,(unsigned char)gps_rx_buffer[offset]))continue;
+                char *line=ws35_rx.line;
+#else
+            gps_rx_buffer[len] = '\0';
+            char *line = strtok(gps_rx_buffer, "\r\n");
+            while (line != NULL) {
+#endif
 				if (line[0] == '$') {       // remember last well-formed sentence for the debug line
 					strncpy(s_dbg_line, line, sizeof(s_dbg_line) - 1);
 					s_dbg_line[sizeof(s_dbg_line) - 1] = '\0';
@@ -42796,8 +42845,10 @@ static void gps_task(void *arg)
 					else if (strstr(line, "RMC")) s_dbg_rmc++;   // time/speed cadence
 				}
 				parse_gps_nmea(line);
-				line = strtok(NULL, "\r\n");
-			}
+#if !defined(CONFIG_BOARD_WS_C5_35)
+                line = strtok(NULL, "\r\n");
+#endif
+            }
 		}
 		// GPS status heartbeat (every 5 s). bytes/s>0 with last=[] (no valid $G
 		// sentence) means our UART baud does not match the module — the auto-detect
@@ -42813,7 +42864,13 @@ static void gps_task(void *arg)
 				         (unsigned)s_dbg_gga, (unsigned)s_dbg_rmc, (unsigned long)fixes,
 				         current_gps.satellites, (int)current_gps.valid,
 				         (double)current_gps.latitude, (double)current_gps.longitude, s_dbg_line);
-			s_dbg_bytes = 0; s_dbg_gga = 0; s_dbg_rmc = 0;
+#if defined(CONFIG_BOARD_WS_C5_35)
+            if(g_gps_debug_serial&&cym_debug_enabled())ESP_LOGI(TAG,
+                "GPS_RAW_RX board=WS35 uart=%d rx=%d baud=%d bytes5s=%lu total=%lu chunks=%lu input_level=%d sample=[%s] reader=monitor tx=detached hardware_unqualified=1",
+                GPS_UART_NUM,GPS_RX_PIN,s_gps_applied_baud,(unsigned long)s_dbg_bytes,(unsigned long)raw_total,(unsigned long)raw_chunks,gpio_get_level(GPS_RX_PIN),raw_preview);
+            raw_chunks=0;raw_preview[0]=0;
+#endif
+            s_dbg_bytes = 0; s_dbg_gga = 0; s_dbg_rmc = 0;
 			s_dbg_line[0] = '\0';
 		}
 		vTaskDelay(pdMS_TO_TICKS(100));

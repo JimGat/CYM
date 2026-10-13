@@ -23,6 +23,15 @@ static const float GAME_AUDIO_VOLUME_DB = 9.0f;
 static QueueHandle_t audio_queue;
 static TaskHandle_t audio_task;
 static bool audio_stop,audio_done,audio_failed;
+/* Failed init alone is not permission: stopped ownership and PA OFF must be verified. */
+static bool silent_cleanup_ok;
+bool doom_audio_silent_ready(void){
+#if CONFIG_BOARD_WS_C5_28
+ return silent_cleanup_ok&&!enabled&&!tx&&!ctrl&&!codec&&!audio_task&&!audio_queue;
+#else
+ return false;
+#endif
+}
 typedef struct {int16_t pcm[DOOM_AUDIO_BLOCK];} audio_block;
 /* One bounded write, called only by the copied-buffer owner. Empty queue emits
  * measured silence rather than replaying stale sound or changing sample rate. */
@@ -64,6 +73,7 @@ bool doom_audio_healthy(void){return enabled&&!__atomic_load_n(&audio_failed,__A
 /* DMA owns copied PCM only. On disable/delete failure retain handles so the
  * UI cannot claim joined cleanup and free engine state underneath ownership. */
 int doom_audio_end(void){
+ silent_cleanup_ok=false;
  __atomic_store_n(&audio_stop,true,__ATOMIC_RELEASE);
  if(audio_task){
   for(unsigned waited=0;waited<100;waited++){
@@ -91,15 +101,17 @@ int doom_audio_end(void){
  }
  if(enabled){if(i2s_channel_disable(tx)!=ESP_OK)return -1;enabled=false;}
  if(tx){if(i2s_del_channel(tx)!=ESP_OK)return -1;tx=NULL;}
- if(codec){audio_codec_delete_codec_if(codec);codec=NULL;}
- if(ctrl){audio_codec_delete_ctrl_if(ctrl);ctrl=NULL;}
+ if(codec){if(audio_codec_delete_codec_if(codec)!=ESP_OK)return -1;codec=NULL;}
+ if(ctrl){if(audio_codec_delete_ctrl_if(ctrl)!=ESP_OK)return -1;ctrl=NULL;}
  ESP_LOGI("CYM_DOOM","AUDIO_STOPPED synchronous_owner DMA_released=%d",tx==NULL);
+ silent_cleanup_ok=ok&&!enabled&&!tx&&!ctrl&&!codec&&!audio_task&&!audio_queue;
  return ok?0:-1;
 }
 bool doom_audio_begin(void){
+ silent_cleanup_ok=false;
  if(tx||codec||ctrl||audio_task||audio_queue)return false;
  audio_stop=audio_done=audio_failed=false;
- void *bus=cym_game_audio_bus();if(!bus||!cym_game_audio_amp(false))return false;
+ void *bus=cym_game_audio_bus();if(!bus||!cym_game_audio_amp(false))goto fail;
  i2s_chan_config_t ch=I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,I2S_ROLE_MASTER);
  ch.dma_desc_num=4;ch.dma_frame_num=256;ch.auto_clear=true;
  if(i2s_new_channel(&ch,&tx,NULL)!=ESP_OK)goto fail;
@@ -130,8 +142,9 @@ bool doom_audio_begin(void){
  ESP_LOGI("CYM_DOOM","AUDIO_STARTED configuration_verified audible=unconfirmed ES8311 rate=%d BCLK=%d LRCLK=%d DOUT=%d volume_db=%.0f SFX_ONLY",RATE,BCLK,LRCLK,DOUT,(double)GAME_AUDIO_VOLUME_DB);
  return true;
 fail:
- ESP_LOGE("CYM_DOOM","AUDIO_INIT_FAILED ES8311/I2S/PA - exit and reboot");
- (void)doom_audio_end();return false;
+ int cleanup_rc=doom_audio_end();
+ ESP_LOGE("CYM_DOOM","AUDIO_INIT_FAILED ES8311/I2S/PA cleanup_rc=%d silent_safe=%u audible=unconfirmed",cleanup_rc,doom_audio_silent_ready());
+ return false;
 }
 bool doom_audio_write(const int16_t *pcm,size_t count){
  if(!doom_audio_healthy()||!audio_queue||!pcm||count!=DOOM_AUDIO_BLOCK||__atomic_load_n(&audio_stop,__ATOMIC_ACQUIRE))return false;

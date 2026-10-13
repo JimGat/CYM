@@ -153,7 +153,7 @@ static int uart_read_bytes(int u,uint8_t *b,int size,int wait) {
  if(!*input) return 0;
  *b=*input++; return 1;
 }
-'''+checksum+'\n'+probe+r'''
+'''+checksum+'\n'+'typedef int TickType_t;\n'+function('gps_uart_consumer_read')+'\n'+probe+r'''
 static bool run(const char *s) { input=s; clock_us=0; return gps_probe_nmea(9600,1300); }
 int main(void) {
  assert(!run("noise$Gnoise"));

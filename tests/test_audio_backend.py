@@ -19,7 +19,8 @@ STUB=r"""#ifndef AUDIO_BACKEND_STUB_H
 #define ES8311_CODEC_DEFAULT_ADDR 0x30
 void backend_log(const char *tag,const char *fmt,...);
 #define ESP_LOGI backend_log
-#define ESP_LOGE(...) ((void)0)
+#define ESP_LOGE backend_log
+#define ESP_LOGW backend_log
 typedef void *i2s_chan_handle_t;
 typedef struct {int dma_desc_num,dma_frame_num;bool auto_clear;} i2s_chan_config_t;
 #define I2S_CHANNEL_DEFAULT_CONFIG(a,b) {0}
@@ -55,7 +56,7 @@ doom_metrics_t doom_metrics;
 #include <stdlib.h>
 #include <string.h>
 static int seq,fail_at=-1,tx_live,tx_on,ctrl_live,codec_live,amp_on,short_write;
-static int read_fail,bad_reg,muted,codec_enabled;
+static int read_fail,bad_reg,muted,codec_enabled,amp_off_fail;
 static float observed_volume;static unsigned started_logs;
 #include <stdarg.h>
 void backend_log(const char*tag,const char*fmt,...){(void)tag;char line[1024];va_list ap;va_start(ap,fmt);vsnprintf(line,sizeof(line),fmt,ap);va_end(ap);
@@ -65,7 +66,7 @@ unsigned v=0;switch(reg){case 0x00:v=0x80;break;case 0x01:v=0xbf;break;case 0x02
 static audio_codec_ctrl_if_t ci={read_reg};
 static int op(void){return seq++==fail_at?-1:0;}
 void *cym_game_audio_bus(void){return &ci;}
-bool cym_game_audio_amp(bool on){if(op())return false;amp_on=on;return true;}
+bool cym_game_audio_amp(bool on){if(op()||(!on&&amp_off_fail))return false;amp_on=on;return true;}
 int i2s_new_channel(const i2s_chan_config_t *c,i2s_chan_handle_t *p,void *rx){assert(!rx);assert(c->dma_desc_num==4&&c->dma_frame_num==256&&c->auto_clear);if(op())return -1;*p=&tx_live;tx_live=1;return 0;}
 int i2s_channel_init_std_mode(i2s_chan_handle_t t,const i2s_std_config_t*c){assert(t);assert(c->clk_cfg.rate==22050&&c->slot_cfg.bits==16&&c->slot_cfg.mode==1);assert(c->gpio_cfg.mclk==-1&&c->gpio_cfg.din==-1);
 #if CONFIG_BOARD_WS_C5_28
@@ -84,9 +85,9 @@ static int enable(const audio_codec_if_t*c,bool v){(void)c;if(op())return -1;cod
 static int fs(const audio_codec_if_t*c,esp_codec_dev_sample_info_t*f){(void)c;assert(f->sample_rate==22050&&f->bits_per_sample==16&&f->channel==1);return op();}
 static int vol(const audio_codec_if_t*c,float db){(void)c;assert(db==9.0f);assert(muted&&!codec_enabled&&!amp_on&&!tx_on);observed_volume=db;return op();}
 static const audio_codec_if_t co={mute,enable,fs,vol};
-const audio_codec_if_t *es8311_codec_new(es8311_codec_cfg_t*c){assert(c->hw_gain.pa_voltage==3.3f&&c->hw_gain.codec_dac_voltage==3.3f);assert(c->ctrl_if==&ci&&!c->master_mode&&!c->use_mclk&&c->pa_pin==-1&&c->codec_mode==1);if(op())return NULL;codec_live=1;return &co;}
-int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);codec_live=0;return 0;}
-int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*c){assert(c==&ci);ctrl_live=0;return 0;}
+const audio_codec_if_t *es8311_codec_new(es8311_codec_cfg_t*c){assert(c->hw_gain.pa_voltage==3.3f&&c->hw_gain.codec_dac_voltage==3.3f);assert(c->ctrl_if==&ci&&!c->master_mode&&!c->use_mclk&&c->pa_pin==-1&&c->codec_mode==1);if(op())return NULL;codec_live=1;codec_enabled=muted=0;return &co;}
+int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);if(op())return -1;codec_live=0;return 0;}
+int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*c){assert(c==&ci);if(op())return -1;ctrl_live=0;return 0;}
 static void (*task_fn)(void*);
 static int task_state,task_deleted,queue_fail,task_fail,task_block;
 typedef struct mock_queue {unsigned n,head,tail;size_t size;unsigned char data[8][520];} mock_queue;
@@ -102,7 +103,13 @@ void vTaskSuspend(void*h){(void)h;task_state=eSuspended;}
 void vTaskDelay(int t){(void)t;if(!task_block&&audio_stop&&task_state!=eSuspended)task_fn(NULL);}
 int main(void){bad_reg=-1;int16_t pcm[DOOM_AUDIO_BLOCK];for(unsigned i=0;i<DOOM_AUDIO_BLOCK;i++)pcm[i]=123;
 assert(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK));
-for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);}
+for(int fail=0;fail<20;fail++){seq=0;fail_at=fail;(void)doom_audio_begin();fail_at=-1;assert(doom_audio_end()==0);
+#if CONFIG_BOARD_WS_C5_28
+assert(doom_audio_silent_ready());
+#else
+assert(!doom_audio_silent_ready());
+#endif
+assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);}
 read_fail=1;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);read_fail=0;
 for(int reg=0;reg<=0x37;reg++){if(reg==0||reg==1||reg==2||reg==6||reg==9||reg==0x0d||reg==0x12||reg==0x14||reg==0x31||reg==0x37){bad_reg=reg;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);}}bad_reg=-1;
 queue_fail=1;assert(!doom_audio_begin());queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
@@ -116,7 +123,13 @@ assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!a
 assert(doom_audio_begin());
 /* Ack alone is not a join: timeout preserves live task, queue and handles. */
 audio_done=true;task_block=1;assert(doom_audio_end()!=0);assert(audio_task&&audio_queue&&tx_live&&tx_on);task_block=0;audio_done=false;assert(doom_audio_end()==0);
-assert(doom_audio_begin());fail_at=seq+3;assert(doom_audio_end()!=0);assert(tx_live);fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live);
+assert(doom_audio_begin());assert(!doom_audio_silent_ready());fail_at=seq+3;assert(doom_audio_end()!=0);assert(tx_live&&!doom_audio_silent_ready());fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live);
+/* Every PA/codec/I2S/delete cleanup fault forbids silent admission until a verified retry. */
+for(int fail=0;fail<7;fail++){assert(doom_audio_begin());fail_at=seq+fail;assert(doom_audio_end()!=0);assert(!doom_audio_silent_ready());fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!codec_live&&!ctrl_live&&!audio_task&&!audio_queue);}
+amp_off_fail=1;assert(!doom_audio_begin());assert(!doom_audio_silent_ready());amp_off_fail=0;assert(doom_audio_end()==0);
+#if CONFIG_BOARD_WS_C5_28
+assert(doom_audio_silent_ready());
+#endif
 puts("PRODUCTION_AUDIO_BACKEND both board routes, copied queue/demand, silence starvation, fault/stop/join retention PASS (mock driver, not hardware)");return 0;}
 
 """

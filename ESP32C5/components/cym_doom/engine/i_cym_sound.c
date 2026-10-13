@@ -9,6 +9,7 @@
 #include "doom_audio.h"
 #ifdef ESP_PLATFORM
 #include "doom_metrics.h"
+#include "esp_log.h"
 #endif
 #include <stdio.h>
 #include <string.h>
@@ -32,19 +33,36 @@ static doom_boolean init(doom_boolean p){prefix=p;memset(&mixer,0,sizeof(mixer))
  last_ms=DG_GetTicksMs();
 #endif
 #ifdef ESP_PLATFORM
- if(!ready)doom_engine_fail("ES8311/I2S audio initialization failed");
+ if(!ready){
+  if(!doom_audio_silent_ready())doom_engine_fail("ES8311/I2S audio initialization or cleanup failed");
+  ESP_LOGW("AUDIO","AUDIO_SILENT_FALLBACK board=WS28 reason=init_failed cleanup=verified audible=unconfirmed");
+ }
 #endif
  return ready;}
 static void shutdown(void){(void)doom_sound_stop();}
 static int lumpnum(sfxinfo_t *s){char name[12];if(s->link)s=s->link;snprintf(name,sizeof(name),"%s%.8s",prefix?"ds":"",s->name);return W_GetNumForName(name);}
+#ifdef ESP_PLATFORM
+static bool degrade_safely(const char *reason){
+ if(doom_audio_end()!=0||!doom_audio_silent_ready())return false;
+ ready=false;memset(&mixer,0,sizeof(mixer));
+ ESP_LOGW("AUDIO","AUDIO_SILENT_FALLBACK board=WS28 reason=%s cleanup=verified audible=unconfirmed",reason);
+ return true;
+}
+#endif
 static void update(void){if(!ready)return;
 #ifdef ESP_PLATFORM
- if(!doom_audio_healthy())doom_engine_fail("Copied PCM worker output fault");
+ if(!doom_audio_healthy()){
+  if(degrade_safely("worker_output_fault"))return;
+  doom_engine_fail("Copied PCM worker output fault or unsafe cleanup");
+ }
  /* Demand follows actual fixed-rate sink consumption, not truncated elapsed
   * engine time. Bounded lookahead: six 256-sample blocks (~70 ms) plus DMA. */
  unsigned blocks=doom_audio_demand();int16_t pcm[DOOM_AUDIO_BLOCK];
  for(unsigned b=0;b<blocks;b++){doom_mixer_render(&mixer,pcm,DOOM_AUDIO_BLOCK,22050);
-  if(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK))doom_engine_fail("PCM queue admission fault");}
+  if(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK)){
+   if(degrade_safely("queue_admission_failed"))return;
+   doom_engine_fail("PCM queue admission fault or unsafe cleanup");
+  }}
 #else
  uint32_t now=DG_GetTicksMs(),ms=now-last_ms;if(!ms)return;last_ms=now;if(ms>50)ms=50;
  int16_t pcm[1103];size_t n=(size_t)ms*22050/1000;doom_mixer_render(&mixer,pcm,n,22050);
