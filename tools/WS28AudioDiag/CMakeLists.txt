@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../ESP32C5/managed_components/espressif__esp_codec_dev")
+set(COMPONENTS main)
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+set(PROJECT_VER "v0.1.0")
+project(WS28AudioDiag)

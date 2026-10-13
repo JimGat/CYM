@@ -6,3 +6,11 @@ HERMES.md
 /tools/ClassicCYDgpsTest/sdkconfig
 /tools/ClassicCYDgpsTest/dependencies.lock
 /tools/ClassicCYDgpsTest/managed_components/
+
+# WS28AudioDiag standalone intermediates
+/tools/WS28AudioDiag/build/
+/tools/WS28AudioDiag/sdkconfig
+/tools/WS28AudioDiag/sdkconfig.old
+/tools/WS28AudioDiag/dependencies.lock
+/tools/WS28AudioDiag/managed_components/
+/tools/WS28AudioDiag/tests/__pycache__/
