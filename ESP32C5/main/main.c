@@ -2032,6 +2032,8 @@ static wdp_ble_device_t *wdp_ble_devices = NULL;
 static uint32_t wdp_ble_capacity = 0;
 static bool wdp_ble_full_logged = false;
 static bool wdp_ble_accepting = false;
+static bool wdp_ble_cleanup_pending = false;
+static const char *wdp_ble_cleanup_reason = "ready";
 static unsigned wdp_ble_inflight = 0;
 static volatile int      wdp_ble_count   = 0;
 static bool              g_wd_ble        = true;   // always on — coex handles RF sharing
@@ -2092,6 +2094,7 @@ static TaskHandle_t wardrive_task_handle = NULL;
 static StaticTask_t wardrive_task_buffer;
 static StackType_t *wardrive_task_stack = NULL;
 static volatile bool wardrive_active = false;
+static bool wardrive_capture_ready = false;
 static bool wardrive_task_done = false;
 
 static void wardrive_task_finish(void)
@@ -2208,6 +2211,17 @@ typedef struct { char text[128]; lv_color_t color; } wdup_ui_msg_t;
 static wd_band_t         g_wd_band         = WD_BAND_BOTH;
 static bool              g_wd_pcap         = false;
 static wd_radio_mode_t   g_wd_radio_mode   = WD_RADIO_WIFI_ONLY;  // default: WiFi only (recommended for SD writes)
+static const char *wardrive_channel_status(void)
+{
+    if (__atomic_load_n(&wdp_ble_cleanup_pending, __ATOMIC_SEQ_CST))
+        return nimble_deinit_failed ? "FAILED" : "CLEANUP";
+    if (!wardrive_active)
+        return wardrive_task_handle && !__atomic_load_n(&wardrive_task_done, __ATOMIC_SEQ_CST)
+               ? "STOPPING" : "STOPPED";
+    if (!__atomic_load_n(&wardrive_capture_ready, __ATOMIC_SEQ_CST)) return "START";
+    return g_wd_radio_mode == WD_RADIO_BLE_ONLY ? "SCAN" : NULL;
+}
+
 static void            (*wdup_back_fn)(void) = NULL;
 // Wardrive upload task stack (allocated from PSRAM to avoid internal heap exhaustion during TLS)
 static StackType_t     *wdup_task_stack        = NULL;
@@ -10021,14 +10035,18 @@ void app_main(void)
                 wd_ui_update_flag = false;
 
                 // BLE-only shows a static "SCAN" (no D-UCB channel hopping) — don't overwrite it.
-                if (wd_ui_channel_label && lv_obj_is_valid(wd_ui_channel_label)
-                        && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
+                if (wd_ui_channel_label && lv_obj_is_valid(wd_ui_channel_label)) {
+                    const char *status = wardrive_channel_status();
                     char wd_ch_buf[16];
+                    if (status) {
+                        lv_label_set_text(wd_ui_channel_label, status);
+                    } else {
                     if (wdp_current_channel < 0)
                         snprintf(wd_ch_buf, sizeof(wd_ch_buf), "BLE");
                     else
                         snprintf(wd_ch_buf, sizeof(wd_ch_buf), "CH %d", wdp_current_channel);
                     lv_label_set_text(wd_ui_channel_label, wd_ch_buf);
+                    }
                 }
 
                 if (wd_ui_gps_label && lv_obj_is_valid(wd_ui_gps_label)) {
@@ -13563,24 +13581,64 @@ static int wdp_ble_gap_cb(struct ble_gap_event *event, void *arg)
 static bool wdp_ble_session_end(void)
 {
     __atomic_store_n(&wdp_ble_accepting, false, __ATOMIC_SEQ_CST);
-    if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return false;
+    wdp_ble_cleanup_reason = "ready";
+    if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) {
+        wdp_ble_cleanup_reason = nimble_deinit_failed ? "nimble-deinit-failed" : "nimble-join-pending";
+        __atomic_store_n(&wdp_ble_cleanup_pending, true, __ATOMIC_SEQ_CST);
+        return false;
+    }
     for (int i = 0; i < 30 && __atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST); ++i)
         vTaskDelay(pdMS_TO_TICKS(10));
-    if (__atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST)) return false;
-    // Dashboard readers hold the existing LVGL mutex. Never free beneath them.
-    if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) != pdTRUE) return false;
-    if (wdp_ble_devices) heap_caps_free(wdp_ble_devices);
-    wdp_ble_devices = NULL;
-    wdp_ble_capacity = 0;
-    wdp_ble_count = 0;
-    wdp_ble_full_logged = false;
-    if (lvgl_mutex) xSemaphoreGive(lvgl_mutex);
+    if (__atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST)) {
+        wdp_ble_cleanup_reason = "callbacks-pending";
+        __atomic_store_n(&wdp_ble_cleanup_pending, true, __ATOMIC_SEQ_CST);
+        return false;
+    }
+    // With the host joined and callbacks drained, an absent table has no dashboard
+    // reader to protect. Do not require the UI lock for a resource-free session.
+    if (wdp_ble_devices) {
+        // Dashboard readers hold this mutex. Retain the table on contention.
+        if (lvgl_mutex && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+            wdp_ble_cleanup_reason = "ui-lock-pending";
+            __atomic_store_n(&wdp_ble_cleanup_pending, true, __ATOMIC_SEQ_CST);
+            return false;
+        }
+        heap_caps_free(wdp_ble_devices);
+        wdp_ble_devices = NULL;
+        wdp_ble_capacity = 0;
+        wdp_ble_count = 0;
+        wdp_ble_full_logged = false;
+        if (lvgl_mutex) xSemaphoreGive(lvgl_mutex);
+    }
+    __atomic_store_n(&wdp_ble_cleanup_pending, false, __ATOMIC_SEQ_CST);
     return true;
 }
 
 static bool wdp_ble_session_begin(void)
 {
-    if (!wdp_ble_session_end()) return false;
+    // Admission retries apply to retained ownership, not to the selected radio
+    // mode. One second / ten attempts bounds transient retries; each attempt
+    // retains the existing bounded host join and callback-drain limits.
+    const int64_t retry_deadline = esp_timer_get_time() + 1000000;
+    bool cleaned = false;
+    for (unsigned attempt = 0; attempt < 10; ++attempt) {
+        if (!wardrive_active) { wdp_ble_cleanup_reason = "cancelled"; break; }
+        if (attempt && esp_timer_get_time() >= retry_deadline) break;
+        if (wdp_ble_session_end()) { cleaned = true; break; }
+        if (nimble_deinit_failed) break; // terminal fault: no retry or ownership bypass
+        if (!attempt)
+            ESP_LOGW(TAG, "[WD_START] cleanup pending predicate=%s; ownership retained",
+                     wdp_ble_cleanup_reason);
+        if (esp_timer_get_time() >= retry_deadline || !wardrive_active) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (!wardrive_active) wdp_ble_cleanup_reason = "cancelled";
+    if (!cleaned || !wardrive_active) {
+        ESP_LOGW(TAG, "[WD_START] refused predicate=%s mode=%d table=%d port=%d callbacks=%u",
+                 wdp_ble_cleanup_reason, (int)g_wd_radio_mode, wdp_ble_devices != NULL,
+                 nimble_port_initialized, __atomic_load_n(&wdp_ble_inflight, __ATOMIC_SEQ_CST));
+        return false;
+    }
     wdp_ble_capacity = 0;
     wdp_ble_count = 0;
     wdp_ble_full_logged = false;
@@ -13597,6 +13655,8 @@ static bool wdp_ble_session_begin(void)
     }
 #endif
     if (!wdp_ble_devices) {
+        wdp_ble_cleanup_reason = "ble-allocation-failed";
+        ESP_LOGE(TAG, "[WD_START] refused predicate=ble-allocation-failed");
         ESP_LOGE(TAG, "Wardrive stopped: BLE dedup allocation failed");
         return false;
     }
@@ -14967,24 +15027,35 @@ static void wardrive_promisc_task(void *pvParameters) {
     // ================================================
 
     wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
-    // Start WiFi promiscuous only if not BLE-only mode
-    if (wardrive_active && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
-        esp_wifi_set_promiscuous_filter(&filt);
-        esp_wifi_set_promiscuous_rx_cb(wdp_promiscuous_cb);
-        esp_wifi_set_promiscuous(true);
-
-        // Pin the reg-domain (GPS-derived) so EU DFS ch 100-144 become tunable. Must
-        // run after esp_wifi_start()/promiscuous is up; persists for a WiFi-only drive
-        // (the coex-restore path below re-applies it for combined mode).
-        wdp_apply_wardrive_country();
-
-        // ========== DMA TRACKING: After promisc ==========
-        size_t dma_after_promisc = heap_caps_get_free_size(MALLOC_CAP_DMA);
-        ESP_LOGI(TAG, "[DMA_TRACK] After promisc start — DMA: %u bytes (lost: %u)",
-                 (unsigned)dma_after_promisc, (unsigned)(dma_before - dma_after_promisc));
-        // =================================================
-    } else {
+    // Mode and lifecycle admission are distinct; never label a failed WiFi start BLE-only.
+    if (!wardrive_active) {
+        ESP_LOGW(TAG, "[WD_START] capture not started: lifecycle refused or cancelled mode=%d",
+                 (int)g_wd_radio_mode);
+    } else if (g_wd_radio_mode == WD_RADIO_BLE_ONLY) {
         ESP_LOGI(TAG, "Wardrive BLE-only mode: WiFi promiscuous disabled");
+    } else {
+        const char *predicate = "wifi-filter";
+        esp_err_t rc = esp_wifi_set_promiscuous_filter(&filt);
+        if (rc == ESP_OK) {
+            predicate = "wifi-callback";
+            rc = esp_wifi_set_promiscuous_rx_cb(wdp_promiscuous_cb);
+        }
+        if (rc == ESP_OK) {
+            predicate = "wifi-enable";
+            rc = esp_wifi_set_promiscuous(true);
+        }
+        if (rc != ESP_OK) {
+            wardrive_active = false;
+            ESP_LOGE(TAG, "[WD_START] refused predicate=%s rc=%d", predicate, (int)rc);
+        } else {
+            // Preserve GPS-derived regulatory policy after promiscuous admission.
+            wdp_apply_wardrive_country();
+            __atomic_store_n(&wardrive_capture_ready, true, __ATOMIC_SEQ_CST);
+            ESP_LOGI(TAG, "[WD_START] WiFi capture enabled; physical reception unverified");
+            size_t dma_after_promisc = heap_caps_get_free_size(MALLOC_CAP_DMA);
+            ESP_LOGI(TAG, "[DMA_TRACK] After promisc start — DMA: %u bytes (lost: %u)",
+                     (unsigned)dma_after_promisc, (unsigned)(dma_before - dma_after_promisc));
+        }
     }
 
     // Start BLE scan only if BLE-only mode (WiFi-only doesn't use BLE).
@@ -15037,6 +15108,11 @@ static void wardrive_promisc_task(void *pvParameters) {
             ESP_LOGE(TAG, "[BLE_INSTRUMENTATION] bt_nimble_init() FAILED");
             wardrive_active = false;
         }
+    }
+
+    if (wardrive_active && ble_continuous) {
+        __atomic_store_n(&wardrive_capture_ready, true, __ATOMIC_SEQ_CST);
+        ESP_LOGI(TAG, "[WD_START] BLE capture enabled; physical reception unverified");
     }
 
     int64_t last_stats_us = esp_timer_get_time();
@@ -15442,7 +15518,8 @@ static void wardrive_promisc_task(void *pvParameters) {
     if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
 
     if (!wdp_ble_session_end())
-        ESP_LOGW(TAG, "Wardrive BLE cleanup pending; table/port retained safely");
+        ESP_LOGW(TAG, "Wardrive BLE cleanup %s predicate=%s; table/port retained safely",
+                 nimble_deinit_failed ? "failed" : "pending", wdp_ble_cleanup_reason);
 
     wardrive_active = false;
 
@@ -15461,6 +15538,8 @@ static void wardrive_promisc_task(void *pvParameters) {
         ensure_wifi_mode();  // driver was esp_wifi_deinit()'d, needs full wifi_cli_init()
     }
 
+    __atomic_store_n(&wardrive_capture_ready, false, __ATOMIC_SEQ_CST);
+
     // Publish completion LAST and suspend: the observer deletes this static task
     // and frees its stack only after eTaskGetState confirms suspension.
     wardrive_task_finish();
@@ -15470,16 +15549,15 @@ static void wardrive_promisc_task(void *pvParameters) {
 static void wd_ui_timer_cb(lv_timer_t *timer) {
     (void)timer;
     if (!wardrive_ui_active) return;
-    if (!wardrive_active && wd_ui_channel_label) lv_label_set_text(wd_ui_channel_label, "STOPPED");
-
-    // In BLE-only mode the box shows a static "SCAN" (no D-UCB channel hopping) — don't overwrite it.
-    if (wardrive_active && wd_ui_channel_label && g_wd_radio_mode != WD_RADIO_BLE_ONLY) {
-        char wd_ch_buf[16];
-        if (wdp_current_channel < 0)
-            snprintf(wd_ch_buf, sizeof(wd_ch_buf), "BLE");
-        else
-            snprintf(wd_ch_buf, sizeof(wd_ch_buf), "CH %d", wdp_current_channel);
-        lv_label_set_text(wd_ui_channel_label, wd_ch_buf);
+    if (wd_ui_channel_label) {
+        const char *status = wardrive_channel_status();
+        if (status) lv_label_set_text(wd_ui_channel_label, status);
+        else {
+            char wd_ch_buf[16];
+            if (wdp_current_channel < 0) snprintf(wd_ch_buf, sizeof(wd_ch_buf), "BLE");
+            else snprintf(wd_ch_buf, sizeof(wd_ch_buf), "CH %d", wdp_current_channel);
+            lv_label_set_text(wd_ui_channel_label, wd_ch_buf);
+        }
     }
 
     // GPS status
@@ -15912,7 +15990,7 @@ static void wardrive_start_btn_cb(lv_event_t *e)
     lv_obj_align(wd_ch_title, LV_ALIGN_TOP_MID, 0, 2);
 
     wd_ui_channel_label = lv_label_create(wd_ch_box);
-    lv_label_set_text(wd_ui_channel_label, wd_ble_only ? "SCAN" : "CH --");
+    lv_label_set_text(wd_ui_channel_label, "START");
     lv_obj_set_style_text_color(wd_ui_channel_label, ui_text_color(), 0);
     lv_obj_set_style_text_font(wd_ui_channel_label, &lv_font_montserrat_16, 0);
     lv_obj_align(wd_ui_channel_label, LV_ALIGN_BOTTOM_MID, 0, -2);
@@ -16170,6 +16248,7 @@ static void wardrive_start_btn_cb(lv_event_t *e)
     }
 
     ESP_LOGI(TAG, "Starting Wardrive (promisc+D-UCB)...");
+    __atomic_store_n(&wardrive_capture_ready, false, __ATOMIC_SEQ_CST);
     wardrive_active = true;
     __atomic_store_n(&wardrive_task_done, false, __ATOMIC_SEQ_CST);
     // ESP-IDF StackType_t is uint8_t; depth and allocation are BYTES on both SoCs.
@@ -16222,7 +16301,9 @@ static void wardrive_screen_stop(void)
         if (!wardrive_reap_task())
             ESP_LOGW(TAG, "Wardrive cleanup pending; running task/stack retained");
 
-        ESP_LOGI(TAG, "Wardrive stopped");
+        ESP_LOGI(TAG, "Wardrive %s", wardrive_task_handle ||
+                 __atomic_load_n(&wdp_ble_cleanup_pending, __ATOMIC_SEQ_CST)
+                 ? "stop requested; cleanup pending" : "stopped");
     }
 
     // Restore WiFi if we stopped it for BLE-only mode
