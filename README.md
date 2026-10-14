@@ -35,6 +35,8 @@
 
 ## v3.0.0 milestone release
 
+**Firmware refresh:** the existing [v3.0.0 release](https://github.com/JimGat/CYM/releases/tag/v3.0.0) now provides **v3.0.1** firmware with the Wardrive startup hotfix. Stable Web Flasher installs v3.0.1; the v3.0.0 announcement URL and original tag are retained. [Refresh details](docs/releases/v3.0.0.md).
+
 GPS-disciplined off-grid radio Clock, expanded board support, official printable cases by co-developer **@birolt29**, and focused tool and reliability improvements. [Read the release highlights](docs/releases/v3.0.0.md).
 
 ## Off-grid amateur radio Clock — GPS-disciplined NTP and grid square
