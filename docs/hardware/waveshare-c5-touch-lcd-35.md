@@ -1,5 +1,7 @@
 # Waveshare ESP32-C5-Touch-LCD-3.5 — Supported display/touch/RTC profile
 
+Vendor Wiki: [Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35)](https://www.waveshare.com/wiki/ESP32-C5-Touch-LCD-3.5).
+
 Owner-tested display/touch, battery acquisition, RTC synchronization/reboot holdover, and GPS LOCK using the WS-C5-35-only GPIO28 receive route. Battery percentage accuracy and additional peripherals remain unqualified.
 
 CYM support for the **Waveshare ESP32-C5-Touch-LCD-3.5** exists as a dedicated board target (`ws-c5-35`). A dedicated binary and web-flasher entry are available in the normal board selector; select Stable for v3.0.0. This build must not be flashed with the existing WS-C5-28 image — and vice versa.

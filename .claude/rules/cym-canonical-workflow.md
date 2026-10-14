@@ -117,6 +117,16 @@ Build success is NOT sign-off for LVGL/task/lifecycle changes. Real-hardware ser
 is ground truth; review task ownership, timers, and use-after-free before shipping such a binary.
 
 ## 12. Releases, notes, wiki & SD assets
+
+## Waveshare board names and vendor documentation
+
+Use the full vendor identifier alongside the CYM alias on first mention in public documentation, release notes and announcements:
+
+- **Waveshare ESP32-C5-Touch-LCD-2.8 (WS-C5-28)** — https://www.waveshare.com/wiki/ESP32-C5-Touch-LCD-2.8
+- **Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35)** — https://www.waveshare.com/wiki/ESP32-C5-Touch-LCD-3.5
+
+Retain existing firmware target IDs (`ws-c5-28`, `ws-c5-35`), filenames and board-specific qualification limits. The aliases are CYM shorthand, not vendor product identifiers.
+
 A release attaches ALL binaries for ALL release boards. The wiki is a separate repo checkout.
 **SD-asset refresh (USER-CONFIRMED, staleness-gated):** at each release-to-main, check asset age;
 if `ouilist.bin` (or `mf_keys.dic`) is older than **30 days**, refresh it and push to BOTH

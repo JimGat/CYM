@@ -94,6 +94,15 @@ The NM-CYD-C5 can be purchased at [nmminer.com](https://www.nmminer.com/product/
 
 ---
 
+## Waveshare board names and vendor documentation
+
+Use the full vendor identifier alongside the CYM alias on first mention in public documentation, release notes and announcements:
+
+- **Waveshare ESP32-C5-Touch-LCD-2.8 (WS-C5-28)** — https://www.waveshare.com/wiki/ESP32-C5-Touch-LCD-2.8
+- **Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35)** — https://www.waveshare.com/wiki/ESP32-C5-Touch-LCD-3.5
+
+Retain existing firmware target IDs (`ws-c5-28`, `ws-c5-35`), filenames and board-specific qualification limits. The aliases are CYM shorthand, not vendor product identifiers.
+
 ## Supported Hardware
 
 CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in the normal board selector after owner display/touch, battery-telemetry, RTC-holdover and GPIO28 GPS LOCK tests; v3.0.0 is available through the Stable channel. Pancake-C5 remains **Development channel only; not stable** and opt-in with `?beta=1`. Hardware capability and qualification remain board-specific.
