@@ -10,6 +10,42 @@ Jim's ordered unit is **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C**, the version supp
 
 The board adapter was implemented from the [Waveshare ESP32-C5-Touch-LCD-3.5](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5) vendor BSP at commit `04e6134cf3e37309b2bec9915189efeace1161bc`. Pin definitions, CH32V006 IO expander protocol, ST7796 display initialization, and FT6336 touch driver were derived from that BSP.
 
+
+## Important: J3 GPIO/UART routing is not populated on the tested assembly
+
+**Owner continuity-tested finding, 2026-10-13:** on Jim's **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C** unit, **GPIO0, GPIO1, GPIO11, GPIO12, GPIO9 and GPIO4 do not connect to the rear J3 expansion connector**. The fitted zero-ohm selection links route these signals to onboard components instead. This supersedes earlier assumptions that the printed GPIO/UART labels guaranteed usable native ESP32 pins at J3.
+
+This is a measured finding for the tested assembly, not a claim that every SKU, PCB revision or resistor population is identical. The exact PCB revision remains unrecorded. Other owners should check their own board's link population and continuity, with power and the battery disconnected, before wiring external hardware.
+
+| ESP32 GPIO | Selection link | Onboard net selected on the tested unit | Alternative net shown by schematic, not a qualified J3 connection |
+|---|---|---|---|
+| GPIO0 | R55 | CAM_D0 | GPIO0_OUT |
+| GPIO1 | R58 | CAM_D1 | GPIO1_OUT |
+| GPIO11 | R56 | CAM_PCLK | U0TXD |
+| GPIO12 | R59 | CAM_VSYNC2 | U0RXD |
+| GPIO9 | R57 | SDCS | GPIO9_OUT |
+| GPIO4 | R60 | EXIO_INT | LCD_QSPI_IO3 |
+
+The resistor IDs and alternative net names come from the pinned vendor schematic; physical route selection is established by Jim's continuity test, not by the schematic's colors or the photograph alone. In particular, R60's LCD_QSPI_IO3 alternative must not be advertised as a verified spare GPIO at J3.
+
+![Owner's PCB photograph of the selection-link area](https://raw.githubusercontent.com/wiki/JimGat/CYM/images/ws-c5-35-j3-routing-20261013.jpg)
+
+The photograph records the assembly's selection-link area. The image alone does not establish continuity or readable resistor IDs. Public image metadata has been stripped.
+
+### GPS consequence
+
+CYM v2.15.98 includes a receive-only GPS qualification path on UART1/RX GPIO12 at the selected baud (default 9600), with primary USB-C Serial/JTAG logging kept separate. Jim's hardware test still received no GPS data. The missing native J3 route means that software UART selection, GPIO-matrix routing or baud changes cannot connect the module through that header on this assembly. `U0TX`/`U0RX` names do not require use of UART0; the physical connection is the blocker here.
+
+**Do not advertise native J3 UART GPS as working on this assembly.** An external 3.3V-compatible, buffered UART-to-I2C bridge is the preferred proposed workaround. Its exact model, address, wiring and CYM driver remain to be qualified; current firmware does not support that bridge yet. Preserve the shared I2C peripherals and verify accessible SDA/SCL, voltage and address compatibility before connecting it.
+
+The CH32V006's EXIO pins can provide digital input snapshots, but its documented stock I2C protocol does not provide buffered UART reception. Repeated input-register polling is not a supported reliable 9600-baud GPS transport. Jim reports Waveshare declined to share the onboard helper firmware source, so replacing that firmware is not an available supported recovery path. No resistor relocation, helper reflashing or PCB modification is recommended by this documentation.
+
+### GPIO28 is a separate, unqualified case
+
+ESP32-C5 **GPIO28 supports both input and output**; it is not an output-only silicon pin. It is also a BOOT strapping pin and CYM defines it as the board's BOOT button input. The schematic's `GPIO28_OUT` label does not by itself prove an output-only electrical path, or a verified bidirectional J3 connection.
+
+GPIO28 was **not included in the six disconnected GPIOs above**. Its header continuity and suitability for external UART RX remain unverified. Do not present it as a working spare GPS input. A connected device that pulls GPIO28 low during reset can select the ROM bootloader; preserve BOOT operation and boot-time levels before considering any reuse.
+
 ## Implementation status
 
 - **Display:** ST7796 320x480 SPI, BGR element order, color-invert, mirror(true, false) - from vendor BSP
@@ -17,7 +53,7 @@ The board adapter was implemented from the [Waveshare ESP32-C5-Touch-LCD-3.5](ht
 - **IO expander:** CH32V006 16-bit little-endian I2C protocol (registers 0x02/0x03/0x05) - distinct from WS-C5-28's CH32V003
 - **Backlight:** PWM via CH32V006 IO expander register 0x05
 - **PMIC:** AXP2101 at I2C 0x34, checked battery-voltage telemetry with measurement enable only; no rail/charging programming
-- **GPS:** disabled - UART header is exposed but not wired in firmware; `BOARD_HAS_GPS=0`, `BOARD_TIME_HAS_GPS_UART=0`
+- **GPS:** receive-only native-UART qualification code is enabled (`BOARD_HAS_GPS=1`, `BOARD_TIME_HAS_GPS_UART=1`), but no GPS data was received on the tested unit. Its native J3 routes are disconnected as documented above; an external I2C/UART bridge is proposed, not implemented or qualified.
 - **Audio:** disabled (`BOARD_HAS_AUDIO=0`)
 - **Battery acquisition:** AXP2101 VBAT enabled; percentage remains voltage-estimated
 - **RGB LED:** disabled (`BOARD_HAS_RGB_LED=0`)
@@ -43,7 +79,7 @@ The board is not electrically interchangeable with WS-C5-28. Display, touch, pow
 | Sensors | QMI8658 IMU, PCF85063 RTC, SHTC3 temperature/humidity | Familiar peripherals, enabled only after board-specific bus verification |
 | Audio | ES8311 codec, NS4150B amplifier, microphone and speaker connector | Keep capability gated until pin map and hardware tests are complete |
 | Camera | BF3901 fitted on SKU 35419 | Record pin ownership and prevent conflicts even when CYM does not initialize the camera |
-| Expansion | 32-pin 2.54 mm female header with UART and I2C labels | UART is the intended external GPS connection for this board |
+| Expansion | 32-pin 2.54 mm female header with GPIO/UART/I2C labels | Six native GPIO routes are not connected to J3 on the continuity-tested assembly; labels are not proof of usable connections |
 | Controls | RESET, BOOT, and programmable PWR buttons | Board-specific button and PMIC behavior |
 
 A 320×480 RGB565 full-screen image is 307,200 bytes. The panel has twice the pixels of a 240×320 display, so CYM should retain partial DMA-capable LVGL draw buffers rather than require two full-screen buffers.
@@ -58,7 +94,7 @@ Waveshare's order-page board label shows these external signal names:[1]
 - `BAT`, `RST`, `PWR`, `3V3`, and ground
 - helper-controller labels `E8` through `E15`
 
-These labels establish available connector functions, not the complete internal routing. In particular, the UART connector confirms that GPS must remain an available capability, but the ESP32 GPIO numbers for TX/RX must be taken from the exact C5 schematic/BSP or measured on Jim's board. WS-C5-28's GPIO11/GPIO12 mapping must not be copied by assumption.
+These are printed signal labels, not proof of electrical availability. The continuity-tested routing warning above supersedes the earlier assumption that TX/RX labels guaranteed an external GPS connection. Check the exact assembly before using any native-GPIO header position.
 
 ## Evidence collected from vendor BSP
 
@@ -74,7 +110,7 @@ Pin definitions, CH32V006 protocol, ST7796 init, and FT6336 touch were taken fro
 Still pending physical hardware validation:
 
 1. PCB revision confirmation on Jim's SKU 35419 unit.
-2. UART TX/RX GPIO assignment for the external GPS connector.
+2. A usable external GPS transport: native J3 UART routes are disconnected on the tested unit; the proposed I2C/UART bridge remains unqualified.
 3. Camera, audio, sensor, USB, and expansion-header pin ownership and conflicts.
 4. Whether camera and non-camera SKUs use one electrically identical base PCB.
 
@@ -99,7 +135,7 @@ Support is not complete until Jim's SKU 35419 unit passes:
 - FT6336 touch accuracy and all four orientation transforms
 - Classic and Modern navigation, including representative full-screen feature views
 - TF-card mount, read, write, remount, and capture-file persistence
-- UART GPS input/output at the exposed connector
+- external GPS through an electrically verified transport; native J3 UART is unavailable on the tested assembly
 - 2.4 GHz and 5 GHz Wi-Fi, BLE, IEEE 802.15.4, and ESP-NOW behavior
 - AXP2101 battery telemetry, charging, backlight, shutdown, and USB/battery transitions
 - RTC, IMU, temperature/humidity, audio, and camera conflict checks before enabling each capability
@@ -111,4 +147,5 @@ Compilation alone is never physical qualification.
 
 [1] https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419
 [2] https://docs.waveshare.com/ESP32-C5-Touch-LCD-3.5
-[3] https://github.com/waveshareteam/ESP32-S3-Touch-LCD-3.5
+[3] https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-reference/peripherals/gpio.html
+[4] https://docs.espressif.com/projects/esptool/en/latest/esp32c5/advanced-topics/boot-mode-selection.html
