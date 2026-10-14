@@ -6,6 +6,8 @@ The Clock feature is available in both Classic and Modern navigation on every re
 - NM-CYD-C5
 - CYD-2432S028
 - Hosyond ES3C35P
+- WS-C5-35
+- HackerBox Amberjack 0131 CYD
 
 Open **Clock** and choose one operating mode. The mode is not saved as a boot default.
 
@@ -89,8 +91,10 @@ When a live GPS fix is available, the Clock displays a six-character Maidenhead 
 |---|---:|---:|---:|---:|---:|---:|---:|
 | WS-C5-28 | PCF85063A | Available | 50 ppm | 100 ppm | ±500 ms | ±250 ms | ±2 s + 100 ppm |
 | NM-CYD-C5 | Not fitted | Available | n/a | 100 ppm | ±500 ms | ±250 ms | ±2 s + 100 ppm |
-| CYD-2432S028 | Not fitted | Not supported | n/a | 150 ppm | n/a | ±250 ms | n/a |
+| CYD-2432S028 | Not fitted | Available | n/a | 150 ppm | ±500 ms | ±250 ms | n/a |
 | Hosyond ES3C35P | Not fitted | Available | n/a | 100 ppm | ±500 ms | ±250 ms | ±2 s + 100 ppm |
+| WS-C5-35 | PCF85063 | GPIO28 RX only | 50 ppm | 100 ppm | ±500 ms | ±250 ms | ±2 s + 100 ppm |
+| HackerBox CYD | Not fitted | Available | n/a | 150 ppm | ±500 ms | ±250 ms | ±2 s + 100 ppm |
 
 All values in this table are deliberately conservative engineering allowances and remain unqualified until measured on hardware.
 
@@ -102,9 +106,9 @@ All values in this table are deliberately conservative engineering allowances an
 - Display Only does not initiate recovery. Select Client NTP when an explicit network recovery is wanted.
 
 
-## off-grid FT4/FT8 GPS time service
+## Off-grid amateur radio: FT4/FT8 GPS time and Maidenhead grid square
 
-Time-synchronized amateur-radio modes such as FT4 and FT8 are a primary AP NTP use case. With a UART GPS receiver and qualified `GPS LOCK`, CYM can provide local UTC to an isolated radio computer without Internet or cellular coverage. Join the displayed `CYM-NTP-xxxxxx` network and configure the client to use the displayed address, normally `192.168.4.1`.
+Time-synchronized amateur-radio modes such as FT4 and FT8 are a primary off-grid AP NTP use case. With a UART GPS receiver and qualified `GPS LOCK`, CYM can provide local UTC to an isolated radio computer without Internet or cellular coverage. Join the displayed `CYM-NTP-xxxxxx` network and configure the client to use the displayed address, normally `192.168.4.1`.
 
 The WSJT-X User Guide says the computer clock should be synchronized to UTC within about one second.[3] CYM's on-screen source, age, reliability, and conservative uncertainty are the operator's go/no-go indicators.
 

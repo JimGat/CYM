@@ -26,5 +26,5 @@ console.log(JSON.stringify(result));
   self.assertIn("Path('_site/index.html').write_text",s)
   self.assertIn('stable: "main"',s)
   page=(ROOT/'ESP32C5/docs/index.html').read_text();hb=re.search(r'"hackerbox-cyd": \{.*?\n        \}',page,re.S).group()
-  self.assertIn('beta: false',hb);self.assertIn('stableAvailable: false',hb)
+  self.assertIn('beta: false',hb);self.assertIn('stableAvailable: true',hb)
 if __name__=='__main__':unittest.main()

@@ -1,5 +1,7 @@
 # WS-C5-28 GPS-Disciplined NTP Clock
 
+> Historical first implementation guide. Current v3.0.0 Clock is multi-board; use the [Universal Clock operator guide](universal-clock.md) for current modes, board capabilities and timing limits.
+
 The NTP Clock is available only in the Waveshare WS-C5-28 firmware target.
 It uses the board RTC and UART GPS input to maintain UTC and serves that time
 on the local network while the NTP Clock screen is open.

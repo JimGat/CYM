@@ -297,3 +297,7 @@ and create the corresponding `docs/manifest.<board>.json`.
 
 - Build success is not enough for LVGL/task/lifecycle changes.
 - For sniffer/capture/UI teardown work, specifically review task ownership, timers, global pointers, cancellation, and use-after-free risks before publishing a binary.
+
+## v3.0.0 owner-approved board promotion
+
+For v3.0.0 and later, the version-synced release-board set is six: NM-CYD-C5, WS-C5-28, Classic CYD-2432S028, Hosyond ES3C35P 3.5, WS-C5-35 and HackerBox Amberjack 0131 CYD. This supersedes the older four-board inventory above. Pancake-C5 DIY and WS-S3-5B remain Development-only experimental targets; all eight application packages are built and independently verified at the shared cycle version. Preserve the narrower per-board peripheral/hardware qualification limits.

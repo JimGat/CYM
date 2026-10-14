@@ -152,3 +152,7 @@ source-vs-packaged version handling (§2), the build gate — all affected relea
 any push (§5), truthful enforcement + AI-attribution wording (§8/§10), Y/X release semantics (§1),
 and the staleness-gated SD-asset rule (§12). Lifecycle-duplicating memory files were converted to
 pointers to this file.
+
+## v3.0.0 owner-approved board promotion
+
+For v3.0.0 and later, the version-synced release-board set is six: NM-CYD-C5, WS-C5-28, Classic CYD-2432S028, Hosyond ES3C35P 3.5, WS-C5-35 and HackerBox Amberjack 0131 CYD. This supersedes the older four-board inventory above. Pancake-C5 DIY and WS-S3-5B remain Development-only experimental targets; all eight application packages are built and independently verified at the shared cycle version. Preserve the narrower per-board peripheral/hardware qualification limits.

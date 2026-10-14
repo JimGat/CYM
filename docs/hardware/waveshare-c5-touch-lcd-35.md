@@ -1,8 +1,8 @@
 # Waveshare ESP32-C5-Touch-LCD-3.5 — Supported display/touch/RTC profile
 
-Owner-tested display/touch, battery acquisition and RTC synchronization/reboot holdover. Battery percentage accuracy and additional peripherals remain unqualified.
+Owner-tested display/touch, battery acquisition, RTC synchronization/reboot holdover, and GPS LOCK using the WS-C5-35-only GPIO28 receive route. Battery percentage accuracy and additional peripherals remain unqualified.
 
-CYM support for the **Waveshare ESP32-C5-Touch-LCD-3.5** exists as a dedicated board target (`ws-c5-35`). A dedicated binary and web-flasher entry are available in the normal board selector; select Development for current firmware. This build must not be flashed with the existing WS-C5-28 image — and vice versa.
+CYM support for the **Waveshare ESP32-C5-Touch-LCD-3.5** exists as a dedicated board target (`ws-c5-35`). A dedicated binary and web-flasher entry are available in the normal board selector; select Stable for v3.0.0. This build must not be flashed with the existing WS-C5-28 image — and vice versa.
 
 Jim's ordered unit is **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C**, the version supplied with the BF3901 camera and a 3.7 V lithium battery.[1] The unit has arrived and Jim has completed the display/touch and RTC tests described above.
 
@@ -11,7 +11,7 @@ Jim's ordered unit is **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C**, the version supp
 The board adapter was implemented from the [Waveshare ESP32-C5-Touch-LCD-3.5](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5) vendor BSP at commit `04e6134cf3e37309b2bec9915189efeace1161bc`. Pin definitions, CH32V006 IO expander protocol, ST7796 display initialization, and FT6336 touch driver were derived from that BSP.
 
 
-## Important: J3 GPIO/UART routing is not populated on the tested assembly
+## Important: six J3 GPIO/UART routes are unavailable on the tested assembly
 
 **Owner continuity-tested finding, 2026-10-13:** on Jim's **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C** unit, **GPIO0, GPIO1, GPIO11, GPIO12, GPIO9 and GPIO4 do not connect to the rear J3 expansion connector**. The fitted zero-ohm selection links route these signals to onboard components instead. This supersedes earlier assumptions that the printed GPIO/UART labels guaranteed usable native ESP32 pins at J3.
 
@@ -36,17 +36,17 @@ The photograph records the assembly's selection-link area. The image alone does 
 
 CYM v2.15.98 includes a receive-only GPS qualification path on UART1/RX GPIO12 at the selected baud (default 9600), with primary USB-C Serial/JTAG logging kept separate. Jim's hardware test still received no GPS data. The missing native J3 route means that software UART selection, GPIO-matrix routing or baud changes cannot connect the module through that header on this assembly. `U0TX`/`U0RX` names do not require use of UART0; the physical connection is the blocker here.
 
-**Do not advertise native J3 UART GPS as working on this assembly.** An external 3.3V-compatible, buffered UART-to-I2C bridge is the preferred proposed workaround. Its exact model, address, wiring and CYM driver remain to be qualified; current firmware does not support that bridge yet. Preserve the shared I2C peripherals and verify accessible SDA/SCL, voltage and address compatibility before connecting it.
+**The GPIO11/12 UART-labelled J3 route does not work on this assembly. The GPIO28 receive-only exception below now has owner-reported GPS LOCK.** An external UART-to-I2C bridge is not required for that confirmed setup. A 3.3V-compatible buffered bridge remains only an unimplemented alternative; no bridge model, wiring or CYM driver has been qualified.
 
 The CH32V006's EXIO pins can provide digital input snapshots, but its documented stock I2C protocol does not provide buffered UART reception. Repeated input-register polling is not a supported reliable 9600-baud GPS transport. Jim reports Waveshare declined to share the onboard helper firmware source, so replacing that firmware is not an available supported recovery path. No resistor relocation, helper reflashing or PCB modification is recommended by this documentation.
 
-### GPIO28 receive-only trial (v2.15.99)
+### Board-specific GPS exception: GPIO28 receive-only, GPS LOCK confirmed
 
-ESP32-C5 GPIO28 supports input and output and is also a BOOT strapping pin. At Jim's request, **only WS-C5-35** now uses **UART1 RX=GPIO28, TX=disabled**, with no alternate GPS-pin or EXIO polling. The selected baud is retained (default 9600); no GPS configuration commands are transmitted. GPIO11/12 are not configured by this trial.
+Since v2.15.99, **only WS-C5-35** uses **UART1 RX=GPIO28, TX=disabled**, with no alternate GPS-pin or EXIO polling. Connect **GPS TX to GPIO28**, connect common **GND**, and select **9600 baud** for the owner-tested module. Saved baud selection is retained; 9600 is the default. No GPS configuration commands are transmitted, and GPIO11/12 are not configured for this route.
 
-GPIO28 is not one of the six disconnected routes above. Jim reports several successful reboots with the GPS attached to GPIO28. **GPS reception/NMEA/fix remain unqualified** until this new image is tested; successful boots do not prove received serial data or qualify other assemblies/modules.
+**Owner hardware result:** after several successful reboots with the GPS attached, Jim reports that his WS-C5-35 **displays GPS LOCK** on v2.15.99. This is owner-observed lock evidence, not merely compilation or successful booting. It qualifies the tested SKU 35419 assembly/module setup; it is not a blanket qualification of all PCB revisions, modules, GPS accuracy, or long-duration stability. Independent raw-UART/NMEA logs were not supplied with this report. GPIO28 is not one of the six disconnected routes above.
 
-WS-C5-35 firmware BOOT polling is disabled so serial data cannot trigger game fire/cancel or Go Dark button actions. Physical BOOT/download strapping is unchanged. Touch controls and the five-second screen-hold Go Dark wake remain available. Avoid pressing physical BOOT against an actively connected GPS transmitter. Other boards retain their BOOT and GPS mappings.
+GPIO28 also serves as a physical BOOT strapping pin. WS-C5-35 firmware BOOT polling is disabled to prevent serial data from triggering button-associated actions. Physical BOOT/download strapping is unchanged. Touch controls and the five-second screen-hold Go Dark wake remain available. Avoid pressing physical BOOT against an actively connected GPS transmitter. Other boards retain their BOOT and GPS mappings; do not apply this exception to them.
 
 See [the v2.15.99 operator procedure](../operator-cycle-v2.15.99.md) for primary-USB diagnostics and separate reception/fix gates. The previous GPIO12 failure remains historical evidence, not a GPIO28 result.
 
@@ -57,7 +57,7 @@ See [the v2.15.99 operator procedure](../operator-cycle-v2.15.99.md) for primary
 - **IO expander:** CH32V006 16-bit little-endian I2C protocol (registers 0x02/0x03/0x05) - distinct from WS-C5-28's CH32V003
 - **Backlight:** PWM via CH32V006 IO expander register 0x05
 - **PMIC:** AXP2101 at I2C 0x34, checked battery-voltage telemetry with measurement enable only; no rail/charging programming
-- **GPS:** v2.15.99 enables the WS-C5-35-only GPIO28 receive trial (`BOARD_HAS_GPS=1`, `BOARD_TIME_HAS_GPS_UART=1`), UART1 RX=28/TX=disabled. GPIO28 reception remains physically unqualified; the earlier GPIO12 path received no data and its J3 route is disconnected. An external I2C/UART bridge remains proposed, not implemented.
+- **GPS:** owner-reported GPS LOCK on v2.15.99 using WS-C5-35-only UART1 RX=GPIO28/TX=disabled at 9600 baud (`BOARD_HAS_GPS=1`, `BOARD_TIME_HAS_GPS_UART=1`). GPIO11/12 J3 routes remain disconnected on the tested assembly. No external bridge is needed for the confirmed GPIO28 setup; bridge support is not implemented.
 - **Audio:** disabled (`BOARD_HAS_AUDIO=0`)
 - **Battery acquisition:** AXP2101 VBAT enabled; percentage remains voltage-estimated
 - **RGB LED:** disabled (`BOARD_HAS_RGB_LED=0`)
@@ -114,7 +114,7 @@ Pin definitions, CH32V006 protocol, ST7796 init, and FT6336 touch were taken fro
 Still pending physical hardware validation:
 
 1. PCB revision confirmation on Jim's SKU 35419 unit.
-2. A usable external GPS transport: native J3 UART routes are disconnected on the tested unit; the proposed I2C/UART bridge remains unqualified.
+2. GPS qualification beyond the owner-observed GPIO28 lock: other board revisions/modules, raw-NMEA log capture, sustained reception and long-duration stability. The GPIO11/12 J3 route remains unavailable; the optional I2C/UART bridge is unimplemented.
 3. Camera, audio, sensor, USB, and expansion-header pin ownership and conflicts.
 4. Whether camera and non-camera SKUs use one electrically identical base PCB.
 
@@ -126,7 +126,7 @@ Still pending physical hardware validation:
 - Local FT6336 component: `ESP32C5/components/esp_lcd_touch_ft6336/`.
 - Local IDF-6-compatible copy of `espressif/esp_lcd_st7796 1.0.0`, retaining its Apache-2.0 license and vendor initialization table.
 - Packaging: `ESP32C5/binaries-ws-c5-35/`, manifest `ESP32C5/docs/manifest.ws-c5-35.json`.
-- Web flasher: beta-only entry visible with `?beta=1`.
+- Web flasher: WS-C5-35 is visible in the normal board selector; v3.0.0 is available in the Stable channel.
 - Build: `make ws-c5-35` or `scripts/build.sh ws-c5-35`.
 
 ## Hardware acceptance checklist
@@ -139,7 +139,7 @@ Support is not complete until Jim's SKU 35419 unit passes:
 - FT6336 touch accuracy and all four orientation transforms
 - Classic and Modern navigation, including representative full-screen feature views
 - TF-card mount, read, write, remount, and capture-file persistence
-- external GPS through an electrically verified transport; native J3 UART is unavailable on the tested assembly
+- external GPS: owner-reported GPIO28 GPS LOCK is confirmed; extended reception/accuracy/soak qualification and other assemblies remain pending
 - 2.4 GHz and 5 GHz Wi-Fi, BLE, IEEE 802.15.4, and ESP-NOW behavior
 - AXP2101 battery telemetry, charging, backlight, shutdown, and USB/battery transitions
 - RTC, IMU, temperature/humidity, audio, and camera conflict checks before enabling each capability

@@ -13,6 +13,10 @@ on:
       - "ESP32C5/binaries-ws-c5-35/*.bin"
       - "ESP32/docs/manifest.cyd-2432s028.json"
       - "ESP32/binaries-cyd-2432s028/*.bin"
+      - "ESP32/docs/manifest.hackerbox-cyd.json"
+      - "ESP32/binaries-hackerbox-cyd/*.bin"
+      - "ESP32S3/docs/manifest.ws-s3-5b.json"
+      - "ESP32S3/binaries-ws-s3-5b/*.bin"
       - "ESP32S3/docs/manifest.hosyond-s3-35.json"
       - "ESP32S3/binaries-hosyond-s3-35/*.bin"
       - ".github/workflows/deploy-flasher.yml"
@@ -62,7 +66,7 @@ jobs:
       - name: Build and verify site
         working-directory: stable-site
         run: |
-          mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-pancake-c5 _site/binaries-ws-c5-35 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35
+          mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-pancake-c5 _site/binaries-ws-c5-35 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35 _site/binaries-hackerbox-cyd
           cp ESP32C5/docs/index.html _site/index.html
           sed 's|"\.\./binaries-esp32c5/|"binaries-esp32c5/|g' ESP32C5/docs/manifest.json > _site/manifest.json
           sed 's|"\.\./binaries-ws-c5-28/|"binaries-ws-c5-28/|g' ESP32C5/docs/manifest.ws-c5-28.json > _site/manifest.ws-c5-28.json
@@ -75,6 +79,11 @@ jobs:
           cp ESP32C5/binaries-pancake-c5/*.bin _site/binaries-pancake-c5/
           cp ESP32C5/binaries-ws-c5-35/*.bin _site/binaries-ws-c5-35/
           cp ESP32/binaries-cyd-2432s028/*.bin _site/binaries-cyd-2432s028/
+          cp ESP32/binaries-hackerbox-cyd/*.bin _site/binaries-hackerbox-cyd/
+          sed 's|"\.\./binaries-hackerbox-cyd/|"binaries-hackerbox-cyd/|g' ESP32/docs/manifest.hackerbox-cyd.json > _site/manifest.hackerbox-cyd.json
+          python3 -m json.tool _site/manifest.hackerbox-cyd.json >/dev/null
+          test -s _site/binaries-hackerbox-cyd/CYM-HackerBox-CYD.bin
+          test -s _site/binaries-hackerbox-cyd/CYM-HackerBox-CYD-full.bin
           cp ESP32S3/binaries-hosyond-s3-35/*.bin _site/binaries-hosyond-s3-35/
           for f in ESP32C5/docs/*.png ESP32C5/docs/*.jpg ESP32C5/docs/*.gif ESP32C5/docs/*.svg ESP32C5/docs/*.ico; do
             [ -f "$f" ] && cp "$f" _site/

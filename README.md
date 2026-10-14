@@ -5,11 +5,11 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v2.15.43</b>
+  <b>v3.0.0</b>
 </p>
 
 <p align="center">
-  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — four released targets plus one opt-in development-channel target across ESP32-C5, ESP32, and ESP32-S3
+  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — six released targets plus two opt-in development-channel targets across ESP32-C5, ESP32, and ESP32-S3
 </p>
 
 <p align="center">
@@ -33,14 +33,22 @@
 
 ---
 
-## Development candidate v2.15.86
+## v3.0.0 milestone release
 
-The eight-board Development/Beta cycle adds startup SD-folder consent,
-completion-owned display batching with subscription-safe watchdog feeding,
-and visible unknown battery status / contended-publication recovery on WS-C5-28.
-Physical rendering and battery acceptance remain outstanding.
-See [startup, display, and battery operator checks](docs/startup-sd-display-regression.md).
-Stable firmware is not promoted by this development cycle.
+GPS-disciplined off-grid radio Clock, expanded board support, official printable cases by co-developer **@birolt29**, and focused tool and reliability improvements. [Read the release highlights](docs/releases/v3.0.0.md).
+
+## Off-grid amateur radio Clock — GPS-disciplined NTP and grid square
+
+Developed especially for off-grid ham-radio operation, CYM's Clock can act as an **NTP server** for an isolated radio computer and an **NTP client** when Internet access is available. With a qualified GPS lock, it disciplines UTC from the receiver and displays a locally calculated **six-character Maidenhead grid square**. No Internet connection is needed for GPS-backed time or the grid readout.
+
+- **AP NTP:** create a local protected Wi-Fi network and serve UTC to your radio computer in the field, including FT4/FT8 operating setups.
+- **Client NTP:** recover/synchronize UTC from the public NTP pool when connected; qualified GPS takes priority.
+- **Display Only:** use the clock offline without initiating Wi-Fi.
+- **Source visibility:** inspect GPS lock, source age, holdover, reliability and conservative uncertainty instead of guessing whether time is trustworthy.
+
+**Stratum-1 reference, not a PPS accuracy guarantee:** with qualified GPS lock, NTP replies advertise **stratum 1 / GPS**. This is the protocol's source classification, not measured near-Stratum-1 timing accuracy. CYM currently uses UART NMEA timing, not a PPS input; its conservative GPS allowance is ±500 ms, and accuracy/drift depend on the receiver, board and network. Public-NTP-backed replies use stratum 2; an untrusted clock reports unsynchronized stratum 16. Check the dashboard and verify your client timing before operating time-sensitive modes.
+
+[Clock operator guide and physical-test evidence](docs/hardware/universal-clock.md)
 
 ## 🎬 Featured Videos
 
@@ -64,7 +72,7 @@ Stable firmware is not promoted by this development cycle.
 
 ## Cheap Yellow Monster — CYM-NM28C5
 
-**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It now builds four released targets plus the opt-in Pancake-C5 DIY development-channel build from a single shared firmware source tree; the Hosyond 2.8-inch and 4.0-inch variants remain experimental — see [Supported Hardware](#supported-hardware) below.
+**Cheap Yellow Monster** is a portable, touchscreen-driven wireless security, BLE, GPS wardriving, and RF experimentation toolkit. It now builds six released targets plus the opt-in Pancake-C5 DIY and WS-S3-5B development-channel builds from a single shared firmware source tree; the Hosyond 2.8-inch and 4.0-inch variants remain experimental — see [Supported Hardware](#supported-hardware) below.
 
 The **NM-CYD-C5 / MonsterC5-style ESP32-C5-WIFI6-KIT** hardware family remains the primary, preferred platform: it's the board CYM was originally built for, it's where new features land first, and — paired with the optional **NM-RF-HAT** expansion board — it has by far the widest RF hardware support (Sub-GHz, nRF24, NFC/RFID, IR, and more).
 
@@ -88,7 +96,7 @@ The NM-CYD-C5 can be purchased at [nmminer.com](https://www.nmminer.com/product/
 
 ## Supported Hardware
 
-CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in the normal board selector after owner display/touch, battery-telemetry and RTC-holdover tests; select Development for current firmware until the next Stable release. Pancake-C5 remains **Development channel only; not stable** and opt-in with `?beta=1`. Hardware capability and qualification remain board-specific.
+CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in the normal board selector after owner display/touch, battery-telemetry, RTC-holdover and GPIO28 GPS LOCK tests; v3.0.0 is available through the Stable channel. Pancake-C5 remains **Development channel only; not stable** and opt-in with `?beta=1`. Hardware capability and qualification remain board-specific.
 
 | Board | Status | What you get |
 |---|---|---|
@@ -96,12 +104,14 @@ CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in th
 | **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P3 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Programming/JTAG debugging stays on the primary USB-C; the second Micro-USB/P3 UART path is GPS-only and carries no CYM logs. No 802.15.4 and no [Screen Orientation](#screen-orientation)/landscape mode. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Its header now shows a 10-second, voltage-estimated battery percentage from the CH32V003 EXIO_ADC path; `FULL` means VBAT is at least 4.15 V, not that charger completion was detected. |
 | **[C5Lab Pancake DIY](https://github.com/C5Lab/pancake)** (`pancake-c5`) | 🧪 **Development channel only; not stable; remote hardware qualification pending** | ESP32-C5 with a 3.5-inch 480×320 display, FT6336U capacitive touch, microSD, WS2812, battery sensing, and optional UART GPS wiring. Available only through the development channel (`?beta=1`); dedicated to D3h420, Janek, and OyczE. |
-| **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch and RTC holdover owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS disabled (UART exposed but not wired). Available in the normal selector; select Development for current firmware. Camera/audio/IMU remain unqualified. |
+| **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for v3.0.0. Camera/audio/IMU remain unqualified. |
+| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.0** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. |
+| **Waveshare ESP32-S3-Touch-LCD-5B** (`ws-s3-5b`) | 🧪 **Development channel only; not stable** | Experimental 1024×600 RGB display target with capacitive touch and PCF85063 RTC support. No verified GPS UART; hardware qualification pending. Opt in with `?beta=1`. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 | **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Released in v2.15.34; available in the web flasher** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi and BLE. The shared CYM application, display, orientation, colors, capacitive touch, Modern/Classic menus, and Deauth Harvest have been physically exercised. SD, RGB LED, battery voltage, external UART GPS, broader radio coverage, and bounded soak remain pending qualification. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
 | **[Hosyond/LCDWiki ESP32-S3 4.0-inch](https://www.lcdwiki.com/4.0inch_ESP32-S3_Display)** (`hosyond-s3-40`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ST7796S 320×480 SPI display, FT6336U capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 
-See [Waveshare ESP32-C5-Touch-LCD-3.5](docs/hardware/waveshare-c5-touch-lcd-35.md) for the WS-C5-35 hardware details, vendor BSP reference, and implementation status. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for that family's controller, bus, pin-map, and acceptance details. WS-C5-35 is included in the normal board selector. Pancake-C5 remains **Development channel only; not stable**, opt-in with `?beta=1`.
+**WS-C5-35 GPS wiring exception:** since v2.15.99, this board alone uses **UART1 RX=GPIO28, TX disabled**. Connect the GPS module TX to **GPIO28** with common **GND**; the owner-confirmed module runs at **9600 baud**. Jim reports GPS LOCK and repeated successful reboots on his SKU 35419 assembly. Its GPIO11/12 UART-labelled J3 routes are not connected; do not copy another board's GPS pinout. Firmware BOOT-button polling is disabled on WS-C5-35 because GPIO28 is shared with the physical BOOT strap; avoid pressing BOOT against an active GPS transmitter. Other boards retain their GPS/BOOT mappings. See [Waveshare ESP32-C5-Touch-LCD-3.5](docs/hardware/waveshare-c5-touch-lcd-35.md) for assembly limits, wiring cautions, vendor BSP reference, and implementation status. See [Hosyond ESP32-S3 Display Family](docs/hardware/hosyond-s3-family.md) for that family's controller, bus, pin-map, and acceptance details. WS-C5-35 is included in the normal board selector. Pancake-C5 remains **Development channel only; not stable**, opt-in with `?beta=1`.
 
 ---
 

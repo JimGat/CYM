@@ -18,8 +18,8 @@ on:
       - "ESP32C5/.github/scripts/**"
       - ".github/workflows/esp32c5-build-master.yml"
       - "ESP32C5/docs/index.html"
-  release:
-    types: [published, edited]
+  # Release publication uses the independently verified all-board packages.
+  # Do not rebuild and overwrite authoritative release assets on publication.
 
 env:
   FW_BASENAME: CYM-NM28C5
