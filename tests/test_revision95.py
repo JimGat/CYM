@@ -5,7 +5,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class Revision95(unittest.TestCase):
  def test_ws35_compiled_gps_route_and_capability(self):
   h=ROOT/'ESP32C5/components/board_hal/include/boards/ws_c5_35.h'
-  code='#include "'+str(h)+'"\n_Static_assert(BOARD_HAS_GPS==1 && BOARD_TIME_HAS_GPS_UART==1,"capability");\n_Static_assert(BOARD_GPS_UART_NUM==1 && BOARD_GPS_TX_GPIO==11 && BOARD_GPS_RX_GPIO==12,"route");\n'
+  code='#include "'+str(h)+'"\n_Static_assert(BOARD_HAS_GPS==1 && BOARD_TIME_HAS_GPS_UART==1,"capability");\n_Static_assert(BOARD_GPS_UART_NUM==1 && BOARD_GPS_TX_GPIO==-1 && BOARD_GPS_RX_GPIO==28,"route");\n'
   p=subprocess.run(['cc','-std=c11','-x','c','-fsyntax-only','-'],input=code,text=True,capture_output=True)
   self.assertEqual(p.returncode,0,p.stderr)
  def test_ws35_uses_usb_primary_no_uart_secondary(self):

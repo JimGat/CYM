@@ -148,7 +148,8 @@
 #if BOARD_TIME_HAS_RTC && !defined(BOARD_RTC_I2C_ADDR)
 #error "Board timing profile declares RTC but no BOARD_RTC_I2C_ADDR"
 #endif
-#if BOARD_TIME_HAS_GPS_UART && (BOARD_GPS_TX < 0 || BOARD_GPS_RX < 0)
+#if BOARD_TIME_HAS_GPS_UART && (BOARD_GPS_RX < 0 || \
+    (BOARD_GPS_TX < 0 && !defined(CONFIG_BOARD_WS_C5_35)))
 #error "Board timing profile declares GPS UART but GPS pins are unavailable"
 #endif
 #if BOARD_TIME_RTC_DRIFT_PPM < 0 || BOARD_TIME_RTOS_DRIFT_PPM < 0 || \

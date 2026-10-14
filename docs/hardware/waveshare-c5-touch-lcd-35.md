@@ -40,11 +40,15 @@ CYM v2.15.98 includes a receive-only GPS qualification path on UART1/RX GPIO12 a
 
 The CH32V006's EXIO pins can provide digital input snapshots, but its documented stock I2C protocol does not provide buffered UART reception. Repeated input-register polling is not a supported reliable 9600-baud GPS transport. Jim reports Waveshare declined to share the onboard helper firmware source, so replacing that firmware is not an available supported recovery path. No resistor relocation, helper reflashing or PCB modification is recommended by this documentation.
 
-### GPIO28 is a separate, unqualified case
+### GPIO28 receive-only trial (v2.15.99)
 
-ESP32-C5 **GPIO28 supports both input and output**; it is not an output-only silicon pin. It is also a BOOT strapping pin and CYM defines it as the board's BOOT button input. The schematic's `GPIO28_OUT` label does not by itself prove an output-only electrical path, or a verified bidirectional J3 connection.
+ESP32-C5 GPIO28 supports input and output and is also a BOOT strapping pin. At Jim's request, **only WS-C5-35** now uses **UART1 RX=GPIO28, TX=disabled**, with no alternate GPS-pin or EXIO polling. The selected baud is retained (default 9600); no GPS configuration commands are transmitted. GPIO11/12 are not configured by this trial.
 
-GPIO28 was **not included in the six disconnected GPIOs above**. Its header continuity and suitability for external UART RX remain unverified. Do not present it as a working spare GPS input. A connected device that pulls GPIO28 low during reset can select the ROM bootloader; preserve BOOT operation and boot-time levels before considering any reuse.
+GPIO28 is not one of the six disconnected routes above. Jim reports several successful reboots with the GPS attached to GPIO28. **GPS reception/NMEA/fix remain unqualified** until this new image is tested; successful boots do not prove received serial data or qualify other assemblies/modules.
+
+WS-C5-35 firmware BOOT polling is disabled so serial data cannot trigger game fire/cancel or Go Dark button actions. Physical BOOT/download strapping is unchanged. Touch controls and the five-second screen-hold Go Dark wake remain available. Avoid pressing physical BOOT against an actively connected GPS transmitter. Other boards retain their BOOT and GPS mappings.
+
+See [the v2.15.99 operator procedure](../operator-cycle-v2.15.99.md) for primary-USB diagnostics and separate reception/fix gates. The previous GPIO12 failure remains historical evidence, not a GPIO28 result.
 
 ## Implementation status
 
@@ -53,7 +57,7 @@ GPIO28 was **not included in the six disconnected GPIOs above**. Its header cont
 - **IO expander:** CH32V006 16-bit little-endian I2C protocol (registers 0x02/0x03/0x05) - distinct from WS-C5-28's CH32V003
 - **Backlight:** PWM via CH32V006 IO expander register 0x05
 - **PMIC:** AXP2101 at I2C 0x34, checked battery-voltage telemetry with measurement enable only; no rail/charging programming
-- **GPS:** receive-only native-UART qualification code is enabled (`BOARD_HAS_GPS=1`, `BOARD_TIME_HAS_GPS_UART=1`), but no GPS data was received on the tested unit. Its native J3 routes are disconnected as documented above; an external I2C/UART bridge is proposed, not implemented or qualified.
+- **GPS:** v2.15.99 enables the WS-C5-35-only GPIO28 receive trial (`BOARD_HAS_GPS=1`, `BOARD_TIME_HAS_GPS_UART=1`), UART1 RX=28/TX=disabled. GPIO28 reception remains physically unqualified; the earlier GPIO12 path received no data and its J3 route is disconnected. An external I2C/UART bridge remains proposed, not implemented.
 - **Audio:** disabled (`BOARD_HAS_AUDIO=0`)
 - **Battery acquisition:** AXP2101 VBAT enabled; percentage remains voltage-estimated
 - **RGB LED:** disabled (`BOARD_HAS_RGB_LED=0`)

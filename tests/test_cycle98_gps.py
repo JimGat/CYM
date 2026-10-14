@@ -26,7 +26,8 @@ int main(void){
   t=(ROOT/'ESP32C5/main/main.c').read_text()
   init=t[t.index('static esp_err_t init_gps_uart(void)\n{'):t.index('static bool parse_gps_nmea(const char *nmea_sentence)\n{')]
   self.assertIn('gps_rx_only_ws35',init)
-  self.assertIn('gpio_reset_pin(GPS_TX_PIN)',init)
+  self.assertNotIn('gpio_reset_pin(GPS_TX_PIN)',init)
+  self.assertIn('gpio_reset_pin(GPS_RX_PIN)',init)
   self.assertIn('GPS_RX_OWNER board=WS35',t)
   self.assertIn('gps_uart_consumer_read',t)
   self.assertEqual(t.count('uart_read_bytes(GPS_UART_NUM,'),2)

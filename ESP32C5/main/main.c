@@ -648,7 +648,7 @@ static void (*s_ble_disc_return_fn)(void) = NULL;
 #define TOUCH_CS        -1                   // FT6336 is I2C — no SPI CS
 #define LCD_BL_IO       BOARD_BACKLIGHT_GPIO // -1 (CH32V006 PWM via I2C 0x24)
 #define LCD_BL_ACTIVE_LEVEL 1
-#define BOOT_BTN_GPIO   BOARD_BOOT_BTN_GPIO  // GPIO28
+#define BOOT_BTN_GPIO   BOARD_BOOT_BTN_GPIO  // Disabled: GPIO28 belongs to GPS RX
 #define GO_DARK_DBL_CLICK_MS 800
 #define LCD_H_RES       BOARD_LCD_WIDTH      // 320
 #define LCD_V_RES       BOARD_LCD_HEIGHT     // 480
@@ -7489,6 +7489,14 @@ static void survey_flush_timer_cb(void *arg)
 }
 
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+static bool game_boot_button_pressed(void)
+{
+#if BOOT_BTN_GPIO >= 0
+    return gpio_get_level(BOOT_BTN_GPIO)==0;
+#else
+    return false; /* WS-C5-35: GPIO28 GPS traffic is not a button press. */
+#endif
+}
 static game_read game_nvs_read(void *ctx,game_intent *v)
 {
     size_t n=sizeof(*v);esp_err_t rc=nvs_get_blob((nvs_handle_t)(uintptr_t)ctx,"intent",v,&n);
@@ -7502,7 +7510,7 @@ static game_mode_io game_nvs_io(nvs_handle_t h){return (game_mode_io){(void *)(u
 static game_mode game_early_consume(esp_err_t nvs_status)
 {
     init_boot_button(); /* independent of SD/display/engine/services */
-    bool held=gpio_get_level(BOOT_BTN_GPIO)==0;
+    bool held=game_boot_button_pressed();
     if(nvs_status!=ESP_OK){ESP_LOGW("CYM_DOOM","MODE_NVS_UNAVAILABLE normal fallback; no erase");return GAME_NORMAL;}
     nvs_handle_t h;esp_err_t rc=nvs_open("cym_game",NVS_READWRITE,&h);
     if(rc!=ESP_OK){ESP_LOGW("CYM_DOOM","MODE_OPEN_FAILED normal fallback");return GAME_NORMAL;}
@@ -7535,7 +7543,7 @@ static bool game_native_poll(void *ctx)
         for(unsigned i=0;i<n&&i<2;i++)
             if(doom_rotate_point(LCD_H_RES,LCD_V_RES,3,px[i],py[i],&lx[valid],&ly[valid]))valid++;
         (void)doom_ui_touch_snapshot(lx,ly,valid);
-        doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
+        doom_ui_boot_fire(game_boot_button_pressed());
     }
     return doom_ui_native_accepting();
 }
@@ -7589,7 +7597,7 @@ static void game_isolated_main(void)
             doom_ui_native_step();cym_display_diag_report();cym_debug_memory_report();
             esp_task_wdt_reset();vTaskDelay(DOOM_NATIVE_BLOCK_TICKS);continue;
         }
-        doom_ui_boot_fire(gpio_get_level(BOOT_BTN_GPIO)==0);
+        doom_ui_boot_fire(game_boot_button_pressed());
         if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(20))==pdTRUE){
             uint32_t before=(uint32_t)esp_timer_get_time(),cb=s_display_diag[1].callback_us;
             lv_timer_handler();
@@ -42513,9 +42521,8 @@ static esp_err_t init_gps_uart(void)
     uart_config_t gps_rx_only_ws35={.baud_rate=g_wd_gps_baud,.data_bits=UART_DATA_8_BITS,
         .parity=UART_PARITY_DISABLE,.stop_bits=UART_STOP_BITS_1,
         .flow_ctrl=UART_HW_FLOWCTRL_DISABLE,.source_clk=UART_SCLK_DEFAULT};
-    esp_err_t err=gpio_reset_pin(GPS_TX_PIN);
-    if(err==ESP_OK)err=gpio_set_direction(GPS_TX_PIN,GPIO_MODE_INPUT);
-    if(err==ESP_OK)err=gpio_reset_pin(GPS_RX_PIN);
+    /* GPIO28 is the sole WS-C5-35 GPS pin: no TX or alternate-pin probing. */
+    esp_err_t err=gpio_reset_pin(GPS_RX_PIN);
     if(err==ESP_OK)err=gpio_set_direction(GPS_RX_PIN,GPIO_MODE_INPUT);
     if(err!=ESP_OK)return err;
     err=uart_driver_install(GPS_UART_NUM,GPS_BUF_SIZE*2,0,0,NULL,0);
@@ -42524,7 +42531,7 @@ static esp_err_t init_gps_uart(void)
     if(err==ESP_OK)err=uart_set_pin(GPS_UART_NUM,UART_PIN_NO_CHANGE,GPS_RX_PIN,UART_PIN_NO_CHANGE,UART_PIN_NO_CHANGE);
     if(err!=ESP_OK){uart_driver_delete(GPS_UART_NUM);return err;}
     s_gps_applied_baud=g_wd_gps_baud;
-    ESP_LOGI(TAG,"GPS_RX_OWNER board=WS35 uart=%d rx=%d tx_detached=%d baud=%d reader=monitor config_writes=0 console=primary_USB input_level=%d routing=GPIO_matrix hardware_unqualified=1",
+    ESP_LOGI(TAG,"GPS_RX_OWNER board=WS35 uart=%d rx=%d tx_detached=%d baud=%d reader=monitor config_writes=0 console=primary_USB input_level=%d routing=GPIO_matrix hardware_unqualified=1 candidates=1 boot_button=disabled",
         GPS_UART_NUM,GPS_RX_PIN,GPS_TX_PIN,s_gps_applied_baud,gpio_get_level(GPS_RX_PIN));
     return ESP_OK;
 #elif defined(CONFIG_BOARD_CYD2USB)

@@ -20,7 +20,7 @@ class StartupIsolation(unittest.TestCase):
   s=(ROOT/'ESP32C5/main/main.c').read_text();f=s[s.index('static game_read game_nvs_read'):s.index('void app_main(void)\n{')]
   for forbidden in ('nvs_flash_erase','esp_ota_','esp_partition_'):
    self.assertNotIn(forbidden,f)
-  self.assertIn('esp_reset_reason()==ESP_RST_SW',f);self.assertIn('gpio_get_level(BOOT_BTN_GPIO)==0',f)
+  self.assertIn('esp_reset_reason()==ESP_RST_SW',f);self.assertIn('game_boot_button_pressed()',f)
  def test_no_live_takeover_and_named_storage_admission(self):
   s=(ROOT/'ESP32C5/main/main.c').read_text();f=s[s.index('static const char *game_storage_blocker(void)\n{'):]
   for token in ('s_fileserv_httpd','sd_provision_active','wpasec_upload_task_handle','wdup_task_handle','screenshot_in_progress','g_active_survey','SD transport operation','NVS intent set/commit'):

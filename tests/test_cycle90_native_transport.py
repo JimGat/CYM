@@ -2,6 +2,7 @@
 from pathlib import Path
 import subprocess,unittest
 from test_cycle84_dma_timekeeper import TRANSPORT
+from test_exclusive_owner_lifecycle import function
 ROOT=Path(__file__).resolve().parents[1]
 class NativeTransport(unittest.TestCase):
  def test_real_native_stripe_completion_and_faults(self):
@@ -86,6 +87,7 @@ static void run(void){
 }
 int main(void){if(!setjmp(finish))run();assert(handler_calls==2&&native_calls==18&&priority==3&&engine_steps==20&&pcm_steps==20);puts("actual isolated loop: safe-boundary local priority3, PCM unchanged, positive blocking on no-frame/cleanup loops PASS");}
 """
+  code=code.replace('static void run(void){',function(source,'game_boot_button_pressed')+'\nstatic void run(void){')
   out=Path('/home/dev/ws-c5-35-fixes/cycle90/host');(out/'native-loop.c').write_text(code)
   r=subprocess.run(['cc','-std=c11','-O1','-I'+str(ROOT/'ESP32C5/components/cym_doom/include'),str(out/'native-loop.c'),'-o',str(out/'native-loop')],capture_output=True,text=True);self.assertEqual(r.returncode,0,r.stderr)
   r=subprocess.run([str(out/'native-loop')],capture_output=True,text=True);(out/'native-loop.log').write_text(r.stdout+r.stderr);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
@@ -101,7 +103,7 @@ int main(void){if(!setjmp(finish))run();assert(handler_calls==2&&native_calls==1
 #define CONFIG_BOARD_WS_C5_35 1
 #define LCD_H_RES 320
 #define LCD_V_RES 480
-#define BOOT_BTN_GPIO 0
+#define BOOT_BTN_GPIO -1
 static uint32_t ms;static unsigned keys,reads,boots;static bool fault,boot_down,exit_requested;
 static unsigned contacts=2;static bool touch_exit;
 static uint32_t esp_timer_get_time(void){return ms*1000;}
@@ -112,9 +114,15 @@ static bool ws_c5_35_touch_read_points(uint16_t *x,uint16_t *y,uint8_t *n,uint8_
  x[0]=touch_exit?5:229;y[0]=touch_exit?420:50;x[1]=219;y[1]=410;return true;
 }
 static bool doom_ui_touch_snapshot(const int *x,const int *y,unsigned n){keys=doom_game_touch_keys(doom_game_layout_make(480,320),x,y,n);if(keys&DOOM_KEY_EXIT)exit_requested=true;return true;}
-static void doom_ui_boot_fire(bool b){boots++;assert(b==boot_down);}
+static void doom_ui_boot_fire(bool b){boots++;
+#if CONFIG_BOARD_WS_C5_35
+assert(!b);
+#else
+assert(b==boot_down);
+#endif
+}
 static bool doom_ui_native_accepting(void){return !exit_requested;}
-"""+poll+r"""
+"""+function(source,'game_boot_button_pressed')+'\n'+poll+r"""
 int main(void){ms=10;assert(game_native_poll(NULL));assert(reads==1&&boots==1&&(keys&DOOM_KEY_FORWARD)&&(keys&DOOM_KEY_FIRE));
  ms=11;game_native_poll(NULL);assert(reads==1);contacts=1;ms=20;game_native_poll(NULL);assert(!(keys&DOOM_KEY_FIRE)&&(keys&DOOM_KEY_FORWARD));
  fault=true;boot_down=true;ms=30;game_native_poll(NULL);assert(keys==0&&boots==3);
@@ -124,6 +132,7 @@ int main(void){ms=10;assert(game_native_poll(NULL));assert(reads==1&&boots==1&&(
   r=subprocess.run(['cc','-std=c11','-O1','-fsanitize=undefined','-I'+str(ROOT/'ESP32C5/components/cym_doom/include'),str(out/'native-input.c'),str(ROOT/'ESP32C5/components/cym_doom/doom_contracts.c'),'-o',str(out/'native-input')],capture_output=True,text=True);self.assertEqual(r.returncode,0,r.stderr)
   r=subprocess.run([str(out/'native-input')],capture_output=True,text=True);(out/'native-input.log').write_text(r.stdout+r.stderr);self.assertEqual(r.returncode,0,r.stdout+r.stderr)
   ws28=(code.replace('#define CONFIG_BOARD_WS_C5_35 1','#define CONFIG_BOARD_WS_C5_35 0')
+   .replace('#define BOOT_BTN_GPIO -1','#define BOOT_BTN_GPIO 0')
    .replace('#define LCD_H_RES 320','#define LCD_H_RES 240')
    .replace('#define LCD_V_RES 480','#define LCD_V_RES 320')
    .replace('doom_game_layout_make(480,320)','doom_game_layout_make(320,240)')

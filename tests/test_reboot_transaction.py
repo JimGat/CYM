@@ -6,7 +6,7 @@ COMP=ROOT/'ESP32C5/components/cym_doom'
 class RebootTransaction(unittest.TestCase):
  def test_production_nvs_admission_rotation_and_early_consume(self):
   s=(ROOT/'ESP32C5/main/main.c').read_text()
-  funcs='\n'.join(function(s,n) for n in ('game_nvs_read','game_nvs_set','game_nvs_erase','game_nvs_commit','game_nvs_io','game_early_consume','game_selector_rotation','game_record_reboot'))
+  funcs='\n'.join(function(s,n) for n in ('game_boot_button_pressed','game_nvs_read','game_nvs_set','game_nvs_erase','game_nvs_commit','game_nvs_io','game_early_consume','game_selector_rotation','game_record_reboot'))
   code=r"""
 #include "game_mode.h"
 #include "storage_gate.h"
@@ -14,7 +14,8 @@ class RebootTransaction(unittest.TestCase):
 #include <stdio.h>
 #include <string.h>
 typedef int esp_err_t;typedef unsigned nvs_handle_t;
-enum{ESP_OK,ESP_ERR_NVS_NOT_FOUND,ESP_RST_SW=7,NVS_READWRITE=1,pdTRUE=1,BOOT_BTN_GPIO=28,LV_OBJ_FLAG_HIDDEN=1};
+enum{ESP_OK,ESP_ERR_NVS_NOT_FOUND,ESP_RST_SW=7,NVS_READWRITE=1,pdTRUE=1,LV_OBJ_FLAG_HIDDEN=1};
+#define BOOT_BTN_GPIO 28
 static game_intent data;static int present,open_fault,set_fault,commit_fault,erase_fault,read_fault;
 static int commits,erases,reboots,takes,gives,boot_init,boot_held,reason=ESP_RST_SW;
 static const char*blocker;static bool transport=true,held;
