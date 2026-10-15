@@ -20,18 +20,18 @@ class SdPsramCapabilities(unittest.TestCase):
         self.assertNotIn('CONFIG_BOARD_', b)
         self.assertNotIn('get_free_size', b)
         with tempfile.TemporaryDirectory(dir=os.environ.get('CYM_WD_TEST_TMPDIR')) as d:
-            p=Path(d); (p/'test.c').write_text('#include <assert.h>\n#include <stdbool.h>\n#include <stddef.h>\n#define MALLOC_CAP_SPIRAM 1\nstatic size_t total;\nstatic size_t heap_caps_get_total_size(int caps){assert(caps==1);return total;}\nstatic bool available(void){'+b+'}\nint main(void){total=0;assert(!available());total=1;assert(available());total=8388608;assert(available());return 0;}')
+            p=Path(d); (p/'test.c').write_text('#include <assert.h>\n#include <stdbool.h>\n#include <stddef.h>\n#define MALLOC_CAP_SPIRAM 1\nstatic size_t total;\nstatic inline size_t heap_caps_get_total_size(int caps){assert(caps==1);return total;}\nstatic bool available(void){'+b+'}\nint main(void){total=0;assert(available());total=1;assert(available());total=8388608;assert(available());return 0;}')
             subprocess.run(['cc','-Wall','-Wextra','-Werror',str(p/'test.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)
     def test_settings_and_shared_worker_guard_before_side_effects(self):
         text=MAIN.read_text()
-        for name, effect in [('show_sd_provision_confirm','create_function_page_base'),('show_sd_provision_running_screen','sd_provision_active = true'),('show_sd_format_confirm1','create_function_page_base')]:
+        for name, effect in [('show_sd_provision_confirm','create_function_page_base'),('show_sd_provision_running_screen','create_function_page_base'),('show_sd_format_confirm1','create_function_page_base')]:
             b=body(text,name)
             self.assertIn('if (!sd_auto_provision_available())',b)
             self.assertLess(b.index('if (!sd_auto_provision_available())'),b.index(effect))
             self.assertIn('show_sd_manual_setup_popup();',b[:b.index(effect)])
             self.assertIn('return;',b[:b.index(effect)])
-    def test_startup_ok_never_requests_no_psram_provision(self):
+    def test_startup_requires_explicit_provision_consent_on_every_board(self):
         b=body(MAIN.read_text(),'show_sd_startup_provision_prompt')
         self.assertIn('sd_auto_provision_available()',b)
         self.assertIn('SD_MANUAL_SETUP_TEXT',b)

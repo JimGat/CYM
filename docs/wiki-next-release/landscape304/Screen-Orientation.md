@@ -2,7 +2,7 @@
 
 > STAGED DEVELOPMENT UPDATE — not published to the live Wiki. Stable remains unchanged.
 
-NM-CYD-C5 and WS-C5-28/35 retain their existing orientation support. Development v3.0.4 adds **Classic CYD** via Patch #10 from co-developer [@birolt29](https://github.com/birolt29), plus a narrow **HackerBox-CYD owner-test candidate**. The contributor reports render, touch, recalibration and WiFi-scan heap checks on Classic at all four angles. He deliberately excluded HackerBox because he lacks its hardware. Neither that report nor host/build tests qualify our exact integrated builds or HackerBox; owner acceptance is pending.
+NM-CYD-C5 and WS-C5-28/35 retain their existing orientation support. Development v3.0.4 adds **Classic CYD** via Patch #10 from co-developer [@birolt29](https://github.com/birolt29), plus a narrow **HackerBox-CYD extension**. The contributor reports render, touch, recalibration and WiFi-scan heap checks on Classic at all four angles. He deliberately excluded HackerBox because he lacks its hardware. Jim subsequently reported that both v3.0.4 builds check out, accepting Classic and HackerBox landscape. This does not establish new heap measurements or explicit completion of every detailed checklist item.
 
 HackerBox retains its existing panel reflection, BGR color order, native touch solver and separate calibration storage. LVGL software rotation sits above those native mappings; no second touch rotation or panel transform change is added. Landscape uses a temporary LVGL rotation buffer, so measure heap under real workload rather than assuming universal headroom.
 

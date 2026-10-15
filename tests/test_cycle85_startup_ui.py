@@ -34,14 +34,6 @@ static void flush(lv_disp_drv_t*d,const lv_area_t*a,lv_color_t*p){(void)a;(void)
 static void s_poll_lvgl_until(volatile int *flag,int sentinel){
  polls++;assert(*flag==sentinel);
  lv_obj_t *o=lv_obj_get_child(lv_layer_top(),0);assert(o);
- if(!psram_total){
-  assert(lv_obj_get_child_cnt(o)==2);lv_obj_update_layout(o);
-  lv_obj_t *label=lv_obj_get_child(o,0),*ok=lv_obj_get_child(o,1);
-  const char *text=lv_label_get_text(label);assert(strstr(text,"no PSRAM")&&strstr(text,"CYM-SD-Assets"));
-  lv_point_t size;lv_txt_get_size(&size,text,&lv_font_montserrat_12,0,0,lv_obj_get_content_width(label),LV_TEXT_FLAG_NONE);
-  assert(size.y<=lv_obj_get_content_height(label));assert(!strcmp(lv_label_get_text(lv_obj_get_child(ok,0)),"OK"));
-  lv_event_send(ok,LV_EVENT_CLICKED,NULL);assert(*flag==1);return;
- }
  assert(lv_obj_get_child_cnt(o)==3);
  lv_obj_t *label=lv_obj_get_child(o,0),*later=lv_obj_get_child(o,1),*provision=lv_obj_get_child(o,2);
  lv_obj_update_layout(o);
@@ -67,7 +59,7 @@ int main(void){
   width=sizes[i][0];height=sizes[i][1];drv.hor_res=width;drv.ver_res=height;lv_disp_drv_update(d,&drv);
   for(choice=1;choice<=2;choice++){
    unsigned before=polls;assert(!show_sd_startup_provision_prompt(0));assert(polls==before);
-   assert(show_sd_startup_provision_prompt(7)==(psram_total && choice==2));assert(polls==before+1);
+   assert(show_sd_startup_provision_prompt(7)==(choice==2));assert(polls==before+1);
    assert(!lv_obj_get_child_cnt(lv_layer_top()));
   }
  }

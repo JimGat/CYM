@@ -2296,12 +2296,16 @@ static lv_obj_t    *sd_provision_log_ta       = NULL;
 static lv_obj_t    *sd_provision_status_label = NULL;
 static lv_obj_t    *sd_prov_back_btn          = NULL;
 static volatile bool sd_provision_active      = false;
-static StackType_t *sd_provision_task_stack   = NULL;
+#define SD_PROV_STACK_BYTES 4096
+_Static_assert(sizeof(StackType_t) == 1, "ESP-IDF task stack depths are bytes");
+static StackType_t *sd_provision_task_stack = NULL;
 static StaticTask_t sd_provision_task_buf;
-// Set true by the provision task just before vTaskDelete(NULL). The main loop
-// polls this and frees the static PSRAM stack from main-task context — a task
-// can never free its own stack (the SP lives inside it → instant overflow).
-static volatile bool sd_provision_stack_free_pending = false;
+static TaskHandle_t sd_provision_task_handle = NULL;
+static char sd_prov_summary[96];
+static bool sd_prov_failed;
+static void sd_provision_task(void *pvParams);
+static bool sd_prov_reap_worker(void);
+static void sd_prov_finish_ui(void);
 
 // Deferred provision startup: event callbacks set these flags instead of creating
 // the dialog directly, so the main loop can create it outside lv_timer_handler()
@@ -6805,24 +6809,19 @@ static bool show_sd_format_confirm(void)
     return (s_sd_err_choice == SD_ERR_RETRY); /* SD_ERR_RETRY(1) = confirmed */
 }
 
-/* Provisioning is available on every board. The worker task's 16 KB stack comes from
- * PSRAM when present, otherwise from internal RAM - a transient allocation freed as soon
- * as the 61-item mkdir/fwrite pass finishes (provisioning runs at startup/idle, before
- * WiFi churns the heap, so internal RAM is ample on PSRAM-less boards like Classic CYD).
- * The manual-copy popup remains only as a fallback if even that internal allocation
- * fails (true OOM) - see the stack allocation in show_sd_provision_running_screen(). */
+/* All boards may request provisioning. Registered total SPIRAM selects the
+ * worker allocation class; PSRAM exhaustion never falls back to internal RAM. */
 static bool sd_auto_provision_available(void)
 {
     return true;
 }
 static const char SD_MANUAL_SETUP_TEXT[] =
-    "This device has no PSRAM.\n"
-    "Auto provision is unavailable.\n"
+    "SD setup could not complete.\n"
     "Manual SD files:\n"
     "github.com/JimGat/\nCYM-SD-Assets\n"
     "Copy contents of sdcard/\n"
     "to the SD card root.\n"
-    "No files have been changed.";
+    "Check the card before retrying.";
 static void sd_manual_setup_ok_cb(lv_event_t *e)
 {
     lv_obj_t *mbox = lv_event_get_current_target(e);
@@ -8927,19 +8926,12 @@ void app_main(void)
                 if (drain_count > 0) {
                     ESP_LOGI(TAG, "[PROV_MAIN_LOOP] Drained %d items in %llu ms total", drain_count, drain_total_ms);
                 }
-            } else if (sd_prov_queue && !sd_provision_active && sd_provision_log_ta) {
-                // Provision has finished but queue may still have items.
-                // Log how many are pending (don't drain them, just count).
-                int pending = 0;
-                sd_prov_update_t msg;
-                while (xQueuePeek(sd_prov_queue, &msg, 0) == pdTRUE) {
-                    pending++;
-                    xQueueReceive(sd_prov_queue, &msg, 0);  // Remove from queue without draining
-                }
-                if (pending > 0) {
-                    ESP_LOGI(TAG, "[PROV_MAIN_LOOP] Provision done, %d items still queued but not displayed (flag=false)", pending);
-                }
             }
+            // Same-core suspended worker is quiescent. Drain remaining progress
+            // before reaping on-page; off-page no LVGL pointers remain to update.
+            if (sd_provision_task_handle &&
+                (!sd_provision_log_ta || uxQueueMessagesWaiting(sd_prov_queue) == 0) &&
+                sd_prov_reap_worker()) sd_prov_finish_ui();
 
             // Process Portal UI events
             if (portal_log_ta && portal_event_queue && portal_ui_active) {
@@ -10234,11 +10226,6 @@ void app_main(void)
         uint64_t wdt_after_us = esp_timer_get_time();
         esp_task_wdt_reset();
         CYM_DEBUG_LOGD(TAG, "[MAIN_LOOP] Watchdog reset after mutex release at %llu us", wdt_after_us);
-
-        // Free the provision task's static PSRAM stack from main-task context.
-        // No stack cleanup in main loop. The 4KB PSRAM stack is reclaimed by
-        // show_sd_provision_running_screen() if the user provisions again, so there's
-        // no cumulative leak. This approach avoids any main-loop blocking.
 
         // Process pending karma saves (with SPI mutex to avoid display conflicts)
         uint64_t sd_spi_try_us = esp_timer_get_time();
@@ -29984,121 +29971,85 @@ void scrollable_textarea_append(lv_obj_t *ta, const char *text,
     lv_textarea_set_cursor_pos(ta, LV_TEXTAREA_CURSOR_LAST);
 }
 
-// ─── Async progress / completion callbacks (run in LVGL context) ─────────────
-
-// Live progress callback: updates the provision log textarea in LVGL context
-static void sd_prov_line_cb(void *arg)
+/* All ownership transitions happen in main context. The worker is pinned to
+ * this same core, finishes all accesses, then suspends itself. eSuspended proves
+ * it is not executing; installed IDF vTaskDelete(non-running) synchronously
+ * removes the static TCB, after which main may free its caller-owned stack.
+ * Do not resume this worker, free its own stack, or reuse its TCB while live. */
+static bool sd_prov_start_worker(bool after_format)
 {
-    sd_prov_update_t *upd = (sd_prov_update_t *)arg;
-    if (!upd) {
-        ESP_LOGW(TAG, "[PROV_LINE_CB] Null update pointer");
-        return;
+    if (sd_provision_active || sd_provision_task_handle) return false;
+    sd_prov_failed = false;
+    sd_prov_summary[0] = 0;
+    sd_prov_queue = xQueueCreate(32, sizeof(sd_prov_update_t));
+    if (!sd_prov_queue) return false;
+    const uint32_t caps = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0
+        ? MALLOC_CAP_SPIRAM : (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    sd_provision_task_stack = heap_caps_malloc(SD_PROV_STACK_BYTES, caps);
+    if (!sd_provision_task_stack) {
+        vQueueDelete(sd_prov_queue);
+        sd_prov_queue = NULL;
+        return false;
     }
-
-    uint64_t cb_start_us = esp_timer_get_time();
-    ESP_LOGI(TAG, "[PROV_LINE_CB] Executing at %llu us, adding: %s", cb_start_us, upd->line);
-
-    if (sd_provision_log_ta) {
-        // Use the scrollable textarea helper with 2000-char circular buffer (trim_enabled=true).
-        // This keeps the textarea rendering fast as items accumulate — without trimming,
-        // render time grows from 100ms at item 7 to 1000+ms at item 40, causing watchdog timeout.
-        // With trimming, render time stays bounded under 150ms regardless of total items.
-        scrollable_textarea_append(sd_provision_log_ta, upd->line, 2000, true);
-
-        // Append a newline (scrollable_textarea_append does not add one automatically)
-        lv_textarea_add_text(sd_provision_log_ta, "\n");
-
-        uint64_t cb_end_us = esp_timer_get_time();
-        CYM_DEBUG_LOGD(TAG, "[PROV_LINE_CB] Text added in %llu us", cb_end_us - cb_start_us);
-    } else {
-        ESP_LOGW(TAG, "[PROV_LINE_CB] Textarea is NULL!");
+    sd_provision_active = true;
+    sd_provision_task_handle = xTaskCreateStaticPinnedToCore(
+        sd_provision_task, "sd_prov", SD_PROV_STACK_BYTES,
+        (void *)(uintptr_t)after_format, 2, sd_provision_task_stack,
+        &sd_provision_task_buf, xPortGetCoreID());
+    if (!sd_provision_task_handle) {
+        sd_provision_active = false;
+        heap_caps_free(sd_provision_task_stack);
+        sd_provision_task_stack = NULL;
+        vQueueDelete(sd_prov_queue);
+        sd_prov_queue = NULL;
+        return false;
     }
-
-    free(upd);
+    return true;
 }
 
-// ─── Provision Done Callback (LVGL Context) ─────────────────────────────────
-//
-// This callback runs inside lv_timer_handler() in the LVGL context (main task).
-// It updates UI labels to show completion. Must be fast — no blocking operations.
-//
-static void sd_prov_done_cb(void *arg)
+static bool sd_prov_reap_worker(void)
 {
-    char *summary = (char *)arg;
-    uint64_t cb_time_us = esp_timer_get_time();
-    ESP_LOGI(TAG, "[PROV_CB] Done callback invoked at %llu us", cb_time_us);
+    if (!sd_provision_task_handle ||
+        eTaskGetState(sd_provision_task_handle) != eSuspended) return false;
+    vTaskDelete(sd_provision_task_handle);
+    sd_provision_task_handle = NULL;
+    heap_caps_free(sd_provision_task_stack);
+    sd_provision_task_stack = NULL;
+    vQueueDelete(sd_prov_queue);
+    sd_prov_queue = NULL;
+    sd_provision_active = false;
+    return true;
+}
 
-    // Update status label with final summary
+/* Main task, under lvgl_mutex; no completion malloc or async callback to fail. */
+static void sd_prov_finish_ui(void)
+{
     if (sd_provision_status_label) {
-        const char *text = summary ? summary : "Done";
-        lv_label_set_text(sd_provision_status_label, text);
-        lv_obj_set_style_text_color(sd_provision_status_label, COLOR_MATERIAL_GREEN, 0);
-        ESP_LOGI(TAG, "[PROV_CB] Status label updated: %s", text);
-    } else {
-        ESP_LOGW(TAG, "[PROV_CB] Status label is NULL");
+        lv_label_set_text(sd_provision_status_label, sd_prov_summary);
+        lv_obj_set_style_text_color(sd_provision_status_label,
+            sd_prov_failed ? COLOR_MATERIAL_RED : COLOR_MATERIAL_GREEN, 0);
     }
-
-    // Enable the Back button
     if (sd_prov_back_btn) {
         lv_obj_clear_state(sd_prov_back_btn, LV_STATE_DISABLED);
         lv_obj_set_style_bg_color(sd_prov_back_btn, COLOR_MATERIAL_TEAL, LV_STATE_DEFAULT);
-        ESP_LOGI(TAG, "[PROV_CB] Back button enabled");
-    } else {
-        ESP_LOGW(TAG, "[PROV_CB] Back button is NULL");
     }
-
-    // Clean up the summary string
-    if (summary) {
-        free(summary);
-        ESP_LOGI(TAG, "[PROV_CB] Summary freed");
-    }
-
-    // Mark provision as complete
-    sd_provision_active = false;
-    ESP_LOGI(TAG, "[PROV_CB] Done callback complete at %llu us", esp_timer_get_time());
 }
 
-// ─── Provision Background Task with Batched Synchronous LVGL Updates ────────
-//
-// This task runs at priority 2 (above main loop, below WiFi/system tasks).
-// It processes 44 SD items: checks each with stat(), creates missing dirs/files.
-// The task feeds its own watchdog to prevent timeout during slow SD operations.
-//
-// ARCHITECTURE: Batched Synchronous Updates (NOT async callbacks)
-// ════════════════════════════════════════════════════════════════════════════════
-// PROBLEM: The old async pattern (lv_async_call) queues 44 callbacks to update the
-// provision log textarea. Each callback executes 200-300ms later in the main loop's
-// event queue. By item 30+, callbacks accumulate faster than they drain, blocking
-// the main loop. Textarea render time grows from 100ms (item 7) to 1000+ms (item 40).
-// The watchdog times out after 9-10 seconds of accumulated main-loop blocking.
-//
-// SOLUTION: Batch updates (5 items per batch) and flush synchronously while holding
-// lvgl_mutex. This reduces 44 updates to ~8 batches, and each sync update takes
-// 50-100ms (texture rendering + trimming), not 300ms queue latency.
-//
-// KEY INVARIANTS:
-// 1. Take sd_spi_mutex only for the single filesystem op (stat/mkdir/fopen) — 1-5ms
-// 2. Release sd_spi_mutex IMMEDIATELY, then yield to main loop
-// 3. Batch accumulated lines in a 1KB buffer (typically 5 items = 200-400 bytes)
-// 4. Every 300ms OR after 5 items OR at the end: acquire lvgl_mutex and flush
-// 5. If lvgl_mutex times out (500ms), fall back to async as a safety valve
-// 6. The main loop (priority 1) is NOT starved — it runs every 200ms for LVGL render
-// 7. Task watchdog subscription guarantees we feed the WDT even during f_mkfs()
-//
-// SYNCHRONIZATION MODEL:
-// - sd_spi_mutex: protects SD card filesystem operations (held 1-5ms per item)
-// - lvgl_mutex: protects LVGL textarea updates (held 50-100ms per batch flush)
-// - No circular dependencies — provision task never calls main-loop code
+static void sd_prov_screen_stop(void)
+{
+    /* Storage work may finish off-page, but it never owns LVGL objects. Main
+     * still reaps it; a second run is refused until that handoff completes. */
+    sd_provision_log_ta = NULL;
+    sd_provision_status_label = NULL;
+    sd_prov_back_btn = NULL;
+}
 
+// Worker posts bounded queue messages only; main owns every LVGL update.
 #define PROV_POST(fmt, ...) do { \
-    sd_prov_update_t *_u = malloc(sizeof(sd_prov_update_t)); \
-    if (_u) { \
-        snprintf(_u->line, sizeof(_u->line), fmt, ##__VA_ARGS__); \
-        ESP_LOGI(TAG, "[PROV_POST] %s", _u->line); \
-        lv_async_call(sd_prov_line_cb, _u); \
-    } else { \
-        ESP_LOGE(TAG, "[PROV_POST] malloc failed for: " fmt, ##__VA_ARGS__); \
-    } \
+    sd_prov_update_t _u; \
+    snprintf(_u.line, sizeof(_u.line), fmt, ##__VA_ARGS__); \
+    ESP_LOGI(TAG, "[PROV_POST] %s", _u.line); \
+    xQueueSend(sd_prov_queue, &_u, 0); \
 } while (0)
 
 // Mutex helper with detailed logging
@@ -30124,6 +30075,7 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
     // Acquire mutex and stat the path
     if (!PROV_TAKE_MUTEX()) {
         ESP_LOGE(TAG, "[PROV_ITEM] %d: Mutex timeout", idx);
+        sd_prov_failed = true;
         PROV_POST("ERR: mutex timeout at item %d", idx);
         return;
     }
@@ -30131,11 +30083,23 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
     uint64_t stat_start = esp_timer_get_time();
     struct stat st;
     bool exists = (stat(item->path, &st) == 0);
+    int stat_error = exists ? 0 : errno;
+    if (!exists && stat_error != ENOENT) {
+        sd_prov_failed = true;
+        xSemaphoreGive(sd_spi_mutex);
+        return;
+    }
     uint64_t stat_ms = (esp_timer_get_time() - stat_start) / 1000;
     CYM_DEBUG_LOGD(TAG, "[PROV_STAT] Item %d: stat() took %lld ms, exists=%d", idx, stat_ms, exists);
 
     // If already exists, we're done with this item
     if (exists) {
+        if ((item->type == SD_ITEM_DIR && !S_ISDIR(st.st_mode)) ||
+            (item->type == SD_ITEM_FILE && !S_ISREG(st.st_mode))) {
+            sd_prov_failed = true;
+            xSemaphoreGive(sd_spi_mutex);
+            return;
+        }
         xSemaphoreGive(sd_spi_mutex);
         ESP_LOGI(TAG, "[PROV_ITEM] %d: EXISTS", idx);
         // Queue to batch instead of posting immediately
@@ -30167,9 +30131,10 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
         if (f) {
             if (item->content && item->content[0]) {
                 size_t written = fwrite(item->content, 1, strlen(item->content), f);
+                if (written != strlen(item->content)) err = EIO;
                 CYM_DEBUG_LOGD(TAG, "[PROV_FWRITE] Item %d: wrote %u bytes", idx, (unsigned)written);
             }
-            fclose(f);
+            if (fclose(f) != 0) err = EIO;
             CYM_DEBUG_LOGD(TAG, "[PROV_FWRITE] Item %d: file closed", idx);
         } else {
             err = errno;
@@ -30191,6 +30156,7 @@ static void sd_prov_do_item(const sd_provision_item_t *item, int idx,
         }
         (*created)++;
     } else {
+        sd_prov_failed = true;
         ESP_LOGE(TAG, "[PROV_ITEM] %d: FAILED (errno=%d)", idx, err);
         int len = snprintf(batch_buffer + *batch_len, batch_size - *batch_len,
                           "  !!  %s%s (err %d)\n", item->path + 8,
@@ -30217,17 +30183,7 @@ static void sd_provision_task(void *pvParams)
     ESP_LOGI(TAG, "[SD_PROV] After format: %d", after_format);
     ESP_LOGI(TAG, "[SD_PROV] Task priority: %d", (int)uxTaskPriorityGet(NULL));
 
-    // Create queue for provision updates. Main loop will drain this queue.
-    // Queue holds up to 32 sd_prov_update_t items (batched text updates).
-    if (sd_prov_queue == NULL) {
-        sd_prov_queue = xQueueCreate(32, sizeof(sd_prov_update_t));
-        if (sd_prov_queue == NULL) {
-            ESP_LOGE(TAG, "[SD_PROV] Failed to create provision queue");
-            goto done;
-        }
-        ESP_LOGI(TAG, "[SD_PROV] Queue created successfully");
-    }
-
+    // Queue and stack were reserved before task launch or any format.
     // Subscribe this task to the watchdog
     esp_err_t wdt_add = esp_task_wdt_add(NULL);
     ESP_LOGI(TAG, "[SD_PROV] Task watchdog add: %s", esp_err_to_name(wdt_add));
@@ -30247,6 +30203,7 @@ static void sd_provision_task(void *pvParams)
         if (!PROV_TAKE_MUTEX()) {
             ESP_LOGE(TAG, "[SD_PROV_FORMAT] Mutex timeout");
             PROV_POST("ERR: mutex timeout during format");
+            sd_prov_failed = true;
             goto done;
         }
 
@@ -30272,6 +30229,7 @@ static void sd_provision_task(void *pvParams)
         if (fr != ESP_OK) {
             ESP_LOGE(TAG, "[SD_PROV_FORMAT] Format failed: %s", esp_err_to_name(fr));
             PROV_POST("Format FAILED.\nCard unmounted cleanly.\nRemove and reinsert\ncard, then retry.");
+            sd_prov_failed = true;
             goto done;
         }
 
@@ -30285,6 +30243,7 @@ static void sd_provision_task(void *pvParams)
         if (!PROV_TAKE_MUTEX()) {
             ESP_LOGE(TAG, "[SD_PROV_FORMAT] Mutex timeout before remount");
             PROV_POST("ERR: mutex timeout before remount");
+            sd_prov_failed = true;
             goto done;
         }
 
@@ -30304,6 +30263,7 @@ static void sd_provision_task(void *pvParams)
         if (mr != ESP_OK) {
             ESP_LOGE(TAG, "[SD_PROV_FORMAT] Remount failed: %s", esp_err_to_name(mr));
             PROV_POST("Remount FAILED: %s", esp_err_to_name(mr));
+            sd_prov_failed = true;
             goto done;
         }
 
@@ -30311,16 +30271,7 @@ static void sd_provision_task(void *pvParams)
         PROV_POST("Remount OK!\nRebuilding structure...");
     }
 
-    // ── Process each of the 44 items with queue-based batching ─────────────────
-    // ARCHITECTURE: Provision task queues batches to sd_prov_queue (FreeRTOS safe).
-    // Main loop drains queue while holding lvgl_mutex, calls scrollable_textarea_append().
-    // This keeps main loop in control and ensures watchdog resets every 10ms.
-    //
-    // Rationale: Async callbacks (lv_async_call) queue 44 updates that execute 200-300ms
-    // later, accumulating by item 30+ and blocking main loop (render > 1000ms).
-    // Direct mutex-holding updates block main loop during render (200-500ms).
-    // Queue-based: main loop stays responsive, drains queue at its pace.
-
+    // Validate every existing SD_ITEMS entry; queue progress for main.
     ESP_LOGI(TAG, "[SD_PROV] Starting item validation phase (%d items)", (int)SD_ITEMS_COUNT);
     uint64_t items_start = esp_timer_get_time();
     uint64_t last_flush_us = items_start;
@@ -30353,25 +30304,10 @@ static void sd_provision_task(void *pvParams)
                 ESP_LOGI(TAG, "[PROV_BATCH] Queueing %d items (elapsed %lld ms, batch_len %d bytes)",
                          batch_item_count, elapsed_since_batch_start, batch_len);
 
-                // Create queue item with the accumulated batch text
-                sd_prov_update_t *upd = malloc(sizeof(sd_prov_update_t));
-                if (upd) {
-                    // Copy batch_buffer to queue item (max 96 bytes, will be truncated if batch is large)
-                    // For larger batches, we send the portion that fits; main loop will request more if needed
-                    int copy_len = (batch_len < (int)sizeof(upd->line) - 1) ? batch_len : (int)sizeof(upd->line) - 1;
-                    strncpy(upd->line, batch_buffer, copy_len);
-                    upd->line[copy_len] = '\0';
-
-                    // Send to queue (non-blocking). Main loop drains this queue.
-                    if (xQueueSend(sd_prov_queue, upd, 0) != pdTRUE) {
-                        ESP_LOGW(TAG, "[PROV_BATCH] Queue full or invalid, dropping batch");
-                    } else {
-                        CYM_DEBUG_LOGD(TAG, "[PROV_BATCH] Queued successfully");
-                    }
-                    free(upd);
-                } else {
-                    ESP_LOGE(TAG, "[PROV_BATCH] malloc failed for queue item");
-                }
+                sd_prov_update_t upd;
+                snprintf(upd.line, sizeof(upd.line), "%.*s", (int)sizeof(upd.line) - 1, batch_buffer);
+                if (xQueueSend(sd_prov_queue, &upd, 0) != pdTRUE)
+                    ESP_LOGW(TAG, "[PROV_BATCH] Queue full, progress truncated");
 
                 batch_item_count = 0;
                 batch_len = 0;
@@ -30412,36 +30348,15 @@ static void sd_provision_task(void *pvParams)
     esp_task_wdt_reset();
 
 done: ;
-    // Post completion callback to LVGL context
-    uint64_t total_ms = (esp_timer_get_time() - task_start_us) / 1000;
-    ESP_LOGI(TAG, "[SD_PROV] Task complete in %lld ms total", total_ms);
-
-    char *summary = malloc(64);
-    if (summary) {
-        snprintf(summary, 64, "Done - %d created, %d OK", created, ok_count);
-        ESP_LOGI(TAG, "[SD_PROV] Posting callback: %s", summary);
-        lv_async_call(sd_prov_done_cb, summary);
-    } else {
-        ESP_LOGE(TAG, "[SD_PROV] Failed to allocate summary string");
-    }
-
-    // Signal main loop to stop draining the queue
-    sd_provision_active = false;
-    ESP_LOGI(TAG, "[SD_PROV] Set sd_provision_active = false");
-
-    // DO NOT delete the queue from this task. The main loop may still be inside
-    // an xQueueReceive call with the queue handle. Deleting the queue while another
-    // task is dereferencing it causes use-after-free (assertion in queue.c).
-    // Instead, just set the flag to false. The main loop will naturally stop draining
-    // when it sees the flag is false. On the next provision cycle, xQueueCreate will
-    // be called again, which implicitly replaces the old queue handle.
-
-    // Unsubscribe from watchdog before exit
-    esp_err_t wdt_del = esp_task_wdt_delete(NULL);
-    ESP_LOGI(TAG, "[SD_PROV] Task watchdog delete: %s", esp_err_to_name(wdt_del));
-    ESP_LOGI(TAG, "[SD_PROV] ========== PROVISION TASK EXIT ==========");
-
-    vTaskDelete(NULL);
+    if (created + ok_count != (int)SD_ITEMS_COUNT) sd_prov_failed = true;
+    snprintf(sd_prov_summary, sizeof(sd_prov_summary),
+             "%s - %d created, %d OK", sd_prov_failed ? "Failed" : "Done", created, ok_count);
+    esp_task_wdt_delete(NULL);
+    ESP_LOGI(TAG, "[SD_PROV] %s; stack high-water=%u bytes (depth=%u bytes)",
+             sd_prov_summary, (unsigned)uxTaskGetStackHighWaterMark(NULL), SD_PROV_STACK_BYTES);
+    /* Final operation: main on the same core must observe eSuspended before
+     * deleting this task and freeing its stack/queue. No early done flag. */
+    vTaskSuspend(NULL);
 }
 
 // ─── Provision running screen ─────────────────────────────────────────────────
@@ -30459,14 +30374,14 @@ static void show_sd_provision_running_screen(bool after_format)
         show_sd_manual_setup_popup();
         return;
     }
-    uint64_t screen_start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "[PROV_SCREEN] Creating provision screen: after_format=%d", after_format);
 
-    sd_provision_active = true;
+    if (sd_provision_active) return;
     const char *title = after_format ? "Format + Provision" : "Validate & Provision";
     CYM_DEBUG_LOGD(TAG, "[PROV_SCREEN] Screen title: %s", title);
 
     create_function_page_base(title);
+    g_screen_stop_fn = sd_prov_screen_stop;
     CYM_DEBUG_LOGD(TAG, "[PROV_SCREEN] Base screen created");
 
     // Create a scrollable textarea for live provision log
@@ -30520,69 +30435,15 @@ static void show_sd_provision_running_screen(bool after_format)
     lv_obj_set_style_text_color(back_lbl, ui_muted_color(), 0);
     lv_obj_center(back_lbl);
 
-    // Allocate and launch the provision background task
-    // The task runs at priority 2 (above main loop) so it makes progress quickly.
-    // It will feed its own watchdog to handle slow SD cards.
-    ESP_LOGI(TAG, "[PROV_SCREEN] Allocating 16KB task stack (PSRAM if present, else internal)...");
-
-    // PSRAM stack when present; else internal RAM (Classic CYD / WROOM-32 have no PSRAM).
-    // Transient ~16 KB, freed right after the provision pass; provisioning runs at
-    // startup/idle so internal RAM is ample. True OOM falls back to the manual-copy popup.
-    uint32_t prov_stack_caps = (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0)
-                                 ? MALLOC_CAP_SPIRAM
-                                 : (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    sd_provision_task_stack = heap_caps_malloc(4096 * sizeof(StackType_t), prov_stack_caps);
-    if (!sd_provision_task_stack) {
-        ESP_LOGE(TAG, "[PROV_SCREEN] Failed to allocate task stack (caps=0x%lx)!",
-                 (unsigned long)prov_stack_caps);
-        sd_provision_active = false;
-        lv_obj_clear_state(sd_prov_back_btn, LV_STATE_DISABLED);
-        lv_obj_set_style_bg_color(sd_prov_back_btn, COLOR_MATERIAL_TEAL, LV_STATE_DEFAULT);
-        show_sd_manual_setup_popup();  // true OOM fallback: point to manual SD setup
-        return;
+    // Render before the priority-2 worker can preempt main. Depth is 4096 bytes,
+    // not words/16KB. Runtime high-water and heap qualification remain required.
+    lv_refr_now(NULL);
+    if (!sd_prov_start_worker(after_format)) {
+        sd_prov_failed = true;
+        snprintf(sd_prov_summary, sizeof(sd_prov_summary), "Failed - insufficient worker resources");
+        sd_prov_finish_ui();
+        show_sd_manual_setup_popup();
     }
-
-    ESP_LOGI(TAG, "[PROV_SCREEN] Stack allocated at %p", sd_provision_task_stack);
-
-    // CRITICAL: Force LVGL to flush the newly created screen to the panel BEFORE
-    // creating the provision task. The task runs at priority 2 (above main loop priority 1),
-    // so it will immediately preempt. If we don't flush first, the main loop never gets
-    // a chance to render the screen before the task floods LVGL with async updates.
-    // Result: screen is still blank, only the old dialog shows, crash after 3.4s.
-    ESP_LOGI(TAG, "[PROV_SCREEN] Forcing LVGL refresh before task creation...");
-    uint64_t flush_start_us = esp_timer_get_time();
-    lv_refr_now(NULL);  // Synchronously render all dirty areas to the panel
-    uint64_t flush_ms = (esp_timer_get_time() - flush_start_us) / 1000;
-    ESP_LOGI(TAG, "[PROV_SCREEN] LVGL flush complete in %lld ms", flush_ms);
-
-    ESP_LOGI(TAG, "[PROV_SCREEN] Creating task: priority=2, after_format=%d", after_format);
-
-    uint64_t task_create_us = esp_timer_get_time();
-    TaskHandle_t task_handle = xTaskCreateStatic(
-        sd_provision_task,           // Task function
-        "sd_prov",                   // Task name
-        4096,                        // Stack size (words)
-        (void *)(uintptr_t)after_format,  // Task parameter
-        2,                           // Priority (above main loop, below WiFi)
-        sd_provision_task_stack,     // Static stack
-        &sd_provision_task_buf       // Static TCB
-    );
-
-    if (task_handle == NULL) {
-        ESP_LOGE(TAG, "[PROV_SCREEN] xTaskCreateStatic failed!");
-        lv_label_set_text(sd_provision_status_label, "ERR: task create failed");
-        sd_provision_active = false;
-        lv_obj_clear_state(sd_prov_back_btn, LV_STATE_DISABLED);
-        lv_obj_set_style_bg_color(sd_prov_back_btn, COLOR_MATERIAL_TEAL, LV_STATE_DEFAULT);
-        heap_caps_free(sd_provision_task_stack);
-        sd_provision_task_stack = NULL;
-        return;
-    }
-
-    uint64_t task_create_ms = (esp_timer_get_time() - task_create_us) / 1000;
-    uint64_t screen_total_ms = (esp_timer_get_time() - screen_start_us) / 1000;
-    ESP_LOGI(TAG, "[PROV_SCREEN] Task created successfully in %lld ms", task_create_ms);
-    ESP_LOGI(TAG, "[PROV_SCREEN] Screen setup complete in %lld ms total", screen_total_ms);
 }
 
 // ─── Validate & Provision confirm ────────────────────────────────────────────
@@ -72852,7 +72713,7 @@ static const char *game_storage_blocker(void)
 {
 #define BLOCK(owner) do { if (owner) return #owner; } while (0)
     BLOCK(s_fileserv_httpd); BLOCK(s_fileserv_active);
-    BLOCK(sd_provision_active); BLOCK(sd_prov_pending_start); BLOCK(sd_provision_stack_free_pending);
+    BLOCK(sd_provision_active); BLOCK(sd_prov_pending_start);
     BLOCK(sd_lazy_mount_task);
     BLOCK(wpasec_upload_task_handle); BLOCK(wpasec_upload_active);
     BLOCK(wdup_task_handle); BLOCK(wdup_active);

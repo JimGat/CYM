@@ -26,8 +26,9 @@ and both menu routes. RED on base and GREEN on integrated source are recorded
 outside the repo. These are host checks, not panel/heap hardware proof.
 
 Landscape allocates a temporary LVGL rotation buffer. No universal RAM-headroom
-claim is made. HackerBox was not tested by the contributor and remains an
-owner-test candidate; both exact integrated images await physical acceptance.
+claim is made. HackerBox was not tested by the contributor. Jim subsequently reported that both
+v3.0.4 board builds check out, accepting Classic and HackerBox landscape. No new
+heap measurements or explicit completion of every checklist item were reported.
 Stable and the existing release are unchanged. No live Wiki publication is included.
 
 ## Operator checklist: run on BOTH boards and BOTH menu layouts
@@ -60,9 +61,11 @@ Stable and the existing release are unchanged. No live Wiki publication is inclu
    Report board, version, orientation, layout, photo and serial evidence for any
    defect; do not adjust native panel transforms speculatively.
 
-## No-PSRAM provisioning clarification (unchanged)
+## No-PSRAM provisioning version boundary
 
 v3.0.2 fixed the unsafe path by requiring registered total SPIRAM before automatic
 Validate & Provision / Format + Provision. Without PSRAM it shows OK-only manual
 setup guidance for CYM-SD-Assets. It did not implement automatic provisioning on
-no-PSRAM boards. A proposed implementation of that capability is separate work.
+no-PSRAM boards. Development v3.0.5 implements that separate capability; see
+[its qualification checklist](sd-no-psram-v3.0.5.md). The v3.0.4 acceptance above
+does not qualify the new provisioning lifecycle.

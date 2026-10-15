@@ -122,11 +122,11 @@ CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in th
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P3 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Programming/JTAG debugging stays on the primary USB-C; the second Micro-USB/P3 UART path is GPS-only and carries no CYM logs. No 802.15.4. [Screen Orientation](#screen-orientation) is enabled in Development v3.0.4 via Patch #10 from co-developer @birolt29; integrated-build owner testing is pending. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P3 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Programming/JTAG debugging stays on the primary USB-C; the second Micro-USB/P3 UART path is GPS-only and carries no CYM logs. No 802.15.4. [Screen Orientation](#screen-orientation) is enabled in Development v3.0.4 via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Its header now shows a 10-second, voltage-estimated battery percentage from the CH32V003 EXIO_ADC path; `FULL` means VBAT is at least 4.15 V, not that charger completion was detected. |
 | **[C5Lab Pancake DIY](https://github.com/C5Lab/pancake)** (`pancake-c5`) | 🧪 **Development channel only; not stable; remote hardware qualification pending** | ESP32-C5 with a 3.5-inch 480×320 display, FT6336U capacitive touch, microSD, WS2812, battery sensing, and optional UART GPS wiring. Available only through the development channel (`?beta=1`); dedicated to D3h420, Janek, and OyczE. |
 | **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for v3.0.0. Camera/audio/IMU remain unqualified. |
-| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.0** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. Development v3.0.4 adds an owner-test Screen Orientation candidate; rotated display/touch/heap qualification is pending. |
+| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.0** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. Jim accepted the Development v3.0.4 landscape builds on both Classic CYD and HackerBox; no additional heap measurements were reported. |
 | **Waveshare ESP32-S3-Touch-LCD-5B** (`ws-s3-5b`) | 🧪 **Development channel only; not stable** | Experimental 1024×600 RGB display target with capacitive touch and PCF85063 RTC support. No verified GPS UART; hardware qualification pending. Opt in with `?beta=1`. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 | **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Released in v2.15.34; available in the web flasher** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi and BLE. The shared CYM application, display, orientation, colors, capacitive touch, Modern/Classic menus, and Deauth Harvest have been physically exercised. SD, RGB LED, battery voltage, external UART GPS, broader radio coverage, and bounded soak remain pending qualification. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
@@ -2052,11 +2052,11 @@ The `*`-suffix values are what the device is actually using as its GPS fallback 
 
 #### Screen Orientation
 
-**Settings → Screen → Orientation** is shared by the Classic and Modern menu layouts (Modern: Tools → Settings). NM-CYD-C5 and Waveshare ESP32-C5-Touch-LCD-2.8/3.5 (WS-C5-28/35) retain their existing support. **Development v3.0.4 adds Classic CYD and a HackerBox-CYD owner-test candidate; this does not change Stable.** Pick `0 Portrait`, `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. A changed orientation is saved to NVS and the device reboots so screens are rebuilt at the new logical dimensions. Valid saved settings are retained across updates; Classic/HackerBox default to portrait when none is saved.
+**Settings → Screen → Orientation** is shared by the Classic and Modern menu layouts (Modern: Tools → Settings). NM-CYD-C5 and Waveshare ESP32-C5-Touch-LCD-2.8/3.5 (WS-C5-28/35) retain their existing support. **Development v3.0.4 adds Classic CYD and HackerBox-CYD; Jim accepted both landscape builds. This does not change Stable.** Pick `0 Portrait`, `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. A changed orientation is saved to NVS and the device reboots so screens are rebuilt at the new logical dimensions. Valid saved settings are retained across updates; Classic/HackerBox default to portrait when none is saved.
 
 Resistive XPT2046 calibration on NM-CYD-C5, Classic and HackerBox always forces native portrait for its corner targets and restores the chosen orientation on completion or timeout. Capacitive WS-C5-28/35 touch needs no such calibration. Existing board-specific panel transforms, touch calibration storage, GPS and console routing are unchanged.
 
-Co-developer **@birolt29's Patch #10** was bench-tested by him on Classic CYD-2432S028R at all four angles, including touch, recalibration and WiFi-scan heap observations. HackerBox was deliberately excluded from his patch because he lacks that hardware. Our narrow extension uses the same LVGL software-rotation layer above HackerBox's existing native reflection and calibration; **it is not a contributor-tested HackerBox fix**. The exact integrated images still need owner tests on both boards. Landscape uses LVGL's temporary rotation buffer; contributor heap observations are not a guarantee for every workload. See the [v3.0.4 owner checklist](docs/testing/landscape-v3.0.4.md).
+Co-developer **@birolt29's Patch #10** was bench-tested by him on Classic CYD-2432S028R at all four angles, including touch, recalibration and WiFi-scan heap observations. HackerBox was deliberately excluded from his patch because he lacks that hardware. Our narrow extension uses the same LVGL software-rotation layer above HackerBox's existing native reflection and calibration; **it is not a contributor-tested HackerBox fix**. Jim subsequently reported that both v3.0.4 board builds check out, accepting Classic and HackerBox landscape. That report does not establish new heap measurements or explicit completion of every detailed checklist item. Landscape uses LVGL's temporary rotation buffer; contributor heap observations are not a guarantee for every workload. See the [v3.0.4 owner checklist](docs/testing/landscape-v3.0.4.md).
 
 > WS-C5-28 support (added in v2.15.01) was confirmed on physical hardware. Existing landscape layout fixes remain in place; this change adds no general screen refactor.
 
@@ -3000,7 +3000,7 @@ Both files are optional — CYM runs without them, but OUI lookup will show `[Un
 
 The **SD Card → File Tree** utility (Settings menu) lets you browse the SD card's directory tree directly on the device — useful for confirming handshakes and wardrive logs were saved without needing to remove the card.
 
-**SD Card Provision** (Settings → SD Card → Provision) creates the full `/sdcard/lab/` folder structure in one tap. When complete, the screen shows a "Done — N created, M OK" summary in a status bar above the Back button.
+**SD Card Provision** (Settings → SD Card → Validate & Provision; Modern: Tools → Settings) creates missing `/sdcard/lab/` directories and seed files after confirmation, preserving existing files. Success shows `Done - N created, M OK`; storage errors show `Failed`, not successful validation. Development v3.0.5 enables this on no-PSRAM boards too; Stable v3.0.2 retains manual setup on those boards. See the [v3.0.5 provisioning checklist](docs/testing/sd-no-psram-v3.0.5.md).
 
 ---
 
@@ -3409,3 +3409,29 @@ remains disabled for them. Waveshare profiles have no additional onboard RGB LED
 Manual resources and additive installer: https://github.com/JimGat/CYM-SD-Assets.
 See [behavior, setup and hardware acceptance](docs/testing/psram-led-v3.0.2.md).
 Host tests and builds do not replace device verification.
+
+
+## v3.0.5 Development: SD provisioning with or without PSRAM
+
+Co-developer **@birolt29 supplied Patch #11** to enable the existing shared SD
+provisioner on no-PSRAM boards, including Classic CYD and HackerBox. Development
+v3.0.5 uses registered total SPIRAM to choose the 4096-byte worker stack: PSRAM
+when present, internal 8-bit RAM only when registered PSRAM is absent. Exhausted
+PSRAM does not trigger an internal fallback. Available heap is not guaranteed.
+
+On boot, after calibration and home-layout setup, missing feature folders offer
+**Later / Provision** on every board; only Provision starts deferred work. Both
+menu layouts retain Settings → SD Card (Modern: Tools → Settings). Normal
+**Validate & Provision** is additive; **Format + Provision** remains destructive
+and requires both confirmation screens. Queue and worker resources are reserved
+before any formatting. Allocation or task-start failure reports failure and
+shows an OK-only manual setup popup; Back remains usable. A storage error can
+leave partial work, so inspect the card rather than assuming it was untouched.
+
+Manual fallback: copy the contents of `sdcard/` from
+[CYM-SD-Assets](https://github.com/JimGat/CYM-SD-Assets) to the card root, preserving
+existing user files. Firmware provisioning seeds folders/configuration; it does
+not download the complete external asset collection. Stable remains **v3.0.2**.
+The new provisioning lifecycle still needs exact-v3.0.5 physical heap/high-water,
+repeat-run and low-memory checks; prior v3.0.4 landscape acceptance is not that
+qualification. See [operator checks](docs/testing/sd-no-psram-v3.0.5.md).
