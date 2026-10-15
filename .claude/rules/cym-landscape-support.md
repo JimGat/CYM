@@ -2,7 +2,7 @@
 
 As of 2026-09-22, **every new screen** added to the firmware must work correctly in
 both portrait and landscape on boards that support [Screen Orientation](../../ESP32C5/main/main.c)
-(currently NM-CYD-C5 and WS-C5-28) — not portrait-only with landscape as a follow-up patch.
+(NM-CYD-C5, WS-C5-28 and WS-C5-35; Development v3.0.4 also enables Classic CYD and a HackerBox owner-test candidate) — not portrait-only with landscape as a follow-up patch.
 This applies going forward to all new screens, not just ones that look form-heavy.
 
 ## The two failure patterns already hit (know these before writing a new screen)

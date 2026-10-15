@@ -4819,7 +4819,7 @@ static void nvs_settings_save_brightness(uint8_t pct)
     }
 }
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
 static void nvs_settings_save_orientation(uint8_t orient)
 {
     nvs_handle_t h;
@@ -4839,16 +4839,14 @@ static void nvs_settings_save_orientation(uint8_t orient)
 // WS-C5-28 plus WS-C5-35 (320x480 ST7796), all with native-portrait touch drivers
 // (XPT2046 calibrated to native portrait; CST3530 configured x_max/y_max=LCD dims,
 // swap_xy/mirror_x/mirror_y=0), so this same software-rotation approach applies to
-// both unchanged. Classic CYD (CYD2USB, but NOT the HackerBox variant) is ALSO
-// enabled: although its ILI9341 needs a board-specific swap_xy+mirror MADCTL transform
-// to reach native portrait (see init_display's CONFIG_BOARD_CYD2USB block), LVGL
-// sw_rotate sits cleanly on top of that native-portrait frame, and its XPT2046 touch
-// cb returns native-portrait coords like NM-CYD-C5's, so LVGL's indev rotation maps
-// touch correctly in all 4 orientations. Device-verified on CYD-2432S028R hardware:
-// render, touch, and heap (no RAM penalty vs portrait on this PSRAM-less board) all
-// confirmed. HackerBox-CYD is EXCLUDED (CONFIG_BOARD_HACKERBOX_CYD): it shares the
-// CYD2USB path but has a physically reflected panel (v2.15.59) whose rotation
-// composition is unverified - enable it only after HackerBox hardware testing.
+// both unchanged. Patch #10 from co-developer @birolt29 adds Classic CYD using
+// the same native-portrait contract. His Classic bench report covers render/touch
+// at all four angles and heap observations; it does not guarantee heap headroom
+// for every workload. HackerBox uses the same software rotation as an owner-test
+// candidate: retain its native panel reflection/color setup and touch calibration.
+// LVGL rotates above those native mappings; do not add another touch transform.
+// Landscape needs LVGL's temporary rotation buffer on these no-PSRAM boards.
+// The exact integrated builds, especially HackerBox, still need hardware testing.
 static void apply_screen_orientation(uint8_t orient)
 {
     lv_disp_t *disp = lv_disp_get_default();
@@ -5752,7 +5750,7 @@ static void run_touch_calibration(void)
 {
     ESP_LOGI(TAG, "Starting touch calibration");
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_CYD2USB)
     // Calibration MUST run in native portrait: the corner targets (CAL_PTS) and the
     // LCD_H_RES/LCD_V_RES bounds below all assume a 240x320 portrait frame, and the
     // cal maps raw ADC -> native portrait. A rotated display would push the targets
@@ -5855,7 +5853,7 @@ static void run_touch_calibration(void)
 
         if (aborted) {
             lv_obj_clean(scr);
-#if defined(CONFIG_BOARD_NM_CYD_C5) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_CYD2USB)
             apply_screen_orientation(saved_orient);
 #endif
             return;
@@ -6012,7 +6010,7 @@ static void run_touch_calibration(void)
 
     // Strip cal widgets without deleting scr (avoids dangling prev_scr pointer).
     lv_obj_clean(scr);
-#if defined(CONFIG_BOARD_NM_CYD_C5) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_CYD2USB)
     apply_screen_orientation(saved_orient);
 #endif
     ESP_LOGI(TAG, "Touch calibration complete");
@@ -7962,14 +7960,14 @@ void app_main(void)
 #else
     disp_drv.user_data = panel_handle;
 #endif
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
     // Enable LVGL software rotation so the user Orientation setting can rotate the
     // whole UI (and touch) at runtime. rot=0 (portrait) costs nothing; a landscape
     // rotation costs a per-flush rotate buffer. See apply_screen_orientation().
     disp_drv.sw_rotate = 1;
 #endif
     lv_disp_drv_register(&disp_drv);
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
     // Apply the persisted orientation now (before any UI is built) so the splash
     // and home screen come up already rotated.
     apply_screen_orientation(screen_orientation);
@@ -26957,8 +26955,8 @@ static void show_scan_time_popup(void)
 
 static lv_obj_t *timeout_popup = NULL;
 static lv_obj_t *timeout_dropdown = NULL;
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
-static lv_obj_t *orient_dropdown  = NULL;   // Screen orientation (NM-CYD-C5 + WS-C5-28)
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
+static lv_obj_t *orient_dropdown  = NULL;   // Orientation-capable board profiles
 #endif
 
 // Map dropdown index to milliseconds: 0=10s, 1=30s, 2=1min, 3=5min, 4=stays on
@@ -27568,7 +27566,7 @@ static void screen_popup_save_cb(lv_event_t *e)
         nvs_settings_save_home_layout(new_home_4cat);
     }
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
     uint8_t new_orient = orient_dropdown ? (uint8_t)lv_dropdown_get_selected(orient_dropdown)
                                          : screen_orientation;
     bool orient_changed = (new_orient != screen_orientation);
@@ -27580,7 +27578,7 @@ static void screen_popup_save_cb(lv_event_t *e)
     brightness_value_label = NULL;
     screen_home_classic_radio = NULL;
     screen_home_4cat_radio = NULL;
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
     orient_dropdown       = NULL;
     // Persist + REBOOT on change (same pattern as Recalibrate Touch). Orientation is
     // applied at boot by apply_screen_orientation() BEFORE any UI is built, so every
@@ -27758,7 +27756,7 @@ static void show_screen_popup_measured(void)
     lv_obj_set_style_text_font(brightness_value_label, &lv_font_montserrat_12, 0);
     lv_obj_center(brightness_value_label);
 
-#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || (defined(CONFIG_BOARD_CYD2USB) && !defined(CONFIG_BOARD_HACKERBOX_CYD))
+#if defined(CONFIG_BOARD_NM_CYD_C5) || defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35) || defined(CONFIG_BOARD_CYD2USB)
     /* ── Orientation section (LEFT column in landscape) ── */
     lv_obj_t *orient_hdr = lv_label_create(pOri);
     lv_label_set_text(orient_hdr, "Orientation");
