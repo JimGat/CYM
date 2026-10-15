@@ -1,4 +1,4 @@
-# v3.0.2 Development: manual SD setup and Classic RGB
+# v3.0.2: manual SD setup and Classic RGB
 
 ## Behavior
 
@@ -49,3 +49,12 @@ nothing has changed. The installer never formats and never overwrites files.
    verify no onboard RGB initialization; display/touch/GPS remain usable.
 
 Primary programming/debug USB only; no logs on the GPS/JST UART.
+
+## Owner acceptance and Stable promotion
+
+Jim reported: "I have tested the PSRAM gate and the descrete RGB led and everything works well!"
+This confirms those two fixes on his tested hardware; it is not a claim that every
+board, peripheral, or individual checklist step above was physically tested.
+Jim subsequently authorized promotion to main and refreshing the existing v3.0.0
+release assets while preserving already-shared links. The tested v3.0.2 images
+are reused without a new firmware build/version or a moved v3.0.0 tag.

@@ -35,7 +35,7 @@
 
 ## v3.0.0 milestone release
 
-**Firmware refresh:** the existing [v3.0.0 release](https://github.com/JimGat/CYM/releases/tag/v3.0.0) now provides **v3.0.1** firmware with the Wardrive startup hotfix. Stable Web Flasher installs v3.0.1; the v3.0.0 announcement URL and original tag are retained. [Refresh details](docs/releases/v3.0.0.md).
+**Firmware refresh:** the existing [v3.0.0 release](https://github.com/JimGat/CYM/releases/tag/v3.0.0) now provides **v3.0.2** firmware with no-PSRAM manual SD guidance and Classic/HackerBox discrete active-low RGB support, retaining the Wardrive startup hotfix. Stable Web Flasher installs v3.0.2; the announcement URL, original tag and asset filenames are retained. Jim confirmed the PSRAM gate and discrete RGB work on his tested hardware. [Refresh details](docs/releases/v3.0.0.md).
 
 GPS-disciplined off-grid radio Clock, expanded board support, official printable cases by co-developer **@birolt29**, and focused tool and reliability improvements. [Read the release highlights](docs/releases/v3.0.0.md).
 
@@ -3383,9 +3383,9 @@ GATT Device Name preferred, advertised fallback, readable manufacturer/model; fu
 SHA-256 in SD JSON, short result-screen preview and explicit uncertainty.
 See [GATT metadata operator contract](docs/gatt23-metadata.md).
 
-## v3.0.2 Development: manual SD setup and Classic RGB
+## v3.0.2 Stable: manual SD setup and Classic RGB
 
-Development-only update on `Jimgat_Dev`; Stable remains unchanged. Devices with
+Owner-approved Stable promotion of the tested v3.0.2 firmware. Devices with
 no registered PSRAM show manual SD-card setup instructions instead of starting
 automatic Validate & Provision or Format + Provision. OK continues boot or closes
 the Settings warning without claiming provisioning succeeded.
