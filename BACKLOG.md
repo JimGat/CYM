@@ -112,6 +112,14 @@ rules). Start ONE track at a time; do not run all simultaneously.
 
 ## Hardware / boards
 
+- **WS-C5-35 external antenna / 3D-printed rear plate** — IDEA (owner-requested).
+  For Waveshare ESP32-C5-Touch-LCD-3.5-C / SKU 35419, explore replacing or relocating
+  the supplied cabled FPC antenna using a properly protected pigtail/bulkhead and a
+  printed back plate. Manufacturer calls the module connector IPEX Gen 1; exact
+  mating parts, dual-band RF suitability, regulatory/gain limits, battery/camera
+  clearance and measured performance remain unqualified. No CAD or hardware mod
+  delivered. See `docs/hardware/waveshare-c5-touch-lcd-35.md`.
+
 - **CYM Adapter Carrier Board** — PLANNED (design). Carrier connecting a Lab5 MonsterC5/MonsterRF
   to CYM, with onboard battery + charging. CYM becomes the display/UI/WiFi front-end; Monster
   handles RF. Supersedes the earlier "custom CYM HAT" idea.

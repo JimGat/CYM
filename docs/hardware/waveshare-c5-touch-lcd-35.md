@@ -13,11 +13,13 @@ Jim's ordered unit is **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C**, the version supp
 The board adapter was implemented from the [Waveshare ESP32-C5-Touch-LCD-3.5](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5) vendor BSP at commit `04e6134cf3e37309b2bec9915189efeace1161bc`. Pin definitions, CH32V006 IO expander protocol, ST7796 display initialization, and FT6336 touch driver were derived from that BSP.
 
 
-## Important: six J3 GPIO/UART routes are unavailable on the tested assembly
+## Important: native routing limitations on the tested assembly
 
 **Owner continuity-tested finding, 2026-10-13:** on Jim's **SKU 35419 / ESP32-C5-Touch-LCD-3.5-C** unit, **GPIO0, GPIO1, GPIO11, GPIO12, GPIO9 and GPIO4 do not connect to the rear J3 expansion connector**. The fitted zero-ohm selection links route these signals to onboard components instead. This supersedes earlier assumptions that the printed GPIO/UART labels guaranteed usable native ESP32 pins at J3.
 
-This is a measured finding for the tested assembly, not a claim that every SKU, PCB revision or resistor population is identical. The exact PCB revision remains unrecorded. Other owners should check their own board's link population and continuity, with power and the battery disconnected, before wiring external hardware.
+This is an owner-reported measured finding for the tested assembly, not a claim that every SKU, PCB revision or resistor population is identical. Jim found no noticeable PCB revision marking beyond the generic model identifier; the exact PCB revision remains unknown. The supplied SKU included the camera and battery. Battery installation required disassembly, and the installed battery was secured with double-sided tape; this is an assembly observation, not a recommendation to dismantle a powered device.
+
+**Reported continuity method:** continuity/beep mode, probing the J3 header contact and the unconnected pad on the zero-ohm selection matrix, with the battery disconnected and no USB connection or other power. Meter make/model, resistance values, beep threshold and a numbered endpoint log were not supplied. Do not invent them or treat photographs as electrical proof. Other owners should check their own board's link population and continuity, with power and the battery disconnected, before wiring external hardware.
 
 | ESP32 GPIO | Selection link | Onboard net selected on the tested unit | Alternative net shown by schematic, not a qualified J3 connection |
 |---|---|---|---|
@@ -28,7 +30,7 @@ This is a measured finding for the tested assembly, not a claim that every SKU, 
 | GPIO9 | R57 | SDCS | GPIO9_OUT |
 | GPIO4 | R60 | EXIO_INT | LCD_QSPI_IO3 |
 
-The resistor IDs and alternative net names come from the pinned vendor schematic; physical route selection is established by Jim's continuity test, not by the schematic's colors or the photograph alone. In particular, R60's LCD_QSPI_IO3 alternative must not be advertised as a verified spare GPIO at J3.
+The resistor IDs and alternative net names come from the pinned vendor schematic; physical route selection is established by Jim's continuity test, not by the schematic's colors or the photograph alone. In particular, R60's LCD_QSPI_IO3 alternative must not be advertised as a verified spare GPIO at J3. More precisely, the manufacturer J3 symbol identifies five corresponding native-labelled header positions (GPIO0_OUT, GPIO1_OUT, GPIO9_OUT, U0TXD and U0RXD); GPIO4/R60 is an additional examined onboard selection route, not a sixth numbered spare native GPIO on that symbol. The observation that GPIO4 is not available at J3 does not establish an unlisted header contact.
 
 ![Owner's PCB photograph of the selection-link area](https://raw.githubusercontent.com/wiki/JimGat/CYM/images/ws-c5-35-j3-routing-20261013.jpg)
 
@@ -44,13 +46,19 @@ The CH32V006's EXIO pins can provide digital input snapshots, but its documented
 
 ### Board-specific GPS exception: GPIO28 receive-only, GPS LOCK confirmed
 
-Since v2.15.99, **only WS-C5-35** uses **UART1 RX=GPIO28, TX=disabled**, with no alternate GPS-pin or EXIO polling. Connect **GPS TX to GPIO28**, connect common **GND**, and select **9600 baud** for the owner-tested module. Saved baud selection is retained; 9600 is the default. No GPS configuration commands are transmitted, and GPIO11/12 are not configured for this route.
+Since v2.15.99, **only WS-C5-35** uses **UART1 RX=GPIO28, TX=disabled**, with no alternate GPS-pin or EXIO polling. Connect **GPS TX to GPIO28**, connect common **GND**, and select **9600 baud** for the owner-tested **ATGM336H** module. Saved baud selection is retained; 9600 is the default. No GPS configuration commands are transmitted, and GPIO11/12 are not configured for this route.
 
 **Owner hardware result:** after several successful reboots with the GPS attached, Jim reports that his WS-C5-35 **displays GPS LOCK** on v2.15.99. This is owner-observed lock evidence, not merely compilation or successful booting. It qualifies the tested SKU 35419 assembly/module setup; it is not a blanket qualification of all PCB revisions, modules, GPS accuracy, or long-duration stability. Independent raw-UART/NMEA logs were not supplied with this report. GPIO28 is not one of the six disconnected routes above.
 
 GPIO28 also serves as a physical BOOT strapping pin. WS-C5-35 firmware BOOT polling is disabled to prevent serial data from triggering button-associated actions. Physical BOOT/download strapping is unchanged. Touch controls and the five-second screen-hold Go Dark wake remain available. Avoid pressing physical BOOT against an actively connected GPS transmitter. Other boards retain their BOOT and GPS mappings; do not apply this exception to them.
 
 See [the v2.15.99 operator procedure](../operator-cycle-v2.15.99.md) for primary-USB diagnostics and separate reception/fix gates. The previous GPIO12 failure remains historical evidence, not a GPIO28 result.
+
+## Future hardware mod: external antenna and printed rear plate
+
+**IDEA — requested by Jim; not designed or hardware-qualified.** The specimen photos show the ESP32-C5-WROOM-1U module connected by miniature coax to the supplied flexible antenna. [Waveshare's onboard-resource description](https://docs.waveshare.com/ESP32-C5-Touch-LCD-3.5#onboard-resources) identifies an **IPEX Gen 1 antenna connector** and an **FPC dual-band Wi-Fi antenna**. This is the ESP32 radio antenna, not the external ATGM336H GPS antenna.
+
+Explore a 3D-printed back plate with a strain-relieved external-antenna pigtail/bulkhead arrangement replacing or relocating the existing antenna connection. Confirm the exact mating connector and cable, 50-ohm RF path, suitable 2.4/5-GHz coverage, antenna gain/regulatory limits, battery/camera/SD/button clearance, minimum cable bend radius and mechanical protection before selecting parts. Preserve a stock configuration for comparison and qualify actual RF performance; no range improvement is claimed. Do not imply both antennas can be used simultaneously. No CAD, external-antenna parts list or physical modification has been completed. Track this in [BACKLOG.md](../../BACKLOG.md).
 
 ## Implementation status
 
