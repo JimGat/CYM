@@ -19,3 +19,15 @@ CYM (Cheap Yellow Monster / CYM Laboratorium) remains its own existing multi-boa
 ## Execution rules
 
 Read .claude/rules/cym-canonical-workflow.md before firmware work. Use one writer on ESP32-Dev, Jimgat_Dev, and the established affected-board build/packaging workflow. Implement one integration track at a time after its scoped design is approved. Planned capability, compiled capability and physical compatibility are separate claims. This memory records requirements; it does not implement the tools, authorize flashing, publish releases, or authorize source imports.
+
+## SD provisioning and Classic RGB capability contracts
+
+Automatic Validate & Provision (including Settings Format + Provision) requires
+registered PSRAM at runtime, not a board-name allowlist or a free-heap threshold.
+No PSRAM means manual SD setup guidance plus OK, without fake validation success
+or an internal-RAM fallback. Preserve user files in manual SD packs.
+
+Classic CYD and its HackerBox profile use a discrete active-low common-anode RGB
+LED, not WS2812. Preserve the WS2812/RMT guard and existing status/brightness/Go
+Dark behavior. The supported Waveshare boards have no additional onboard RGB LED;
+do not invent an RGB backend for them. Hardware output remains owner-qualified.

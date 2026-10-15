@@ -6801,6 +6801,40 @@ static bool show_sd_format_confirm(void)
     return (s_sd_err_choice == SD_ERR_RETRY); /* SD_ERR_RETRY(1) = confirmed */
 }
 
+/* Registered PSRAM, not board identity or current free memory, gates provisioning. */
+static bool sd_auto_provision_available(void)
+{
+    return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+}
+static const char SD_MANUAL_SETUP_TEXT[] =
+    "This device has no PSRAM.\n"
+    "Auto provision is unavailable.\n"
+    "Manual SD files:\n"
+    "github.com/JimGat/\nCYM-SD-Assets\n"
+    "Copy contents of sdcard/\n"
+    "to the SD card root.\n"
+    "No files have been changed.";
+static void sd_manual_setup_ok_cb(lv_event_t *e)
+{
+    lv_obj_t *mbox = lv_event_get_current_target(e);
+    if (mbox) lv_msgbox_close_async(mbox);
+}
+static void show_sd_manual_setup_popup(void)
+{
+    // Static map outlives the button matrix; close outside event dispatch.
+    static const char *buttons[] = {"OK", ""};
+    lv_obj_t *mbox = lv_msgbox_create(NULL, "Manual SD setup", SD_MANUAL_SETUP_TEXT, buttons, false);
+    lv_obj_set_width(mbox, lv_disp_get_hor_res(NULL) - 16);
+    lv_obj_set_style_pad_all(mbox, 8, 0);
+    lv_obj_set_style_pad_row(mbox, 4, 0);
+    lv_obj_set_style_text_font(mbox, &lv_font_montserrat_12, 0);
+    lv_obj_t *text = lv_msgbox_get_text(mbox);
+    lv_obj_set_style_text_font(text, &lv_font_montserrat_12, 0);
+    lv_label_set_long_mode(text, LV_LABEL_LONG_WRAP);
+    lv_obj_center(mbox);
+    lv_obj_add_event_cb(mbox, sd_manual_setup_ok_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
 /* Startup owns LVGL; callbacks record consent only, not storage work. */
 static volatile int s_sd_startup_choice;
 static void sd_startup_choice_cb(lv_event_t *e)
@@ -6810,6 +6844,7 @@ static void sd_startup_choice_cb(lv_event_t *e)
 static bool show_sd_startup_provision_prompt(unsigned missing)
 {
     if (!missing) return false;
+    const bool can_provision = sd_auto_provision_available();
     s_sd_startup_choice = 0;
     if (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
         ESP_LOGW(TAG, "[SD_STARTUP] Cannot display consent; no provisioning started");
@@ -6824,15 +6859,20 @@ static bool show_sd_startup_provision_prompt(unsigned missing)
     lv_obj_set_style_radius(overlay, 0, 0);
     lv_obj_set_style_pad_all(overlay, 8, 0);
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-    char message[256] = "SD feature folders missing:\n";
-    size_t used = strlen(message);
-    for (unsigned i = 0; i < 3; i++) {
-        if (missing & (1u << i))
-            used += snprintf(message + used, sizeof(message) - used,
-                             "%s\n", sd_startup_paths[i]);
+    char message[256];
+    if (can_provision) {
+        snprintf(message, sizeof(message), "SD feature folders missing:\n");
+        size_t used = strlen(message);
+        for (unsigned i = 0; i < 3; i++) {
+            if (missing & (1u << i))
+                used += snprintf(message + used, sizeof(message) - used,
+                                 "%s\n", sd_startup_paths[i]);
+        }
+        snprintf(message + used, sizeof(message) - used,
+                 "\nValidate & Provision now?\nNo format or file overwrite.");
+    } else {
+        snprintf(message, sizeof(message), "%s", SD_MANUAL_SETUP_TEXT);
     }
-    snprintf(message + used, sizeof(message) - used,
-             "\nValidate & Provision now?\nNo format or file overwrite.");
     lv_obj_t *label = lv_label_create(overlay);
     lv_label_set_text(label, message);
     lv_obj_set_size(label, lv_pct(100), lv_disp_get_ver_res(NULL) - 72);
@@ -6840,7 +6880,7 @@ static bool show_sd_startup_provision_prompt(unsigned missing)
     lv_obj_set_style_text_color(label, ui_text_color(), 0);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
     lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 0);
-    for (unsigned i = 0; i < 2; i++) {
+    for (unsigned i = 0; i < (can_provision ? 2u : 1u); i++) {
         lv_obj_t *btn = lv_btn_create(overlay);
         lv_obj_set_size(btn, 100, 36);
         lv_obj_align(btn, i ? LV_ALIGN_BOTTOM_RIGHT : LV_ALIGN_BOTTOM_LEFT, 0, 0);
@@ -6848,7 +6888,7 @@ static bool show_sd_startup_provision_prompt(unsigned missing)
         lv_obj_add_event_cb(btn, sd_startup_choice_cb, LV_EVENT_CLICKED,
                             (void *)(uintptr_t)(i + 1));
         lv_obj_t *text = lv_label_create(btn);
-        lv_label_set_text(text, i ? "Provision" : "Later");
+        lv_label_set_text(text, can_provision ? (i ? "Provision" : "Later") : "OK");
         lv_obj_set_style_text_color(text, ui_text_color(), 0);
         lv_obj_set_style_text_font(text, &lv_font_montserrat_14, 0);
         lv_obj_center(text);
@@ -6862,7 +6902,7 @@ static bool show_sd_startup_provision_prompt(unsigned missing)
     xSemaphoreGive(lvgl_mutex);
     ESP_LOGI(TAG, "[SD_STARTUP] Consent=%s missing_mask=0x%x",
              s_sd_startup_choice == 2 ? "provision" : "later", missing);
-    return s_sd_startup_choice == 2;
+    return can_provision && s_sd_startup_choice == 2;
 }
 
 // ============================================================================
@@ -30397,6 +30437,10 @@ static void sd_prov_back_btn_cb(lv_event_t *e)
 // Create the provision running screen with live log textarea
 static void show_sd_provision_running_screen(bool after_format)
 {
+    if (!sd_auto_provision_available()) {
+        show_sd_manual_setup_popup();
+        return;
+    }
     uint64_t screen_start_us = esp_timer_get_time();
     ESP_LOGI(TAG, "[PROV_SCREEN] Creating provision screen: after_format=%d", after_format);
 
@@ -30536,6 +30580,10 @@ static void sd_prov_confirm_no_cb(lv_event_t *e)
 
 static void show_sd_provision_confirm(bool after_format)
 {
+    if (!sd_auto_provision_available()) {
+        show_sd_manual_setup_popup();
+        return;
+    }
     create_function_page_base("Validate & Provision");
 
     lv_obj_t *msg = lv_label_create(function_page);
@@ -31086,6 +31134,10 @@ static void sd_format_confirm1_yes_cb(lv_event_t *e)
 
 static void show_sd_format_confirm1(void)
 {
+    if (!sd_auto_provision_available()) {
+        show_sd_manual_setup_popup();
+        return;
+    }
     create_function_page_base("Format SD Card");
 
     lv_obj_t *msg = lv_label_create(function_page);

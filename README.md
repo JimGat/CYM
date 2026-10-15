@@ -3382,3 +3382,18 @@ Shared development metadata integration: original fingerprint/filenames preserve
 GATT Device Name preferred, advertised fallback, readable manufacturer/model; full
 SHA-256 in SD JSON, short result-screen preview and explicit uncertainty.
 See [GATT metadata operator contract](docs/gatt23-metadata.md).
+
+## v3.0.2 Development: manual SD setup and Classic RGB
+
+Development-only update on `Jimgat_Dev`; Stable remains unchanged. Devices with
+no registered PSRAM show manual SD-card setup instructions instead of starting
+automatic Validate & Provision or Format + Provision. OK continues boot or closes
+the Settings warning without claiming provisioning succeeded.
+
+Classic CYD-2432S028 and HackerBox Amberjack 0131 now use their discrete active-low
+RGB LED through the existing status, brightness and Go Dark controls; WS2812/RMT
+remains disabled for them. Waveshare profiles have no additional onboard RGB LED.
+
+Manual resources and additive installer: https://github.com/JimGat/CYM-SD-Assets.
+See [behavior, setup and hardware acceptance](docs/testing/psram-led-v3.0.2.md).
+Host tests and builds do not replace device verification.

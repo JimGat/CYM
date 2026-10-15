@@ -13,6 +13,7 @@
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "led_strip.h"
+#include "classic_rgb_led.h"
 // Note: Legacy RMT driver removed in ESP-IDF 6.x - using led_strip component instead
 #include "board_hal.h"
 #include <stdlib.h>
@@ -120,8 +121,14 @@ static esp_err_t init_wifi(void) {
 
 esp_err_t init_led(void) {
     if (g_led_strip != NULL) return ESP_OK;  // already initialised (e.g. after BLE→WiFi switch)
-    /* This function is WS2812/RMT-specific. BOARD_HAS_RGB_LED also covers the
-     * Classic CYD's discrete common-anode LED, whose WS2812 profile is -1 x0. */
+#if defined(CONFIG_BOARD_CYD2USB)
+    // HackerBox inherits CYD2USB. Never send WS2812 data to discrete LEDs.
+    esp_err_t classic_ret = classic_rgb_led_init(&g_led_strip);
+    if (classic_ret != ESP_OK)
+        ESP_LOGW(TAG, "Discrete RGB unavailable: %s", esp_err_to_name(classic_ret));
+    return classic_ret;
+#endif
+    // No onboard LED (including Waveshare): no LED GPIO/RMT initialization.
     if (BOARD_RGB_LED_COUNT <= 0 || BOARD_RGB_LED_GPIO < 0) return ESP_OK;
     led_strip_config_t strip_cfg = {
         .strip_gpio_num = BOARD_RGB_LED_GPIO,
