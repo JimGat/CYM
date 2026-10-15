@@ -6805,10 +6805,15 @@ static bool show_sd_format_confirm(void)
     return (s_sd_err_choice == SD_ERR_RETRY); /* SD_ERR_RETRY(1) = confirmed */
 }
 
-/* Registered PSRAM, not board identity or current free memory, gates provisioning. */
+/* Provisioning is available on every board. The worker task's 16 KB stack comes from
+ * PSRAM when present, otherwise from internal RAM - a transient allocation freed as soon
+ * as the 61-item mkdir/fwrite pass finishes (provisioning runs at startup/idle, before
+ * WiFi churns the heap, so internal RAM is ample on PSRAM-less boards like Classic CYD).
+ * The manual-copy popup remains only as a fallback if even that internal allocation
+ * fails (true OOM) - see the stack allocation in show_sd_provision_running_screen(). */
 static bool sd_auto_provision_available(void)
 {
-    return heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+    return true;
 }
 static const char SD_MANUAL_SETUP_TEXT[] =
     "This device has no PSRAM.\n"
@@ -30518,15 +30523,22 @@ static void show_sd_provision_running_screen(bool after_format)
     // Allocate and launch the provision background task
     // The task runs at priority 2 (above main loop) so it makes progress quickly.
     // It will feed its own watchdog to handle slow SD cards.
-    ESP_LOGI(TAG, "[PROV_SCREEN] Allocating 4KB PSRAM stack for task...");
+    ESP_LOGI(TAG, "[PROV_SCREEN] Allocating 16KB task stack (PSRAM if present, else internal)...");
 
-    sd_provision_task_stack = heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+    // PSRAM stack when present; else internal RAM (Classic CYD / WROOM-32 have no PSRAM).
+    // Transient ~16 KB, freed right after the provision pass; provisioning runs at
+    // startup/idle so internal RAM is ample. True OOM falls back to the manual-copy popup.
+    uint32_t prov_stack_caps = (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0)
+                                 ? MALLOC_CAP_SPIRAM
+                                 : (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    sd_provision_task_stack = heap_caps_malloc(4096 * sizeof(StackType_t), prov_stack_caps);
     if (!sd_provision_task_stack) {
-        ESP_LOGE(TAG, "[PROV_SCREEN] Failed to allocate task stack!");
-        lv_label_set_text(sd_provision_status_label, "ERR: no PSRAM for task");
+        ESP_LOGE(TAG, "[PROV_SCREEN] Failed to allocate task stack (caps=0x%lx)!",
+                 (unsigned long)prov_stack_caps);
         sd_provision_active = false;
         lv_obj_clear_state(sd_prov_back_btn, LV_STATE_DISABLED);
         lv_obj_set_style_bg_color(sd_prov_back_btn, COLOR_MATERIAL_TEAL, LV_STATE_DEFAULT);
+        show_sd_manual_setup_popup();  // true OOM fallback: point to manual SD setup
         return;
     }
 
