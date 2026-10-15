@@ -8418,6 +8418,9 @@ void app_main(void)
 #elif defined(CONFIG_BOARD_PANCAKE_C5)
                 uint16_t tp_x = 0, tp_y = 0;
                 pancake_c5_touch_read(&tp_x, &tp_y, &touched);
+#elif defined(CONFIG_BOARD_WS_C5_35)
+                uint16_t tp_x = 0, tp_y = 0;
+                touched = ws_c5_35_touch_read(&tp_x, &tp_y, &touched) && touched;
 #elif defined(CONFIG_BOARD_WS_S3_5B)
                 uint16_t tp_x = 0, tp_y = 0;
                 ws_s3_5b_touch_read(&tp_x, &tp_y, &touched);
@@ -8434,6 +8437,8 @@ void app_main(void)
                     if (touch_wake_hold_ms == 0) touch_wake_hold_ms = t_now;
                     if (t_now - touch_wake_hold_ms >= 5000) {
                         touch_wake_hold_ms = 0;
+                        // Consume the wake gesture before normal UI input resumes.
+                        ignore_touch_until_release = true;
                         go_dark_disable();
                     }
                 } else {
@@ -17283,7 +17288,11 @@ static void show_go_dark_confirm(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
 
     lv_obj_t *hint = lv_label_create(card);
+#if BOOT_BTN_GPIO >= 0
     lv_label_set_text(hint, "Screen & LED off.\nAll ops continue.\n\nTo wake:\n- Double-click BOOT\n- Hold screen 5 seconds");
+#else
+    lv_label_set_text(hint, "Screen & LED off.\nAll ops continue.\n\nTo wake:\n- Hold screen 5 seconds");
+#endif
     lv_obj_set_style_text_color(hint, ui_muted_color(), 0);
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);

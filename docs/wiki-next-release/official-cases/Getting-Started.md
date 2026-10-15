@@ -220,8 +220,8 @@ Go Dark turns the display completely off while keeping all firmware running. It 
 
 | Method | How |
 |--------|-----|
-| **Boot button** | Physical button on the board edge -- always works |
-| **Full-screen touch hold** | Press and hold anywhere on the screen for **5 seconds** -- CYM wakes after the 5-second hold |
+| **BOOT (only when provided as an application input)** | Double-click or hold 2 seconds. Not available on WS-C5-35 (GPIO28 is GPS RX) or WS-S3-5B. Do not press BOOT as their wake workaround. |
+| **Full-screen touch hold** | Hold anywhere continuously for **5 seconds**, then release. WS-C5-35 requires v3.0.3 Development; v3.0.2 omitted its touch-wake polling path. |
 
 The 5-second hold requirement is deliberate: a shorter threshold caused false wakes from the display's own LVGL DMA flush cycles, which intermittently touch the SPI bus in patterns the resistive touch driver could misread. Touches shorter than 5 seconds are ignored entirely while the display is off. Once you complete the hold, the display returns immediately.
 

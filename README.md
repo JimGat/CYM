@@ -33,6 +33,16 @@
 
 ---
 
+## v3.0.3 Development: WS-C5-35 Go Dark recovery
+
+Development v3.0.3 adds the missing raw FT6336 touch polling for the
+**Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35)** five-second Go Dark wake.
+Wake instructions advertise BOOT only when the board profile provides an
+application BOOT input. WS-C5-35 remains touch-wake-only: GPIO28 stays GPS RX,
+not a wake button. Release the wake finger before operating the restored UI.
+Stable and the existing v3.0.0 release remain on v3.0.2.
+[Operator checks and evidence limits](docs/testing/go-dark-v3.0.3.md).
+
 ## v3.0.0 milestone release
 
 **Firmware refresh:** the existing [v3.0.0 release](https://github.com/JimGat/CYM/releases/tag/v3.0.0) now provides **v3.0.2** firmware with no-PSRAM manual SD guidance and Classic/HackerBox discrete active-low RGB support, retaining the Wardrive startup hotfix. Stable Web Flasher installs v3.0.2; the announcement URL, original tag and asset filenames are retained. Jim confirmed the PSRAM gate and discrete RGB work on his tested hardware. [Refresh details](docs/releases/v3.0.0.md).
@@ -1823,11 +1833,11 @@ The live dashboard shows:
 
 **Stop** — ends the session, closes all open files, and returns to the Wardrive menu.
 
-**Go Dark** — available from the title bar power icon on every screen. The display turns off while wardriving continues in the background. The NeoPixel stays cyan while active.
+**Go Dark** — available from the title bar power icon. The display and status LED turn off while background operations continue.
 
 **Waking from Go Dark:**
-- **Boot button** — press the physical BOOT button on the board.
-- **Touch-to-wake** — hold a finger on the top-right corner of the screen (where the power icon is) for about 5 seconds. Useful when the boot button is hard to reach inside a printed case.
+- **Touch-to-wake** — hold a finger anywhere on the screen continuously for **5 seconds**, then release before operating controls. WS-C5-35 requires the v3.0.3 Development correction; its older v3.0.2 build omitted this wake path.
+- **BOOT, only on profiles with an application BOOT input** — double-click BOOT or hold it for 2 seconds. **Not available on WS-C5-35 or WS-S3-5B.** WS-C5-35 GPIO28 is GPS RX: do not press BOOT as a wake workaround, particularly with a GPS transmitter connected.
 
 #### Mark Button — GPS Waypoints
 
