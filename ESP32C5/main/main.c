@@ -69,6 +69,7 @@ LV_IMG_DECLARE(deedee_img);
 #define MY_SYMBOL_BUG            "\xEF\x86\x88"   /* fa-bug              U+F188 */
 #define MY_SYMBOL_SKULL          "\xEF\x95\x8C"   /* fa-skull            U+F54C */
 #define MY_SYMBOL_GHOST          "\xEF\x9B\xA2"   /* fa-ghost            U+F6E2 */
+#define MY_SYMBOL_CAMERA         "\xEF\x80\xB0"   /* fa-camera U+F030 */
 #define MY_SYMBOL_DRAGON         "\xEF\x9B\x95"   /* fa-dragon (chameleon tile) U+F6D5 */
 #define MY_SYMBOL_FINGERPRINT    "\xEF\x95\xB7"   /* fa-fingerprint      U+F577 */
 #define MY_SYMBOL_ID_BADGE       "\xEF\x8B\x81"   /* fa-id-badge         U+F2C1 */
@@ -18555,7 +18556,7 @@ static void show_main_tiles(void)
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles_container, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Classic");
 #if CONFIG_BOARD_WS_C5_35
-    create_tile(tiles_container, LV_SYMBOL_IMAGE, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
+    create_tile(tiles_container, MY_SYMBOL_CAMERA, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
     /* Additional WS35 tool must remain reachable in both orientations. */
     lv_obj_add_flag(tiles_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(tiles_container, LV_SCROLLBAR_MODE_AUTO);
@@ -45691,7 +45692,7 @@ static void show_cat_tools(void)
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Modern");
 #if CONFIG_BOARD_WS_C5_35
-    create_tile(tiles, LV_SYMBOL_IMAGE, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
+    create_tile(tiles, MY_SYMBOL_CAMERA, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
 #endif
 }
 

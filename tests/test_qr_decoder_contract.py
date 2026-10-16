@@ -12,7 +12,7 @@ class DecoderTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   assert (BASE/'cym_qr.c').exists(),'QR adapter implementation missing'
-  cls.tmp=tempfile.TemporaryDirectory(dir='/home/dev/projects/cym-qr308-evidence')
+  cls.tmp=tempfile.TemporaryDirectory()
   lib=Path(cls.tmp.name)/'decoder.so'
   subprocess.run(['cc','-shared','-fPIC','-std=c11','-O2','-Wall','-Wextra','-I',str(BASE/'include'),'-I',str(BASE/'third_party/quirc'),str(BASE/'cym_qr.c'),*[str(BASE/'third_party/quirc'/f) for f in ['quirc.c','decode.c','identify.c','version_db.c']],'-lm','-o',str(lib)],check=True)
   cls.lib=C.CDLL(str(lib))

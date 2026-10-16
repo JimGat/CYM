@@ -11,14 +11,19 @@ def body(text,name):
  return text[start:i]
 class UiStop(unittest.TestCase):
  def test_completed_delayed_and_unquiesced_workers(self):
-  source=body((ROOT/'ESP32C5/main/qr_decoder_ui.c').read_text(),'qr_decoder_ui_stop')
+  text=(ROOT/'ESP32C5/main/qr_decoder_ui.c').read_text()
+  reaper=body(text.replace('static bool reap(', 'void reap('),'reap').replace('void reap(', 'static bool reap(')
+  source=reaper+'\n'+body(text,'qr_decoder_ui_stop')
   pre=r"""
 #include <assert.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <stdlib.h>
-typedef struct {atomic_bool cancel,done;void *camera;int image;} qr_session_t;
+typedef struct {atomic_bool cancel,done;void *camera,*task,*stack,*tcb;int image;} qr_session_t;
+enum {eSuspended};
+static int eTaskGetState(void *t){assert(t);return eSuspended;}
+static void vTaskDelete(void *t){assert(t);}
 static qr_session_t *session;
 static void *poll_timer,*status_label,*result_label,*preview,*retry_button;
 static int ticks,complete_at,disposed,detached,timer_deleted,cache_invalidated;

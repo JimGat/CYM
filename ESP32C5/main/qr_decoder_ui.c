@@ -6,6 +6,9 @@
 #include "qr_record.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_log.h"
+#include "esp_memory_utils.h"
+#include "debug_settings.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -14,12 +17,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* Suspension-based stack reclaim is audited only for single-core C5. */
+#if !CONFIG_IDF_TARGET_ESP32C5 || !CONFIG_FREERTOS_UNICORE || !CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM
+#error "QR external-stack lifecycle requires the audited single-core C5 configuration"
+#endif
+#define QR_STACK_BYTES 24576
+#define QR_STACK_CAPS (MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)
+#define QR_TCB_CAPS (MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)
 #define PREVIEW_W 120
 #define PREVIEW_H 160
 #define DISPLAY_CAP (CYM_QR_MAX_PAYLOAD*4+1)
 typedef enum { QR_STARTING,QR_SCANNING,QR_RESULT,QR_ERROR } qr_phase_t;
 typedef struct {
     atomic_bool cancel,done;
+    TaskHandle_t task;
+    StackType_t *stack;
+    StaticTask_t *tcb;
     atomic_int phase;
     SemaphoreHandle_t preview_lock;
     void *bus;
@@ -36,13 +49,49 @@ typedef struct {
 static qr_session_t *session;
 static lv_obj_t *status_label,*result_label,*preview,*retry_button;
 static lv_timer_t *poll_timer;
+/* Startup/failure-only logs use the existing debug gate and primary USB
+ * console. Never print payloads or enable debug implicitly. */
+static void qr_diag(const char *stage,int error,unsigned caps,size_t bytes)
+{
+    if(!cym_debug_enabled())return;
+    ESP_LOGI("qr_start", "stage=%s error=%d caps=0x%x bytes=%u internal_free=%u internal_largest=%u DMA_free=%u DMA_largest=%u psram_free=%u psram_largest=%u",
+        stage,error,caps,(unsigned)bytes,
+        (unsigned)heap_caps_get_free_size(QR_TCB_CAPS),
+        (unsigned)heap_caps_get_largest_free_block(QR_TCB_CAPS),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_free_size(QR_STACK_CAPS),
+        (unsigned)heap_caps_get_largest_free_block(QR_STACK_CAPS));
+}
+/* done is not a join. Only the UI owner reaps; nobody resumes this private
+ * worker. On single-core C5, eSuspended proves the switch off its stack has
+ * completed. Static-task vTaskDelete performs synchronous kernel/TLS cleanup
+ * before caller-owned stack/TCB release: no idle/free race or cleanup task. */
+static bool reap(qr_session_t *s)
+{
+    if(!atomic_load(&s->done))return false;
+    if(s->task){
+        if(eTaskGetState(s->task)!=eSuspended)return false;
+        vTaskDelete(s->task);
+        s->task=NULL;
+        free(s->stack);s->stack=NULL;
+        free(s->tcb);s->tcb=NULL;
+    }
+    return true;
+}
 static void worker(void *arg)
 {
     qr_session_t *s=arg;
-    esp_err_t error=cym_camera_open(&s->camera,s->bus);
+    if(cym_debug_enabled())ESP_LOGI("qr_start","stage=worker_enter stack_psram=%d stack_bytes=%u stack_hwm=%u",
+        esp_ptr_external_ram(s->stack),QR_STACK_BYTES,(unsigned)uxTaskGetStackHighWaterMark(NULL));
+    /* No flash/NVS/OTA APIs on this external stack. Camera/I2C/PARLIO and
+     * FAT/SD save keep caches enabled; ISR/control/DMA descriptors stay internal. */
+    esp_err_t error=atomic_load(&s->cancel)?ESP_OK:cym_camera_open(&s->camera,s->bus);
+    qr_diag("camera_open",error,0,0);
+    if(atomic_load(&s->cancel))goto finish;
     if(error)goto finish;
     s->decoder=cym_qr_create(240,320);
-    if(!s->decoder){error=ESP_ERR_NO_MEM;goto finish;}
+    if(!s->decoder){error=ESP_ERR_NO_MEM;qr_diag("decoder_create",error,QR_STACK_CAPS,0);goto finish;}
     atomic_store(&s->phase,QR_SCANNING);
     unsigned failures=0;
     while(!atomic_load(&s->cancel)){
@@ -83,17 +132,20 @@ finish:
     if(s->camera){esp_err_t e=cym_camera_close(&s->camera);if(e)error=e;}
     if(s->decoder){cym_qr_destroy(s->decoder);s->decoder=NULL;}
     if(error){snprintf(s->status,sizeof(s->status),"Camera unavailable (%s). Retry or Back.",esp_err_to_name(error));atomic_store(&s->phase,QR_ERROR);}
-    /* Final access to context. The task self-deletes, never forcibly deleted
-     * by the UI. Retained camera on failed quiescence blocks subsequent starts. */
+    /* Retained camera blocks reentry. Publish after all context work; the UI
+     * must still observe actual suspension before reclaiming task storage. */
     memset(s->payload,0,CYM_QR_MAX_PAYLOAD);
     if(atomic_load(&s->cancel))memset(s->text,0,DISPLAY_CAP);
+    qr_diag(s->camera?"camera_retained":"worker_complete",error,0,0);
+    if(cym_debug_enabled())ESP_LOGI("qr_start","stage=worker_park stack_hwm=%u",(unsigned)uxTaskGetStackHighWaterMark(NULL));
     atomic_store(&s->done,true);
-    vTaskDelete(NULL);
+    /* No access to s after publication, including in this suspend loop. */
+    for(;;)vTaskSuspend(NULL);
 }
 static void dispose(qr_session_t *s)
 {
     if(!s)return;
-    if(s->camera)return; /* failed quiescence: retain ownership, never free */
+    if(s->camera||s->task)return; /* retain ISR/DMA or live stack ownership */
     if(s->preview_lock)vSemaphoreDelete(s->preview_lock);
     if(s->payload)memset(s->payload,0,CYM_QR_MAX_PAYLOAD);
     if(s->text)memset(s->text,0,DISPLAY_CAP);
@@ -110,7 +162,7 @@ static void poll(lv_timer_t *timer)
             if(s->fresh){memcpy(s->display,s->latest,PREVIEW_W*PREVIEW_H*2);s->fresh=false;lv_obj_invalidate(preview);}
             xSemaphoreGive(s->preview_lock);
         }
-    }else if((phase==QR_RESULT||phase==QR_ERROR)&&atomic_load(&s->done)){
+    }else if((phase==QR_RESULT||phase==QR_ERROR)&&reap(s)){
         lv_label_set_text(status_label,s->status);
         lv_obj_add_flag(preview,LV_OBJ_FLAG_HIDDEN);
         if(phase==QR_RESULT){lv_label_set_text_static(result_label,s->text);lv_obj_clear_flag(result_label,LV_OBJ_FLAG_HIDDEN);}
@@ -128,34 +180,44 @@ void qr_decoder_ui_stop(void)
     atomic_store(&s->cancel,true);
     /* Worker has no LVGL dependency. Never wait for an LVGL callback/lock.
      * Slow init/storage timeout retains context; the next open may reap it. */
-    for(unsigned i=0;i<300&&!atomic_load(&s->done);i++)vTaskDelay(pdMS_TO_TICKS(10));
-    if(atomic_load(&s->done)&&!s->camera){session=NULL;dispose(s);}
+    for(unsigned i=0;i<300&&!reap(s);i++)vTaskDelay(pdMS_TO_TICKS(10));
+    if(reap(s)&&!s->camera){session=NULL;dispose(s);}
 }
 static void start(void)
 {
     qr_session_t *s=session;
+    if(s->task&&!reap(s))return;
     atomic_store(&s->phase,QR_STARTING);atomic_store(&s->done,false);atomic_store(&s->cancel,false);
     s->text[0]=0;memset(s->payload,0,CYM_QR_MAX_PAYLOAD);
     lv_label_set_text_static(result_label,"");lv_obj_add_flag(result_label,LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(preview,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(retry_button,LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(status_label,"Starting camera...");
-    /* quirc decode has sizeable automatic RS workspace: dedicated internal stack,
-     * all image/decoder/context bulk allocations are explicit PSRAM. */
-    if(xTaskCreate(worker,"qr_scan",24576,s,2,NULL)!=pdPASS){
-        strcpy(s->status,"Not enough worker memory. Retry or Back.");atomic_store(&s->phase,QR_ERROR);atomic_store(&s->done,true);
-    }
+    /* Keep quirc's sizeable RS workspace budget; do not shrink to fit a 2KB
+     * internal largest block. Only the small kernel TCB consumes internal RAM. */
+    qr_diag("stack_alloc",0,QR_STACK_CAPS,QR_STACK_BYTES);
+    s->stack=heap_caps_malloc(QR_STACK_BYTES,QR_STACK_CAPS);
+    if(!s->stack){qr_diag("stack_alloc",ESP_ERR_NO_MEM,QR_STACK_CAPS,QR_STACK_BYTES);goto failed;}
+    s->tcb=heap_caps_malloc(sizeof(*s->tcb),QR_TCB_CAPS);
+    if(!s->tcb){qr_diag("tcb_alloc",ESP_ERR_NO_MEM,QR_TCB_CAPS,sizeof(*s->tcb));goto failed;}
+    s->task=xTaskCreateStatic(worker,"qr_scan",QR_STACK_BYTES,s,2,s->stack,s->tcb);
+    if(!s->task){qr_diag("task_create",ESP_ERR_NO_MEM,QR_STACK_CAPS,QR_STACK_BYTES);goto failed;}
+    return;
+failed:
+    free(s->stack);s->stack=NULL;free(s->tcb);s->tcb=NULL;
+    strcpy(s->status,"Not enough worker memory. Retry or Back.");
+    atomic_store(&s->phase,QR_ERROR);atomic_store(&s->done,true);
 }
 static void retry(lv_event_t *event)
 {
     (void)event;
-    if(!session||!atomic_load(&session->done))return;
+    if(!session||!reap(session))return;
     if(session->camera){lv_label_set_text(status_label,"Camera stop incomplete. Restart blocked; reboot required.");return;}
     start();
 }
 void qr_decoder_ui_open(lv_obj_t *page,void *bus,qr_ui_save_fn save)
 {
-    if(session&&atomic_load(&session->done)&&!session->camera){dispose(session);session=NULL;}
-    if(session){lv_obj_t *label=lv_label_create(page);lv_label_set_text(label,"Previous camera is stopping. Back and retry later.");return;}
+    if(session&&reap(session)&&!session->camera){dispose(session);session=NULL;}
+    if(session){lv_obj_t *label=lv_label_create(page);lv_label_set_text(label,atomic_load(&session->done)&&session->camera?"Camera stop incomplete. Restart blocked; reboot required.":"Previous camera is stopping. Back and retry later.");return;}
     qr_session_t *s=heap_caps_calloc(1,sizeof(*s),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(s){
         s->gray=heap_caps_malloc(240*320,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);

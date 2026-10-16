@@ -1,7 +1,7 @@
 {
   "name": "CYM Hosyond ES3C35P 3.5 v2.15.93",
-  "version": "v3.0.8",
-  "build": "v3.0.8",
+  "version": "v3.0.9",
+  "build": "v3.0.9",
   "chipFamily": "ESP32-S3",
   "parts": [
     {

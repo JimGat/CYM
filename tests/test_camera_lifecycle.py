@@ -5,7 +5,7 @@ B=ROOT/'ESP32C5/components/cym_camera'
 class CameraTests(unittest.TestCase):
  def test_real_service_ownership_and_packet_validation(self):
   self.assertTrue((B/'cym_camera.c').exists(),'Camera service missing')
-  with tempfile.TemporaryDirectory(dir='/home/dev/projects/cym-qr308-evidence') as d:
+  with tempfile.TemporaryDirectory() as d:
    p=Path(d);(p/'esp_err.h').write_text('#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_FAIL -1\n#define ESP_ERR_INVALID_STATE 2\n#define ESP_ERR_INVALID_ARG 3\n#define ESP_ERR_NO_MEM 4\n')
    (p/'test.c').write_text(r"""
 #include <assert.h>

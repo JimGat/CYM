@@ -12,7 +12,7 @@ class QRRecordTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   assert SRC.exists(), 'QR record implementation is missing'
-  cls.tmp=tempfile.TemporaryDirectory(dir='/home/dev/projects/cym-qr308-evidence')
+  cls.tmp=tempfile.TemporaryDirectory()
   so=Path(cls.tmp.name)/'record.so'
   subprocess.run(['cc','-shared','-fPIC','-std=c11','-Wall','-Wextra','-Werror','-I',str(SRC.parent/'include'),str(SRC),'-o',str(so)],check=True)
   cls.lib=C.CDLL(str(so),use_errno=True)
