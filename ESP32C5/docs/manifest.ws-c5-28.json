@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster - WS-C5-28",
-  "version": "v3.0.10",
-  "build": "v3.0.10",
+  "version": "v3.0.11",
+  "build": "v3.0.11",
   "chipFamily": "ESP32-C5",
   "parts": [
     {

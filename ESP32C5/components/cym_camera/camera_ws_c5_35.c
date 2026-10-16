@@ -10,6 +10,9 @@
 #include "driver/parlio_tx.h"
 #include "esp_private/parlio_rx_private.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+#include "debug_settings.h"
 #include "esp_memory_utils.h"
 #include "esp_cache.h"
 #include "esp_private/esp_cache_private.h"
@@ -57,6 +60,9 @@ typedef struct {
     size_t packet_size;
     atomic_bool armed;
     atomic_bool frame_complete;
+    atomic_uint recv_bytes;
+    unsigned incomplete,header_errors,row_errors,shape_errors;
+    int64_t invalid_report_at;
     bool enabled,isr_added,owns_reservation;
 } ws_camera_t;
 static esp_err_t reg_write(ws_camera_t *c,uint8_t reg,uint8_t value)
@@ -65,6 +71,7 @@ static bool receive_done(parlio_rx_unit_handle_t rx,const parlio_rx_event_data_t
 {
     (void)rx;ws_camera_t *c=ctx;BaseType_t wake=pdFALSE;
     if(atomic_load(&c->armed)){
+        atomic_store(&c->recv_bytes,event->recv_bytes);
         atomic_store(&c->frame_complete,event->recv_bytes >= PACKET_BYTES);
         xSemaphoreGiveFromISR(c->done,&wake);
     }
@@ -166,12 +173,32 @@ fail:
     if(camera_backend_close(c)!=ESP_OK)*out=c; /* retained, blocks all reentry */
     return e;
 }
+/* Owner-task only: no formatting/logging in ISR. Error counts are bounded
+ * summaries, never packet headers, pixels or decoded content. Zero denotes
+ * incomplete RX; unpack returns distinct shape/frame-header/row-header codes. */
+static esp_err_t invalid_response(ws_camera_t *c,int unpack_error)
+{
+    if(!unpack_error)c->incomplete++;
+    else if(unpack_error==-2)c->header_errors++;
+    else if(unpack_error==-3)c->row_errors++;
+    else c->shape_errors++;
+    if(cym_debug_enabled()){
+        int64_t now=esp_timer_get_time();
+        if(!c->invalid_report_at||now-c->invalid_report_at>=5000000){
+            c->invalid_report_at=now;
+            ESP_LOGI("qr_camera","invalid_response incomplete=%u header=%u row=%u shape=%u recv_bytes=%u",
+                c->incomplete,c->header_errors,c->row_errors,c->shape_errors,(unsigned)atomic_load(&c->recv_bytes));
+        }
+    }
+    return ESP_ERR_INVALID_RESPONSE;
+}
 esp_err_t camera_backend_acquire(void *ctx,cym_camera_frame_t *f,unsigned timeout)
 {
     ws_camera_t *c=ctx;
     if(!c||!f||timeout>500)return ESP_ERR_INVALID_ARG;
     while(xSemaphoreTake(c->done,0)==pdTRUE){}
     atomic_store(&c->frame_complete,false);
+    atomic_store(&c->recv_bytes,0);
     esp_err_t e=parlio_rx_unit_enable(c->rx,true);if(e)return e;c->enabled=true;
     parlio_receive_config_t recv={.delimiter=c->delimiter};
     e=parlio_rx_unit_receive(c->rx,c->packet,c->packet_size,&recv);if(e)goto done;
@@ -183,7 +210,9 @@ done:
     {esp_err_t stop=halt(c);if(stop)return stop;}
     reg_write(c,0x09,0x13);
     if(e)return e;
-    if(!atomic_load(&c->frame_complete)||cym_camera_unpack_bf3901(c->packet,c->packet_size,c->rgb,153600))return ESP_ERR_INVALID_RESPONSE;
+    if(!atomic_load(&c->frame_complete))return invalid_response(c,0);
+    int unpack=cym_camera_unpack_bf3901(c->packet,atomic_load(&c->recv_bytes),c->rgb,153600);
+    if(unpack)return invalid_response(c,unpack);
     *f=(cym_camera_frame_t){c->rgb,240,320,480,CYM_CAMERA_RGB565_LE};return ESP_OK;
 }
 void camera_backend_release(void *ctx){(void)ctx;}

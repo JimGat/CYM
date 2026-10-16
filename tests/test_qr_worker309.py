@@ -68,7 +68,8 @@ typedef struct {int x;} cym_camera_t;
 typedef struct {int x;} cym_qr_t;
 typedef struct {uint8_t *data;size_t stride;int width,height;int format;} cym_camera_frame_t;
 typedef int (*qr_ui_save_fn)(const uint8_t*,size_t,char*,size_t);
-typedef int (*qr_ui_frame_save_fn)(const uint8_t *,int,int,size_t,const char *,char *,size_t);
+typedef bool (*qr_ui_capture_valid_fn)(void *);
+typedef int (*qr_ui_frame_save_fn)(const uint8_t *,int,int,size_t,const char *,char *,size_t,qr_ui_capture_valid_fn,void *);
 typedef struct {unsigned rotation;lv_color_t panel,card,pressed,border,text,muted,accent;const lv_font_t *font;qr_ui_frame_save_fn save_frame;} qr_ui_options_t;
 #define CYM_QR_ERROR_COUNT 8
 typedef struct {uint32_t candidates,normal_attempts,mirror_attempts,valid,payload_length;uint32_t errors[8];} cym_qr_stats_t;
@@ -161,7 +162,7 @@ static void lv_label_set_text(lv_obj_t*p,const char*s){(void)p;snprintf(displaye
 """
 POST=r"""
 static int save(const uint8_t*p,size_t n,char*out,size_t cap){save_calls++;assert(atomic_load(&session->phase)==QR_SAVING);poll(NULL);assert(strstr(displayed,"Saving"));assert(n==test_length&&!memcmp(p,test_payload,n));snprintf(out,cap,"test.txt");return save_error;}
-static int frame_save(const uint8_t *gray,int w,int h,size_t stride,const char *meta,char *name,size_t cap){assert(esp_ptr_external_ram(gray));assert(w==240&&h==320&&stride==240);assert(strstr(meta,"decoder_rotation=0"));assert(cym_debug_enabled());frame_calls++;snprintf(name,cap,"frame-0000.pgm");return frame_error;}
+static int frame_save(const uint8_t *gray,int w,int h,size_t stride,const char *meta,char *name,size_t cap,qr_ui_capture_valid_fn valid,void *ctx){assert(valid(ctx));assert(esp_ptr_external_ram(gray));assert(w==240&&h==320&&stride==240);assert(strstr(meta,"decoder_rotation=0"));assert(cym_debug_enabled());frame_calls++;snprintf(name,cap,"frame-0000.pgm");return frame_error;}
 static void reset(void){assert(!session&&!live);internal_free=4734;internal_largest=2304;psram_free=5723232;psram_largest=5636096;create_fail=close_fail=hold_camera=scan_success=stop_before_suspend=finish_at=ticks=save_error=save_calls=frame_calls=frame_error=acquire_error=0;test_payload=(const uint8_t*)"x";test_length=1;}
 static void start_open(void){qr_ui_options_t opts={.save_frame=frame_save};qr_decoder_ui_open(&obj,(void*)1,save,&opts);}
 int main(void){

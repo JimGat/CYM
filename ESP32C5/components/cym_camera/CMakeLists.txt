@@ -7,6 +7,7 @@ idf_component_register(SRCS ${camera_sources} INCLUDE_DIRS "include"
 if(CONFIG_BOARD_WS_C5_35)
     # REQUIRES is expanded before board Kconfig is loaded. Link SDK targets
     # here, after registration, so includes/dependencies are WS35-scoped.
+    target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../main")
     target_link_libraries(${COMPONENT_LIB} PRIVATE idf::esp_driver_i2c
         idf::esp_driver_parlio idf::esp_driver_gpio idf::esp_timer idf::esp_mm)
     target_link_options(${COMPONENT_LIB} INTERFACE "LINKER:--wrap=parlio_new_tx_unit" "LINKER:--wrap=parlio_del_tx_unit")

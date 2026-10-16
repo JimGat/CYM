@@ -28,7 +28,7 @@
 #define PREVIEW_W 120
 #define PREVIEW_H 160
 #define DISPLAY_CAP (CYM_QR_MAX_PAYLOAD*4+1)
-typedef enum { QR_STARTING,QR_SCANNING,QR_SAVING,QR_RESULT,QR_ERROR } qr_phase_t;
+typedef enum { QR_STARTING,QR_SCANNING,QR_SAVING,QR_RESULT,QR_ERROR,QR_CAPTURED } qr_phase_t;
 typedef struct {
     atomic_bool cancel,done;
     atomic_uint capture_generation;
@@ -105,26 +105,55 @@ static void gray_stats(qr_session_t *s)
     }
     s->mean_gray=sum/(240*320);
 }
+static void qr_diag(const char *stage,int error,unsigned caps,size_t bytes);
+static bool capture_allowed(void *ctx)
+{
+    qr_session_t *s=ctx;
+    return cym_debug_enabled()&&!atomic_load(&s->cancel)&&
+        atomic_load(&s->capture_generation)==cym_debug_generation();
+}
 /* Worker-only snapshot and card callback. UI never copies pixels or waits for
  * SD. One pending request; toggling debug off or Back cancels before write. */
-static void capture_frame(qr_session_t *s,const cym_qr_stats_t *stats)
+static bool capture_frame(qr_session_t *s,const cym_qr_stats_t *stats)
 {
-    if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation()){atomic_store(&s->capture,0);return;}
-    int expected=1;if(!atomic_compare_exchange_strong(&s->capture,&expected,2))return;
+    if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation()){atomic_store(&s->capture,0);return false;}
+    int expected=1;if(!atomic_compare_exchange_strong(&s->capture,&expected,2))return false;
     uint8_t *snapshot=heap_caps_malloc(240*320,QR_STACK_CAPS);
-    int e=ENOMEM;char name[40]={0},meta[640];
+    int e=ENOMEM;bool paused=false;char name[40]={0},meta[640];
     if(snapshot){
         memcpy(snapshot,s->gray,240*320);
         snprintf(meta,sizeof(meta),"width=240 height=320 stride=240 source_stride=%u format=RGB565_LE rotation=%u decoder_rotation=0 min=%u max=%u mean=%u dark=%u light=%u frames=%u processed=%u candidates=%u normal=%u mirror=%u errors=%u,%u,%u,%u,%u,%u,%u,%u",
             (unsigned)s->stride,s->options.rotation*90,s->min_gray,s->max_gray,s->mean_gray,s->dark,s->light,(unsigned)s->frames,(unsigned)s->processed,(unsigned)stats->candidates,(unsigned)stats->normal_attempts,(unsigned)stats->mirror_attempts,
             (unsigned)stats->errors[0],(unsigned)stats->errors[1],(unsigned)stats->errors[2],(unsigned)stats->errors[3],(unsigned)stats->errors[4],(unsigned)stats->errors[5],(unsigned)stats->errors[6],(unsigned)stats->errors[7]);
         if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation())e=ECANCELED;
-        else e=s->options.save_frame?s->options.save_frame(snapshot,240,320,240,meta,name,sizeof(name)):ENOSYS;
+        else {
+            /* release() already completed before decode. Only this worker owns
+             * the camera; successful close is the SD admission gate, not a
+             * best-effort hint. The snapshot AND this metadata live in PSRAM
+             * (metadata is on our external worker stack). No live buffer is
+             * freed by UI cancellation. Resume is explicit Scan Again. */
+            paused=true;
+            qr_diag("debug_close_begin",0,0,0);
+            int close_error=s->camera?cym_camera_close(&s->camera):ESP_OK;
+            qr_diag("debug_close_end",close_error,0,0);
+            if(close_error||s->camera)e=EBUSY;
+            else if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation())e=ECANCELED;
+            else {
+                qr_diag("debug_save_begin",0,0,0);
+                e=s->options.save_frame?s->options.save_frame(snapshot,240,320,240,meta,name,sizeof(name),capture_allowed,s):ENOSYS;
+                qr_diag("debug_save_end",e,0,0);
+            }
+        }
         memset(snapshot,0,240*320);free(snapshot);
     }
     if(!e)snprintf(s->capture_status,sizeof(s->capture_status),"Saved debug/%s",name);
     else snprintf(s->capture_status,sizeof(s->capture_status),"Frame not saved: %s. Retry.",strerror(e));
+    if(paused){
+        snprintf(s->status,sizeof(s->status),"%.84s\n%s",s->capture_status,
+            s->camera?"Camera stop incomplete; restart blocked":"Scan paused. Press Scan Again.");
+    }
     transition("debug_frame_complete",e);atomic_store(&s->capture,3);
+    return paused;
 }
 
 /* Startup/failure-only logs use the existing debug gate and primary USB
@@ -205,7 +234,7 @@ static void worker(void *arg)
         s->processed++;s->candidates+=stats.candidates;s->normal+=stats.normal_attempts;s->mirror+=stats.mirror_attempts;
         for(unsigned i=0;i<CYM_QR_ERROR_COUNT;i++)s->decode_errors[i]+=stats.errors[i];
         if(cym_debug_enabled())gray_stats(s);
-        capture_frame(s,&stats);report(s,false);
+        report(s,false);
         if(n>=0&&stats.valid){
             /* Immutable escaped text is published BEFORE potentially slow close
              * or SD. UI may read it, but must never reclaim a live worker. */
@@ -215,12 +244,23 @@ static void worker(void *arg)
             int close_error=cym_camera_close(&s->camera);
             transition("camera_close_end",close_error);
             char name[40]={0};transition("record_save_begin",0);
-            int save_error=atomic_load(&s->cancel)?ECANCELED:s->save(s->payload,(size_t)n,name,sizeof(name));
+            int save_error=(close_error||s->camera)?EBUSY:atomic_load(&s->cancel)?ECANCELED:s->save(s->payload,(size_t)n,name,sizeof(name));
             transition("record_save_end",save_error);
             if(!save_error)snprintf(s->status,sizeof(s->status),"QR Code - %d bytes\nSaved %s%s",n,name,close_error?"\nCamera stop incomplete; restart blocked":"");
             else snprintf(s->status,sizeof(s->status),"QR Code - %d bytes\nNot saved: %s%s",n,strerror(save_error),close_error?"\nCamera stop incomplete; restart blocked":"");
+            /* Successful decode wins: publish/save its record once before the
+             * optional diagnostic image. A close failure admits neither SD
+             * operation, even if finish later manages to quiesce the camera. */
+            if(!close_error&&!s->camera){
+                char result_status[sizeof(s->status)];memcpy(result_status,s->status,sizeof(result_status));
+                capture_frame(s,&stats);
+                memcpy(s->status,result_status,sizeof(s->status));
+            }else atomic_store(&s->capture,0);
             atomic_store(&s->phase,QR_RESULT);transition("result_published",save_error);
             error=ESP_OK;break;
+        }
+        if(capture_frame(s,&stats)){
+            atomic_store(&s->phase,QR_CAPTURED);error=ESP_OK;break;
         }
         /* No queued backlog; one image per bounded acquisition/decode cycle. */
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -257,7 +297,9 @@ static void poll(lv_timer_t *timer)
     if(capture_button){
         bool enabled=cym_debug_enabled()&&phase==QR_SCANNING;
         if(enabled){lv_obj_clear_flag(capture_button,LV_OBJ_FLAG_HIDDEN);lv_obj_clear_flag(capture_label,LV_OBJ_FLAG_HIDDEN);lv_obj_clear_flag(activity_label,LV_OBJ_FLAG_HIDDEN);}
-        else {lv_obj_add_flag(capture_button,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(capture_label,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(activity_label,LV_OBJ_FLAG_HIDDEN);int expected=1;atomic_compare_exchange_strong(&s->capture,&expected,0);}
+        else {lv_obj_add_flag(capture_button,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(capture_label,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(activity_label,LV_OBJ_FLAG_HIDDEN);/* A decoded result may be saving first. Hiding the control must not
+         * revoke the already-consented image on that same frame. */
+         if(!capture_allowed(s)){int expected=1;atomic_compare_exchange_strong(&s->capture,&expected,0);}}
         int capture=atomic_load(&s->capture);
         if(capture==1||capture==2){lv_obj_add_state(capture_button,LV_STATE_DISABLED);lv_label_set_text(capture_label,"Saving one camera image... Back cancels pending work");}
         else {lv_obj_clear_state(capture_button,LV_STATE_DISABLED);
@@ -274,7 +316,7 @@ static void poll(lv_timer_t *timer)
         lv_obj_add_flag(preview,LV_OBJ_FLAG_HIDDEN);
         if(!s->text_shown){lv_label_set_text_static(result_label,s->text);lv_obj_clear_flag(result_label,LV_OBJ_FLAG_HIDDEN);s->text_shown=true;transition("decoded_displayed_saving",0);}
         lv_label_set_text(status_label,"QR decoded - Saving record / stopping camera...");
-    }else if((phase==QR_RESULT||phase==QR_ERROR)&&reap(s)){
+    }else if((phase==QR_RESULT||phase==QR_ERROR||phase==QR_CAPTURED)&&reap(s)){
         if(!s->result_shown){
             lv_label_set_text(status_label,s->status);
             lv_obj_add_flag(preview,LV_OBJ_FLAG_HIDDEN);
@@ -323,7 +365,13 @@ static void start(void)
     if(!s->stack){qr_diag("stack_alloc",ESP_ERR_NO_MEM,QR_STACK_CAPS,QR_STACK_BYTES);goto failed;}
     s->tcb=heap_caps_malloc(sizeof(*s->tcb),QR_TCB_CAPS);
     if(!s->tcb){qr_diag("tcb_alloc",ESP_ERR_NO_MEM,QR_TCB_CAPS,sizeof(*s->tcb));goto failed;}
-    s->task=xTaskCreateStatic(worker,"qr_scan",QR_STACK_BYTES,s,2,s->stack,s->tcb);
+    /* app_main/UI priority is 1 (ESP_TASK_MAIN_PRIO). quirc_end's
+     * grouping/perspective search and RS normal/mirror decode are CPU-bound;
+     * the frame-end delay alone cannot yield to a lower-priority UI. Equal
+     * priority uses the audited IDF configUSE_TIME_SLICING=1 at 100 Hz. Keep
+     * stack size and all other task priorities unchanged. */
+    qr_diag("scan_again_start",0,0,0);
+    s->task=xTaskCreateStatic(worker,"qr_scan",QR_STACK_BYTES,s,1,s->stack,s->tcb);
     if(!s->task){qr_diag("task_create",ESP_ERR_NO_MEM,QR_STACK_CAPS,QR_STACK_BYTES);goto failed;}
     return;
 failed:

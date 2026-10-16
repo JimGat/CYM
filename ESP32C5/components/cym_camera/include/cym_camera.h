@@ -12,4 +12,6 @@ esp_err_t cym_camera_open(cym_camera_t **out, void *borrowed_bus);
 esp_err_t cym_camera_acquire(cym_camera_t *c,cym_camera_frame_t *frame,unsigned timeout_ms);
 void cym_camera_release(cym_camera_t *c);
 esp_err_t cym_camera_close(cym_camera_t **c);
+/* Packet validation: -1 shape/capacity, -2 frame header, -3 row header.
+ * Validate all headers before exposing pixels; no packet bytes are logged. */
 int cym_camera_unpack_bf3901(const uint8_t *packet,size_t len,uint8_t *rgb,size_t cap);

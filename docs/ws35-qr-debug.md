@@ -1,9 +1,10 @@
 # WS-C5-35 QR Decoder: aiming and diagnostics
 
-Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35), v3.0.10 Development test cycle.
-The camera preview was confirmed visible by the owner on v3.0.9. The changes
-below have host/build gates; physical rotation, styling and scan acceptance
-still require the next board test. Synthetic QR images are not camera evidence.
+Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35), v3.0.11 Development test candidate.
+The camera preview was confirmed visible by the owner on v3.0.9. The v3.0.10 physical log reproduced SD DMA allocation exhaustion during
+debug capture and long decode/UI wall times. v3.0.11 is a corrective candidate;
+physical frame recovery, UI timing, rotation and recognition acceptance remain
+pending. Host/build results are recorded separately in the cycle handoff. Synthetic QR images are not camera evidence.
 
 ## Normal operation
 
@@ -94,7 +95,14 @@ QR content; pressing Save Debug Frame is consent for ONE image to be written.
 There is no automatic image capture, continuous recording, network or upload.
 
 The worker takes one PSRAM snapshot of the exact native decoder grayscale
-input, including the original full field of view. It writes P5 PGM under:
+input, including the original full field of view and matching numeric metadata.
+It then closes/quiesces the camera BEFORE any SD access. A close failure retains
+camera ownership and blocks SD/restart rather than freeing a live resource.
+The explicit capture pauses scanning after the save attempt; press Scan Again /
+Retry to resume. This deliberate pause avoids allocating camera resources again
+before the requested image has been recovered. A reopen failure is shown as a
+camera error; Back and retry remain available unless ownership is retained.
+It writes P5 PGM under:
 
     /sdcard/lab/QR/debug/frame-0000.pgm
 
@@ -106,12 +114,22 @@ candidate/attempt/error counters. No payload is embedded as text metadata.
 The PIXELS themselves may reveal sensitive QR data or the surroundings.
 
 While pending: `Saving one camera image... Back cancels pending work`.
-Success: `Saved debug/frame-NNNN.pgm`.
+Success: `Saved debug/frame-NNNN.pgm` followed by
+`Scan paused. Press Scan Again.` on the status label. The preview is hidden once
+the worker is safely parked, and Scan Again / Retry becomes visible.
 Failure: `Frame not saved: <error>. Retry.` (missing SD, busy/unwritable card,
-allocation, write or close failure). A request consumes at most one pending
+allocation, write or close failure). After a close/save attempt the scan is
+paused, including SD failure; use Scan Again, then press Save Debug Frame again
+only if another image is wanted. Snapshot allocation failure leaves the scan
+running without closing the camera. A request consumes at most one pending
 slot; repeated clicks cannot queue captures. Debug OFF, a debug-generation
-change or Back cancels a not-yet-written request. An SD write already in progress
+change or Back cancels a not-yet-written request, including cancellation while
+waiting for the SD mutex. The worker rechecks request validity after admission. An SD write already in progress
 may finish; UI teardown retains live worker ownership rather than freeing it.
+A successful decode on the same frame has priority: escaped text is published,
+the camera closes, and the normal record is saved once BEFORE the optional
+image. A failed camera close blocks both writes, retaining the decoded text.
+Image failure never overwrites a successful decoded result or saves it twice.
 The UI does not synchronously wait for the button's SD operation. Card and
 shared-bus latency remain hardware-dependent. Back uses the existing bounded
 three-second join and may retain a still-stopping worker; retry later, never
@@ -120,7 +138,7 @@ force-free it. A failed write/close removes only its own incomplete image.
 For diagnosis, copy the PGM from your SD card yourself, inspect it offline, and
 share only a benign test frame voluntarily. It is a real camera input sample;
 the generated `printable-simple-qr.png` in the development evidence directory is
-only a synthetic print target containing `CYM TEST 310`.
+only a synthetic print target, not a captured camera frame.
 
 ## Interpreting debug output
 
@@ -147,12 +165,42 @@ frames, or zero shape if none arrived. Current format0 is RGB565 little-endian.
 - decoded_payload_length: quirc decoded a payload (length only, including0).
   decoded_displayed_saving proves UI reached the pre-save result path, if the
   save took long enough to be observed by the UI poll.
-- camera_close_begin/end: isolate camera-stop delay/failure.
+- camera_close_begin/end: isolate normal-result camera-stop delay/failure.
+- qr_start stage=debug_close_begin/end and debug_save_begin/end: debug-only
+  memory markers include internal and DMA free/largest blocks. Compare the
+  post-close DMA headroom with the v3.0.10 DMA_free=258 / DMA_largest=168.
+  Successful close precedes the first SD operation. End value/error0 is success.
+  No save_begin after failed close is expected. Scan Again emits
+  stage=scan_again_start then camera_open with fresh headroom. A failed reopen
+  must report error, not continue scanning with a missing camera.
+- qr_camera invalid_response: at most one summary per five seconds on errors;
+  incomplete counts short/missing RX completion, header counts invalid frame
+  headers, row counts invalid row headers, shape counts length/capacity errors.
+  recv_bytes is a byte count only, never packet content. Counters reset on
+  camera reopen; a quiet error interval is not proof that a frame was valid.
 - record_save_begin/end: isolate SD save delay/failure. End value0 means success;
   nonzero is an errno. A failed save must not discard the displayed result.
 - result_published then result_displayed: completed worker publication and UI
   display. worker_park followed by owner reap is the only safe reclaim path;
   done alone is not a join. ui_stop records leaving the screen.
+
+## Scheduler correction and physical timing gate
+
+The installed IDF main/UI task has priority1; v3.0.10 QR worker priority2 can
+preempt it for the whole CPU-bound quirc identification/decode. The frame-end
+100ms delay does not create UI opportunities inside that work. v3.0.11 changes
+only the QR worker to priority1, using the installed 100Hz equal-priority time
+slicing. quirc perspective grouping/jiggle and normal/mirror Reed-Solomon work
+remain unchanged. This is not a decoder-quality fix and does not guarantee
+sub-second UI latency. LVGL wall times include scheduling, drawing and waits;
+these logs do not establish that display buffers are too small.
+
+Host tests execute the actual worker and UI poll under a deterministic READY
+policy replay during a long mocked decode, including UI cancellation. That
+checks priority/admission policy, NOT real RTOS timing. The physical gate is a
+comparable 20-30 second capture showing touch/Back responsiveness, handler/decode
+wall times, no watchdog faults and an actual recoverable PGM. Measure and report
+remaining stalls; do not infer improvement from compilation or the host model.
 
 ## Recognition evidence and limits
 

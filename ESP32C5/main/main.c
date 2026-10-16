@@ -45672,12 +45672,13 @@ static int qr_save_record(const uint8_t *payload, size_t length, char *name, siz
     xSemaphoreGive(sd_spi_mutex);
     return e;
 }
-static int qr_save_debug_frame(const uint8_t *gray,int w,int h,size_t stride,const char *meta,char *name,size_t cap)
+static int qr_save_debug_frame(const uint8_t *gray,int w,int h,size_t stride,const char *meta,char *name,size_t cap,qr_ui_capture_valid_fn valid,void *ctx)
 {
-    if(!cym_debug_enabled())return ECANCELED;
+    if(!cym_debug_enabled()||!valid||!valid(ctx))return ECANCELED;
     if(!wifi_wardrive_is_sd_mounted())return ENODEV;
     if(!sd_spi_mutex||xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(500))!=pdTRUE)return EBUSY;
-    int e=cym_debug_enabled()?cym_qr_debug_frame("/sdcard",gray,w,h,stride,meta,name,cap):ECANCELED;
+    /* Back or debug OFF/ON may arrive during mutex admission. */
+    int e=(cym_debug_enabled()&&valid(ctx))?cym_qr_debug_frame("/sdcard",gray,w,h,stride,meta,name,cap):ECANCELED;
     xSemaphoreGive(sd_spi_mutex);return e;
 }
 static void show_qr_decoder(void)
