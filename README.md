@@ -3435,3 +3435,14 @@ not download the complete external asset collection. Stable remains **v3.0.2**.
 The new provisioning lifecycle still needs exact-v3.0.5 physical heap/high-water,
 repeat-run and low-memory checks; prior v3.0.4 landscape acceptance is not that
 qualification. See [operator checks](docs/testing/sd-no-psram-v3.0.5.md).
+
+
+## v3.0.6 Development: startup memory diagnostics
+
+Adds debug-gated startup memory checkpoints and bounded storage short-read diagnostics
+for Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35) investigation, with the shared
+Waveshare ESP32-C5-Touch-LCD-2.8 (WS-C5-28) path available for comparison.
+This is instrumentation, not a verified correction or new hardware qualification.
+Allocation sizes, task stacks/priorities, audio settings and storage speed are unchanged.
+Stable remains v3.0.2.
+[Diagnostic operator checks](docs/testing/startup-memory-v3.0.6.md).

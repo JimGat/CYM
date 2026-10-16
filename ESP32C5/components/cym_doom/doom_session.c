@@ -1,4 +1,6 @@
 #include "debug_gate.h"
+#include "doom_startup_diag.h"
+#include <errno.h>
 /* Private silent native embedding. The caller MUST be the sole engine worker.
  * No LVGL, ISR, asynchronous callback or foreign task may enter this module.
  * Full mutable engine state is captured before Create, restored after raw owned
@@ -160,7 +162,18 @@ static void io_unlock(void){
 static void io_observed(unsigned op,uint32_t bytes,bool failed){dm_io_record(io_phase_sample,op,io_admission_us,io_hold_us,bytes,failed);}
 FILE *doom_owned_fopen(const char *p,const char *mode){check_stop();if(!p||strcmp(p,wad_path)||(strcmp(mode,"rb")&&strcmp(mode,"r")))return NULL;if(file_n==16)doom_engine_fail("File registry full");if(!io_lock(DM_IO_OPEN))doom_engine_fail("SD transport busy");FILE *f=fopen(p,mode);io_unlock();io_observed(DM_IO_OPEN,0,!f);if(f)files[file_n++]=f;return f;}
 int doom_owned_fclose(FILE *f){if(!f)return 0;for(unsigned i=0;i<file_n;i++)if(files[i]==f){if(!io_lock(DM_IO_CLOSE))doom_engine_fail("SD close transport busy");int rc=fclose(f);io_unlock();io_observed(DM_IO_CLOSE,0,rc!=0);files[i]=files[--file_n];return rc;}doom_engine_fail("Unregistered engine file close");}
-size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){check_stop();if(s&&n>SIZE_MAX/s)doom_engine_fail("File read overflow");if(!io_lock(DM_IO_READ))doom_engine_fail("SD read transport busy");uint32_t before=metric_us();size_t result=fread(p,s,n,f);io_unlock();io_observed(DM_IO_READ,(uint32_t)(result*s),ferror(f)!=0);DM_ADD(sd_reads,1);DM_ADD(sd_us,metric_us()-before);return result;}
+static unsigned read_diag_count;
+size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){
+ check_stop();if(s&&n>SIZE_MAX/s)doom_engine_fail("File read overflow");
+ if(!io_lock(DM_IO_READ))doom_engine_fail("SD read transport busy");
+ uint32_t before=metric_us();size_t result=fread(p,s,n,f);
+ /* Capture before unlock, metrics or logging can clobber errno/stream flags. */
+ int saved_errno=errno;int read_error=ferror(f);int read_eof=feof(f);
+ io_unlock();io_observed(DM_IO_READ,(uint32_t)(result*s),read_error!=0);
+ DM_ADD(sd_reads,1);DM_ADD(sd_us,metric_us()-before);
+ doom_read_diag(&read_diag_count,s,n,result,read_error,read_eof,saved_errno);
+ errno=saved_errno;return result;
+}
 int doom_owned_fseek(FILE *f,long off,int whence){check_stop();if(!io_lock(DM_IO_SEEK))doom_engine_fail("SD seek transport busy");int rc=fseek(f,off,whence);io_unlock();io_observed(DM_IO_SEEK,0,rc!=0);return rc;}
 long doom_owned_ftell(FILE *f){if(!io_lock(DM_IO_TELL))doom_engine_fail("SD tell transport busy");long result=ftell(f);io_unlock();io_observed(DM_IO_TELL,0,result<0);return result;}
 int doom_owned_forbidden(const char *p){(void)p;doom_engine_fail("Host shell/SD write disabled in prototype");}
@@ -200,6 +213,7 @@ int doom_session_start(const char *path){if(active||armed||!path||strlen(path)>=
 #ifdef ESP_PLATFORM
 owner=xTaskGetCurrentTaskHandle();
 #endif
+doom_startup_diag("ENGINE_INIT_ENTRY",0,NULL);read_diag_count=0;
 error_text[0]=0;snprintf(wad_path,sizeof(wad_path),"%s",path);size_t bytes=doom_session_state_bytes();if(!bytes){snprintf(error_text,sizeof(error_text),"Missing engine state linker region");return -1;}state=raw_alloc(bytes);owned=raw_alloc(OWN_MAX*sizeof(*owned));if(!state||!owned){free(state);state=NULL;free(owned);owned=NULL;snprintf(error_text,sizeof(error_text),"No memory for engine ownership/reset state");return -1;}snapshot_state(false);owned_n=file_n=0;active=true;memset(&keys,0,sizeof(keys));desired_keys=0;int rc=call_engine(create);if(rc)doom_session_stop();return rc;}
 int doom_session_tick(void){if(!active)return -1;uint32_t before=metric_us();int rc=call_engine(doomgeneric_Tick);DM_ADD(ticks,1);DM_ADD(tick_us,metric_us()-before);return rc;}
 void doom_session_set_keys(unsigned mask){if(mask!=__atomic_load_n(&desired_keys,__ATOMIC_ACQUIRE)){__atomic_store_n(&doom_metrics.input_ms,DG_GetTicksMs(),__ATOMIC_RELAXED);}__atomic_store_n(&desired_keys,mask,__ATOMIC_RELEASE);}

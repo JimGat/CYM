@@ -102,6 +102,8 @@ int main(void){pthread_t t;assert(!pthread_create(&t,NULL,writer,NULL));unsigned
 #define pdMS_TO_TICKS(x) (x)
 #include """+'"'+metrics+'"'+r"""
 doom_metrics_t doom_metrics;
+#include <errno.h>
+static inline void doom_read_diag(unsigned *c,size_t s,size_t n,size_t r,int e,int f,int er){(void)c;(void)s;(void)n;(void)r;(void)e;(void)f;(void)er;}
 static uint32_t clock_us;static bool busy,held;static void *sd_spi_mutex=(void*)1;
 static unsigned file_n;static FILE *files[16];static char wad_path[]="fixture";
 static uint32_t metric_us(void){return clock_us;}
@@ -117,6 +119,7 @@ static size_t fake_fread(void*p,size_t s,size_t n,FILE*f){(void)p;(void)f;assert
 static int fake_fseek(FILE*f,long o,int w){(void)f;(void)o;(void)w;assert(held);clock_us+=12;return -1;}
 static long fake_ftell(FILE*f){(void)f;assert(held);clock_us+=13;return 42;}
 #define ferror(f) 0
+#define feof(f) 0
 #define fopen fake_fopen
 #define fclose fake_fclose
 #define fread fake_fread

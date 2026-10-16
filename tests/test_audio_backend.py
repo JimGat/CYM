@@ -8,6 +8,22 @@ STUB=r"""#ifndef AUDIO_BACKEND_STUB_H
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#define CYM_DEBUG_HOST_STATE 1
+#define DOOM_STARTUP_DIAG_HOST 1
+#define MALLOC_CAP_INTERNAL 1
+#define MALLOC_CAP_8BIT 2
+#define MALLOC_CAP_DMA 4
+#define MALLOC_CAP_SPIRAM 8
+typedef int esp_err_t;
+typedef int BaseType_t;
+typedef void *TaskHandle_t;
+static unsigned heap_samples,checkpoint_logs;
+static bool debug_active=true;
+bool cym_debug_enabled(void){return debug_active;}
+uint32_t cym_debug_generation(void){return 1;}
+static size_t heap_caps_get_free_size(unsigned c){heap_samples++;return c*100;}
+static size_t heap_caps_get_largest_free_block(unsigned c){heap_samples++;return c*10;}
+static unsigned uxTaskGetStackHighWaterMark(TaskHandle_t t){return t?222:111;}
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define I2S_NUM_0 0
@@ -60,6 +76,7 @@ static int read_fail,bad_reg,muted,codec_enabled,amp_off_fail;
 static float observed_volume;static unsigned started_logs;
 #include <stdarg.h>
 void backend_log(const char*tag,const char*fmt,...){(void)tag;char line[1024];va_list ap;va_start(ap,fmt);vsnprintf(line,sizeof(line),fmt,ap);va_end(ap);
+if(strstr(line,"STARTUP_MEMORY")){assert(strstr(line,"free_dma=400")&&strstr(line,"largest_dma=40"));checkpoint_logs++;}
 if(strstr(line,"AUDIO_STARTED")){assert(strstr(line,"volume_db=9"));assert(!strstr(line,"volume_db=-30"));assert(strstr(line,"audible=unconfirmed"));assert(observed_volume==9.0f);assert(amp_on&&codec_enabled&&!muted&&tx_on&&audio_task&&audio_queue);started_logs++;}}
 static int read_reg(const audio_codec_ctrl_if_t*c,int reg,int width,void*out,int len){(void)c;assert(width==1&&len==1);if(read_fail)return -1;
 unsigned v=0;switch(reg){case 0x00:v=0x80;break;case 0x01:v=0xbf;break;case 0x02:v=0x18;break;case 0x06:v=3;break;case 0x09:case 0x0a:v=0x0c;break;case 0x0d:v=1;break;case 0x14:v=0x1a;break;case 0x32:v=0x8a;break;case 0x37:v=8;break;}if(reg==0x12)v=codec_enabled?0:2;if(reg==0x14)v=codec_enabled?0x1a:0;if(reg==0x31)v=muted?0x60:0;if(reg==bad_reg)v^=0x40;*(unsigned char*)out=v;return 0;}
@@ -113,7 +130,7 @@ assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_q
 read_fail=1;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);read_fail=0;
 for(int reg=0;reg<=0x37;reg++){if(reg==0||reg==1||reg==2||reg==6||reg==9||reg==0x0d||reg==0x12||reg==0x14||reg==0x31||reg==0x37){bad_reg=reg;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);}}bad_reg=-1;
 queue_fail=1;assert(!doom_audio_begin());queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
-seq=0;fail_at=-1;assert(doom_audio_begin());assert(amp_on&&doom_audio_demand()==6&&started_logs>0);
+seq=0;fail_at=-1;unsigned checkpoints_before=checkpoint_logs;assert(doom_audio_begin());assert(checkpoint_logs==checkpoints_before+8);assert(amp_on&&doom_audio_demand()==6&&started_logs>0);
 unsigned writes=DM_GET(audio_writes);for(unsigned i=0;i<6;i++)assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));assert(!doom_audio_demand());assert(DM_GET(audio_writes)==writes);
 pcm[0]=0;assert(audio_step());assert(DM_GET(audio_nonzero)==DOOM_AUDIO_BLOCK);assert(doom_audio_demand()==1);
 assert(!doom_audio_write(pcm,DOOM_AUDIO_BLOCK+1));
@@ -130,6 +147,7 @@ amp_off_fail=1;assert(!doom_audio_begin());assert(!doom_audio_silent_ready());am
 #if CONFIG_BOARD_WS_C5_28
 assert(doom_audio_silent_ready());
 #endif
+debug_active=false;unsigned samples_before=heap_samples,logs_before=checkpoint_logs;assert(doom_audio_begin());assert(doom_audio_end()==0);assert(heap_samples==samples_before&&checkpoint_logs==logs_before);
 puts("PRODUCTION_AUDIO_BACKEND both board routes, copied queue/demand, silence starvation, fault/stop/join retention PASS (mock driver, not hardware)");return 0;}
 
 """
