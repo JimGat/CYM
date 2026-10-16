@@ -105,3 +105,35 @@ int cym_qr_record(const char *root, const uint8_t *data, size_t len,
     snprintf(filename,cap,"%s",name);
     return 0;
 }
+
+int cym_qr_debug_frame(const char *root,const uint8_t *gray,int w,int h,
+                       size_t stride,const char *meta,char *filename,size_t cap)
+{
+    char path[256],name[40],header[768];struct stat st;
+    if(filename&&cap)filename[0]=0;
+    if(!root||!gray||!meta||!filename||cap<32||w<1||h<1||w>1024||h>1024||stride<(size_t)w)return EINVAL;
+    if(strlen(meta)>640||strchr(meta,'\n')||strchr(meta,'\r'))return EINVAL;
+    if(stat(root,&st))return errno;
+    if(!S_ISDIR(st.st_mode))return ENOTDIR;
+    const char *dirs[]={"lab","lab/QR","lab/QR/debug"};
+    for(unsigned i=0;i<3;i++){
+        if(snprintf(path,sizeof(path),"%s/%s",root,dirs[i])>=(int)sizeof(path))return ENAMETOOLONG;
+        int e=directory(path);if(e)return e;
+    }
+    int fd=-1;
+    /* Bounded collision search, never overwrite an earlier voluntary frame. */
+    for(unsigned i=0;i<1024;i++){
+        snprintf(name,sizeof(name),"frame-%04u.pgm",i);
+        if(snprintf(path,sizeof(path),"%s/lab/QR/debug/%s",root,name)>=(int)sizeof(path))return ENAMETOOLONG;
+        fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0664);
+        if(fd>=0)break;
+        if(errno!=EEXIST)return errno;
+    }
+    if(fd<0)return EEXIST;
+    int n=snprintf(header,sizeof(header),"P5\n# %s\n%d %d\n255\n",meta,w,h);
+    int e=n<0||n>=(int)sizeof(header)?EINVAL:all(fd,header,(size_t)n);
+    for(int y=0;!e&&y<h;y++)e=all(fd,(const char *)gray+y*stride,(size_t)w);
+    if(close(fd)&&!e)e=errno?errno:EIO;
+    if(e){unlink(path);return e;}
+    snprintf(filename,cap,"%s",name);return 0;
+}

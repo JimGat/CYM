@@ -25,7 +25,8 @@ enum {eSuspended};
 static int eTaskGetState(void *t){assert(t);return eSuspended;}
 static void vTaskDelete(void *t){assert(t);}
 static qr_session_t *session;
-static void *poll_timer,*status_label,*result_label,*preview,*retry_button;
+static void *poll_timer,*status_label,*result_label,*preview,*retry_button,*capture_button,*capture_label,*activity_label;
+static void transition(const char *s,int i){(void)s;(void)i;}
 static int ticks,complete_at,disposed,detached,timer_deleted,cache_invalidated;
 #define pdMS_TO_TICKS(x) (x)
 static void lv_timer_del(void *p){assert(p);timer_deleted++;}

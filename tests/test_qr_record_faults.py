@@ -33,4 +33,10 @@ int __wrap_open(const char *p,int f,...){va_list a;va_start(a,f);int m=va_arg(a,
     code=lib.cym_qr_record(os.fsencode(card),b'binary\0payload',14,b'v3.0.8',0,123,out,len(out))
     if mode==4:self.assertEqual(code,0);self.assertTrue(out.value)
     else:self.assertNotEqual(code,0);self.assertEqual(out.value,b'');self.assertEqual(list((card/'lab/QR').iterdir()),[])
+   lib.cym_qr_debug_frame.argtypes=[C.c_char_p,C.c_void_p,C.c_int,C.c_int,C.c_size_t,C.c_char_p,C.c_void_p,C.c_size_t]
+   for mode in [1,2,3,4]:
+    card=p/('frame'+str(mode));card.mkdir();out=C.create_string_buffer(80);lib.faults(mode)
+    code=lib.cym_qr_debug_frame(os.fsencode(card),bytes(range(16)),4,4,4,b'rotation=180',out,len(out))
+    if mode==4:self.assertEqual(code,0);self.assertTrue(out.value)
+    else:self.assertNotEqual(code,0);self.assertEqual(out.value,b'');self.assertEqual(list((card/'lab/QR/debug').iterdir()),[])
 if __name__=='__main__':unittest.main()

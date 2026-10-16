@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster - CYD-2432S028",
-  "version": "v3.0.9",
-  "build": "v3.0.9",
+  "version": "v3.0.10",
+  "build": "v3.0.10",
   "chipFamily": "ESP32",
   "parts": [
     {

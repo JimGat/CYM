@@ -11,3 +11,9 @@ size_t cym_qr_escape(const uint8_t *data, size_t len, char *out, size_t cap);
 int cym_qr_record(const char *root, const uint8_t *data, size_t len,
                   const char *version, int64_t utc_unix, uint64_t uptime_ms,
                   char *filename, size_t cap);
+
+/* Explicit consent only. Exact native decoder gray pixels, row padding omitted.
+ * metadata is a bounded single-line non-secret numeric diagnostic string.
+ * Caller serializes mounted SD; no automatic capture or upload. */
+int cym_qr_debug_frame(const char *root,const uint8_t *gray,int width,int height,
+                       size_t stride,const char *metadata,char *filename,size_t cap);

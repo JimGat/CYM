@@ -25,23 +25,29 @@ void cym_qr_destroy(cym_qr_t *q)
     if (q->decoder) quirc_destroy(q->decoder);
     memset(q,0,sizeof(*q)); free(q);
 }
-int cym_qr_decode_gray(cym_qr_t *q, const uint8_t *gray, size_t stride, uint8_t *out, size_t cap)
+int cym_qr_decode_gray_ex(cym_qr_t *q, const uint8_t *gray, size_t stride, uint8_t *out, size_t cap,cym_qr_stats_t *stats)
 {
+    cym_qr_stats_t local={0};if(!stats)stats=&local;memset(stats,0,sizeof(*stats));
     if (!q || !gray || !out || cap < CYM_QR_MAX_PAYLOAD || stride < (size_t)q->width) return -1;
     uint8_t *dst = quirc_begin(q->decoder,NULL,NULL);
     for (int y=0; y<q->height; ++y) memcpy(dst+y*q->width,gray+y*stride,q->width);
     quirc_end(q->decoder);
     int best = INT_MAX, len = 0;
-    for (int i=0; i<quirc_count(q->decoder); ++i) {
+    stats->candidates=quirc_count(q->decoder);
+    for (int i=0; i<(int)stats->candidates; ++i) {
         quirc_extract(q->decoder,i,&q->code);
         quirc_decode_error_t err = quirc_decode(&q->code,&q->data);
-        if (err) { quirc_flip(&q->code); err = quirc_decode(&q->code,&q->data); }
+        stats->normal_attempts++;stats->errors[err]++;
+        if (err) {
+            quirc_flip(&q->code);err=quirc_decode(&q->code,&q->data);
+            stats->mirror_attempts++;stats->errors[err]++;
+        }
         if (err || q->data.payload_len < 0 || (size_t)q->data.payload_len > cap) continue;
         int x=0,y=0;
         for (int j=0;j<4;++j) { x+=q->code.corners[j].x; y+=q->code.corners[j].y; }
         x=x/4-q->width/2; y=y/4-q->height/2;
         int distance=x*x+y*y;
-        if (distance < best) { best=distance;len=q->data.payload_len;memcpy(out,q->data.payload,len); }
+        if (distance < best) { best=distance;len=q->data.payload_len;memcpy(out,q->data.payload,len);stats->valid=1;stats->payload_length=len; }
     }
     return len;
 }
@@ -55,4 +61,12 @@ int cym_qr_rgb565_gray(const uint8_t *rgb, size_t stride, uint8_t *gray, int w, 
         gray[y*w+x]=(77*r+150*g+29*b)>>8;
     }
     return 0;
+}
+
+int cym_qr_decode_gray(cym_qr_t *q,const uint8_t *g,size_t stride,uint8_t *out,size_t cap)
+{return cym_qr_decode_gray_ex(q,g,stride,out,cap,NULL);}
+const char *cym_qr_error_name(unsigned e)
+{
+    static const char *names[]={"SUCCESS","INVALID_GRID_SIZE","INVALID_VERSION","FORMAT_ECC","DATA_ECC","UNKNOWN_DATA_TYPE","DATA_OVERFLOW","DATA_UNDERFLOW"};
+    return e<CYM_QR_ERROR_COUNT?names[e]:"INVALID_ERROR";
 }

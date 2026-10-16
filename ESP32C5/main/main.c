@@ -45672,12 +45672,25 @@ static int qr_save_record(const uint8_t *payload, size_t length, char *name, siz
     xSemaphoreGive(sd_spi_mutex);
     return e;
 }
+static int qr_save_debug_frame(const uint8_t *gray,int w,int h,size_t stride,const char *meta,char *name,size_t cap)
+{
+    if(!cym_debug_enabled())return ECANCELED;
+    if(!wifi_wardrive_is_sd_mounted())return ENODEV;
+    if(!sd_spi_mutex||xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(500))!=pdTRUE)return EBUSY;
+    int e=cym_debug_enabled()?cym_qr_debug_frame("/sdcard",gray,w,h,stride,meta,name,cap):ECANCELED;
+    xSemaphoreGive(sd_spi_mutex);return e;
+}
 static void show_qr_decoder(void)
 {
     create_function_page_base("QR Decoder");
     g_screen_stop_fn = qr_decoder_ui_stop;
     g_screen_back_fn = g_home_layout_4cat ? show_cat_tools : show_main_tiles;
-    qr_decoder_ui_open(function_page, ws_c5_35_i2c_bus(), qr_save_record);
+    apply_menu_bg();
+    const qr_ui_options_t options={.rotation=screen_orientation,
+        .panel=ui_panel_color(),.card=ui_card_color(),.pressed=ui_card_pressed_color(),
+        .border=ui_border_color(),.text=ui_text_color(),.muted=ui_muted_color(),
+        .accent=UI_ACCENT_CYAN,.font=&g_font_icon14,.save_frame=qr_save_debug_frame};
+    qr_decoder_ui_open(function_page, ws_c5_35_i2c_bus(), qr_save_record,&options);
 }
 #endif
 
