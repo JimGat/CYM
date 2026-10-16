@@ -10,6 +10,7 @@ STUB=r"""#ifndef AUDIO_BACKEND_STUB_H
 #include <stddef.h>
 #define CYM_DEBUG_HOST_STATE 1
 #define DOOM_STARTUP_DIAG_HOST 1
+#define DRAM_ATTR
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
 #define MALLOC_CAP_DMA 4
@@ -18,6 +19,9 @@ typedef int esp_err_t;
 typedef int BaseType_t;
 typedef void *TaskHandle_t;
 static unsigned heap_samples,checkpoint_logs;
+static void *pcm_storage;static unsigned storage_allocs,storage_frees;static int storage_fail;
+void *heap_caps_malloc(size_t,unsigned);
+void heap_caps_free(void*);
 static bool debug_active=true;
 bool cym_debug_enabled(void){return debug_active;}
 uint32_t cym_debug_generation(void){return 1;}
@@ -107,12 +111,15 @@ int audio_codec_delete_codec_if(const audio_codec_if_t*c){assert(c==&co);if(op()
 int audio_codec_delete_ctrl_if(const audio_codec_ctrl_if_t*c){assert(c==&ci);if(op())return -1;ctrl_live=0;return 0;}
 static void (*task_fn)(void*);
 static int task_state,task_deleted,queue_fail,task_fail,task_block;
-typedef struct mock_queue {unsigned n,head,tail;size_t size;unsigned char data[8][520];} mock_queue;
-QueueHandle_t xQueueCreate(unsigned n,size_t size){assert(n<=8&&size<=520);if(queue_fail)return NULL;mock_queue*q=calloc(1,sizeof(*q));q->size=size;return q;}
+typedef struct mock_queue {unsigned n,head,tail;size_t size;unsigned char *data;bool is_static;} mock_queue;
+void *heap_caps_malloc(size_t n,unsigned caps){assert(n==4096&&caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)&&!pcm_storage);if(storage_fail)return NULL;pcm_storage=malloc(n);assert(pcm_storage);storage_allocs++;return pcm_storage;}
+void heap_caps_free(void*p){assert(p&&p==pcm_storage&&!audio_task&&!audio_queue);free(p);pcm_storage=NULL;storage_frees++;}
+QueueHandle_t xQueueCreate(unsigned n,size_t size){(void)n;(void)size;assert(!"dynamic queue consumes DMA-capable internal memory");return NULL;}
+QueueHandle_t xQueueCreateStatic(unsigned n,size_t size,uint8_t *storage,StaticQueue_t *ctrl){assert(n==8&&size==512&&storage==pcm_storage&&ctrl);if(queue_fail)return NULL;mock_queue*q=(mock_queue*)ctrl;memset(q,0,sizeof(*q));q->size=size;q->data=storage;q->is_static=true;return q;}
 unsigned uxQueueMessagesWaiting(QueueHandle_t q){return q->n;}
-int xQueueSend(QueueHandle_t q,const void*p,int ticks){assert(!ticks);if(q->n==8)return 0;memcpy(q->data[q->tail++%8],p,q->size);q->n++;return 1;}
-int xQueueReceive(QueueHandle_t q,void*p,int ticks){assert(!ticks);if(!q->n)return 0;memcpy(p,q->data[q->head++%8],q->size);q->n--;return 1;}
-void vQueueDelete(QueueHandle_t q){free(q);}
+int xQueueSend(QueueHandle_t q,const void*p,int ticks){assert(!ticks);if(q->n==8)return 0;memcpy(q->data+(q->tail++%8)*q->size,p,q->size);q->n++;return 1;}
+int xQueueReceive(QueueHandle_t q,void*p,int ticks){assert(!ticks);if(!q->n)return 0;memcpy(p,q->data+(q->head++%8)*q->size,q->size);q->n--;return 1;}
+void vQueueDelete(QueueHandle_t q){assert(q->is_static&&!audio_task&&q->data==pcm_storage);}
 int xTaskCreate(void(*f)(void*),const char*n,unsigned st,void*a,int pri,TaskHandle_t*h){(void)n;(void)st;(void)a;(void)pri;if(task_fail)return 0;task_fn=f;*h=&task_state;task_state=eRunning;return 1;}
 int eTaskGetState(TaskHandle_t h){assert(h);return task_state;}
 void vTaskDelete(TaskHandle_t h){assert(h&&task_state==eSuspended);task_deleted++;}
@@ -129,7 +136,8 @@ assert(!doom_audio_silent_ready());
 assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);}
 read_fail=1;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);read_fail=0;
 for(int reg=0;reg<=0x37;reg++){if(reg==0||reg==1||reg==2||reg==6||reg==9||reg==0x0d||reg==0x12||reg==0x14||reg==0x31||reg==0x37){bad_reg=reg;assert(!doom_audio_begin());assert(!amp_on&&!tx_live&&!audio_task);}}bad_reg=-1;
-queue_fail=1;assert(!doom_audio_begin());queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
+storage_fail=1;assert(!doom_audio_begin());assert(!pcm_storage);storage_fail=0;
+queue_fail=1;assert(!doom_audio_begin());assert(!pcm_storage);queue_fail=0;task_fail=1;assert(!doom_audio_begin());task_fail=0;
 seq=0;fail_at=-1;unsigned checkpoints_before=checkpoint_logs;assert(doom_audio_begin());assert(checkpoint_logs==checkpoints_before+8);assert(amp_on&&doom_audio_demand()==6&&started_logs>0);
 unsigned writes=DM_GET(audio_writes);for(unsigned i=0;i<6;i++)assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));assert(!doom_audio_demand());assert(DM_GET(audio_writes)==writes);
 pcm[0]=0;assert(audio_step());assert(DM_GET(audio_nonzero)==DOOM_AUDIO_BLOCK);assert(doom_audio_demand()==1);
@@ -139,7 +147,7 @@ assert(doom_audio_write(pcm,DOOM_AUDIO_BLOCK));short_write=1;assert(!audio_step(
 assert(doom_audio_end()==0);assert(!tx_live&&!tx_on&&!codec_live&&!ctrl_live&&!amp_on&&!audio_task&&!audio_queue);
 assert(doom_audio_begin());
 /* Ack alone is not a join: timeout preserves live task, queue and handles. */
-audio_done=true;task_block=1;assert(doom_audio_end()!=0);assert(audio_task&&audio_queue&&tx_live&&tx_on);task_block=0;audio_done=false;assert(doom_audio_end()==0);
+audio_done=true;task_block=1;assert(doom_audio_end()!=0);assert(audio_task&&audio_queue&&tx_live&&tx_on&&pcm_storage);task_block=0;audio_done=false;assert(doom_audio_end()==0);
 assert(doom_audio_begin());assert(!doom_audio_silent_ready());fail_at=seq+3;assert(doom_audio_end()!=0);assert(tx_live&&!doom_audio_silent_ready());fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live);
 /* Every PA/codec/I2S/delete cleanup fault forbids silent admission until a verified retry. */
 for(int fail=0;fail<7;fail++){assert(doom_audio_begin());fail_at=seq+fail;assert(doom_audio_end()!=0);assert(!doom_audio_silent_ready());fail_at=-1;assert(doom_audio_end()==0);assert(!tx_live&&!codec_live&&!ctrl_live&&!audio_task&&!audio_queue);}
@@ -148,6 +156,7 @@ amp_off_fail=1;assert(!doom_audio_begin());assert(!doom_audio_silent_ready());am
 assert(doom_audio_silent_ready());
 #endif
 debug_active=false;unsigned samples_before=heap_samples,logs_before=checkpoint_logs;assert(doom_audio_begin());assert(doom_audio_end()==0);assert(heap_samples==samples_before&&checkpoint_logs==logs_before);
+assert(!pcm_storage&&storage_allocs==storage_frees);
 puts("PRODUCTION_AUDIO_BACKEND both board routes, copied queue/demand, silence starvation, fault/stop/join retention PASS (mock driver, not hardware)");return 0;}
 
 """
@@ -159,7 +168,8 @@ class Backend(unittest.TestCase):
   (OUT/'freertos').mkdir(exist_ok=True)
   (OUT/'freertos/FreeRTOS.h').write_text('#pragma once\n#define pdTRUE 1\n#define pdPASS 1\n#define pdMS_TO_TICKS(x) (x)\n')
   (OUT/'freertos/task.h').write_text('#pragma once\ntypedef void *TaskHandle_t;\nenum{eRunning,eSuspended};\nint xTaskCreate(void(*)(void*),const char*,unsigned,void*,int,TaskHandle_t*);\nint eTaskGetState(TaskHandle_t);\nvoid vTaskDelete(TaskHandle_t);\nvoid vTaskDelay(int);\nvoid vTaskSuspend(void*);\n')
-  (OUT/'freertos/queue.h').write_text('#pragma once\ntypedef struct mock_queue *QueueHandle_t;\nQueueHandle_t xQueueCreate(unsigned,size_t);\nunsigned uxQueueMessagesWaiting(QueueHandle_t);\nint xQueueSend(QueueHandle_t,const void*,int);\nint xQueueReceive(QueueHandle_t,void*,int);\nvoid vQueueDelete(QueueHandle_t);\n')
+  (OUT/'freertos/queue.h').write_text('#pragma once\ntypedef struct mock_queue *QueueHandle_t;\ntypedef union {max_align_t alignment;unsigned char bytes[256];} StaticQueue_t;\nQueueHandle_t xQueueCreateStatic(unsigned,size_t,uint8_t*,StaticQueue_t*);\nQueueHandle_t xQueueCreate(unsigned,size_t);\nunsigned uxQueueMessagesWaiting(QueueHandle_t);\nint xQueueSend(QueueHandle_t,const void*,int);\nint xQueueReceive(QueueHandle_t,void*,int);\nvoid vQueueDelete(QueueHandle_t);\n')
+  self.assertIn('static DRAM_ATTR StaticQueue_t audio_queue_control;', (COMP/'doom_audio.c').read_text())
   (OUT/'harness.c').write_text(HARNESS)
   (OUT/'esp_timer.h').write_text('#include <stdint.h>\nstatic inline int64_t esp_timer_get_time(void){static int64_t us;return us+=2000;}\n')
   for board in ['28','35']:

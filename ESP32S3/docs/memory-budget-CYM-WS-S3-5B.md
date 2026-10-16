@@ -36,7 +36,7 @@ Runtime display allocations (not all represented in linker BSS): two physical 10
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v3.0.6 |
+| Version | v3.0.7 |
 | Build date | 2026-10-16 |
 | .iram0.text | 129,719 B (126.7 KB) |
 | .dram0.data | 29,337 B (28.6 KB) |

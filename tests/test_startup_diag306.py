@@ -88,11 +88,12 @@ int main(void){
  def test_allocation_boundaries_and_init_entry(self):
   audio=(ROOT/'ESP32C5/components/cym_doom/doom_audio.c').read_text()
   b=body(audio,'doom_audio_begin')
-  for before,call,after in [('I2S_CHANNEL_BEFORE','i2s_new_channel(','I2S_CHANNEL_AFTER'),('I2S_STD_BEFORE','i2s_channel_init_std_mode(','I2S_STD_AFTER'),('PCM_QUEUE_BEFORE','xQueueCreate(','PCM_QUEUE_AFTER'),('AUDIO_TASK_BEFORE','xTaskCreate(','AUDIO_TASK_AFTER')]:
+  for before,call,after in [('I2S_CHANNEL_BEFORE','i2s_new_channel(','I2S_CHANNEL_AFTER'),('I2S_STD_BEFORE','i2s_channel_init_std_mode(','I2S_STD_AFTER'),('PCM_QUEUE_BEFORE','heap_caps_malloc(','PCM_QUEUE_AFTER'),('AUDIO_TASK_BEFORE','xTaskCreate(','AUDIO_TASK_AFTER')]:
    self.assertLess(b.index(before),b.index(call));self.assertLess(b.index(call),b.index(after))
    self.assertLess(b.index(after),b.index('goto fail',b.index(call)))
   self.assertIn('ch.dma_desc_num=4;ch.dma_frame_num=256;ch.auto_clear=true;',b)
-  self.assertIn('xQueueCreate(8,sizeof(audio_block))',b)
+  self.assertIn('xQueueCreateStatic(8,sizeof(audio_block),audio_queue_storage,&audio_queue_control)',b)
+  self.assertIn('MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT',b)
   self.assertIn('xTaskCreate(audio_worker,"cym_pcm",4096,NULL,3,&audio_task)',b)
   session=(ROOT/'ESP32C5/components/cym_doom/doom_session.c').read_text()
   b=body(session,'doom_session_start');self.assertLess(b.index('ENGINE_INIT_ENTRY'),b.index('state=raw_alloc'))

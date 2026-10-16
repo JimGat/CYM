@@ -174,7 +174,15 @@ size_t doom_owned_fread(void *p,size_t s,size_t n,FILE *f){
  doom_read_diag(&read_diag_count,s,n,result,read_error,read_eof,saved_errno);
  errno=saved_errno;return result;
 }
-int doom_owned_fseek(FILE *f,long off,int whence){check_stop();if(!io_lock(DM_IO_SEEK))doom_engine_fail("SD seek transport busy");int rc=fseek(f,off,whence);io_unlock();io_observed(DM_IO_SEEK,0,rc!=0);return rc;}
+int doom_owned_fseek(FILE *f,long off,int whence){
+ check_stop();if(!io_lock(DM_IO_SEEK))doom_engine_fail("SD seek transport busy");
+ int rc=fseek(f,off,whence);int saved_errno=errno;
+ /* A buffered seek can read storage and fail before the fread wrapper runs.
+  * Preserve its errno immediately; diagnostics never hold the transport lock. */
+ io_unlock();io_observed(DM_IO_SEEK,0,rc!=0);
+ doom_seek_diag(&read_diag_count,off,whence,rc,saved_errno);
+ errno=saved_errno;return rc;
+}
 long doom_owned_ftell(FILE *f){if(!io_lock(DM_IO_TELL))doom_engine_fail("SD tell transport busy");long result=ftell(f);io_unlock();io_observed(DM_IO_TELL,0,result<0);return result;}
 int doom_owned_forbidden(const char *p){(void)p;doom_engine_fail("Host shell/SD write disabled in prototype");}
 int doom_owned_rename(const char *p,const char *q){(void)q;return doom_owned_forbidden(p);}

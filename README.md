@@ -3446,3 +3446,14 @@ This is instrumentation, not a verified correction or new hardware qualification
 Allocation sizes, task stacks/priorities, audio settings and storage speed are unchanged.
 Stable remains v3.0.2.
 [Diagnostic operator checks](docs/testing/startup-memory-v3.0.6.md).
+
+
+## v3.0.7 Development: startup memory allocation
+
+Moves copied task-only payload storage into explicit PSRAM on Waveshare
+ESP32-C5-Touch-LCD-2.8 (WS-C5-28) and Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35).
+Internal control metadata and actual DMA buffers stay internal. Queue capacity,
+worker stack/priority, peripheral settings and storage speed are unchanged.
+Adds bounded failed-seek diagnostics. This is a hardware-test candidate, not
+physical acceptance. Stable remains v3.0.2.
+[Operator checks](docs/testing/startup-memory-v3.0.7.md).

@@ -13,6 +13,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
+#ifndef DOOM_STARTUP_DIAG_HOST
+#include "esp_heap_caps.h"
+#include "esp_attr.h"
+#endif
 #include <string.h>
 static i2s_chan_handle_t tx;
 static const audio_codec_ctrl_if_t *ctrl;
@@ -22,13 +26,18 @@ static bool enabled;
 static const float GAME_AUDIO_VOLUME_DB = 9.0f;
 #define QUEUE_TARGET 6u
 static QueueHandle_t audio_queue;
+/* Only task-context producer/consumer copies touch this payload; I2S copies
+ * from the worker's internal stack into driver-owned DMA buffers. Keep RTOS
+ * control/list metadata internal and never use this queue from an ISR. */
+static DRAM_ATTR StaticQueue_t audio_queue_control;
+static uint8_t *audio_queue_storage;
 static TaskHandle_t audio_task;
 static bool audio_stop,audio_done,audio_failed;
 /* Failed init alone is not permission: stopped ownership and PA OFF must be verified. */
 static bool silent_cleanup_ok;
 bool doom_audio_silent_ready(void){
 #if CONFIG_BOARD_WS_C5_28
- return silent_cleanup_ok&&!enabled&&!tx&&!ctrl&&!codec&&!audio_task&&!audio_queue;
+ return silent_cleanup_ok&&!enabled&&!tx&&!ctrl&&!codec&&!audio_task&&!audio_queue&&!audio_queue_storage;
 #else
  return false;
 #endif
@@ -85,6 +94,9 @@ int doom_audio_end(void){
   vTaskDelete(audio_task);audio_task=NULL;
  }
  if(audio_queue){vQueueDelete(audio_queue);audio_queue=NULL;}
+ /* Static queues do not own their supplied storage. Join above must finish
+  * before deleting queue metadata or reclaiming copied PCM payload. */
+ if(audio_queue_storage){heap_caps_free(audio_queue_storage);audio_queue_storage=NULL;}
 
  bool ok=cym_game_audio_amp(false);
  if(codec){
@@ -105,12 +117,12 @@ int doom_audio_end(void){
  if(codec){if(audio_codec_delete_codec_if(codec)!=ESP_OK)return -1;codec=NULL;}
  if(ctrl){if(audio_codec_delete_ctrl_if(ctrl)!=ESP_OK)return -1;ctrl=NULL;}
  ESP_LOGI("CYM_DOOM","AUDIO_STOPPED synchronous_owner DMA_released=%d",tx==NULL);
- silent_cleanup_ok=ok&&!enabled&&!tx&&!ctrl&&!codec&&!audio_task&&!audio_queue;
+ silent_cleanup_ok=ok&&!enabled&&!tx&&!ctrl&&!codec&&!audio_task&&!audio_queue&&!audio_queue_storage;
  return ok?0:-1;
 }
 bool doom_audio_begin(void){
  silent_cleanup_ok=false;
- if(tx||codec||ctrl||audio_task||audio_queue)return false;
+ if(tx||codec||ctrl||audio_task||audio_queue||audio_queue_storage)return false;
  audio_stop=audio_done=audio_failed=false;
  void *bus=cym_game_audio_bus();if(!bus||!cym_game_audio_amp(false))goto fail;
  i2s_chan_config_t ch=I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,I2S_ROLE_MASTER);
@@ -145,7 +157,9 @@ bool doom_audio_begin(void){
  if(!cym_game_audio_amp(true)){ESP_LOGE("CYM_DOOM","AUDIO_NOT_READY board=%s reason=amp_pin_readback",AUDIO_BOARD);goto fail;}
  if(cym_debug_enabled())ESP_LOGI("CYM_DOOM","I2S_DIAG board=%s TX_ONLY no_mclk rate=%d bits=%d slot_bits=%d slot_mask=%d mono=%d bclk=%d lrclk=%d dout=%d pa_supply=3.3 dac_supply=3.3 configured_clocks_not_wire_measurement",AUDIO_BOARD,RATE,(int)cfg.slot_cfg.data_bit_width,(int)cfg.slot_cfg.slot_bit_width,(int)cfg.slot_cfg.slot_mask,(int)cfg.slot_cfg.slot_mode,BCLK,LRCLK,DOUT);
  doom_startup_diag("PCM_QUEUE_BEFORE",0,NULL);
- audio_queue=xQueueCreate(8,sizeof(audio_block));
+ /* No internal fallback: preserve DMA-capable SRAM for SD/display/I2S. */
+ audio_queue_storage=heap_caps_malloc(8*sizeof(audio_block),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+ audio_queue=audio_queue_storage?xQueueCreateStatic(8,sizeof(audio_block),audio_queue_storage,&audio_queue_control):NULL;
  doom_startup_diag("PCM_QUEUE_AFTER",audio_queue?1:0,NULL);
  if(!audio_queue)goto fail;
  doom_startup_diag("AUDIO_TASK_BEFORE",0,NULL);

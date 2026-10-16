@@ -31,8 +31,17 @@ static inline void doom_read_diag(unsigned *count,size_t size,size_t requested,s
  ESP_LOGI("CYM_DOOM","WAD_READ_SHORT requested_items=%lu returned_items=%lu item_size=%lu requested_bytes=%lu returned_bytes=%lu ferror=%d feof=%d errno=%d",(unsigned long)requested,(unsigned long)returned,(unsigned long)size,(unsigned long)(size*requested),(unsigned long)(size*returned),error,eof,saved_errno);
  doom_startup_diag("WAD_READ_MEMORY",saved_errno,NULL);
 }
+static inline void doom_seek_diag(unsigned *count,long offset,int whence,int result,int saved_errno)
+{
+ if(!result||!cym_debug_enabled()||*count>=4)return;
+ ++*count;
+ ESP_LOGI("CYM_DOOM","WAD_SEEK_FAILED offset=%ld whence=%d result=%d errno=%d",offset,whence,result,saved_errno);
+ doom_startup_diag("WAD_SEEK_MEMORY",saved_errno,NULL);
+}
+
 #else
 /* Headless legacy engine builds have no hardware heap or task diagnostics. */
 static inline void doom_startup_diag(const char *phase,int result,void *audio){(void)phase;(void)result;(void)audio;}
 static inline void doom_read_diag(unsigned *count,size_t size,size_t requested,size_t returned,int error,int eof,int saved_errno){(void)count;(void)size;(void)requested;(void)returned;(void)error;(void)eof;(void)saved_errno;}
+static inline void doom_seek_diag(unsigned *count,long offset,int whence,int result,int saved_errno){(void)count;(void)offset;(void)whence;(void)result;(void)saved_errno;}
 #endif

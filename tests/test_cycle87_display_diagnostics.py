@@ -104,6 +104,7 @@ int main(void){pthread_t t;assert(!pthread_create(&t,NULL,writer,NULL));unsigned
 doom_metrics_t doom_metrics;
 #include <errno.h>
 static inline void doom_read_diag(unsigned *c,size_t s,size_t n,size_t r,int e,int f,int er){(void)c;(void)s;(void)n;(void)r;(void)e;(void)f;(void)er;}
+static inline void doom_seek_diag(unsigned *c,long o,int w,int r,int e){(void)c;(void)o;(void)w;(void)r;(void)e;}
 static uint32_t clock_us;static bool busy,held;static void *sd_spi_mutex=(void*)1;
 static unsigned file_n;static FILE *files[16];static char wad_path[]="fixture";
 static uint32_t metric_us(void){return clock_us;}
