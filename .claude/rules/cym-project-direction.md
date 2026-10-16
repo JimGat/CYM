@@ -22,11 +22,11 @@ Read .claude/rules/cym-canonical-workflow.md before firmware work. Use one write
 
 ## SD provisioning and Classic RGB capability contracts
 
-Development v3.0.5 makes automatic Validate & Provision available with or without
+Stable v3.0.7 includes the v3.0.5 automatic Validate & Provision implementation, available with or without
 PSRAM, with explicit consent. Registered total SPIRAM selects the worker stack
 class; a PSRAM-equipped board must not silently fall back to internal RAM on OOM.
 Resource/start failures show truthful manual guidance; no format starts until the
-worker queue and stack are reserved. Stable v3.0.2 retains its PSRAM-only gate.
+worker queue and stack are reserved. The earlier Stable v3.0.2 PSRAM-only gate is superseded.
 Preserve user files in normal validation and manual SD packs.
 
 Classic CYD and its HackerBox profile use a discrete active-low common-anode RGB

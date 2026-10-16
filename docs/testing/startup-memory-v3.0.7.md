@@ -1,4 +1,4 @@
-# v3.0.7 Development: startup memory allocation candidate
+# v3.0.7: startup memory allocation — Stable promotion
 
 ## Scope
 
@@ -35,6 +35,9 @@ padding. Do not erase NVS, format SD, replace validated files or change wiring.
    first and then WS28 using the same release and workload.
 8. Enter `debug off` afterward. Debug off performs no diagnostic heap sampling.
 
-Build and host-test results establish software verification only. Physical
-startup, audible output and stability remain unqualified until captured.
-Stable, live Wiki, bootloader, partitions and SD contents are not changed.
+Jim confirmed that the WS-C5-35 startup repair worked with audible sound on
+hardware. Repeated exit/relaunch, extended soak, post-fix DMA-margin capture and
+the matching WS-C5-28 workflow remain separately unqualified. Host/build checks
+do not supply those measurements. Owner-approved promotion refreshes the existing
+v3.0.0 release and Stable to these exact v3.0.7 packages; bootloader, partition
+layout and SD contents are not changed by this documentation/promotion step.
