@@ -1,0 +1,8 @@
+set(qr_sources)
+if(CONFIG_BOARD_WS_C5_35)
+    set(qr_sources "cym_qr.c" "qr_record.c" "third_party/quirc/quirc.c" "third_party/quirc/identify.c" "third_party/quirc/decode.c" "third_party/quirc/version_db.c")
+endif()
+idf_component_register(SRCS ${qr_sources} INCLUDE_DIRS "include" PRIV_INCLUDE_DIRS "third_party/quirc" REQUIRES heap)
+if(CONFIG_BOARD_WS_C5_35)
+    set_source_files_properties("third_party/quirc/quirc.c" PROPERTIES COMPILE_OPTIONS "-include;${CMAKE_CURRENT_LIST_DIR}/include/qr_alloc.h")
+endif()

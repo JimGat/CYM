@@ -3215,6 +3215,11 @@ static void show_cat_attack(void);
 static void show_cat_defend(void);
 static void show_cat_recon(void);
 static void show_cat_tools(void);
+#if CONFIG_BOARD_WS_C5_35 && BOARD_HAS_QR_CAMERA
+#include "qr_decoder_ui.h"
+#include "qr_record.h"
+static void show_qr_decoder(void);
+#endif
 static void category_tile_event_cb(lv_event_t *e);
 static void show_home_layout_popup(void);   // Settings > Home Layout chooser
 static void home_layout_show_menu_async(void *arg);
@@ -17554,6 +17559,9 @@ static const nav_show_entry_t NAV_SHOW_TABLE[] = {
     { "Defend",               show_cat_defend              },
     { "Recon & Scan",         show_cat_recon               },
     { "Tools & System",       show_cat_tools               },
+#if CONFIG_BOARD_WS_C5_35
+    { "QR Decoder",           show_qr_decoder              },
+#endif
     // Detectors submenu is a resolvable parent so ‹ Back from Pwn/BLE-Spam Detect
     // returns to it (not straight Home). Title distinct from the "Defend" category.
     { "Detect & Defend",      show_detect_defend_screen    },
@@ -18220,6 +18228,9 @@ static void main_tile_event_cb(lv_event_t *e)
         }
     }
 
+#if CONFIG_BOARD_WS_C5_35
+    if (strcmp(tile_name, "QR Decoder") == 0) { show_qr_decoder(); return; }
+#endif
     if (strcmp(tile_name, "WiFi Menu") == 0) {
         show_wifi_menu_screen();
     } else if (strcmp(tile_name, "Clock Classic") == 0) {
@@ -18543,6 +18554,12 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles_container, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Classic");
+#if CONFIG_BOARD_WS_C5_35
+    create_tile(tiles_container, LV_SYMBOL_IMAGE, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
+    /* Additional WS35 tool must remain reachable in both orientations. */
+    lv_obj_add_flag(tiles_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(tiles_container, LV_SCROLLBAR_MODE_AUTO);
+#endif
     // Go Dark moved from a home tile to the top-bar power button (title_bar, far-right).
     create_tile(tiles_container, MY_SYMBOL_SITEMAP,     "IOT/OT",       lv_color_hex(0x00695C), main_tile_event_cb, "IOT/OT");
     // NFC/RFID Hub — always visible; works with RF-HAT PN532 (DIP 3) or standalone breakout on CN1
@@ -29816,6 +29833,7 @@ typedef struct {
 static const sd_provision_item_t SD_ITEMS[] = {
     /* ── Directories ─────────────────────────────────────────────────────── */
     { SD_ITEM_DIR,  "/sdcard/lab",                           NULL },
+    { SD_ITEM_DIR,  "/sdcard/lab/QR",                        NULL },  /* Individual inert QR records */
     { SD_ITEM_DIR,  "/sdcard/lab/handshakes",                NULL },
     { SD_ITEM_DIR,  "/sdcard/lab/wardrives",                 NULL },  /* main.c wardrive task */
     { SD_ITEM_DIR,  "/sdcard/lab/pcaps",                     NULL },  /* MITM pcap logger */
@@ -45643,6 +45661,25 @@ static void show_cat_recon(void)
 #endif
 }
 
+#if CONFIG_BOARD_WS_C5_35
+static int qr_save_record(const uint8_t *payload, size_t length, char *name, size_t cap)
+{
+    if (!wifi_wardrive_is_sd_mounted()) return ENODEV;
+    if (!sd_spi_mutex || xSemaphoreTake(sd_spi_mutex, pdMS_TO_TICKS(500)) != pdTRUE) return EBUSY;
+    int e = cym_qr_record("/sdcard", payload, length, FW_VERSION,
+                          (int64_t)time(NULL), (uint64_t)(esp_timer_get_time()/1000), name, cap);
+    xSemaphoreGive(sd_spi_mutex);
+    return e;
+}
+static void show_qr_decoder(void)
+{
+    create_function_page_base("QR Decoder");
+    g_screen_stop_fn = qr_decoder_ui_stop;
+    g_screen_back_fn = g_home_layout_4cat ? show_cat_tools : show_main_tiles;
+    qr_decoder_ui_open(function_page, ws_c5_35_i2c_bus(), qr_save_record);
+}
+#endif
+
 static void show_cat_tools(void)
 {
     create_function_page_base("Tools & System");
@@ -45653,6 +45690,9 @@ static void show_cat_tools(void)
         create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Modern");
+#if CONFIG_BOARD_WS_C5_35
+    create_tile(tiles, LV_SYMBOL_IMAGE, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
+#endif
 }
 
 static void category_tile_event_cb(lv_event_t *e)

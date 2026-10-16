@@ -113,3 +113,10 @@
 #define BOARD_NAME           "WS-C5-35"
 #define BOARD_DISPLAY_DRIVER "ST7796"
 #define BOARD_TOUCH_DRIVER   "FT6336"
+
+/* BF3901 image camera, independent of SPI2 and GPS RX28. Runtime probe required. */
+#define BOARD_HAS_QR_CAMERA 1
+#define BOARD_CAMERA_CS_GPIO 12
+#define BOARD_CAMERA_SCLK_GPIO 11
+#define BOARD_CAMERA_D0_GPIO 0
+#define BOARD_CAMERA_D1_GPIO 1

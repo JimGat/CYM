@@ -9,3 +9,13 @@ if(CONFIG_BOARD_WS_C5_28 OR CONFIG_BOARD_WS_C5_35)
     target_link_libraries(${COMPONENT_LIB} PRIVATE ${doom_lib})
     target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../components/cym_doom/include")
 endif()
+
+# QR implementation and camera dependencies are WS35-only, not C5/PSRAM-wide.
+if(CONFIG_BOARD_WS_C5_35)
+    target_sources(${COMPONENT_LIB} PRIVATE "qr_decoder_ui.c")
+    foreach(qr_component cym_camera cym_qr)
+        idf_component_get_property(qr_lib ${qr_component} COMPONENT_LIB)
+        target_link_libraries(${COMPONENT_LIB} PRIVATE ${qr_lib})
+        target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../components/${qr_component}/include")
+    endforeach()
+endif()

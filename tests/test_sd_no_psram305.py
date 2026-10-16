@@ -136,7 +136,7 @@ int main(void){
  def test_same_shared_handler_and_additive_items(self):
   s=MAIN.read_text();items=s[s.index("static const sd_provision_item_t SD_ITEMS"):s.index("#define SD_ITEMS_COUNT")]
   import re
-  self.assertEqual(len(re.findall(r"\{ SD_ITEM_(?:DIR|FILE),",items)),61)
+  self.assertEqual(len(re.findall(r"\{ SD_ITEM_(?:DIR|FILE),",items)),62)
   self.assertGreaterEqual(s.count("show_sd_card_screen();"),2)
   b=body(s,"sd_prov_do_item");self.assertIn("fwrite",b);self.assertIn("fclose",b)
   self.assertIn("EIO",b);self.assertIn("sd_prov_failed = true",b)
