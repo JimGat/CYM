@@ -494,9 +494,12 @@ class NTPClockBehaviorContract(unittest.TestCase):
         self.assertIn("s_holdover_base_uncertainty_us", src)
         self.assertIn("s_holdover_base_age_ms", src)
 
-    def test_ntp_stop_has_bounded_forced_cleanup(self):
+    def test_ntp_stop_retains_live_owner_until_suspended(self):
         src = _read_if_exists(NTP_SRC)
-        self.assertIn("vTaskDelete(s_task)", src)
+        self.assertNotIn("vTaskDelete(s_task)", src)
+        self.assertIn("eTaskGetState(s_task) != eSuspended", src)
+        self.assertIn("vTaskDeleteWithCaps(s_task)", src)
+        self.assertIn("ESP_ERR_TIMEOUT", src)
         self.assertIn("portENTER_CRITICAL", src)
 
     def test_ntp_launch_always_prompts_for_network_mode(self):
@@ -552,7 +555,7 @@ class NTPClockBehaviorContract(unittest.TestCase):
 
     def test_all_release_soc_versions_match_cycle(self):
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v3.0.13")', (ROOT / rel).read_text(), rel)
+            self.assertIn('set(PROJECT_VER "v3.0.14")', (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

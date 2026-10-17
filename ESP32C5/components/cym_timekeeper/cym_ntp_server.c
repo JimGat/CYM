@@ -12,6 +12,12 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include <string.h>
+#include <stdatomic.h>
+#include "esp_heap_caps.h"
+#include "freertos/idf_additions.h"
+
+// Application debug gate; no UI/flash operations on this worker.
+extern bool cym_debug_enabled(void);
 
 static const char *TAG = "ntp_server";
 
@@ -151,7 +157,58 @@ static uint32_t uncertainty_to_dispersion(uint32_t uncertainty_us)
 
 // ── Server task ─────────────────────────────────────────────────────────────
 
-static volatile bool s_running = false;
+// Admission protects the owner handle/fd across start and bounded join. A timed
+// out join retains both; start cannot reuse a live worker's descriptor.
+static atomic_bool s_running = false;
+static bool s_lifecycle_busy;
+static portMUX_TYPE s_lifecycle_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool ntp_owner_enter(void)
+{
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    bool acquired = !s_lifecycle_busy;
+    if (acquired) s_lifecycle_busy = true;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return acquired;
+}
+static esp_err_t ntp_owner_leave(esp_err_t rc)
+{
+    portENTER_CRITICAL(&s_lifecycle_mux);
+    s_lifecycle_busy = false;
+    portEXIT_CRITICAL(&s_lifecycle_mux);
+    return rc;
+}
+
+// Keep the 4096-byte application budget plus the GCC TLS area reserved by IDF.
+static size_t ntp_stack_tls_bytes(void)
+{
+#ifdef CYM_NTP_HOST_TEST
+    return 0;
+#else
+    extern char _thread_local_data_start, _thread_local_data_end;
+    extern char _thread_local_bss_start, _thread_local_bss_end;
+    size_t bytes = (uintptr_t)&_thread_local_data_end - (uintptr_t)&_thread_local_data_start
+                 + (uintptr_t)&_thread_local_bss_end - (uintptr_t)&_thread_local_bss_start;
+    return (bytes + 15U) & ~(size_t)15U;
+#endif
+}
+
+static void ntp_boundary(const char *boundary, esp_err_t rc, unsigned caps, size_t stack)
+{
+    if (rc == ESP_OK && !cym_debug_enabled()) return;
+    size_t free_bytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (rc != ESP_OK) {
+        ESP_LOGE(TAG, "%s rc=%s (%d) stack=%s/%u internal free=%u largest=%u",
+                 boundary, esp_err_to_name(rc), (int)rc,
+                 (caps & MALLOC_CAP_SPIRAM) ? "psram" : "internal", (unsigned)stack,
+                 (unsigned)free_bytes, (unsigned)largest);
+    } else {
+        ESP_LOGI(TAG, "%s rc=%s (%d) stack=%s/%u internal free=%u largest=%u",
+                 boundary, esp_err_to_name(rc), (int)rc,
+                 (caps & MALLOC_CAP_SPIRAM) ? "psram" : "internal", (unsigned)stack,
+                 (unsigned)free_bytes, (unsigned)largest);
+    }
+}
 static int s_sock = -1;
 static TaskHandle_t s_task = NULL;
 static cym_ntp_server_stats_t s_stats;
@@ -160,20 +217,20 @@ static portMUX_TYPE s_stats_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void ntp_server_task(void *arg)
 {
-    (void)arg;
+    const int sock = (int)(intptr_t)arg;  // worker owns fd until suspension
     uint8_t buf[NTP_PACKET_SIZE];
     struct sockaddr_in client_addr;
     socklen_t addr_len;
 
-    ESP_LOGI(TAG, "NTP server task started on UDP/123");
+    if (cym_debug_enabled()) ESP_LOGI(TAG, "NTP server task started on UDP/123");
 
     while (s_running) {
         addr_len = sizeof(client_addr);
-        int n = recvfrom(s_sock, buf, sizeof(buf), 0,
+        int n = recvfrom(sock, buf, sizeof(buf), 0,
                          (struct sockaddr *)&client_addr, &addr_len);
         if (!s_running) break;
         if (n < 0) {
-            if (errno == EINTR || errno == EBADF) break;
+            if (errno == EBADF) break;
             continue;
         }
 
@@ -287,7 +344,7 @@ static void ntp_server_task(void *arg)
         memcpy(&resp[40], &tx_s, 4);
         memcpy(&resp[44], &tx_f, 4);
 
-        int sent = sendto(s_sock, resp, NTP_PACKET_SIZE, 0,
+        int sent = sendto(sock, resp, NTP_PACKET_SIZE, 0,
                           (struct sockaddr *)&client_addr, addr_len);
         if (sent == NTP_PACKET_SIZE) {
             STATS_INC(valid_requests);
@@ -296,97 +353,104 @@ static void ntp_server_task(void *arg)
         }
     }
 
-    ESP_LOGI(TAG, "NTP server task exiting");
-    s_task = NULL;
-    vTaskDelete(NULL);
+    // Self-delete WithCaps creates a cleanup task and can abort under OOM.
+    // Close our fd and park; owner must observe eSuspended before reaping.
+    close(sock);
+    s_running = false;
+    for (;;) vTaskSuspend(NULL);
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
 esp_err_t cym_ntp_server_start(void)
 {
-    if (s_running) return ESP_OK;
-
-    // Reset rate-limit state
+    if (!ntp_owner_enter()) return ESP_ERR_INVALID_STATE;
+    if (s_task) return ntp_owner_leave(s_running ? ESP_OK : ESP_ERR_INVALID_STATE);
+    const bool psram = heap_caps_get_total_size(MALLOC_CAP_SPIRAM) > 0;
+    const unsigned caps = MALLOC_CAP_8BIT | (psram ? MALLOC_CAP_SPIRAM : MALLOC_CAP_INTERNAL);
+    const size_t stack = 4096 + ntp_stack_tls_bytes();
+#if !CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY
+    if (psram) {
+        ntp_boundary("stack policy unavailable", ESP_ERR_INVALID_STATE, caps, stack);
+        return ntp_owner_leave(ESP_ERR_INVALID_STATE);
+    }
+#endif
+    ntp_boundary("before socket", ESP_OK, caps, stack);
     memset(s_source_table, 0, sizeof(s_source_table));
     s_global_tokens = GLOBAL_RATE_BURST * 1000;
     s_global_last_us = 0;
     portENTER_CRITICAL(&s_stats_mux);
     memset(&s_stats, 0, sizeof(s_stats));
     portEXIT_CRITICAL(&s_stats_mux);
-
-    // Create UDP socket
     s_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    esp_err_t rc = ESP_FAIL;
     if (s_sock < 0) {
         ESP_LOGE(TAG, "socket() failed: errno %d", errno);
-        return ESP_FAIL;
+        goto fail;
     }
-
-    // Allow address reuse
+    // Timeouts allow cooperative cancellation, without fd-close/reuse races.
     int opt = 1;
-    setsockopt(s_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
+    struct timeval timeout = { .tv_sec = 0, .tv_usec = 100000 };
+    if (setsockopt(s_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0 ||
+        setsockopt(s_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0 ||
+        setsockopt(s_sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
+        ESP_LOGE(TAG, "socket options failed: errno %d", errno);
+        goto fail;
+    }
     struct sockaddr_in addr = {
-        .sin_family = AF_INET,
-        .sin_port = htons(NTP_PORT),
+        .sin_family = AF_INET, .sin_port = htons(NTP_PORT),
         .sin_addr.s_addr = htonl(INADDR_ANY),
     };
-
     if (bind(s_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         ESP_LOGE(TAG, "bind() UDP/123 failed: errno %d", errno);
-        close(s_sock);
-        s_sock = -1;
-        return ESP_FAIL;
+        goto fail;
     }
-
+    ntp_boundary("socket bound", ESP_OK, caps, stack);
     s_running = true;
-
-    BaseType_t ret = xTaskCreate(ntp_server_task, "ntp_srv", 4096, NULL, 5, &s_task);
-    if (ret != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create NTP server task");
+    // WithCaps keeps the TCB internal. No internal-stack fallback on PSRAM OOM.
+    if (xTaskCreateWithCaps(ntp_server_task, "ntp_srv", stack,
+                            (void *)(intptr_t)s_sock, 5, &s_task, caps) != pdPASS) {
         s_running = false;
-        close(s_sock);
-        s_sock = -1;
-        return ESP_ERR_NO_MEM;
+        rc = ESP_ERR_NO_MEM;
+        goto fail;
     }
+    ntp_boundary("task create", ESP_OK, caps, stack);
+    return ntp_owner_leave(ESP_OK);
+fail:
+    if (s_sock >= 0) close(s_sock);  // task creation never succeeded
+    s_sock = -1;
+    ntp_boundary("start", rc, caps, stack);
+    return ntp_owner_leave(rc);
+}
 
-    portENTER_CRITICAL(&s_stats_mux);
-    s_stats.running = true;
-    portEXIT_CRITICAL(&s_stats_mux);
-    ESP_LOGI(TAG, "NTP server started on UDP/123");
-    return ESP_OK;
+esp_err_t cym_ntp_server_stop_wait(uint32_t timeout_ms)
+{
+    if (!ntp_owner_enter()) return ESP_ERR_INVALID_STATE;
+    s_running = false;
+    // Actual suspension, not a flag just before suspension, is the join point.
+    uint32_t waited = 0;
+    while (s_task && eTaskGetState(s_task) != eSuspended) {
+        if (waited >= timeout_ms) {
+            if (timeout_ms) ESP_LOGW(TAG, "NTP stop timeout; worker/fd/stack retained");
+            return ntp_owner_leave(ESP_ERR_TIMEOUT);
+        }
+        uint32_t step = timeout_ms - waited;
+        if (step > 10) step = 10;
+        vTaskDelay(pdMS_TO_TICKS(step) ? pdMS_TO_TICKS(step) : 1);
+        waited += step;
+    }
+    if (s_task) {
+        vTaskDeleteWithCaps(s_task);  // non-self; worker already closed its fd
+        s_task = NULL;
+        s_sock = -1;
+        if (cym_debug_enabled()) ESP_LOGI(TAG, "NTP worker reaped");
+    }
+    return ntp_owner_leave(ESP_OK);
 }
 
 void cym_ntp_server_stop(void)
 {
-    if (!s_running && s_sock < 0) return;
-
-    s_running = false;
-
-    // Close socket to wake recvfrom
-    if (s_sock >= 0) {
-        shutdown(s_sock, SHUT_RDWR);
-        close(s_sock);
-        s_sock = -1;
-    }
-
-    // Wait bounded for task exit
-    if (s_task) {
-        for (int i = 0; i < 30 && s_task != NULL; i++) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (s_task) {
-            ESP_LOGW(TAG, "NTP task did not exit in time; forcing cleanup");
-            vTaskDelete(s_task);
-            s_task = NULL;
-        }
-    }
-
-    portENTER_CRITICAL(&s_stats_mux);
-    s_stats.running = false;
-    portEXIT_CRITICAL(&s_stats_mux);
-    ESP_LOGI(TAG, "NTP server stopped (served %lu requests)",
-             (unsigned long)s_stats.valid_requests);
+    (void)cym_ntp_server_stop_wait(3000);
 }
 
 void cym_ntp_server_get_stats(cym_ntp_server_stats_t *out)

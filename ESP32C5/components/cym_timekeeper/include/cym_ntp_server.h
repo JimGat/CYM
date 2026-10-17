@@ -19,9 +19,13 @@ typedef struct {
 // if already running. Returns bind/task errors on failure.
 esp_err_t cym_ntp_server_start(void);
 
-// Stop the NTP server. Closes the socket, waits bounded for task exit.
-// Safe to call when already stopped.
+// Request stop and join for up to three seconds. Timeout retains ownership.
+// Safe to retry; no live resource owner is forcibly deleted.
 void cym_ntp_server_stop(void);
+
+// Cooperative join; timeout_ms=0 polls without blocking the UI.
+// ESP_ERR_TIMEOUT retains fd/task/stack; start is rejected until reaped.
+esp_err_t cym_ntp_server_stop_wait(uint32_t timeout_ms);
 
 // Get a snapshot of server counters.
 void cym_ntp_server_get_stats(cym_ntp_server_stats_t *out);

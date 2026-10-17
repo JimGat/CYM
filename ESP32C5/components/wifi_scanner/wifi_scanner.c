@@ -6,6 +6,9 @@
 #include "esp_attr.h"
 #include <string.h>
 
+// Application diagnostic hook: debug-gated, no payload/address logging.
+extern void cym_debug_memory_snapshot(const char *where);
+
 static const char *TAG = "wifi_scanner";
 
 // Scanner state (local)
@@ -32,6 +35,7 @@ static void wifi_scanner_event_handler(void *arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
         g_scan_in_progress = false;
         g_scan_done = true;
+        cym_debug_memory_snapshot("wifi-scan-complete");
         ESP_LOGI(TAG, "Scan done");
         
         uint16_t number = MAX_SCAN_RESULTS;
@@ -87,6 +91,7 @@ esp_err_t wifi_scanner_start_scan(void) {
     g_shared_scan_count = 0;
     
     ESP_LOGI(TAG, "Starting WiFi scan...");
+    cym_debug_memory_snapshot("wifi-scan-start");
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
     if (ret == ESP_ERR_TIMEOUT) {
         // P5: esp_wifi_scan_start() can return ESP_ERR_TIMEOUT transiently, notably a dual-band
@@ -98,6 +103,7 @@ esp_err_t wifi_scanner_start_scan(void) {
         ret = esp_wifi_scan_start(&scan_cfg, false);
     }
 
+    cym_debug_memory_snapshot("wifi-scan-start-return");
     if (ret != ESP_OK) {
         g_scan_in_progress = false;
         ESP_LOGE(TAG, "Failed to start scan: %s", esp_err_to_name(ret));
@@ -129,6 +135,7 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
     g_shared_scan_count = 0;
 
     ESP_LOGI(TAG, "Starting passive WiFi scan (%lu ms/channel)...", (unsigned long)per_channel_ms);
+    cym_debug_memory_snapshot("wifi-scan-start");
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
     if (ret == ESP_ERR_TIMEOUT) {
         // P5: retry once on a transient coex ESP_ERR_TIMEOUT (IDF #16059). See the active-scan
@@ -138,6 +145,7 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
         ret = esp_wifi_scan_start(&scan_cfg, false);
     }
 
+    cym_debug_memory_snapshot("wifi-scan-start-return");
     if (ret != ESP_OK) {
         g_scan_in_progress = false;
         ESP_LOGE(TAG, "Failed to start passive scan: %s", esp_err_to_name(ret));

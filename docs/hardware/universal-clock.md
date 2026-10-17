@@ -146,3 +146,56 @@ Sources:
 [2] https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf — NXP PCF85063A data sheet
 [3] https://wsjt.sourceforge.io/wsjtx-doc/wsjtx-main.html — WSJT-X User Guide
 [4] https://docs.waveshare.com/ESP32-C5-Touch-LCD-2.8 — Waveshare ESP32-C5-Touch-LCD-2.8 documentation
+
+
+## NTP startup and safe exit
+
+NTP binds UDP/123 and creates its responder before optional mDNS is initialized.
+An NTP startup failure does not advertise `_ntp._udp`; an mDNS error leaves the
+working UDP server available at the displayed IP address. Registered PSRAM selects
+an explicit PSRAM responder stack with an internal TCB, with no internal-stack
+fallback on allocation failure. Boards without PSRAM use an internal stack. The
+4096-byte application stack budget is retained, plus the SDK GCC TLS reservation.
+The responder uses snapshots/socket APIs only; trust persistence stays on the
+internal-stack main task, not this PSRAM worker.
+
+Leaving Clock requests cancellation immediately and removes its UI timer/pointers.
+The internal-stack network worker unwinds SNTP, mDNS and NTP, then parks for
+owner-side reaping. A slow exit retains ownership instead of deleting a live task
+or recycling its socket. If reentry reports "Clock stopping", dismiss the message
+and retry after cleanup; do not interpret it as a successful new network session.
+Display Only does not start or stop Wi-Fi resources.
+
+For diagnostics, issue `Debug On`, enter Client NTP or AP NTP, then leave and
+reenter Clock. Expect exact NTP/task/mDNS startup return codes, selected responder
+stack class/bytes, and internal free/largest-block readings. With `Debug Off`,
+successful boundaries are quiet and failures still report. Hardware acceptance
+requires repeated rapid exit/reentry during startup, working UDP/123 replies,
+truthful optional mDNS status, and a stable heap after cleanup on each board;
+host tests and compilation alone do not establish physical acceptance.
+
+
+### Cooperative Clock → radio feature handoff (v3.0.14 review correction)
+Clock reserves its radio before the startup worker is scheduled. Only that worker
+may enter Wi-Fi initialization while reserved. Home/Back remain responsive: Home's
+radio reset and the latest selected radio tool are deferred until the worker has
+completed NTP/mDNS and radio cleanup, suspended, and been reaped. Offline navigation
+cancels a queued tool. No LVGL-mutex wait or forced live Clock task deletion is used.
+A canceled/failed startup that never claimed Wi-Fi cannot restore/disconnect it.
+
+With the existing Debug setting enabled, bounded `[HEAP]` snapshots report internal
+free/largest/minimum, DMA free/largest and PSRAM free/largest at paired display
+allocation, radio init/teardown and scan boundaries. BLE `[BLE_SCAN]` reports deltas
+of the shared advertisement callback counters between labeled boundaries; parse
+failures and duplicates overlap and are not dropped/accepted packet buckets.
+`cancel-return` is an observation boundary, not a claim trailing callbacks drained.
+These are diagnostics, not physical RF reception or fragmentation root-cause proof.
+No payload or address is added to these messages. Debug-off snapshots do no heap
+queries or logging. No RF parameters, UI result handling or display row depth changed.
+
+The two 15-row RGB565 display buffers consume 14,400 internal/DMA bytes on WS-C5-28
+(240 pixels wide) and 19,200 on WS-C5-35 (320 wide): WS35 dynamically allocates 4,800
+more bytes. This is separate from ELF static sections. Auto-generated archive input
+BSS summaries can misattribute PSRAM-bound engine input sections; use ELF output
+sections and linker reset ranges for placement. Runtime before/after snapshots
+remain hardware-pending; no stack/DMA shrink or broad PSRAM move is inferred.

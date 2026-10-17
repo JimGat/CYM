@@ -37,3 +37,7 @@ static int current_radio_mode=RADIO_MODE_BLE;
 static void bt_nimble_deinit(void){deinit_calls++;}
 static int ble_gap_disc_cancel(void){cancel_calls++;return 0;}
 static int bspam_start_scan(void){return scan_rc;}
+
+/* Radio owner admission is exercised by run_ntp_clock_owner_host.py.
+ * This detector-only harness starts with no Clock owner. */
+static bool clock_defer_radio_navigation(void (*fn)(void)) { (void)fn; return false; }

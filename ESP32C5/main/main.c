@@ -1,4 +1,5 @@
 #include "esp_attr.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <time.h>
 #include "ff.h"
@@ -308,7 +309,7 @@ static bool          s_ble_for_blueduck  = false; /* selects GATT table at bt_ni
 static uint8_t bt_found_devices[BT_MAX_DEVICES][6];
 static int bt_found_device_count = 0;
 
-// BLE callback diagnostics (reset each scan)
+// Monotonic BLE callback diagnostics; scan logs use boundary deltas, not resets
 static volatile uint32_t s_bt_cb_total     = 0; // total disc events received
 static volatile uint32_t s_bt_ext_events   = 0; // BLE_GAP_EVENT_EXT_DISC
 static volatile uint32_t s_bt_leg_events   = 0; // BLE_GAP_EVENT_DISC (legacy)
@@ -1047,15 +1048,16 @@ static lv_obj_t *s_ntp_mode_popup = NULL;
 static TaskHandle_t s_ntp_wifi_task = NULL;
 static volatile bool s_ntp_wifi_connected = false;
 static volatile bool s_ntp_wifi_failed = false;
-static volatile bool s_ntp_stopping = false;
+static atomic_bool s_ntp_stopping = false;
 static char s_ntp_ip_str[20] = "";
 static char s_ntp_ap_ssid[24] = "";
 #define NTP_AP_PASSWORD "cymtime28"
 #define NTP_PUBLIC_SYNC_TIMEOUT_MS 5000
 #define NTP_PUBLIC_REFRESH_INTERVAL_MS 60000
 #define NTP_RTC_REPAIR_THRESHOLD_SEC 5
-static bool s_ntp_mdns_ok = false;
-static bool s_ntp_udp_ok = false;
+static atomic_bool s_ntp_mdns_ok = false;
+static bool s_ntp_mdns_owned = false; // worker-owned; includes partially initialized mDNS
+static atomic_bool s_ntp_udp_ok = false;
 static bool s_ntp_pending_after_wifi = false;
 static void (*s_ntp_return_fn)(void) = NULL;
 static lv_obj_t *s_ntp_retry_btn = NULL;
@@ -1064,6 +1066,20 @@ static void show_clock_mode_popup(void);
 static void show_clock_or_mode_prompt(void (*return_fn)(void));
 static void show_clock_settings_screen(void);
 static void clock_stop(void);
+static void clock_network_cleanup_poll(void);
+static void log_heap_stats(const char *where);
+// Clock alone reserves the radio through cooperative cleanup. UI state below is
+// serialized by lvgl_mutex; the atomic admission token is also read by workers.
+static atomic_bool s_clock_radio_reserved = false;
+static _Atomic(TaskHandle_t) s_clock_radio_task = NULL;
+static atomic_bool s_clock_idle_reset_pending = false;
+static void (*s_clock_deferred_radio_fn)(void) = NULL;
+static bool clock_radio_admit(void);
+static bool clock_radio_reset_admit(void);
+static bool clock_defer_radio_navigation(void (*fn)(void));
+static void clock_radio_handoff_poll(void);
+static void clock_cancel_radio_navigation(void);
+
 
 // Wardrive band selection
 typedef enum { WD_BAND_BOTH = 0, WD_BAND_24G, WD_BAND_5G } wd_band_t;
@@ -3403,6 +3419,7 @@ static void run_screen_stop_fn(void) {
 static void (*g_screen_back_fn)(void) = NULL;
 
 static void reset_function_page_children(void) {
+    clock_cancel_radio_navigation(); // offline navigation supersedes a queued radio tool
     run_screen_stop_fn();   // stop the OUTGOING screen's operation before tearing down its UI
     g_screen_back_fn = NULL;
     scan_status_label = NULL;
@@ -7479,6 +7496,7 @@ static void _ot_espnow_capture_stop(void)
 
 static bool _ot_switch_to_wifi(void)
 {
+    if (!clock_radio_admit()) return false;
     if (!ensure_wifi_mode()) return false;
     /* Kick a passive scan if one isn't already running — covers the WIFI and
      * ESP-NOW slots, which share this same hook (see ot_radio.c comment) and
@@ -7510,6 +7528,7 @@ static bool _ot_switch_to_wifi(void)
 
 static bool _ot_switch_to_ble(void)
 {
+    if (!clock_radio_admit()) return false;
     /* Cleanly stop any in-flight WiFi scan BEFORE tearing WiFi down for BLE —
      * mirrors the wifi_scanner_abort() call _ot_switch_to_154() already makes
      * for the same reason. Without this, ensure_ble_mode() unconditionally
@@ -7552,6 +7571,7 @@ static bool _ot_switch_to_ble(void)
 #if CONFIG_IEEE802154_ENABLED
 static bool _ot_switch_to_154(void)
 {
+    if (!clock_radio_admit()) return false;
     /* Leaving WiFi/BLE for the radio-exclusive 802.15.4 PHY — stop whatever
      * passive listening we started on those slots and flush what was found
      * so it isn't silently lost when the radio switches out from under it. */
@@ -7665,9 +7685,11 @@ static void game_isolated_main(void)
     init_touch();init_backlight();
     lvgl_mutex=xSemaphoreCreateMutex();sd_spi_mutex=xSemaphoreCreateMutex();
     if(!lvgl_mutex || !sd_spi_mutex){ESP_LOGE("CYM_DOOM","ESSENTIAL_INIT_FAILED mutex; reset returns CYM");return;}
+    log_heap_stats("display-drawbuffers-before-isolated");
     const size_t bytes=LCD_H_RES*15*sizeof(lv_color_t);
     buf1=spi_bus_dma_memory_alloc(LCD_HOST,bytes,MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
     buf2=spi_bus_dma_memory_alloc(LCD_HOST,bytes,MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL);
+    log_heap_stats("display-drawbuffers-after-isolated");
     if(!buf1 || !buf2){ESP_LOGE("CYM_DOOM","ESSENTIAL_INIT_FAILED display DMA; reset returns CYM");return;}
     lv_disp_draw_buf_init(&draw_buf,buf1,buf2,LCD_H_RES*15);
     static lv_disp_drv_t game_disp;lv_disp_drv_init(&game_disp);
@@ -7960,6 +7982,7 @@ void app_main(void)
     ESP_LOGI(TAG, "Screenshot worker not started (no PSRAM on this board)");
 #endif
 
+log_heap_stats("display-drawbuffers-before");
 #if defined(CONFIG_BOARD_WS_S3_5B)
     // Full logical frames in PSRAM, never oversized internal SPI DMA buffers.
     const size_t buf_size = LCD_H_RES * LCD_V_RES * sizeof(lv_color_t);
@@ -7977,6 +8000,7 @@ void app_main(void)
     buf1 = spi_bus_dma_memory_alloc(LCD_HOST, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
     buf2 = spi_bus_dma_memory_alloc(LCD_HOST, buf_size, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
 #endif
+    log_heap_stats("display-drawbuffers-after");
     if (buf1 == NULL || buf2 == NULL) {
         ESP_LOGE(TAG, "Failed to allocate draw buffers! free SPIRAM=%zu internal=%zu",
                  heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
@@ -10215,6 +10239,10 @@ void app_main(void)
                     }
                 }
             }
+
+            // Clock ownership is serialized with navigation by lvgl_mutex.
+            // This only reaps a cooperatively parked internal-stack worker.
+            clock_radio_handoff_poll();
 
             // Monitor LVGL handler execution to detect hangs
             uint64_t lvgl_call_us = esp_timer_get_time();
@@ -14691,15 +14719,22 @@ static void handshake_stop(void)
 // Call at any key transition to track what is consuming internal SRAM.
 static void log_heap_stats(const char *where)
 {
-    if(!cym_debug_enabled())return;
-    size_t int_free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    size_t int_min   = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
-    size_t int_block = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-    size_t dma_free  = heap_caps_get_free_size(MALLOC_CAP_DMA);
-    ESP_LOGI(TAG, "[HEAP] %s — int free=%u min=%u block=%u  DMA=%u",
-             where, (unsigned)int_free, (unsigned)int_min,
-             (unsigned)int_block, (unsigned)dma_free);
+    if (!cym_debug_enabled()) return;
+    const unsigned internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    ESP_LOGI(TAG, "[HEAP] %s int_free=%u int_largest=%u int_min=%u dma_free=%u dma_largest=%u psram_free=%u psram_largest=%u",
+             where,
+             (unsigned)heap_caps_get_free_size(internal),
+             (unsigned)heap_caps_get_largest_free_block(internal),
+             (unsigned)heap_caps_get_minimum_free_size(internal),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
 }
+
+// Shared application diagnostic hook: same gating/capability classes in scanner.
+void cym_debug_memory_snapshot(const char *where) { log_heap_stats(where); }
+
 
 // Append one pending adaptive-mode transition to the per-session sidecar CSV
 // (WD_<mode>_<stamp>_mode.csv), then clear the event. Called from the wardrive
@@ -15819,8 +15854,11 @@ static void wd_gps_no_data_mbox_cb(lv_event_t *e)
     if (mbox) lv_msgbox_close_async(mbox);
 }
 
+static void wardrive_start_btn_cb(lv_event_t *e);
+static void clock_deferred_wardrive(void) { wardrive_start_btn_cb(NULL); }
 static void wardrive_start_btn_cb(lv_event_t *e)
 {
+    if (clock_defer_radio_navigation(clock_deferred_wardrive)) return;
     (void)e;
 
     // Only check GPS if we're not already in a GPS choice/wait state
@@ -17489,6 +17527,7 @@ static void nav_stack_enter(const char *name)
 // Title-bar "‹" handler: go up one level to the parent menu, or Home if none.
 static void nav_back_cb(lv_event_t *e)
 {
+    clock_cancel_radio_navigation();
     (void)e;
     // Resolve the go-up target, then DEFER it to the main loop (see
     // nav_deferred_show_fn) so any stop-hook runs off the LVGL event stack.
@@ -17750,6 +17789,7 @@ static void create_function_page_base(const char *name)
 
 static void radio_reset_to_idle(void)
 {
+    if (!clock_radio_reset_admit()) return;
     ESP_LOGI(TAG, "radio_reset_to_idle: stopping all attacks, resetting radio...");
     /* [FIX] Radio stop/restart glitches GPIO2 (touch MISO) → spurious corner touch.
      * Suppress touch for the whole reset + settle window so the glitch can't fire a button. */
@@ -17910,6 +17950,7 @@ static void radio_reset_to_idle(void)
 
 void show_menu(void)
 {
+    clock_cancel_radio_navigation();
     // Run the current screen's own teardown FIRST, while its radio mode is still
     // intact — symmetric with the top-bar ‹ Back path (nav_back_cb → parent →
     // reset_function_page_children → run_screen_stop_fn). radio_reset_to_idle()
@@ -18735,6 +18776,7 @@ static void wifi_sas_screen_stop(void)
 // WiFi Scan & Attack screen - scan and show network list with checkboxes
 static void show_wifi_scan_attack_screen(void)
 {
+    if (clock_defer_radio_navigation(show_wifi_scan_attack_screen)) return;
     // Ensure WiFi mode is active
     if (!ensure_wifi_mode()) {
         ESP_LOGE(TAG, "Failed to switch to WiFi mode for scan");
@@ -21392,6 +21434,7 @@ static void wpasec_stop(void)
  */
 static void show_wpa_sec_upload_page(void)
 {
+    if (clock_defer_radio_navigation(show_wpa_sec_upload_page)) return;
     create_function_page_base("WPA-SEC Upload");
     // Top ‹ Back → "Select Attack" tiles (parent "Connect to WiFi" isn't in
     // NAV_SHOW_TABLE, so without this override ‹ Back would resolve to Home).
@@ -23338,6 +23381,7 @@ static void ap_fileserv_stop(void)
 
 static void show_ap_file_server_screen(void)
 {
+    if (clock_defer_radio_navigation(show_ap_file_server_screen)) return;
     create_function_page_base("AP File Server");
     apply_menu_bg();
     g_screen_stop_fn = ap_fileserv_stop;  /* top ‹ Back / Home stops the AP + HTTP server */
@@ -23623,6 +23667,7 @@ static void s_wcs_set_btn_state(bool connected)
 
 static void s_wcs_connect_cb(lv_event_t *e)
 {
+    if (!clock_radio_admit()) return;
     (void)e;
 
     /* ── Disconnect path ── */
@@ -23674,6 +23719,7 @@ static void s_wcs_connect_cb(lv_event_t *e)
 
 static void show_wifi_client_server_screen(void)
 {
+    if (clock_defer_radio_navigation(show_wifi_client_server_screen)) return;
     log_heap_stats("fileserv-screen-open");
     const char *page_title = (s_wdup_pending_after_wifi || s_wpasec_pending_after_wifi)
                            ? "WiFi for Upload" : "WiFi File Server";
@@ -24029,6 +24075,7 @@ static int wdup_upload_one(const char *filepath, const char *filename,
 
 static bool wdup_ensure_wifi(void)
 {
+    if (!clock_radio_admit()) return false;
     wifi_ap_record_t ap;
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
@@ -25915,6 +25962,7 @@ static void wdup_ta_focus_cb(lv_event_t *e)
 
 static void show_wardrive_upload_screen(void)
 {
+    if (clock_defer_radio_navigation(show_wardrive_upload_screen)) return;
     create_function_page_base("Wardrive Upload");
 
     lv_obj_t *content = lv_obj_create(function_page);
@@ -28685,6 +28733,16 @@ static void clock_mode_cancel_cb(lv_event_t *e)
 
 static void show_clock_mode_popup(void)
 {
+    clock_network_cleanup_poll();
+    if (s_ntp_stopping) {
+        // Existing network owner is still unwinding. Do not reset its cancel
+        // flag or permit another mode to overwrite its resource ownership.
+        static const char *buttons[] = { "" };
+        lv_obj_t *box = lv_msgbox_create(NULL, "Clock stopping",
+            "Network cleanup is still pending. Please retry shortly.", buttons, true);
+        lv_obj_center(box);
+        return;
+    }
     clock_mode_popup_close();
     s_ntp_mode_popup = lv_obj_create(lv_layer_top());
     lv_obj_set_size(s_ntp_mode_popup, 280, 250);
@@ -28736,15 +28794,152 @@ static void show_clock_or_mode_prompt(void (*return_fn)(void))
 static void ntp_start_mdns_and_server(void)
 {
     s_ntp_mdns_ok = false;
+    s_ntp_udp_ok = false;
+    if (s_ntp_stopping) return;
+    esp_err_t rc = cym_ntp_server_start();
+    s_ntp_udp_ok = (rc == ESP_OK);
+    if (rc != ESP_OK || cym_debug_enabled()) {
+        ESP_LOGW(TAG, "Clock NTP start rc=%s (%d) internal free=%u largest=%u",
+                 esp_err_to_name(rc), (int)rc,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    // NTP is required; mDNS is optional and may need another 4096 internal bytes.
+    // Never advertise a server that failed. Cancellation is checked at every
+    // boundary; the worker retains any partial ownership until cleanup.
+    if (rc != ESP_OK || s_ntp_stopping) return;
 #if BOARD_TIME_HAS_MDNS
-    if (mdns_init() == ESP_OK) {
-        if (mdns_hostname_set("cym-ntp") == ESP_OK) {
-            mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
-            s_ntp_mdns_ok = true;
-        }
+    rc = mdns_init();
+    s_ntp_mdns_owned = (rc == ESP_OK);
+    if (rc != ESP_OK || cym_debug_enabled()) {
+        ESP_LOGW(TAG, "Clock mdns_init rc=%s (%d) internal free=%u largest=%u",
+                 esp_err_to_name(rc), (int)rc,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    }
+    if (rc != ESP_OK || s_ntp_stopping) return;
+    rc = mdns_hostname_set("cym-ntp");
+    if (rc != ESP_OK || cym_debug_enabled())
+        ESP_LOGW(TAG, "Clock mdns_hostname_set rc=%s (%d) internal free=%u largest=%u",
+                 esp_err_to_name(rc), (int)rc,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (rc != ESP_OK || s_ntp_stopping) return;
+    rc = mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
+    s_ntp_mdns_ok = (rc == ESP_OK && !s_ntp_stopping);
+    if (rc != ESP_OK || cym_debug_enabled())
+        ESP_LOGW(TAG, "Clock mdns_service_add rc=%s (%d) internal free=%u largest=%u",
+                 esp_err_to_name(rc), (int)rc,
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+#endif
+}
+
+// Only the internal-stack startup worker tears down network resources. Stop
+// hooks never wait under lvgl_mutex or delete this live owner. Even a stalled
+// NTP join retains the worker, fd and stack; the UI can leave/retry later.
+static void clock_network_release(clock_mode_t mode, bool wifi_claimed)
+{
+    if (!wifi_claimed) return; // early cancel/no credentials/init failure never owned Wi-Fi
+#if BOARD_TIME_HAS_MDNS
+    if (s_ntp_mdns_owned) {
+        mdns_free();
+        s_ntp_mdns_owned = false;
     }
 #endif
-    s_ntp_udp_ok = (cym_ntp_server_start() == ESP_OK);
+    s_ntp_mdns_ok = false;
+    int64_t began = esp_timer_get_time();
+    bool warned = false;
+    for (;;) {
+        esp_err_t rc = cym_ntp_server_stop_wait(0);
+        if (rc == ESP_OK) break;
+        if (!warned && esp_timer_get_time() - began >= 3000000) {
+            ESP_LOGW(TAG, "Clock cleanup rc=%s (%d); retaining network owner",
+                     esp_err_to_name(rc), (int)rc);
+            warned = true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    s_ntp_udp_ok = false;
+    if (mode == CLOCK_MODE_AP_NTP) {
+        esp_wifi_set_mode(WIFI_MODE_STA);
+    } else if (mode == CLOCK_MODE_CLIENT_NTP) {
+        esp_wifi_disconnect();
+    }
+#if CONFIG_BOARD_HAS_5GHZ
+    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+}
+
+// Called only by the UI owner with lvgl_mutex held. No waiting, networking or
+// stack frees here: regular internal-stack task deletion uses IDF idle cleanup.
+static void clock_network_cleanup_poll(void)
+{
+    if (s_ntp_wifi_task) {
+        if (eTaskGetState(s_ntp_wifi_task) != eSuspended) return;
+        vTaskDelete(s_ntp_wifi_task);
+        s_ntp_wifi_task = NULL;
+        s_clock_radio_task = NULL;
+        s_clock_radio_reserved = false; // no radio writes remain after worker suspension
+    }
+    if (!s_ntp_stopping) return;
+    s_ntp_wifi_connected = false;
+    s_ntp_wifi_failed = false;
+    s_ntp_ip_str[0] = '\0';
+    s_ntp_ap_ssid[0] = '\0';
+    s_ntp_public_state = NTP_PUBLIC_IDLE;
+    s_ntp_stopping = false; // only after the previous owner has truly parked
+}
+
+// Never waits or touches LVGL. Clock's own worker may enter Wi-Fi setup;
+// every other radio claimant must retry until the old owner has parked/reaped.
+static bool clock_radio_admit(void)
+{
+    if (!s_clock_radio_reserved && !s_clock_idle_reset_pending) return true;
+    TaskHandle_t owner = s_clock_radio_task;
+    return owner && owner == xTaskGetCurrentTaskHandle();
+}
+
+static bool clock_radio_reset_admit(void)
+{
+    if (clock_radio_admit()) return true;
+    s_clock_idle_reset_pending = true; // Home still renders; reset before next radio tool
+    return false;
+}
+
+// UI-mutex owner only. One latest radio destination, no retained lv_event/object.
+// Home/Back/offline page creation clears it; ordinary input is never locked.
+static bool clock_defer_radio_navigation(void (*fn)(void))
+{
+    if (s_ntp_clock_active) clock_stop();
+    clock_network_cleanup_poll();
+    if (s_clock_radio_reserved) {
+        s_clock_deferred_radio_fn = fn;
+        return true;
+    }
+    if (s_clock_idle_reset_pending) {
+        s_clock_idle_reset_pending = false;
+        radio_reset_to_idle();
+    }
+    return false;
+}
+
+static void clock_cancel_radio_navigation(void)
+{
+    s_clock_deferred_radio_fn = NULL;
+}
+
+static void clock_radio_handoff_poll(void)
+{
+    clock_network_cleanup_poll();
+    if (s_clock_radio_reserved) return;
+    if (s_clock_idle_reset_pending) {
+        s_clock_idle_reset_pending = false;
+        radio_reset_to_idle();
+    }
+    void (*fn)(void) = s_clock_deferred_radio_fn;
+    s_clock_deferred_radio_fn = NULL;
+    if (fn) fn(); // old radio cleanup and deferred Home reset are both finished
 }
 
 static void clock_try_public_sync(void)
@@ -28756,6 +28951,7 @@ static void clock_try_public_sync(void)
         return;
     }
 
+    if (s_ntp_stopping) return;
     s_ntp_public_state = NTP_PUBLIC_SYNCING;
     esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
     config.start = false;
@@ -28802,9 +28998,11 @@ static void clock_try_public_sync(void)
     s_ntp_public_state = NTP_PUBLIC_TIMEOUT;
 }
 
-static bool ntp_start_ap_mode(void)
+static bool ntp_start_ap_mode(bool *wifi_claimed)
 {
+    if (s_ntp_stopping) return false;
     if (!ensure_wifi_mode()) return false;
+    *wifi_claimed = true;
     if (!esp_netif_get_handle_from_ifkey("WIFI_AP_DEF") &&
         !esp_netif_create_default_wifi_ap()) return false;
 
@@ -28841,32 +29039,31 @@ static bool ntp_start_ap_mode(void)
 
 static void clock_wifi_task(void *arg)
 {
-    (void)arg;
+    const clock_mode_t mode = (clock_mode_t)(intptr_t)arg;
+    bool wifi_claimed = false;
+    s_clock_radio_task = xTaskGetCurrentTaskHandle();
     s_ntp_wifi_connected = false;
     s_ntp_wifi_failed = false;
     s_ntp_public_state = NTP_PUBLIC_IDLE;
+    if (s_ntp_stopping) goto done;
 
-    if (s_clock_mode == CLOCK_MODE_AP_NTP) {
-        if (!ntp_start_ap_mode()) s_ntp_wifi_failed = true;
-        s_ntp_wifi_task = NULL;
-        vTaskDelete(NULL);
-        return;
+    if (mode == CLOCK_MODE_AP_NTP) {
+        if (!ntp_start_ap_mode(&wifi_claimed)) s_ntp_wifi_failed = true;
+        else while (!s_ntp_stopping) vTaskDelay(pdMS_TO_TICKS(100));
+        goto done;
     }
 
     if (g_saved_wifi_ssid[0] == '\0') {
         s_ntp_wifi_failed = true;
-        s_ntp_wifi_task = NULL;
-        vTaskDelete(NULL);
-        return;
+        goto done;
     }
 
     if (!ensure_wifi_mode()) {
         s_ntp_wifi_failed = true;
-        s_ntp_wifi_task = NULL;
-        vTaskDelete(NULL);
-        return;
+        goto done;
     }
 
+    wifi_claimed = true;
     esp_wifi_set_mode(WIFI_MODE_STA);
 #if CONFIG_BOARD_HAS_5GHZ
     esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
@@ -28897,12 +29094,10 @@ static void clock_wifi_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    if (s_ntp_stopping) { s_ntp_wifi_task = NULL; vTaskDelete(NULL); return; }
+    if (s_ntp_stopping) goto done;
     if (!got_ip) {
         s_ntp_wifi_failed = true;
-        s_ntp_wifi_task = NULL;
-        vTaskDelete(NULL);
-        return;
+        goto done;
     }
 
     // Serve immediately; public synchronization is bounded recovery.
@@ -28914,7 +29109,7 @@ static void clock_wifi_task(void *arg)
     // Client NTP screen is active. Between polls the disciplined local clock
     // carries time; qualified GPS suppresses network polling until lock is lost.
     int refresh_waited_ms = 0;
-    while (!s_ntp_stopping && s_clock_mode == CLOCK_MODE_CLIENT_NTP) {
+    while (!s_ntp_stopping && mode == CLOCK_MODE_CLIENT_NTP) {
         vTaskDelay(pdMS_TO_TICKS(100));
         refresh_waited_ms += 100;
         if (refresh_waited_ms < NTP_PUBLIC_REFRESH_INTERVAL_MS) continue;
@@ -28928,8 +29123,11 @@ static void clock_wifi_task(void *arg)
         clock_try_public_sync();
     }
 
-    s_ntp_wifi_task = NULL;
-    vTaskDelete(NULL);
+done:
+    clock_network_release(mode, wifi_claimed);
+    // Do not publish a NULL handle before returning from the worker. UI reaps
+    // only an actually suspended task; no self-delete cleanup allocation.
+    for (;;) vTaskSuspend(NULL);
 }
 
 static bool maidenhead6(double lat, double lon, char out[7])
@@ -29166,6 +29364,7 @@ static void clock_exit_cb(lv_event_t *e)
 static void clock_retry_cb(lv_event_t *e)
 {
     (void)e;
+    clock_network_cleanup_poll();
     if (!s_ntp_clock_active || s_ntp_wifi_task) return;
     void (*return_fn)(void) = s_ntp_return_fn;
     clock_stop();
@@ -29180,38 +29379,9 @@ static void clock_stop(void)
     s_ntp_clock_active = false;
     s_ntp_stopping = true;
 
-    // Display Only never starts network resources.
-    if (s_clock_mode != CLOCK_MODE_DISPLAY_ONLY) {
-        cym_ntp_server_stop();
-#if BOARD_TIME_HAS_MDNS
-        if (s_ntp_mdns_ok) mdns_free();
-#endif
-    }
-
-    // Delete UI timer
+    // UI ownership ends immediately. The worker observes cancellation and
+    // unwinds SNTP/mDNS/NTP/Wi-Fi before parking; the main UI loop reaps it.
     if (s_ntp_ui_timer) { lv_timer_del(s_ntp_ui_timer); s_ntp_ui_timer = NULL; }
-
-    // Wait bounded for WiFi task
-    if (s_ntp_wifi_task) {
-        for (int i = 0; i < 20 && s_ntp_wifi_task; i++) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (s_ntp_wifi_task) {
-            ESP_LOGW(TAG, "Forcing stalled NTP WiFi task cleanup");
-            vTaskDelete(s_ntp_wifi_task);
-            s_ntp_wifi_task = NULL;
-        }
-    }
-
-    // Leave only an explicitly entered network mode cleanly.
-    if (s_clock_mode == CLOCK_MODE_AP_NTP) {
-        esp_wifi_set_mode(WIFI_MODE_STA);
-    } else if (s_clock_mode == CLOCK_MODE_CLIENT_NTP) {
-        esp_wifi_disconnect();
-    }
-#if CONFIG_BOARD_HAS_5GHZ
-    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-#endif
 
     // NULL all LVGL pointers
     s_ntp_time_lbl = NULL;
@@ -29232,18 +29402,15 @@ static void clock_stop(void)
 
     // Restore general brightness
     set_backlight_percent(s_ntp_saved_brightness);
-    s_ntp_stopping = false;
-    s_ntp_wifi_connected = false;
-    s_ntp_wifi_failed = false;
-    s_ntp_ip_str[0] = '\0';
-    s_ntp_mdns_ok = false;
-    s_ntp_udp_ok = false;
-    s_ntp_public_state = NTP_PUBLIC_IDLE;
-    s_ntp_ap_ssid[0] = '\0';
+    clock_network_cleanup_poll();
 }
 
 static void show_clock_screen(void)
 {
+    if (clock_defer_radio_navigation(show_clock_screen)) return;
+    if (s_ntp_clock_active) clock_stop();
+    clock_network_cleanup_poll();
+    if (s_ntp_stopping) { show_clock_mode_popup(); return; }
     create_function_page_base("Clock");
     g_screen_stop_fn = clock_stop;
     apply_menu_bg();
@@ -29409,7 +29576,17 @@ static void show_clock_screen(void)
     s_ntp_wifi_failed = false;
     s_ntp_ip_str[0] = '\0';
     if (s_clock_mode != CLOCK_MODE_DISPLAY_ONLY) {
-        xTaskCreate(clock_wifi_task, "clock_wifi", 4096, NULL, 5, &s_ntp_wifi_task);
+        s_clock_radio_task = NULL;
+        s_clock_radio_reserved = true; // reserve before worker can run on another core
+        BaseType_t rc = xTaskCreate(clock_wifi_task, "clock_wifi", 4096, (void *)(intptr_t)s_clock_mode, 5, &s_ntp_wifi_task);
+        if (rc != pdPASS) {
+            s_clock_radio_reserved = false;
+            s_ntp_wifi_failed = true;
+            ESP_LOGE(TAG, "Clock WiFi task create rc=%d internal free=%u largest=%u",
+                     (int)rc,
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        }
     }
 }
 
@@ -32027,6 +32204,7 @@ static void lookout_back_btn_cb(lv_event_t *e)
 
 static void show_bt_lookout_screen(void)
 {
+    if (clock_defer_radio_navigation(show_bt_lookout_screen)) return;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
 
@@ -33137,6 +33315,7 @@ static void ble_targ_screen_stop(void)
 // BLE Targeted Capture picker — 8-second BLE discovery, user picks target device.
 static void show_ble_targeted_pcap_screen(void)
 {
+    if (clock_defer_radio_navigation(show_ble_targeted_pcap_screen)) return;
     if (!ensure_ble_mode()) {
         ESP_LOGE(TAG, "BLE Targeted: BLE init failed");
         return;
@@ -33295,6 +33474,7 @@ static void ble_pcap_screen_stop(void)
 
 static void show_ble_pcap_screen(void)
 {
+    if (clock_defer_radio_navigation(show_ble_pcap_screen)) return;
     if (!ensure_ble_mode()) {
         ESP_LOGE(TAG, "BLE PCAP: BLE init failed");
         return;
@@ -34766,6 +34946,7 @@ static void show_bluetooth_screen(void)
 // BT Locator screen - scan BT devices, select one, then track RSSI every 10s
 static void show_bt_locator_screen(void)
 {
+    if (clock_defer_radio_navigation(show_bt_locator_screen)) return;
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
@@ -35456,6 +35637,7 @@ static void bt_sas_save_list_cb(lv_event_t *e)
 
 static void show_bt_scan_select_screen(void)
 {
+    if (clock_defer_radio_navigation(show_bt_scan_select_screen)) return;
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
@@ -36249,6 +36431,7 @@ static void bto_refresh_cb(lv_timer_t *t)
 
 static void show_bt_observer_screen(void)
 {
+    if (clock_defer_radio_navigation(show_bt_observer_screen)) return;
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
@@ -36464,6 +36647,7 @@ static void bt_observer_task(void *pvParameters)
 // Direct-track BT Locator: skip scan, jump straight to tracking the SAS-selected device
 static void show_bt_locator_direct_track(void)
 {
+    if (clock_defer_radio_navigation(show_bt_locator_direct_track)) return;
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
@@ -38193,6 +38377,7 @@ static void gw_update_screen_ui(void)
 
 static void show_gatt_walker_screen(void)
 {
+    if (clock_defer_radio_navigation(show_gatt_walker_screen)) return;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
 
@@ -41276,9 +41461,66 @@ static void deauther_proceed(void)
     deauth_paused = false;
 }
 
+static bool clock_attack_route_uses_radio(const char *name)
+{
+    static const char *const routes[] = {
+        "Scan",
+        "Deauther",
+        "Evil Twin",
+        "Blackout",
+        "Snifferdog",
+        "Sniffer",
+        "SAE Overflow",
+        "Handshakes",
+        "Start Wardrive",
+        "Karma",
+        "Portal",
+        "BLE Scan",
+        "AirTag scan",
+        "BT Scan & Select",
+        "BT Observer",
+        "BT Locator",
+        "BT Locator Direct",
+        "GATT Walker",
+        "WhisperPair",
+        "BLE MITM",
+        "Dee Dee Detector",
+        "BLE PCAP",
+        "BLE Targeted",
+        "BLE Spoof SAS",
+        "BLE Disc SAS",
+        "BLE Spam",
+        "BLE Blaster",
+        "BLE Spoof General",
+        "BLE Spoof",
+        "BLE Disconnect",
+        "HoneyPair",
+        "BlueDuck",
+    };
+    if (!name) return false;
+    for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i)
+        if (strcmp(name, routes[i]) == 0) return true;
+    return false; // menus, saved data and unknown/stub pages remain offline-usable
+}
+
+static void attack_dispatch(const char *attack_name);
+static char s_clock_attack_route[32];
+static void clock_deferred_attack(void) { attack_dispatch(s_clock_attack_route); }
 void attack_event_cb(lv_event_t *e)
 {
-    const char *attack_name = (const char *)lv_event_get_user_data(e);
+    const char *name = (const char *)lv_event_get_user_data(e);
+    if (!name) return;
+    if (clock_attack_route_uses_radio(name)) {
+        if (strlen(name) >= sizeof(s_clock_attack_route)) return;
+        if (clock_defer_radio_navigation(clock_deferred_attack)) {
+            strlcpy(s_clock_attack_route, name, sizeof(s_clock_attack_route));
+            return;
+        }
+    }
+    attack_dispatch(name);
+}
+static void attack_dispatch(const char *attack_name)
+{
     if (!attack_name) return;
     ESP_LOGI(TAG, "[UI] %s", attack_name);
 
@@ -43437,6 +43679,7 @@ static void evil_twin_start_btn_cb(lv_event_t *e)
  */
 static bool ensure_wifi_mode(void)
 {
+    if (!clock_radio_admit()) return false;
     // A sync failure does not relinquish controller/host ownership.
     if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return false;
     switch (current_radio_mode) {
@@ -43470,7 +43713,9 @@ static bool ensure_wifi_mode(void)
             }
             // Full init — either first boot or after esp_wifi_deinit() on BLE switch.
             ESP_LOGI(TAG, "Initializing WiFi...");
+            log_heap_stats("wifi-init-before");
             esp_err_t ret = wifi_cli_init();
+            log_heap_stats("wifi-init-after");
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "WiFi init failed: %d", ret);
                 return false;
@@ -43525,6 +43770,7 @@ static bool ensure_wifi_mode(void)
  */
 static bool ensure_ble_mode(void)
 {
+    if (!clock_radio_admit()) return false;
     switch (current_radio_mode) {
         case RADIO_MODE_BLE:
             // Radio mode alone does not establish synchronization.
@@ -43537,7 +43783,9 @@ static bool ensure_ble_mode(void)
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
             if(cym_debug_enabled())heap_caps_print_heap_info(MALLOC_CAP_DMA);
             {
+            log_heap_stats("ble-init-before");
             esp_err_t ret = bt_nimble_init();
+            log_heap_stats("ble-init-after");
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "BLE init failed: %d", ret);
                 return false;
@@ -43557,8 +43805,10 @@ static bool ensure_ble_mode(void)
             ESP_LOGI(TAG, "Switching from WiFi to BLE mode (full WiFi deinit)...");
             ESP_LOGI(TAG, "DMA free before WiFi deinit: %lu bytes",
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
+            log_heap_stats("wifi-teardown-before");
             esp_wifi_stop();
             esp_wifi_deinit();
+            log_heap_stats("wifi-teardown-after");
             wifi_initialized = false;
             ESP_LOGI(TAG, "DMA free after WiFi deinit: %lu bytes (freed WiFi DMA pool)",
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
@@ -43905,8 +44155,77 @@ static bool wifi_is_matter_oui(const uint8_t *bssid)
 /**
  * BLE GAP event callback for scanning — handles both legacy and BLE 5 Coded PHY
  */
+typedef struct {
+    uint32_t callbacks, legacy, extended, parse_fail, blacklisted, duplicate;
+} bt_diag_counts_t;
+static bt_diag_counts_t s_bt_diag_start;
+static uint32_t s_bt_diag_id;
+static bool s_bt_diag_active;
+static portMUX_TYPE s_bt_diag_mux = portMUX_INITIALIZER_UNLOCKED;
+
+static bt_diag_counts_t bt_diag_read(void)
+{
+    return (bt_diag_counts_t) {
+        .callbacks = __atomic_load_n(&s_bt_cb_total, __ATOMIC_RELAXED),
+        .legacy = __atomic_load_n(&s_bt_leg_events, __ATOMIC_RELAXED),
+        .extended = __atomic_load_n(&s_bt_ext_events, __ATOMIC_RELAXED),
+        .parse_fail = __atomic_load_n(&s_bt_parse_fail, __ATOMIC_RELAXED),
+        .blacklisted = __atomic_load_n(&s_bt_blacklisted, __ATOMIC_RELAXED),
+        .duplicate = __atomic_load_n(&s_bt_already_seen, __ATOMIC_RELAXED),
+    };
+}
+
+static bt_diag_counts_t bt_diag_delta(bt_diag_counts_t end, bt_diag_counts_t start)
+{
+    return (bt_diag_counts_t) {
+        .callbacks=end.callbacks-start.callbacks, .legacy=end.legacy-start.legacy,
+        .extended=end.extended-start.extended, .parse_fail=end.parse_fail-start.parse_fail,
+        .blacklisted=end.blacklisted-start.blacklisted, .duplicate=end.duplicate-start.duplicate,
+    }; // unsigned wrap is intentional; parse failures/duplicates are not disjoint
+}
+
+static uint32_t bt_diag_begin(void)
+{
+    if (!cym_debug_enabled()) return 0;
+    uint32_t id = 0;
+    portENTER_CRITICAL(&s_bt_diag_mux);
+    if (!s_bt_diag_active) {
+        if (++s_bt_diag_id == 0) ++s_bt_diag_id;
+        id = s_bt_diag_id;
+        s_bt_diag_start = bt_diag_read();
+        s_bt_diag_active = true;
+    }
+    portEXIT_CRITICAL(&s_bt_diag_mux);
+    log_heap_stats("ble-scan-start");
+    return id;
+}
+
+static void bt_diag_end(const char *boundary, uint32_t id)
+{
+    bt_diag_counts_t start = {0};
+    bool captured = false;
+    portENTER_CRITICAL(&s_bt_diag_mux);
+    if (s_bt_diag_active && (!id || id == s_bt_diag_id)) {
+        start = s_bt_diag_start;
+        s_bt_diag_active = false;
+        captured = true;
+    }
+    portEXIT_CRITICAL(&s_bt_diag_mux);
+    if (!captured || !cym_debug_enabled()) return;
+    bt_diag_counts_t delta = bt_diag_delta(bt_diag_read(), start);
+    log_heap_stats("ble-scan-complete");
+    ESP_LOGI(TAG, "[BLE_SCAN] boundary=%s callbacks=%u legacy=%u extended=%u parse_fail=%u blacklisted=%u duplicate=%u (overlapping counters; boundary deltas, not RF proof)",
+             boundary, (unsigned)delta.callbacks, (unsigned)delta.legacy,
+             (unsigned)delta.extended, (unsigned)delta.parse_fail,
+             (unsigned)delta.blacklisted, (unsigned)delta.duplicate);
+}
+
 static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
 {
+    if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
+        bt_diag_end("gap-complete", 0);
+        return 0;
+    }
     // Extract common fields from either legacy or extended disc event
     const uint8_t *adv_data;
     uint8_t adv_data_len;
@@ -43926,7 +44245,7 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
         rssi            = d->rssi;
         phy             = d->prim_phy;
         is_scan_response = (d->props & BLE_HCI_ADV_SCAN_RSP_MASK) != 0;
-        s_bt_ext_events++;
+        __atomic_fetch_add(&s_bt_ext_events, 1, __ATOMIC_RELAXED);
     } else
 #endif
     if (event->type == BLE_GAP_EVENT_DISC) {
@@ -43938,15 +44257,15 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
         rssi            = d->rssi;
         phy             = BLE_HCI_LE_PHY_1M;
         is_scan_response = (d->event_type == BLE_HCI_ADV_RPT_EVTYPE_SCAN_RSP);
-        s_bt_leg_events++;
+        __atomic_fetch_add(&s_bt_leg_events, 1, __ATOMIC_RELAXED);
     } else {
         return 0;
     }
-    s_bt_cb_total++;
+    __atomic_fetch_add(&s_bt_cb_total, 1, __ATOMIC_RELAXED);
 
     // Blacklist check — silently drop blacklisted devices before any processing
     if (bt_blacklist_check(addr_val)) {
-        s_bt_blacklisted++;
+        __atomic_fetch_add(&s_bt_blacklisted, 1, __ATOMIC_RELAXED);
         return 0;
     }
 
@@ -43978,7 +44297,7 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
     struct ble_hs_adv_fields fields;
     memset(&fields, 0, sizeof(fields));
     if (ble_hs_adv_parse_fields(&fields, adv_data, adv_data_len) != 0) {
-        s_bt_parse_fail++;
+        __atomic_fetch_add(&s_bt_parse_fail, 1, __ATOMIC_RELAXED);
     }
 
     // Check if device already seen
@@ -43986,7 +44305,7 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
 
     // If already seen, only process scan responses to update names
     if (already_seen) {
-        s_bt_already_seen++;
+        __atomic_fetch_add(&s_bt_already_seen, 1, __ATOMIC_RELAXED);
         if (is_scan_response && fields.name != NULL && fields.name_len > 0) {
             int dev_idx = bt_find_device_index(addr_val);
             if (dev_idx >= 0 && bt_devices[dev_idx].name[0] == '\0') {
@@ -44088,6 +44407,7 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
  */
 static int bt_start_scan(void)
 {
+    uint32_t diag_id = bt_diag_begin();
 #if MYNEWT_VAL(BLE_EXT_ADV)
     struct ble_gap_ext_disc_params p1m = {
         .itvl    = 0x60,
@@ -44099,7 +44419,7 @@ static int bt_start_scan(void)
         .window  = 0x60,
         .passive = 0,
     };
-    return ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC,
+    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC,
                             0, 0, 0,
                             BLE_HCI_SCAN_FILT_NO_WL,
                             0,
@@ -44114,9 +44434,12 @@ static int bt_start_scan(void)
         .passive = 0,
         .filter_duplicates = 0,
     };
-    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &scan_params,
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &scan_params,
                         bt_gap_event_callback, NULL);
 #endif
+    log_heap_stats("ble-scan-start-return");
+    if (rc != 0 && diag_id) bt_diag_end("start-failed", diag_id);
+    return rc;
 }
 
 /**
@@ -44124,7 +44447,8 @@ static int bt_start_scan(void)
  */
 static void bt_stop_scan(void)
 {
-    ble_gap_disc_cancel();
+    int rc = ble_gap_disc_cancel();
+    if (rc == 0) bt_diag_end("cancel-return", 0);
 }
 
 /**
@@ -44137,10 +44461,11 @@ static void bt_stop_scan(void)
  */
 static int bt_start_scan_passive(void)
 {
+    uint32_t diag_id = bt_diag_begin();
 #if MYNEWT_VAL(BLE_EXT_ADV)
     struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
     struct ble_gap_ext_disc_params pcoded = { .itvl = 0x60, .window = 0x60, .passive = 1 };
-    return ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC,
+    int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC,
                             0, 0, 0,
                             BLE_HCI_SCAN_FILT_NO_WL,
                             0,
@@ -44155,9 +44480,12 @@ static int bt_start_scan_passive(void)
         .passive = 1,
         .filter_duplicates = 0,
     };
-    return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &scan_params,
+    int rc = ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &scan_params,
                         bt_gap_event_callback, NULL);
 #endif
+    log_heap_stats("ble-scan-start-return");
+    if (rc != 0 && diag_id) bt_diag_end("start-failed", diag_id);
+    return rc;
 }
 
 /**
@@ -44278,6 +44606,7 @@ static void apply_ble_power_settings(void)
  */
 static esp_err_t bt_nimble_init(void)
 {
+    if (!clock_radio_admit()) return ESP_ERR_INVALID_STATE;
     if (nimble_initialized && !nimble_stop_requested) {
         return ESP_OK;
     }
@@ -44347,7 +44676,9 @@ static esp_err_t bt_nimble_init(void)
  */
 static void bt_nimble_deinit(void)
 {
+    log_heap_stats("ble-teardown-before");
     if (!nimble_port_initialized) {
+        log_heap_stats("ble-teardown-after");
         return;
     }
     
@@ -44363,7 +44694,9 @@ static void bt_nimble_deinit(void)
     }
     
     // Async stop also covers initialized-but-never-synced hosts.
-    if (!bt_nimble_cleanup_bounded()) return;
+    bool cleaned = bt_nimble_cleanup_bounded();
+    log_heap_stats("ble-teardown-after");
+    if (!cleaned) return;
     vTaskDelay(pdMS_TO_TICKS(200));
     ESP_LOGI(TAG, "NimBLE stopped");
 }
@@ -44710,8 +45043,6 @@ static void bt_locator_update_list(void)
 static void bt_scan_task(void *pvParameters)
 {
     bt_reset_counters();
-    s_bt_cb_total = s_bt_ext_events = s_bt_leg_events = 0;
-    s_bt_parse_fail = s_bt_blacklisted = s_bt_already_seen = 0;
     ble_scan_finished = false;
 
     int bt_scan_iters = (int)g_bt_scan_duration_s * 10;
@@ -45137,6 +45468,7 @@ static void deauth_monitor_start_monitoring(void)
 // Show deauth monitor screen
 static void show_deauth_monitor_screen(void)
 {
+    if (clock_defer_radio_navigation(show_deauth_monitor_screen)) return;
     // Ensure WiFi mode is active
     if (!ensure_wifi_mode()) {
         ESP_LOGE(TAG, "Failed to switch to WiFi mode for deauth monitor");
@@ -46045,6 +46377,7 @@ static void pwnagotchi_detector_stop(void)
 
 static void show_pwnagotchi_detector_screen(void)
 {
+    if (clock_defer_radio_navigation(show_pwnagotchi_detector_screen)) return;
     if (!ensure_wifi_mode()) {
         ESP_LOGE(TAG, "Pwnagotchi detector: WiFi mode failed");
         return;
@@ -46528,6 +46861,7 @@ static void harvester_detector_stop(void)
 
 static void show_harvester_detector_screen(void)
 {
+    if (clock_defer_radio_navigation(show_harvester_detector_screen)) return;
     if (!ensure_wifi_mode()) {
         ESP_LOGE(TAG, "Harvester detector: WiFi mode failed");
         return;
@@ -47325,6 +47659,7 @@ static void hidden_camera_stop(void)
 
 static void show_hidden_camera_screen(void)
 {
+    if (clock_defer_radio_navigation(show_hidden_camera_screen)) return;
     if (!ensure_wifi_mode()) {
         ESP_LOGE(TAG, "Hidden-camera detector: WiFi mode failed");
         return;
@@ -47787,6 +48122,7 @@ static void blespam_detector_stop(void)
 
 static void show_blespam_detector_screen(void)
 {
+    if (clock_defer_radio_navigation(show_blespam_detector_screen)) return;
     s_bspam_active = false;
     create_function_page_base("BLE Spam Detect");
     g_screen_stop_fn = blespam_detector_stop;
@@ -48191,6 +48527,7 @@ static void flipper_detector_stop(void)
 
 static void show_flipper_detector_screen(void)
 {
+    if (clock_defer_radio_navigation(show_flipper_detector_screen)) return;
     create_function_page_base("Flipper Detect");
     g_screen_stop_fn = flipper_detector_stop;
     apply_menu_bg();
@@ -50887,6 +51224,7 @@ static void wana_screen_stop(void)
 }
 
 static void show_wifi_analyzer_screen(void) {
+    if (clock_defer_radio_navigation(show_wifi_analyzer_screen)) return;
     if (!ensure_wifi_mode()) return;
 
     create_function_page_base("Chanalizer");
@@ -51150,6 +51488,7 @@ static void wscope_screen_stop(void)
 }
 
 static void show_wscope_screen(void) {
+    if (clock_defer_radio_navigation(show_wscope_screen)) return;
     if (!ensure_wifi_mode()) return;
     wifi_scanner_abort();   // stop any in-progress scan
 
@@ -51657,6 +51996,7 @@ static void show_found_tags_screen(void)
  */
 static void show_tag_tracker_screen(int dev_idx)
 {
+    if (!clock_radio_admit()) return;
     if (dev_idx < 0 || dev_idx >= bt_device_count) return;
     bt_device_info_t *dev = &bt_devices[dev_idx];
 
@@ -51777,6 +52117,7 @@ static void show_tag_tracker_screen(int dev_idx)
 // Show AirTag scanner screen
 static void show_airtag_scan_screen(void)
 {
+    if (clock_defer_radio_navigation(show_airtag_scan_screen)) return;
     // Ensure BLE mode is active
     if (!ensure_ble_mode()) {
         ESP_LOGE(TAG, "Failed to switch to BLE mode for AirTag scanner");
@@ -52432,6 +52773,7 @@ static void wp_exploit_btn_cb(lv_event_t *e) { (void)e; wp_run_all(WP_MODE_EXPLO
 
 static void show_whisperpair_screen(void)
 {
+    if (clock_defer_radio_navigation(show_whisperpair_screen)) return;
     create_function_page_base("WhisperPair");
     g_screen_stop_fn = wp_stop;
     /* Landscape (240px): the portrait absolute layout drops the action buttons + log off
@@ -68531,6 +68873,7 @@ static void s_ots_kb_event_cb(lv_event_t *e)
 
 static void show_ot_survey_screen(void)
 {
+    if (clock_defer_radio_navigation(show_ot_survey_screen)) return;
     create_function_page_base("OT Air Survey");
     g_screen_stop_fn = ot_survey_screen_stop;
     apply_menu_bg();
@@ -69799,6 +70142,7 @@ static void s_zgwd_ui_timer_cb(lv_timer_t *t)
 // ── Passive / Active / Stop callbacks ────────────────────────────────────────
 static void s_zgwd_start(zgwd_ctx_t *ctx, bool active_mode)
 {
+    if (!clock_radio_admit()) return;
     if (ctx->scanning || ctx->task) return;
     ctx->scanning    = true;
     ctx->active_mode = active_mode;
@@ -69918,6 +70262,7 @@ static void zgwd_scout_stop(void)
 // ── Main Zigbee Scout screen ──────────────────────────────────────────────────
 static void show_zigbee_wardrive_screen(void)
 {
+    if (clock_defer_radio_navigation(show_zigbee_wardrive_screen)) return;
     if (!s_zgwd_rx_q)
         s_zgwd_rx_q = xQueueCreate(ZGWD_Q_DEPTH, sizeof(zgwd_frame_msg_t));
 
@@ -70043,6 +70388,7 @@ static void s_zgwd_disassoc_task_fn(void *arg)
 
 static void s_zgwd_disassoc_proceed_cb(lv_event_t *e)
 {
+    if (!clock_radio_admit()) return;
     lv_obj_t *popup = (lv_obj_t *)lv_event_get_user_data(e);
     if (popup && lv_obj_is_valid(popup)) lv_obj_del(popup);
 
@@ -70336,6 +70682,7 @@ static void zgwd_locator_stop(void)
 
 static void show_zgwd_locator(int pan_idx)
 {
+    if (!clock_radio_admit()) return;
     (void)pan_idx;
     zgwd_pan_entry_t *pe = &s_zgwd_sel_pan;
 
@@ -70472,6 +70819,7 @@ static void zgwd_flood_stop(void)
 
 static void show_zgwd_flood(int pan_idx)
 {
+    if (!clock_radio_admit()) return;
     (void)pan_idx;
     zgwd_pan_entry_t *pe = &s_zgwd_sel_pan;
 
@@ -71461,6 +71809,7 @@ static void obs_device_locate_stop(void)
 
 static void show_obs_device_locate_screen(void)
 {
+    if (clock_defer_radio_navigation(show_obs_device_locate_screen)) return;
     create_function_page_base("Device Locate");
     g_screen_stop_fn = obs_device_locate_stop;
     g_screen_back_fn = show_obs_device_detail_screen;
