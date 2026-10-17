@@ -1,0 +1,17 @@
+{
+  "name": "CYM WS-C5-35 popup test",
+  "version": "v3.0.16-zx4",
+  "erase_all": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C5",
+      "parts": [
+        {
+          "path": "CYM-WS-C5-35-v3.0.16-zx4-app.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ],
+  "sha256": "dd81f846ac56c0dc94e9ff6c1c766d50ce0ceca30da7069f691bb1918e8300d1"
+}
