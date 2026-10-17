@@ -32,7 +32,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 
 static const char *TAG = "ot_radio";
@@ -79,16 +79,17 @@ const uint8_t OT_PROFILE_WEIGHTS[OT_PROFILE_COUNT][OT_SLOT_COUNT] = {
 
 /* ── Survey lock flag (owned here, read from main.c via extern) ──────────── */
 
-volatile bool g_ot_survey_active = false;
+_Atomic bool g_ot_survey_active = false;
 
 /* ── Internal scheduler state ────────────────────────────────────────────── */
 
 static ot_radio_hooks_t   s_hooks       = {0};
-static ot_sched_state_t   s_state       = OT_SCHED_IDLE;
-static ot_radio_slot_t    s_cur_slot    = OT_SLOT_WIFI;
+static _Atomic ot_sched_state_t s_state       = OT_SCHED_IDLE;
+static _Atomic ot_radio_slot_t s_cur_slot    = OT_SLOT_WIFI;
 static ot_survey_profile_t s_profile   = OT_PROFILE_BALANCED;
 static TaskHandle_t        s_task       = NULL;
-static SemaphoreHandle_t   s_stop_sem   = NULL; /* signalled when task exits */
+static StackType_t *s_stack;
+static StaticTask_t *s_tcb;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -198,19 +199,19 @@ static void scheduler_task(void *arg)
     if (s_hooks.switch_to_idle) s_hooks.switch_to_idle();
 
     ESP_LOGI(TAG, "Scheduler stopped");
-    s_task = NULL;
-    if (s_stop_sem) xSemaphoreGive(s_stop_sem);
-    vTaskDelete(NULL);
+    /* Publish completion, then park. Owner also verifies eSuspended before
+     * deletion: publication alone is not proof this stack is off-core. */
+    s_state = OT_SCHED_PARKED;
+    for (;;) vTaskSuspend(NULL);
 }
 
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
 void ot_radio_init(const ot_radio_hooks_t *hooks)
 {
-    if (!hooks) return;
+    if (!hooks || s_state != OT_SCHED_IDLE) return;
     memcpy(&s_hooks, hooks, sizeof(s_hooks));
 
-    if (!s_stop_sem) s_stop_sem = xSemaphoreCreateBinary();
 
     ESP_LOGI(TAG, "Radio hooks registered (154=%s)",
              s_hooks.switch_to_154 ? "yes" : "no");
@@ -218,40 +219,36 @@ void ot_radio_init(const ot_radio_hooks_t *hooks)
 
 esp_err_t ot_radio_scheduler_start(ot_survey_profile_t profile)
 {
-    if (s_state == OT_SCHED_RUNNING) {
+    if (s_state != OT_SCHED_IDLE || s_task) {
         ESP_LOGW(TAG, "Scheduler already running");
         return ESP_ERR_INVALID_STATE;
     }
-    if (profile >= OT_PROFILE_COUNT) return ESP_ERR_INVALID_ARG;
+    if ((unsigned)profile >= OT_PROFILE_COUNT) return ESP_ERR_INVALID_ARG;
 
+    g_ot_survey_active = true;
     s_profile   = profile;
     s_state     = OT_SCHED_RUNNING;
     s_cur_slot  = OT_SLOT_WIFI;
 
-    /* Allocate task stack from PSRAM when available, else DRAM. */
+    /* Preserve 4096-byte stack capacity/priority. Record caller-owned storage. */
 #ifdef CONFIG_SPIRAM
-    StackType_t *stack = (StackType_t *)heap_caps_malloc(
-        4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
-    StaticTask_t *tcb = (StaticTask_t *)heap_caps_malloc(
-        sizeof(StaticTask_t), MALLOC_CAP_INTERNAL);
-    if (stack && tcb) {
-        s_task = xTaskCreateStaticPinnedToCore(
-            scheduler_task, "ot_sched", 4096, NULL, OT_SCHED_TASK_PRIO, stack, tcb, 0);
-    } else {
-        if (stack) heap_caps_free(stack);
-        if (tcb)   heap_caps_free(tcb);
-        s_task = NULL;
-    }
+    s_stack=heap_caps_malloc(4096*sizeof(StackType_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    s_tcb=heap_caps_malloc(sizeof(StaticTask_t),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    if (s_stack && s_tcb)
+        s_task=xTaskCreateStaticPinnedToCore(scheduler_task,"ot_sched",4096,NULL,
+                    OT_SCHED_TASK_PRIO,s_stack,s_tcb,0);
     if (!s_task) {
-        /* Static create failed, fall back to dynamic. */
-        xTaskCreate(scheduler_task, "ot_sched", 4096, NULL, OT_SCHED_TASK_PRIO, &s_task);
+        heap_caps_free(s_stack);heap_caps_free(s_tcb);s_stack=NULL;s_tcb=NULL;
     }
 #else
-    xTaskCreate(scheduler_task, "ot_sched", 4096, NULL, OT_SCHED_TASK_PRIO, &s_task);
+    /* No-PSRAM boards keep their existing bounded internal task path. A PSRAM
+     * board fails admission instead of silently borrowing scarce internal RAM. */
+    xTaskCreate(scheduler_task,"ot_sched",4096,NULL,OT_SCHED_TASK_PRIO,&s_task);
 #endif
 
     if (!s_task) {
         s_state = OT_SCHED_IDLE;
+        g_ot_survey_active = false;
         ESP_LOGE(TAG, "Failed to create scheduler task");
         return ESP_FAIL;
     }
@@ -261,26 +258,30 @@ esp_err_t ot_radio_scheduler_start(ot_survey_profile_t profile)
     return ESP_OK;
 }
 
+bool ot_radio_scheduler_owns_current_task(void)
+{
+    return s_task && xTaskGetCurrentTaskHandle()==s_task;
+}
+
 esp_err_t ot_radio_scheduler_stop(void)
 {
     if (s_state == OT_SCHED_IDLE) return ESP_OK;
-
-    s_state = OT_SCHED_STOP_REQUESTED;
-
-    /* Wait for the task to exit and signal the semaphore. */
-    if (s_stop_sem) {
-        if (xSemaphoreTake(s_stop_sem, pdMS_TO_TICKS(OT_SCHED_STOP_WAIT_MS)) != pdTRUE) {
-            /* Timed out — force-delete as a last resort. */
-            ESP_LOGW(TAG, "Scheduler task did not exit in %u ms — force deleting",
-                     OT_SCHED_STOP_WAIT_MS);
-            if (s_task) { vTaskDelete(s_task); s_task = NULL; }
+    if (s_state == OT_SCHED_RUNNING) s_state = OT_SCHED_STOP_REQUESTED;
+    for (unsigned waited=0; waited<OT_SCHED_STOP_WAIT_MS; waited+=20) {
+        if (s_state == OT_SCHED_PARKED && s_task && eTaskGetState(s_task)==eSuspended) {
+            bool offcore=true;
+            for (unsigned core=0;core<configNUMBER_OF_CORES;core++)
+                if (xTaskGetCurrentTaskHandleForCore(core)==s_task) offcore=false;
+            if (!offcore) { vTaskDelay(pdMS_TO_TICKS(20));continue; }
+            vTaskDelete(s_task);s_task=NULL;
+            heap_caps_free(s_stack);heap_caps_free(s_tcb);s_stack=NULL;s_tcb=NULL;
+            s_state=OT_SCHED_IDLE;g_ot_survey_active=false;
+            return ESP_OK;
         }
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
-
-    s_state            = OT_SCHED_IDLE;
-    g_ot_survey_active = false;
-    ESP_LOGI(TAG, "Survey lock OFF");
-    return ESP_OK;
+    /* No force delete, no new allocation, no conflicting admission on timeout. */
+    return ESP_ERR_TIMEOUT;
 }
 
 ot_radio_slot_t ot_radio_current_slot(void) { return s_cur_slot; }

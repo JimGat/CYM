@@ -208,6 +208,7 @@ esp_err_t ot_survey_start(const ot_survey_config_t *cfg, ot_survey_session_t *se
                            const ot_survey_geo_t *start_geo)
 {
     if (!cfg || !sess) return ESP_ERR_INVALID_ARG;
+    if (g_active_survey || g_ot_survey_active) return ESP_ERR_INVALID_STATE;
 
     memset(sess, 0, sizeof(*sess));
     generate_uuid(&sess->uuid);
@@ -310,15 +311,13 @@ esp_err_t ot_survey_stop(ot_survey_session_t *sess, const ot_survey_geo_t *end_g
     if (!sess) return ESP_ERR_INVALID_ARG;
     if (sess->state == OT_STATE_STOPPED) return ESP_OK;
 
-    /* Clear active pointer before stopping so adapters stop tapping immediately. */
-    if (g_active_survey == sess) g_active_survey = NULL;
-
-    sess->state       = OT_STATE_STOPPED;
-    sess->stop_time_s = (uint32_t)(esp_timer_get_time() / 1000000ULL);
-    if (end_geo) sess->geo_end = *end_geo;  /* else left zeroed (valid=false) */
-
-    /* Stop radio scheduler and release survey lock. */
-    ot_radio_scheduler_stop();
+    /* Main owner unpublishes callbacks before asynchronous stop. */
+    esp_err_t stop_rc=ot_radio_scheduler_stop();
+    if (stop_rc!=ESP_OK) return stop_rc;
+    if (g_active_survey==sess) g_active_survey=NULL;
+    sess->state=OT_STATE_STOPPED;
+    sess->stop_time_s=(uint32_t)(esp_timer_get_time()/1000000ULL);
+    if (end_geo) sess->geo_end=*end_geo;
 
 #if CONFIG_IEEE802154_ENABLED
     if (s_pcapng) {
@@ -362,7 +361,8 @@ esp_err_t ot_survey_pause(ot_survey_session_t *sess)
     sess->state = OT_STATE_PAUSED;
     /* Pause scheduler — radio goes idle, survey lock stays OFF during pause
      * so other features can be used temporarily. */
-    ot_radio_scheduler_stop();
+    esp_err_t rc=ot_radio_scheduler_stop();
+    if (rc!=ESP_OK) return rc;
     return write_metadata(sess);
 }
 
@@ -372,7 +372,8 @@ esp_err_t ot_survey_resume(ot_survey_session_t *sess)
     if (sess->state != OT_STATE_PAUSED) return ESP_ERR_INVALID_STATE;
     sess->state = OT_STATE_ACTIVE;
     /* Restart scheduler for the same profile. */
-    ot_radio_scheduler_start(sess->cfg.profile);
+    esp_err_t rc=ot_radio_scheduler_start(sess->cfg.profile);
+    if (rc!=ESP_OK) { sess->state=OT_STATE_PAUSED;return rc; }
     return write_metadata(sess);
 }
 

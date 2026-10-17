@@ -36,25 +36,25 @@ Runtime display allocations (not all represented in linker BSS): two physical 10
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v3.0.14 |
+| Version | v3.0.15 |
 | Build date | 2026-10-17 |
 | .iram0.text | 129,719 B (126.7 KB) |
-| .dram0.data | 29,369 B (28.7 KB) |
-| .dram0.bss  (internal) | 84,320 B (82.3 KB) |
+| .dram0.data | 33,597 B (32.8 KB) |
+| .dram0.bss  (internal) | 84,416 B (82.4 KB) |
 | .ext_ram.bss  (PSRAM) | 207,452 B (202.6 KB) |
-| App binary size | 2,848,432 B (2781.7 KB) |
+| App binary size | 2,861,856 B (2794.8 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ## Internal BSS consumers
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 59,360 B (58.0 KB) |
+| `libmain.a` | 59,423 B (58.0 KB) |
 | `librf_hat.a` | 11,433 B (11.2 KB) |
 | `libnet80211.a` | 7,832 B (7.6 KB) |
 | `liblwip.a` | 4,147 B (4.0 KB) |
 | `libmesh.a` | 3,939 B (3.8 KB) |
-| `libespressif__mdns.a` | 3,578 B (3.5 KB) |
+| `libespressif__mdns.a` | 3,583 B (3.5 KB) |
 | `libwifi_scanner.a` | 2,413 B (2.4 KB) |
 | `libwifi_attacks.a` | 1,990 B (1.9 KB) |
 | `libwpa_supplicant.a` | 1,931 B (1.9 KB) |

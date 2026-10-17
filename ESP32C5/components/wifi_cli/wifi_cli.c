@@ -2,6 +2,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "wifi_cli.h"
+#include "cym_netif_lifecycle.h"
 #include "wifi_scanner.h"
 #include "wifi_sniffer.h"
 #include "wifi_attacks.h"
@@ -27,6 +28,8 @@ static bool netif_initialized = false;
 static esp_netif_t *sta_netif_handle = NULL;
 static esp_netif_t *ap_netif_handle = NULL;
 static bool wifi_event_handler_registered = false;
+static bool ip_event_handler_registered = false;
+static unsigned net_diag_budget;
 
 // LED strip (NeoPixel)
 #define RMT_RES_HZ (10 * 1000 * 1000)
@@ -34,14 +37,30 @@ static bool wifi_event_handler_registered = false;
 // WiFi event handler
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
-    // TODO: Handle WiFi events (scan done, connect, etc.)
     (void)arg;
-    (void)event_base;
-    (void)event_id;
-    (void)event_data;
+    /* Bounded per bring-up, event-loop thread only. No network identifiers. */
+    unsigned remaining=__atomic_load_n(&net_diag_budget,__ATOMIC_RELAXED);
+    if (!remaining) return;
+    const char *stage = NULL;
+    if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) stage="sta-ip-event";
+    if (event_base == WIFI_EVENT) {
+        if (event_id == WIFI_EVENT_STA_CONNECTED) stage="sta-associated-await-dhcp";
+        else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
+            stage="sta-disconnected";
+            if (event_data) ESP_LOGI("netlife","sta-disconnect-reason=%u",
+                (unsigned)((wifi_event_sta_disconnected_t *)event_data)->reason);
+        } else if (event_id == WIFI_EVENT_AP_START) stage="ap-start-event";
+        else if (event_id == WIFI_EVENT_AP_STOP) stage="ap-stop-event";
+        else if (event_id == WIFI_EVENT_AP_STACONNECTED) stage="ap-client-associated";
+    }
+    if (stage) {
+        __atomic_fetch_sub(&net_diag_budget,1,__ATOMIC_RELAXED);
+        cym_net_stage(stage,ESP_OK);
+    }
 }
 
 static esp_err_t init_wifi(void) {
+    __atomic_store_n(&net_diag_budget,24,__ATOMIC_RELAXED);
     // Initialize netif only once (persists across radio mode switches)
     if (!netif_initialized) {
         ESP_ERROR_CHECK(esp_netif_init());
@@ -62,12 +81,11 @@ static esp_err_t init_wifi(void) {
         sta_netif_handle = esp_netif_create_default_wifi_sta();
     }
     
+    if (!sta_netif_handle) return cym_net_stage("sta-netif-create",ESP_ERR_NO_MEM);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_err_t wifi_init_err = esp_wifi_init(&cfg);
     if (wifi_init_err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_init failed (0x%x) — restarting to recover RAM", wifi_init_err);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_restart();
+        return cym_net_stage("wifi-init",wifi_init_err);
     }
     
     // Register event handler only once
@@ -85,6 +103,13 @@ static esp_err_t init_wifi(void) {
         }
     }
     
+    if (!ip_event_handler_registered) {
+        esp_err_t rc=esp_event_handler_register(IP_EVENT,IP_EVENT_STA_GOT_IP,wifi_event_handler,NULL);
+        if (rc != ESP_OK) return cym_net_stage("ip-handler-register",rc);
+        ip_event_handler_registered=true;
+    }
+    esp_err_t dhcp_rc=cym_dhcp_client_prepare(sta_netif_handle);
+    if (dhcp_rc != ESP_OK) return dhcp_rc;
     // Initialize in STA-only mode (uses less memory, avoids AP netif issues)
     // AP mode will be enabled dynamically when needed (Evil Twin, etc.)
     wifi_config_t wifi_config = {0};
@@ -173,7 +198,8 @@ esp_err_t wifi_cli_init(void) {
     init_led();
     
     // Initialize WiFi
-    init_wifi();
+    ret=init_wifi();
+    if (ret != ESP_OK) return ret;
     
     // Initialize scanner component
     wifi_scanner_init();

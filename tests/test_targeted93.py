@@ -67,6 +67,7 @@ enum {CLOCK_MODE_DISPLAY_ONLY,CLOCK_MODE_AP_NTP,CLOCK_MODE_CLIENT_NTP};
 enum {NTP_PUBLIC_IDLE,NTP_PUBLIC_SYNCING,NTP_PUBLIC_SUCCESS,NTP_PUBLIC_TIME_OK,NTP_PUBLIC_TIMEOUT,NTP_PUBLIC_SKIPPED_GPS};
 static int s_clock_mode,s_ntp_public_state,g_clock_offset_minutes;
 static bool s_ntp_clock_active=true,s_ntp_wifi_connected,s_ntp_wifi_failed,s_ntp_mdns_ok,s_ntp_udp_ok;
+static const char *s_ntp_net_status="Connecting...",*s_ntp_mdns_status="mDNS: Idle";
 static char s_ntp_ip_str[40],s_ntp_ap_ssid[40];
 static lv_color_t source_color;
 static lv_color_t lv_color_hex(unsigned value){return value;}
@@ -83,7 +84,7 @@ clock_ui_timer_cb(NULL);assert(setter_calls==14);assert(!strcmp(s_ntp_time_lbl->
 setter_calls=0;clock_ui_timer_cb(NULL);assert(setter_calls==0);
 for(int second=1;second<=3;second++){sample.utc.tv_sec=second;setter_calls=0;clock_ui_timer_cb(NULL);char expected[16];snprintf(expected,sizeof(expected),"00:00:%02d",second);assert(!strcmp(s_ntp_time_lbl->text,expected));assert(setter_calls==1);}
 setter_calls=0;sample.utc.tv_sec=86400;clock_ui_timer_cb(NULL);assert(setter_calls==2);assert(!strcmp(s_ntp_date_lbl->text,"1970-01-02"));
-setter_calls=0;s_ntp_udp_ok=true;s_ntp_mdns_ok=true;requests=7;s_ntp_public_state=NTP_PUBLIC_TIMEOUT;clock_ui_timer_cb(NULL);assert(setter_calls==4);assert(!strcmp(s_ntp_service_lbl->text,"NTP: UDP/123 SERVING"));assert(!strcmp(s_ntp_network_lbl->text,"Public NTP: retrying in 60s"));
+setter_calls=0;s_ntp_udp_ok=true;s_ntp_mdns_ok=true;s_ntp_mdns_status="mDNS: Registered cym-ntp.local";requests=7;s_ntp_public_state=NTP_PUBLIC_TIMEOUT;clock_ui_timer_cb(NULL);assert(setter_calls==4);assert(!strcmp(s_ntp_service_lbl->text,"NTP: UDP/123 SERVING"));assert(!strcmp(s_ntp_network_lbl->text,"Public NTP: retrying in 60s"));
 setter_calls=0;sample.source=CYM_TIME_GPS_LOCKED;clock_ui_timer_cb(NULL);assert(setter_calls==2);assert(source_color==0x69F0AE);assert(!strcmp(s_ntp_source_lbl->text,"GPS LOCK"));
 setter_calls=0;s_ntp_clock_active=false;sample.utc.tv_sec++;clock_ui_timer_cb(NULL);assert(setter_calls==0);
 s_ntp_clock_active=true;s_ntp_time_lbl=NULL;setter_calls=0;have_snapshot=false;clock_ui_timer_cb(NULL);assert(!strcmp(s_ntp_source_lbl->text,"UNSYNCED"));assert(source_color==0xFF5252);

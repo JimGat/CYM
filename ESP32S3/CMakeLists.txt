@@ -16,7 +16,7 @@ cmake_minimum_required(VERSION 3.16)
 #     build
 # ─────────────────────────────────────────────────────────────────────────────
 
-set(PROJECT_VER "v3.0.14")
+set(PROJECT_VER "v3.0.15")
 
 # S3-specific components first (esp_lcd_st77922), then shared C5 components.
 # Ordering matters: ESP-IDF uses the first occurrence when two directories
@@ -113,3 +113,5 @@ else()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/../scripts/lvgl-diag.cmake")
+
+include("${CMAKE_CURRENT_LIST_DIR}/../scripts/mdns-overlay.cmake")

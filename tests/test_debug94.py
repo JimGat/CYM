@@ -216,6 +216,7 @@ typedef int esp_err_t;
 static int screen_orientation;static bool dark_mode_enabled,enabled;static int fail;
 static lv_obj_t *function_page,*s_hardware_debug_switch,*s_hardware_debug_status;
 static lv_timer_t *s_hardware_debug_timer;static void (*g_screen_stop_fn)(void);
+static const char *cym_debug_console_status(void){return "Ready (USB-C)";}
 static bool cym_debug_enabled(void){return enabled;}
 static int cym_debug_set(bool v){if(fail)return -1;enabled=v;return 0;}
 static lv_color_t ui_card_color(void){return dark_mode_enabled?lv_color_hex(0x303030):lv_color_white();}

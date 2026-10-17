@@ -7,6 +7,7 @@
 #include "lvgl.h"
 #include "sd_error_handler.h"
 #include "debug_settings.h"
+#include "legacy_log_lifetime.h"
 #include "gps_rx_ws35.h"
 #define CYM_DEBUG_LOGD(...) do { if(cym_debug_enabled()) ESP_LOGD(__VA_ARGS__); } while(0)
 #define CYM_DEBUG_LOGI(...) do { if(cym_debug_enabled()) ESP_LOGI(__VA_ARGS__); } while(0)
@@ -162,6 +163,7 @@ static uint8_t s_game_prior_orientation;
 #include "soc/lp_aon_reg.h"   // C5-only LP-AON registers for download-mode boot flag
 #endif
 #include "wifi_cli.h"
+#include "cym_netif_lifecycle.h"
 #include "led_strip.h"
 #include "wifi_scanner.h"
 #include "wifi_sniffer.h"
@@ -1048,6 +1050,7 @@ static lv_obj_t *s_ntp_mode_popup = NULL;
 static TaskHandle_t s_ntp_wifi_task = NULL;
 static volatile bool s_ntp_wifi_connected = false;
 static volatile bool s_ntp_wifi_failed = false;
+static _Atomic(const char *) s_ntp_net_status = "Connecting...";
 static atomic_bool s_ntp_stopping = false;
 static char s_ntp_ip_str[20] = "";
 static char s_ntp_ap_ssid[24] = "";
@@ -1545,7 +1548,7 @@ typedef struct {
 static QueueHandle_t evil_twin_event_queue = NULL;
 
 static QueueHandle_t evil_twin_log_queue = NULL;
-static bool evil_twin_log_capture_enabled = false;
+static _Atomic bool evil_twin_log_capture_enabled = false;
 static vprintf_like_t previous_vprintf = NULL;
 
 // Blackout UI state
@@ -1553,7 +1556,7 @@ static lv_obj_t *blackout_networks_label = NULL;
 static lv_obj_t *blackout_status_label = NULL;
 static lv_obj_t *blackout_stop_btn = NULL;
 static QueueHandle_t blackout_log_queue = NULL;
-static bool blackout_log_capture_enabled = false;
+static _Atomic bool blackout_log_capture_enabled = false;
 static volatile bool blackout_ui_active = false;
 
 // Snifferdog UI state
@@ -1561,7 +1564,7 @@ static lv_obj_t *snifferdog_kick_label = NULL;
 static lv_obj_t *snifferdog_recent_label = NULL;
 static lv_obj_t *snifferdog_stop_btn = NULL;
 static QueueHandle_t snifferdog_log_queue = NULL;
-static bool snifferdog_log_capture_enabled = false;
+static _Atomic bool snifferdog_log_capture_enabled = false;
 static volatile bool snifferdog_ui_active = false;
 
 // Snifferdog attack state (from original project)
@@ -1595,7 +1598,7 @@ static lv_obj_t *sniffer_observe_client_list = NULL;  // Client list in observat
 static volatile bool sniffer_observe_mode = false;
 static int sniffer_observe_ap_index = -1;
 static volatile bool sniffer_ui_needs_refresh = false;
-static bool sniffer_log_capture_enabled = false;
+static _Atomic bool sniffer_log_capture_enabled = false;
 static volatile bool sniffer_ui_active = false;
 static bool sniffer_return_pending = false;  // Track if we should return to sniffer from sub-pages
 
@@ -1619,7 +1622,7 @@ static void sniffer_session_reap(void);
 static lv_obj_t *sae_overflow_log_ta = NULL;
 static lv_obj_t *sae_overflow_stop_btn = NULL;
 static QueueHandle_t sae_overflow_log_queue = NULL;
-static bool sae_overflow_log_capture_enabled = false;
+static _Atomic bool sae_overflow_log_capture_enabled = false;
 static volatile bool sae_overflow_ui_active = false;
 
 // Handshake UI state
@@ -1627,7 +1630,7 @@ static lv_obj_t *handshake_log_ta = NULL;
 static lv_obj_t *handshake_stop_btn = NULL;
 static lv_obj_t *handshake_status_list = NULL;
 static QueueHandle_t handshake_log_queue = NULL;
-static bool handshake_log_capture_enabled = false;
+static _Atomic bool handshake_log_capture_enabled = false;
 static volatile bool handshake_ui_active = false;
 
 // Handshake UI dashboard labels (for sniffer mode)
@@ -2009,7 +2012,7 @@ static wdp_network_t wdp_screen_fifo[WDP_SCREEN_FIFO_SIZE];  // 20-network scree
 static lv_obj_t *wardrive_log_ta = NULL;
 static lv_obj_t *wardrive_stop_btn = NULL;
 static QueueHandle_t wardrive_log_queue = NULL;
-static bool wardrive_log_capture_enabled = false;
+static _Atomic bool wardrive_log_capture_enabled = false;
 static volatile bool wardrive_ui_active = false;
 
 // Wardrive UI dashboard widgets
@@ -2154,7 +2157,7 @@ static lv_obj_t *karma_probe_dd = NULL;
 static lv_obj_t *karma_html_dd = NULL;
 static lv_obj_t *karma_start_btn = NULL;
 static QueueHandle_t karma_log_queue = NULL;
-static bool karma_log_capture_enabled = false;
+static _Atomic bool karma_log_capture_enabled = false;
 static volatile bool karma_ui_active = false;
 static lv_obj_t *karma_info_ssid_label = NULL;
 static lv_obj_t *karma_info_filename_label = NULL;
@@ -3350,6 +3353,8 @@ static void show_zgwd_flood(int pan_idx);
 #endif
 static void show_iot_ot_menu_screen(void);
 static void show_ot_survey_screen(void);
+static void s_ots_owner_poll(void);
+static bool s_ots_owner_busy(void);
 static const char *s_ots_allowlist_label(const uint8_t mac[6]);
 static void s_ots_load_allowlist(void);
 static void show_ot_results_screen(const char *session_dir, void (*parent_fn)(void));
@@ -4018,9 +4023,21 @@ static void scan_checkbox_event_cb(lv_event_t *e)
     wifi_scanner_select_network(index, checked);
 }
 
+static void legacy_logs_reap(void)
+{
+    (void)cym_log_retire(&evil_twin_log_queue,evil_twin_log_capture_enabled);
+    (void)cym_log_retire(&blackout_log_queue,blackout_log_capture_enabled);
+    (void)cym_log_retire(&snifferdog_log_queue,snifferdog_log_capture_enabled);
+    (void)cym_log_retire(&sae_overflow_log_queue,sae_overflow_log_capture_enabled);
+    (void)cym_log_retire(&handshake_log_queue,handshake_log_capture_enabled);
+    (void)cym_log_retire(&wardrive_log_queue,wardrive_log_capture_enabled);
+    (void)cym_log_retire(&karma_log_queue,karma_log_capture_enabled);
+}
+
 static int dual_vprintf(const char *fmt, va_list ap)
 {
-    va_list ap_copy, ap_copy2, ap_copy3, ap_copy4, ap_copy5, ap_copy6, ap_copy7;
+    cym_log_enter();
+    va_list ap_copy, ap_copy2, ap_copy3, ap_copy4, ap_copy5, ap_copy6, ap_copy7, ap_copy8;
     va_copy(ap_copy, ap);
     va_copy(ap_copy2, ap);
     va_copy(ap_copy3, ap);
@@ -4028,6 +4045,7 @@ static int dual_vprintf(const char *fmt, va_list ap)
     va_copy(ap_copy5, ap);
     va_copy(ap_copy6, ap);
     va_copy(ap_copy7, ap);
+    va_copy(ap_copy8, ap);
 
     int ret = rom_vprintf(fmt, ap);
 
@@ -4104,7 +4122,7 @@ static int dual_vprintf(const char *fmt, va_list ap)
 
     if (wardrive_log_capture_enabled && wardrive_log_queue) {
         evil_log_msg_t msg;
-        int written = vsnprintf(msg.text, sizeof(msg.text), fmt, ap_copy5);
+        int written = vsnprintf(msg.text, sizeof(msg.text), fmt, ap_copy8);
         if (written > 0) {
             msg.text[sizeof(msg.text) - 1] = '\0';
             // Capture logs with TAG (WiFi_Hacker) for Wardrive
@@ -4128,22 +4146,24 @@ static int dual_vprintf(const char *fmt, va_list ap)
     va_end(ap_copy5);
     va_end(ap_copy6);
     va_end(ap_copy7);
+    va_end(ap_copy8);
 
     va_end(ap_copy);
     va_end(ap_copy2);
     va_end(ap_copy3);
+    cym_log_leave();
     return ret;
 }
 
 static esp_err_t evil_twin_enable_log_capture(void)
 {
+    if (!evil_twin_log_capture_enabled && !cym_log_retire(&evil_twin_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (!evil_twin_log_queue) {
         evil_twin_log_queue = xQueueCreate(32, sizeof(evil_log_msg_t));
         if (!evil_twin_log_queue) {
             return ESP_ERR_NO_MEM;
         }
-    } else {
-        xQueueReset(evil_twin_log_queue);
     }
 
     if (!evil_twin_log_capture_enabled) {
@@ -4166,9 +4186,7 @@ static void evil_twin_disable_log_capture(void)
         }
     }
 
-    if (evil_twin_log_queue) {
-        xQueueReset(evil_twin_log_queue);
-    }
+    (void)cym_log_retire(&evil_twin_log_queue,false);
 }
 
 // Evil Twin UI event callback - called from wifi_attacks task context
@@ -4213,13 +4231,13 @@ static void rogue_ap_add_status_message(const char *message, lv_color_t color) {
 
 static esp_err_t blackout_enable_log_capture(void)
 {
+    if (!blackout_log_capture_enabled && !cym_log_retire(&blackout_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (!blackout_log_queue) {
         blackout_log_queue = xQueueCreate(32, sizeof(evil_log_msg_t));
         if (!blackout_log_queue) {
             return ESP_ERR_NO_MEM;
         }
-    } else {
-        xQueueReset(blackout_log_queue);
     }
 
     if (!blackout_log_capture_enabled) {
@@ -4242,20 +4260,18 @@ static void blackout_disable_log_capture(void)
         }
     }
 
-    if (blackout_log_queue) {
-        xQueueReset(blackout_log_queue);
-    }
+    (void)cym_log_retire(&blackout_log_queue,false);
 }
 
 static esp_err_t snifferdog_enable_log_capture(void)
 {
+    if (!snifferdog_log_capture_enabled && !cym_log_retire(&snifferdog_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (!snifferdog_log_queue) {
         snifferdog_log_queue = xQueueCreate(32, sizeof(evil_log_msg_t));
         if (!snifferdog_log_queue) {
             return ESP_ERR_NO_MEM;
         }
-    } else {
-        xQueueReset(snifferdog_log_queue);
     }
 
     if (!snifferdog_log_capture_enabled) {
@@ -4278,9 +4294,7 @@ static void snifferdog_disable_log_capture(void)
         }
     }
 
-    if (snifferdog_log_queue) {
-        xQueueReset(snifferdog_log_queue);
-    }
+    (void)cym_log_retire(&snifferdog_log_queue,false);
 }
 
 static esp_err_t sniffer_enable_log_capture(void)
@@ -4327,13 +4341,13 @@ static void sniffer_disable_log_capture(void)
 
 static esp_err_t sae_overflow_enable_log_capture(void)
 {
+    if (!sae_overflow_log_capture_enabled && !cym_log_retire(&sae_overflow_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (!sae_overflow_log_queue) {
         sae_overflow_log_queue = xQueueCreate(32, sizeof(evil_log_msg_t));
         if (!sae_overflow_log_queue) {
             return ESP_ERR_NO_MEM;
         }
-    } else {
-        xQueueReset(sae_overflow_log_queue);
     }
 
     if (!sae_overflow_log_capture_enabled) {
@@ -4356,13 +4370,13 @@ static void sae_overflow_disable_log_capture(void)
         }
     }
 
-    if (sae_overflow_log_queue) {
-        xQueueReset(sae_overflow_log_queue);
-    }
+    (void)cym_log_retire(&sae_overflow_log_queue,false);
 }
 
 static esp_err_t handshake_enable_log_capture(void)
 {
+    if (!handshake_log_capture_enabled && !cym_log_retire(&handshake_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (handshake_log_queue == NULL) {
         handshake_log_queue = xQueueCreate(20, sizeof(evil_log_msg_t));
         if (handshake_log_queue == NULL) {
@@ -4390,20 +4404,18 @@ static void handshake_disable_log_capture(void)
         }
     }
 
-    if (handshake_log_queue) {
-        xQueueReset(handshake_log_queue);
-    }
+    (void)cym_log_retire(&handshake_log_queue,false);
 }
 
 static esp_err_t wardrive_enable_log_capture(void)
 {
+    if (!wardrive_log_capture_enabled && !cym_log_retire(&wardrive_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (!wardrive_log_queue) {
         wardrive_log_queue = xQueueCreate(32, sizeof(evil_log_msg_t));
         if (!wardrive_log_queue) {
             return ESP_ERR_NO_MEM;
         }
-    } else {
-        xQueueReset(wardrive_log_queue);
     }
 
     if (!wardrive_log_capture_enabled) {
@@ -4426,20 +4438,18 @@ static void wardrive_disable_log_capture(void)
         }
     }
 
-    if (wardrive_log_queue) {
-        xQueueReset(wardrive_log_queue);
-    }
+    (void)cym_log_retire(&wardrive_log_queue,false);
 }
 
 static esp_err_t karma_enable_log_capture(void)
 {
+    if (!karma_log_capture_enabled && !cym_log_retire(&karma_log_queue,false))
+        return ESP_ERR_INVALID_STATE;
     if (!karma_log_queue) {
         karma_log_queue = xQueueCreate(32, sizeof(evil_log_msg_t));
         if (!karma_log_queue) {
             return ESP_ERR_NO_MEM;
         }
-    } else {
-        xQueueReset(karma_log_queue);
     }
 
     if (!karma_log_capture_enabled) {
@@ -4462,9 +4472,7 @@ static void karma_disable_log_capture(void)
         }
     }
 
-    if (karma_log_queue) {
-        xQueueReset(karma_log_queue);
-    }
+    (void)cym_log_retire(&karma_log_queue,false);
 }
 
 static esp_err_t portal_enable_log_capture(void)
@@ -7934,53 +7942,7 @@ void app_main(void)
     gw_init(sd_spi_mutex);
     cham_init();
 
-#if defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM
-    // Screenshot worker (queue + background saver task) — PSRAM boards only.
-    // screenshot_btn_event_cb() (the tap-title trigger) is also gated the same
-    // way, but skip standing up the queue/task at all on CYD2USB rather than
-    // just refusing to use them: lv_snapshot_take() needs a full-screen RGB565
-    // buffer (240*320*2 = 153,600 bytes) that will never fit that board's
-    // ~20-50KB free heap regardless, so the 16KB task stack below would sit
-    // there permanently for a task that can never receive a valid message —
-    // pure waste on the board that can least afford it. Freeing it also adds
-    // real margin back for OT Survey's WiFi->BLE handoff (see
-    // OBS_STORE_CYD2USB_CAPACITY's doc comment for that board's budget).
-    screenshot_queue = xQueueCreate(1, sizeof(screenshot_msg_t));
-    if (screenshot_queue == NULL) {
-        ESP_LOGE(TAG, "Failed to create screenshot queue!");
-        return;
-    }
-
-    // Try PSRAM first; fall back to internal DRAM (still safe here — this whole
-    // block only compiles/runs on CONFIG_BOARD_HAS_PSRAM boards).
-    // MALLOC_CAP_8BIT is mandatory: MALLOC_CAP_INTERNAL alone can return IRAM (0x40000000+),
-    // which xPortcheckValidStackMem rejects — FreeRTOS requires task stacks to be in DRAM.
-    screenshot_task_stack = (StackType_t *)heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
-    if (screenshot_task_stack == NULL) {
-        screenshot_task_stack = (StackType_t *)heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    }
-    if (screenshot_task_stack != NULL) {
-        screenshot_task_handle = xTaskCreateStatic(
-            screenshot_save_task,
-            "shot_save",
-            4096,
-            NULL,
-            tskIDLE_PRIORITY + 2,
-            screenshot_task_stack,
-            &screenshot_task_buffer);
-        if (screenshot_task_handle == NULL) {
-            ESP_LOGE(TAG, "Failed to create screenshot save task");
-            heap_caps_free(screenshot_task_stack);
-            screenshot_task_stack = NULL;
-            // Non-critical — continue without screenshot support
-        }
-    } else {
-        ESP_LOGW(TAG, "Failed to allocate screenshot task stack — screenshots disabled");
-        // Non-critical — continue without screenshot support
-    }
-#else
-    ESP_LOGI(TAG, "Screenshot worker not started (no PSRAM on this board)");
-#endif
+    /* Screenshot resources are admitted lazily by the title-tap owner. */
 
 log_heap_stats("display-drawbuffers-before");
 #if defined(CONFIG_BOARD_WS_S3_5B)
@@ -8154,15 +8116,10 @@ log_heap_stats("display-drawbuffers-before");
     ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 10 * 1000));
     
-    // Initialize portal HTML buffer (1MB in PSRAM for large HTML files up to 900KB)
-    ESP_LOGI(TAG, "Initializing portal HTML buffer in PSRAM...");
-    esp_err_t html_ret = wifi_attacks_init_portal_html_buffer();
-    if (html_ret == ESP_OK) {
-        ESP_LOGI(TAG, "Portal HTML buffer ready (1MB PSRAM allocated)");
-    } else {
-        ESP_LOGW(TAG, "Portal HTML buffer allocation failed - large HTML files may not work");
-    }
-    
+    /* Custom HTML already allocates lazily in wifi_attacks_load_html_file().
+     * Retain selected content across sessions; HTTP borrowers are unchanged.
+     * This avoids 1MiB of boot PSRAM, not internal/DMA RAM. */
+
     // ========================================================================
     // SD Card Initialization with Modal Popup
     // ========================================================================
@@ -10243,6 +10200,8 @@ log_heap_stats("display-drawbuffers-before");
             // Clock ownership is serialized with navigation by lvgl_mutex.
             // This only reaps a cooperatively parked internal-stack worker.
             clock_radio_handoff_poll();
+            s_ots_owner_poll();
+            legacy_logs_reap();
 
             // Monitor LVGL handler execution to detect hangs
             uint64_t lvgl_call_us = esp_timer_get_time();
@@ -10471,7 +10430,7 @@ log_heap_stats("display-drawbuffers-before");
                         ot_survey_queue_export(g_active_survey, stored154);
 
                     /* ── Write raw PSDU to PCAPNG ──────────────────────────── */
-                    ot_survey_write_154_frame(fr.psdu, fr.psdu_len,
+                    if (g_active_survey) ot_survey_write_154_frame(fr.psdu, fr.psdu_len,
                                               fr.rssi, fr.lqi, fr.ts_us);
                 }
             }
@@ -10916,6 +10875,29 @@ static void screenshot_save_task(void *arg)
     }
 }
 
+static bool screenshot_worker_ensure(void)
+{
+    if (screenshot_task_handle) return true;
+#if defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM
+    screenshot_queue=xQueueCreate(1,sizeof(screenshot_msg_t));
+    if (!screenshot_queue) return false;
+    screenshot_task_stack=heap_caps_malloc(4096*sizeof(StackType_t),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if (!screenshot_task_stack)
+        screenshot_task_stack=heap_caps_malloc(4096*sizeof(StackType_t),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    if (screenshot_task_stack)
+        screenshot_task_handle=xTaskCreateStatic(screenshot_save_task,"shot_save",4096,NULL,
+            tskIDLE_PRIORITY+2,screenshot_task_stack,&screenshot_task_buffer);
+    if (!screenshot_task_handle) {
+        heap_caps_free(screenshot_task_stack);screenshot_task_stack=NULL;
+        vQueueDelete(screenshot_queue);screenshot_queue=NULL;
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
 static void screenshot_btn_event_cb(lv_event_t *e)
 {
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
@@ -10948,7 +10930,7 @@ static void screenshot_btn_event_cb(lv_event_t *e)
         return;
     }
 
-    if (!screenshot_queue || !screenshot_task_handle) {
+    if (!screenshot_worker_ensure()) {
         ESP_LOGE(TAG, "Screenshot: worker not initialized");
         return;
     }
@@ -17790,6 +17772,7 @@ static void create_function_page_base(const char *name)
 static void radio_reset_to_idle(void)
 {
     if (!clock_radio_reset_admit()) return;
+    if ((g_ot_survey_active || s_ots_owner_busy()) && !ot_radio_scheduler_owns_current_task()) return;
     ESP_LOGI(TAG, "radio_reset_to_idle: stopping all attacks, resetting radio...");
     /* [FIX] Radio stop/restart glitches GPIO2 (touch MISO) → spurious corner touch.
      * Suppress touch for the whole reset + settle window so the glitch can't fire a button. */
@@ -18880,6 +18863,13 @@ static void sta_connect_check_timer_cb(lv_timer_t *timer)
     (void)timer;
     
     if (sta_connect_success) {
+        esp_netif_ip_info_t ip={0};
+        esp_netif_t *netif=esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        if (!netif || esp_netif_get_ip_info(netif,&ip)!=ESP_OK || !ip.ip.addr) {
+            if (wifi_connect_status_label) lv_label_set_text(wifi_connect_status_label,"Associated; waiting DHCP");
+            return;
+        }
+        cym_net_stage("connect-ui-ip-observed",ESP_OK);
         sta_connect_success = false;
         
         // Unregister event handler
@@ -19089,8 +19079,11 @@ static void wifi_connect_btn_cb(lv_event_t *e)
     }
     sta_connect_check_timer = lv_timer_create(sta_connect_check_timer_cb, 200, NULL);
 
-    // Start connection
-    ESP_LOGI(TAG, "Connecting to '%s'...", wifi_connect_ssid);
+    // Start connection; do not expose SSIDs in diagnostics.
+    if (cym_dhcp_client_prepare(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"))!=ESP_OK) {
+        sta_connect_failed=true;return;
+    }
+    cym_net_stage("connect-request",ESP_OK);
     esp_wifi_clear_fast_connect();
     esp_wifi_connect();
 }
@@ -28509,6 +28502,11 @@ static void show_hardware_options_screen_measured(void)
     lv_obj_set_width(s_hardware_debug_status,lv_pct(100));lv_label_set_long_mode(s_hardware_debug_status,LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_font(s_hardware_debug_status,&lv_font_montserrat_12,0);
     lv_obj_align(s_hardware_debug_status,LV_ALIGN_BOTTOM_LEFT,0,0);
+    lv_obj_t *console_label=lv_label_create(row);
+    lv_label_set_text(console_label,cym_debug_console_status());
+    lv_obj_set_width(console_label,lv_pct(100));
+    lv_obj_set_style_text_font(console_label,&lv_font_montserrat_12,0);
+    lv_obj_align(console_label,LV_ALIGN_TOP_LEFT,0,28);
     hardware_debug_sync(NULL);
     s_hardware_debug_timer=lv_timer_create(hardware_debug_sync,200,NULL);
     if(!s_hardware_debug_timer){ESP_LOGE(TAG,"Hardware debug sync timer allocation failed");lv_label_set_text(s_hardware_debug_status,"Sync unavailable - reopen Hardware");}
@@ -28791,9 +28789,27 @@ static void show_clock_or_mode_prompt(void (*return_fn)(void))
     show_clock_mode_popup();
 }
 
+/* Patched dependency: timeout retains its entire lifetime until the next poll. */
+#if BOARD_TIME_HAS_MDNS
+extern esp_err_t mdns_free_wait(void);
+#endif
+static _Atomic(const char *) s_ntp_mdns_status = "mDNS: Idle";
+static void clock_mdns_release(void)
+{
+#if BOARD_TIME_HAS_MDNS
+    if (s_ntp_mdns_owned) {
+        s_ntp_mdns_status = "mDNS: Stopping";
+        while (mdns_free_wait() != ESP_OK) vTaskDelay(pdMS_TO_TICKS(100));
+        s_ntp_mdns_owned = false;
+    }
+#endif
+    s_ntp_mdns_ok = false;
+}
+
 static void ntp_start_mdns_and_server(void)
 {
     s_ntp_mdns_ok = false;
+    s_ntp_mdns_status = "mDNS: Idle";
     s_ntp_udp_ok = false;
     if (s_ntp_stopping) return;
     esp_err_t rc = cym_ntp_server_start();
@@ -28809,22 +28825,24 @@ static void ntp_start_mdns_and_server(void)
     // boundary; the worker retains any partial ownership until cleanup.
     if (rc != ESP_OK || s_ntp_stopping) return;
 #if BOARD_TIME_HAS_MDNS
+    s_ntp_mdns_status = "mDNS: Starting";
     rc = mdns_init();
-    s_ntp_mdns_owned = (rc == ESP_OK);
+    /* A failed init may retain a timed-out producer; always drain our attempt. */
+    s_ntp_mdns_owned = true;
     if (rc != ESP_OK || cym_debug_enabled()) {
         ESP_LOGW(TAG, "Clock mdns_init rc=%s (%d) internal free=%u largest=%u",
                  esp_err_to_name(rc), (int)rc,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
-    if (rc != ESP_OK || s_ntp_stopping) return;
+    if (rc != ESP_OK || s_ntp_stopping) goto mdns_failed;
     rc = mdns_hostname_set("cym-ntp");
     if (rc != ESP_OK || cym_debug_enabled())
         ESP_LOGW(TAG, "Clock mdns_hostname_set rc=%s (%d) internal free=%u largest=%u",
                  esp_err_to_name(rc), (int)rc,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    if (rc != ESP_OK || s_ntp_stopping) return;
+    if (rc != ESP_OK || s_ntp_stopping) goto mdns_failed;
     rc = mdns_service_add(NULL, "_ntp", "_udp", 123, NULL, 0);
     s_ntp_mdns_ok = (rc == ESP_OK && !s_ntp_stopping);
     if (rc != ESP_OK || cym_debug_enabled())
@@ -28832,6 +28850,14 @@ static void ntp_start_mdns_and_server(void)
                  esp_err_to_name(rc), (int)rc,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    if (s_ntp_mdns_ok) {
+        s_ntp_mdns_status = "mDNS: Registered cym-ntp.local";
+        return;
+    }
+mdns_failed:
+    clock_mdns_release();
+    s_ntp_mdns_status = s_ntp_stopping ? "mDNS: Stopping" :
+        (rc == ESP_ERR_NO_MEM ? "mDNS: Resource failure" : "mDNS: Init/protocol failure");
 #endif
 }
 
@@ -28841,13 +28867,7 @@ static void ntp_start_mdns_and_server(void)
 static void clock_network_release(clock_mode_t mode, bool wifi_claimed)
 {
     if (!wifi_claimed) return; // early cancel/no credentials/init failure never owned Wi-Fi
-#if BOARD_TIME_HAS_MDNS
-    if (s_ntp_mdns_owned) {
-        mdns_free();
-        s_ntp_mdns_owned = false;
-    }
-#endif
-    s_ntp_mdns_ok = false;
+    clock_mdns_release();
     int64_t began = esp_timer_get_time();
     bool warned = false;
     for (;;) {
@@ -29027,6 +29047,13 @@ static bool ntp_start_ap_mode(bool *wifi_claimed)
 
     esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     esp_netif_ip_info_t ip = {0};
+    ip.ip.addr=esp_ip4addr_aton("192.168.4.1");
+    ip.gw=ip.ip;ip.netmask.addr=esp_ip4addr_aton("255.255.255.0");
+    s_ntp_net_status="AP DHCP setup";
+    if (cym_dhcp_server_configure(ap_netif,&ip) != ESP_OK) {
+        s_ntp_net_status="AP DHCP setup failed";
+        return false;
+    }
     if (!ap_netif || esp_netif_get_ip_info(ap_netif, &ip) != ESP_OK || ip.ip.addr == 0) {
         return false;
     }
@@ -29064,26 +29091,37 @@ static void clock_wifi_task(void *arg)
     }
 
     wifi_claimed = true;
-    esp_wifi_set_mode(WIFI_MODE_STA);
+    s_ntp_net_status="STA setup";
+    if (cym_net_stage("clock-sta-mode",esp_wifi_set_mode(WIFI_MODE_STA)) != ESP_OK) {
+        s_ntp_wifi_failed=true;goto done;
+    }
 #if CONFIG_BOARD_HAS_5GHZ
     esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY);
 #endif
     esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-
+    if (cym_dhcp_client_prepare(sta_netif) != ESP_OK) {
+        s_ntp_net_status="STA DHCP setup failed";s_ntp_wifi_failed=true;goto done;
+    }
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
         esp_wifi_start();
         wifi_config_t cfg = {0};
         strncpy((char *)cfg.sta.ssid, g_saved_wifi_ssid, sizeof(cfg.sta.ssid) - 1);
         strncpy((char *)cfg.sta.password, g_saved_wifi_pass, sizeof(cfg.sta.password) - 1);
-        esp_wifi_set_config(WIFI_IF_STA, &cfg);
+        if (cym_net_stage("clock-sta-config",esp_wifi_set_config(WIFI_IF_STA,&cfg)) != ESP_OK) {
+            s_ntp_wifi_failed=true;goto done;
+        }
         esp_wifi_clear_fast_connect();
-        esp_wifi_connect();
+        if (cym_net_stage("clock-sta-connect",esp_wifi_connect()) != ESP_OK) {
+            s_ntp_wifi_failed=true;goto done;
+        }
     }
 
-    bool got_ip = false;
+    bool got_ip = false, associated = false;
     for (int i = 0; i < 150 && !s_ntp_stopping; i++) {
-        if (sta_netif) {
+        associated = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+        s_ntp_net_status=associated?"Associated; waiting DHCP":"Waiting association";
+        if (sta_netif && associated) {
             esp_netif_ip_info_t ip;
             if (esp_netif_get_ip_info(sta_netif, &ip) == ESP_OK && ip.ip.addr != 0) {
                 snprintf(s_ntp_ip_str, sizeof(s_ntp_ip_str), IPSTR, IP2STR(&ip.ip));
@@ -29096,10 +29134,14 @@ static void clock_wifi_task(void *arg)
 
     if (s_ntp_stopping) goto done;
     if (!got_ip) {
+        s_ntp_net_status=associated?"DHCP timeout (associated)":"Association timeout";
+        cym_net_stage(associated?"clock-dhcp-timeout":"clock-association-timeout",ESP_ERR_TIMEOUT);
         s_ntp_wifi_failed = true;
         goto done;
     }
 
+    cym_net_stage("clock-ip-observed",ESP_OK);
+    s_ntp_net_status="Address acquired";
     // Serve immediately; public synchronization is bounded recovery.
     ntp_start_mdns_and_server();
     s_ntp_wifi_connected = true;
@@ -29253,9 +29295,9 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
                      "AP IP: %s" : "DHCP IP: %s", s_ntp_ip_str);
             clock_label_set_text_if_changed(s_ntp_ip_lbl, ibuf);
         } else if (s_ntp_wifi_failed) {
-            clock_label_set_text_if_changed(s_ntp_ip_lbl, "DHCP IP: OFFLINE");
+            clock_label_set_text_if_changed(s_ntp_ip_lbl, s_ntp_net_status);
         } else {
-            clock_label_set_text_if_changed(s_ntp_ip_lbl, "DHCP IP: connecting...");
+            clock_label_set_text_if_changed(s_ntp_ip_lbl, s_ntp_net_status);
         }
     }
     if (s_ntp_network_lbl) {
@@ -29278,10 +29320,9 @@ static void clock_ui_timer_cb(lv_timer_t *timer)
     }
     if (s_ntp_host_lbl) {
 #if BOARD_TIME_HAS_MDNS
-        clock_label_set_text_if_changed(s_ntp_host_lbl, s_ntp_mdns_ok ?
-            "Hostname: cym-ntp.local" : "Hostname: mDNS failed");
+        clock_label_set_text_if_changed(s_ntp_host_lbl, s_ntp_mdns_status);
 #else
-        clock_label_set_text_if_changed(s_ntp_host_lbl, "Hostname: mDNS not available");
+        clock_label_set_text_if_changed(s_ntp_host_lbl, "mDNS: Disabled (board capability)");
 #endif
     }
     if (s_ntp_service_lbl) {
@@ -68587,8 +68628,17 @@ static uint8_t     s_ots_scan_tick  = 0;     /* cycles 0-2 for dot animation */
  * over a second (measured: "LONG lv_timer_handler() took 1022.4 ms" — flagged
  * as a WDT-timeout risk by the firmware's own instrumentation) because that
  * callback runs synchronously inside lv_timer_handler(). */
-static volatile bool s_ots_stopping   = false;  /* stop requested, background task running */
-static volatile bool s_ots_stop_done  = false;  /* background task finished; consumed by timer */
+static _Atomic bool s_ots_stopping   = false;  /* stop requested, background task running */
+static bool s_ots_stop_done  = false;  /* background task finished; consumed by timer */
+
+/* Main owns generation/admission/UI; the preadmitted worker drains one lifetime. */
+static TaskHandle_t s_ots_stop_handle;
+static _Atomic bool s_ots_worker_parked;
+static bool s_ots_show_results;
+static uint32_t s_ots_generation, s_ots_worker_generation;
+static esp_err_t s_ots_finalize_result;
+static ot_survey_geo_t s_ots_end_geo;
+static void s_ots_request_stop(bool show_results);
 
 static ot_survey_session_t   s_ots_session;          /* lives in .bss */
 static ot_survey_profile_t   s_ots_sel_profile = OT_PROFILE_BALANCED;
@@ -68656,31 +68706,14 @@ static void s_ots_timer_cb(lv_timer_t *t)
 }
 
 static void s_ots_stop_task(void *arg);         /* defined below; used by the Stop button */
-static void s_ots_orphan_stop_task(void *arg);  /* defined below; used by the screen stop hook */
+
 
 static void ot_survey_screen_stop(void)
 {
     if (s_ots_tmr) { lv_timer_del(s_ots_tmr); s_ots_tmr = NULL; }
-    /* If a survey is still running when the user leaves via top ‹ Back / Home, stop it
-     * on a background task (ot_radio_scheduler_stop + ot_survey_stop take ~1-3s —
-     * running that inline in this hook, which fires from the main/LVGL loop, would
-     * freeze the UI / risk the WDT). Otherwise the survey kept running after the user
-     * navigated away.
-     *
-     * Uses s_ots_orphan_stop_task, NOT s_ots_stop_task — this path must NOT touch
-     * s_ots_stopping/s_ots_stop_done. s_ots_tmr is always deleted (just above) before
-     * this fires, so nothing here is left watching those flags; if they were set
-     * anyway, they'd sit dangling until whatever s_ots_tmr gets created next, which
-     * could belong to a completely different, later survey — silently hijacking it
-     * into auto-showing an unrelated results screen instead of the config/running
-     * panel the user expects. The !s_ots_stopping guard here still matters: it means
-     * a Stop-button-initiated stop (s_ots_stop_task) is already in flight, so don't
-     * also spawn a redundant concurrent teardown. */
-    if (g_ot_survey_active && !s_ots_stopping) {
-        if (s_ots_allowlist) { free(s_ots_allowlist); s_ots_allowlist = NULL; }
-        s_ots_allowlist_count = 0;
-        xTaskCreate(s_ots_orphan_stop_task, "ots_ostop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
-    }
+    s_ots_show_results=false; /* Home/Back must not navigate on completion. */
+    if (s_ots_stop_handle) s_ots_request_stop(false);
+    else { s_ots_stopping=false;s_ots_stop_done=false; }
     s_ots_cfg_cont  = NULL;
     s_ots_run_cont  = NULL;
     s_ots_prof_lbl  = NULL;
@@ -68739,7 +68772,17 @@ static void s_ots_start_cb(lv_event_t *e)
         start_geo.accuracy_m = gps->accuracy;
     }
 
+    if (s_ots_stop_handle || s_ots_stopping || g_active_survey || g_ot_survey_active) return;
+    s_ots_worker_parked=false;s_ots_stop_done=false;s_ots_show_results=false;
+    s_ots_worker_generation=++s_ots_generation;
+    /* Admit existing 4096-byte drain before resources; Stop/Home allocate nothing. */
+    if (xTaskCreate(s_ots_stop_task,"ots_stop",4096,NULL,tskIDLE_PRIORITY+2,
+                    &s_ots_stop_handle)!=pdPASS) {
+        s_ots_stop_handle=NULL;
+        ESP_LOGE(TAG,"[OTS] stop-worker admission failed");return;
+    }
     if (ot_survey_start(&cfg, &s_ots_session, &start_geo) != ESP_OK) {
+        s_ots_request_stop(false);
         ESP_LOGE(TAG, "[OTS] survey start failed");
         return;
     }
@@ -68773,55 +68816,51 @@ static void s_ots_start_cb(lv_event_t *e)
 static void s_ots_stop_task(void *arg)
 {
     (void)arg;
-    ot_radio_scheduler_stop();
-    if (g_active_survey) {
-        ot_survey_geo_t end_geo = {0};
-        const gps_data_t *gps = gps_best();
-        if (gps && gps->valid) {
-            end_geo.valid      = true;
-            end_geo.latitude   = gps->latitude;
-            end_geo.longitude  = gps->longitude;
-            end_geo.altitude_m = gps->altitude;
-            end_geo.accuracy_m = gps->accuracy;
-        }
-        ot_survey_stop(g_active_survey, &end_geo);
-    }
-    s_ots_stop_done = true;  /* consumed by s_ots_timer_cb, which does the UI swap */
-    vTaskDelete(NULL);
+    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+    /* Main unpublished adapters before notification. Timeout retains ownership. */
+    while (ot_radio_scheduler_stop()!=ESP_OK) vTaskDelay(pdMS_TO_TICKS(100));
+    while (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex,pdMS_TO_TICKS(300))!=pdTRUE)
+        vTaskDelay(pdMS_TO_TICKS(20));
+    s_ots_finalize_result=ot_survey_stop(&s_ots_session,&s_ots_end_geo);
+    if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
+    s_ots_worker_parked=true;
+    for (;;) vTaskSuspend(NULL);
 }
 
-/* Identical radio/session teardown to s_ots_stop_task(), used when the user
- * leaves the OT Survey screen via top Back/Home mid-survey (ot_survey_screen_stop()
- * below) instead of tapping the in-screen Stop button. Deliberately does NOT touch
- * s_ots_stopping/s_ots_stop_done. Those flags exist so the SAME timer instance that
- * requested a stop can watch for its own completion and auto-show results — they
- * are meant for the Stop-button path, where s_ots_tmr keeps running throughout.
- * ot_survey_screen_stop() always deletes s_ots_tmr synchronously before this task
- * even starts, so nothing is left to legitimately consume them here. Before this
- * split (fixed 2026-09-22), Home/Back mid-survey DID set them, and they'd sit
- * "dangling" until whatever s_ots_tmr got created next — including a brand new
- * timer from a *different*, later survey the user had since started — silently
- * hijacking it into showing an old/unrelated results screen instead of the fresh
- * config or running panel the user was expecting. Field report: "I did navigate
- * home a couple of times to try to get the scan to re run but... it gave me a
- * screen as if the scan had already ran and there were no results." */
-static void s_ots_orphan_stop_task(void *arg)
+static bool s_ots_owner_busy(void) { return s_ots_stopping; }
+
+/* Main loop polls even after the screen timer has been deleted. */
+static void s_ots_owner_poll(void)
 {
-    (void)arg;
-    ot_radio_scheduler_stop();
-    if (g_active_survey) {
-        ot_survey_geo_t end_geo = {0};
-        const gps_data_t *gps = gps_best();
-        if (gps && gps->valid) {
-            end_geo.valid      = true;
-            end_geo.latitude   = gps->latitude;
-            end_geo.longitude  = gps->longitude;
-            end_geo.altitude_m = gps->altitude;
-            end_geo.accuracy_m = gps->accuracy;
-        }
-        ot_survey_stop(g_active_survey, &end_geo);
+    if (!s_ots_stop_handle || !s_ots_worker_parked ||
+        eTaskGetState(s_ots_stop_handle)!=eSuspended) return;
+    for (unsigned core=0;core<configNUMBER_OF_CORES;core++)
+        if (xTaskGetCurrentTaskHandleForCore(core)==s_ots_stop_handle) return;
+    vTaskDelete(s_ots_stop_handle);s_ots_stop_handle=NULL;
+    s_ots_worker_parked=false;
+    if (s_ots_allowlist) { free(s_ots_allowlist);s_ots_allowlist=NULL; }
+    s_ots_allowlist_count=0;
+    if (s_ots_finalize_result!=ESP_OK)
+        ESP_LOGW(TAG,"[OTS] finalization failed: %s",esp_err_to_name(s_ots_finalize_result));
+    if (s_ots_show_results && s_ots_tmr && s_ots_worker_generation==s_ots_generation)
+        s_ots_stop_done=true;
+    else { s_ots_stopping=false;s_ots_stop_done=false; }
+}
+
+static void s_ots_request_stop(bool show_results)
+{
+    if (!s_ots_stop_handle || s_ots_stopping) return;
+    s_ots_stopping=true;s_ots_show_results=show_results;s_ots_stop_done=false;
+    /* Export/PCAP consumers run on main; ISR producers only fill bounded rings. */
+    g_active_survey=NULL;
+    memset(&s_ots_end_geo,0,sizeof(s_ots_end_geo));
+    const gps_data_t *gps=gps_best();
+    if (gps && gps->valid) {
+        s_ots_end_geo.valid=true;s_ots_end_geo.latitude=gps->latitude;
+        s_ots_end_geo.longitude=gps->longitude;s_ots_end_geo.altitude_m=gps->altitude;
+        s_ots_end_geo.accuracy_m=gps->accuracy;
     }
-    vTaskDelete(NULL);
+    xTaskNotifyGive(s_ots_stop_handle);
 }
 
 /* Stop button: hand off scheduler/survey teardown to a background task so this
@@ -68830,17 +68869,9 @@ static void s_ots_orphan_stop_task(void *arg)
 static void s_ots_stop_cb(lv_event_t *e)
 {
     (void)e;
-    if (s_ots_stopping) return;  /* already stopping — ignore repeat taps */
-    s_ots_stopping  = true;
-    s_ots_stop_done = false;
-    if (s_ots_stop_btn) lv_obj_add_state(s_ots_stop_btn, LV_STATE_DISABLED);
-    if (s_ots_scan_lbl) lv_label_set_text(s_ots_scan_lbl, "Stopping...");
-
-    /* Release allowlist memory now — no longer needed once stop is requested */
-    if (s_ots_allowlist) { free(s_ots_allowlist); s_ots_allowlist = NULL; }
-    s_ots_allowlist_count = 0;
-
-    xTaskCreate(s_ots_stop_task, "ots_stop", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
+    s_ots_request_stop(true);
+    if (s_ots_stop_btn) lv_obj_add_state(s_ots_stop_btn,LV_STATE_DISABLED);
+    if (s_ots_scan_lbl) lv_label_set_text(s_ots_scan_lbl,"Stopping...");
 }
 
 /* Past Surveys button — only reachable from the idle config panel (a survey

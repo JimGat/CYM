@@ -1,0 +1,273 @@
+--- mdns_service.c
++++ mdns_service.c
+@@ -53,6 +53,11 @@
+ #endif
+ static QueueHandle_t s_action_queue;
+ static esp_timer_handle_t s_timer_handle;
++/* Single public lifecycle owner. Callback admission is separately synchronized. */
++static bool s_stopping;
++static unsigned s_timer_inflight;
++static portMUX_TYPE s_admission_mux = portMUX_INITIALIZER_UNLOCKED;
++esp_err_t mdns_free_wait(void);
+ 
+ static const char *TAG = "mdns_service";
+ 
+@@ -152,7 +157,7 @@
+         break;
+ #endif
+     case ACTION_TX_HANDLE:
+-        mdns_priv_send_action(action, ACTION_CLEANUP);
++        /* Packet remains owned by the TX list; clear_tx_queue frees it once. */
+         break;
+     case ACTION_RX_HANDLE:
+         mdns_priv_receive_action(action, ACTION_CLEANUP);
+@@ -220,30 +225,36 @@
+  */
+ static void service_task(void *pvParameters)
+ {
++    (void)pvParameters;
+     mdns_action_t *a = NULL;
+-    for (;;) {
+-        if (mdns_priv_is_server_init() && s_action_queue) {
+-            if (xQueueReceive(s_action_queue, &a, portMAX_DELAY) == pdTRUE) {
+-                assert(a);
+-                if (a->type == ACTION_TASK_STOP) {
+-                    break;
+-                }
+-                MDNS_SERVICE_LOCK();
+-                execute_action(a);
+-                MDNS_SERVICE_UNLOCK();
+-            }
+-        } else {
+-            vTaskDelay(500 * portTICK_PERIOD_MS);
++    while (!__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE)) {
++        if (xQueueReceive(s_action_queue, &a, pdMS_TO_TICKS(100)) == pdTRUE) {
++            assert(a);
++            MDNS_SERVICE_LOCK();
++            if (__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE)) free_action(a);
++            else execute_action(a);
++            MDNS_SERVICE_UNLOCK();
+         }
+     }
+-    s_service_task_handle = NULL;
+-    vTaskDelay(portMAX_DELAY);
++    /* The owner must observe suspension AND absence from every CPU. */
++    for (;;) vTaskSuspend(NULL);
+ }
+ 
+ static void timer_cb(void *arg)
+ {
++    (void)arg;
++    portENTER_CRITICAL(&s_admission_mux);
++    if (__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE)) {
++        portEXIT_CRITICAL(&s_admission_mux);
++        return;
++    }
++    ++s_timer_inflight;
++    portEXIT_CRITICAL(&s_admission_mux);
+     mdns_priv_send_packets();
+     mdns_priv_query_start_stop();
++    portENTER_CRITICAL(&s_admission_mux);
++    --s_timer_inflight;
++    portEXIT_CRITICAL(&s_admission_mux);
+ }
+ 
+ static esp_err_t start_timer(void)
+@@ -263,14 +274,15 @@
+ 
+ static esp_err_t stop_timer(void)
+ {
+-    esp_err_t err = ESP_OK;
+-    if (s_timer_handle) {
+-        err = esp_timer_stop(s_timer_handle);
+-        if (err) {
+-            return err;
+-        }
+-        err = esp_timer_delete(s_timer_handle);
+-    }
++    if (!s_timer_handle) return ESP_OK;
++    esp_err_t err = esp_timer_stop(s_timer_handle);
++    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
++    portENTER_CRITICAL(&s_admission_mux);
++    bool busy = s_timer_inflight != 0;
++    portEXIT_CRITICAL(&s_admission_mux);
++    if (busy) return ESP_ERR_TIMEOUT;
++    err = esp_timer_delete(s_timer_handle);
++    if (err == ESP_OK) s_timer_handle = NULL;
+     return err;
+ }
+ 
+@@ -299,6 +311,7 @@
+     HOOK_MALLOC_FAILED;
+ err:
+     mdns_mem_task_free(s_stack_buffer);
++    s_stack_buffer = NULL;
+     return ret;
+ #endif
+ }
+@@ -318,7 +331,7 @@
+         ESP_RETURN_ON_FALSE(s_service_semaphore != NULL, ESP_FAIL, TAG, "Failed to create the mDNS service lock");
+     }
+     MDNS_SERVICE_LOCK();
+-    ESP_GOTO_ON_ERROR(start_timer(), err, TAG, "Failed to start the mDNS service timer");
++    ESP_GOTO_ON_ERROR(start_timer(), err_stop_timer, TAG, "Failed to start the mDNS service timer");
+ 
+     if (!s_service_task_handle) {
+         ESP_GOTO_ON_ERROR(create_task_with_caps(), err_stop_timer, TAG, "Failed to start the mDNS service task");
+@@ -333,11 +346,7 @@
+     return ret;
+ 
+ err_stop_timer:
+-    stop_timer();
+-err:
+     MDNS_SERVICE_UNLOCK();
+-    vSemaphoreDelete(s_service_semaphore);
+-    s_service_semaphore = NULL;
+     return ret;
+ }
+ 
+@@ -349,23 +358,23 @@
+  */
+ static esp_err_t service_task_stop(void)
+ {
+-    stop_timer();
+-    if (s_service_task_handle) {
+-        TaskHandle_t task_handle = s_service_task_handle;
+-        mdns_action_t action;
+-        mdns_action_t *a = &action;
+-        action.type = ACTION_TASK_STOP;
+-        if (xQueueSend(s_action_queue, &a, (TickType_t)0) != pdPASS) {
++    /* Out-of-band stop cannot be lost when the data queue is full. */
++    __atomic_store_n(&s_stopping, true, __ATOMIC_RELEASE);
++    for (unsigned tries = 0; tries < 30; ++tries) {
++        if (stop_timer() != ESP_OK) { vTaskDelay(pdMS_TO_TICKS(10)); continue; }
++        TaskHandle_t task = s_service_task_handle;
++        if (!task) return ESP_OK;
++        bool parked = eTaskGetState(task) == eSuspended;
++        for (unsigned core = 0; core < configNUMBER_OF_CORES; ++core)
++            if (xTaskGetCurrentTaskHandleForCore(core) == task) parked = false;
++        if (parked) {
++            vTaskDelete(task);
+             s_service_task_handle = NULL;
++            return ESP_OK;
+         }
+-        while (s_service_task_handle) {
+-            vTaskDelay(10 / portTICK_PERIOD_MS);
+-        }
+-        vTaskDelete(task_handle);
+-    }
+-    vSemaphoreDelete(s_service_semaphore);
+-    s_service_semaphore = NULL;
+-    return ESP_OK;
++        vTaskDelay(pdMS_TO_TICKS(10));
++    }
++    return ESP_ERR_TIMEOUT; /* No release, no conflicting reentry. */
+ }
+ 
+ void mdns_priv_service_lock(void)
+@@ -382,9 +391,8 @@
+ {
+     esp_err_t err = ESP_OK;
+ 
+-    if (mdns_priv_is_server_init()) {
+-        return err;
+-    }
++    if (__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE)) return ESP_ERR_INVALID_STATE;
++    if (mdns_priv_is_server_init()) return err;
+ 
+     if (mdns_priv_responder_init() != ESP_OK) {
+         return ESP_ERR_NO_MEM;
+@@ -398,7 +406,7 @@
+ 
+     if (mdns_priv_netif_init() != ESP_OK) {
+         err = ESP_FAIL;
+-        goto free_queue;
++        goto free_all_and_disable_pcbs;
+     }
+ 
+     if (service_task_start()) {
+@@ -410,35 +418,30 @@
+     return ESP_OK;
+ 
+ free_all_and_disable_pcbs:
+-    mdns_priv_netif_deinit();
+-free_queue:
+-    vQueueDelete(s_action_queue);
+ free_responder:
+-    mdns_priv_responder_free();
++    /* Includes registered event handlers, queued payloads and partial timer. */
++    if (mdns_free_wait() != ESP_OK) return ESP_ERR_INVALID_STATE;
+     return err;
+ }
+ 
+-void mdns_free(void)
+-{
+-    if (!mdns_priv_is_server_init()) {
+-        return;
+-    }
+-
+-    // Unregister handlers before destroying the mdns internals to avoid receiving async events while deinit
++esp_err_t mdns_free_wait(void)
++{
++    if (!mdns_priv_is_server_init()) return ESP_OK;
++    __atomic_store_n(&s_stopping, true, __ATOMIC_RELEASE);
++    /* IDF event unregister serializes against the entered event-loop callback. */
+     mdns_priv_netif_unregister_predefined_handlers();
+-
+-    mdns_service_remove_all();
+-    service_task_stop();
+-#if !MDNS_TASK_USE_SIMPLE_CREATE
+-    mdns_mem_task_free(s_stack_buffer);
+-#endif
++    if (service_task_stop() != ESP_OK) return ESP_ERR_TIMEOUT;
++    /* TCP/IP API call serializes PCB removal with RX callbacks. Timer and worker
++     * are now quiescent; no producer can borrow responder data past this point. */
+     mdns_priv_pcb_deinit();
+     if (s_action_queue) {
+         mdns_action_t *c;
+-        while (xQueueReceive(s_action_queue, &c, 0) == pdTRUE) {
+-            free_action(c);
+-        }
+-        vQueueDelete(s_action_queue);
++        while (xQueueReceive(s_action_queue, &c, 0) == pdTRUE) free_action(c);
++        portENTER_CRITICAL(&s_admission_mux);
++        QueueHandle_t retired = s_action_queue;
++        s_action_queue = NULL;
++        portEXIT_CRITICAL(&s_admission_mux);
++        vQueueDelete(retired);
+     }
+     mdns_priv_clear_tx_queue();
+     mdns_priv_query_free();
+@@ -447,12 +450,27 @@
+     mdns_priv_cache_clear();
+ #endif
+     mdns_priv_responder_free();
++#if !MDNS_TASK_USE_SIMPLE_CREATE
++    mdns_mem_task_free(s_stack_buffer);
++    s_stack_buffer = NULL;
++#endif
++    if (s_service_semaphore) vSemaphoreDelete(s_service_semaphore);
++    s_service_semaphore = NULL;
++    __atomic_store_n(&s_stopping, false, __ATOMIC_RELEASE);
++    return ESP_OK;
++}
++
++void mdns_free(void)
++{
++    if (mdns_free_wait() != ESP_OK)
++        ESP_LOGW(TAG, "mDNS stop pending; retaining resources and blocking reentry");
+ }
+ 
+ bool mdns_priv_queue_action(mdns_action_t *action)
+ {
+-    if (xQueueSend(s_action_queue, &action, (TickType_t)0) != pdPASS) {
+-        return false;
+-    }
+-    return true;
+-}
++    portENTER_CRITICAL(&s_admission_mux);
++    bool accepted = !__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE) && s_action_queue &&
++        xQueueSend(s_action_queue, &action, 0) == pdPASS;
++    portEXIT_CRITICAL(&s_admission_mux);
++    return accepted; /* Rejected payload remains producer-owned. */
++}

@@ -1,3 +1,4 @@
+#include "cym_netif_lifecycle.h"
 #include "wifi_attacks.h"
 #include "wifi_scanner.h"
 #include "wifi_wardrive.h"
@@ -606,7 +607,7 @@ esp_err_t wifi_attacks_start_evil_twin(const char *ssid, const char *password) {
     }
     
     // Stop DHCP server to configure custom IP
-    esp_netif_dhcps_stop(ap_netif);
+    /* DHCP stop/set/start is checked below as one transaction. */
     
     // Set static IP 172.0.0.1 for AP
     esp_netif_ip_info_t ip_info;
@@ -614,9 +615,10 @@ esp_err_t wifi_attacks_start_evil_twin(const char *ssid, const char *password) {
     ip_info.gw.addr = esp_ip4addr_aton("172.0.0.1");
     ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
     
-    esp_err_t ret = esp_netif_set_ip_info(ap_netif, &ip_info);
+    esp_err_t ret = cym_dhcp_server_configure(ap_netif, &ip_info);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set AP IP to 172.0.0.1: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "AP DHCP configuration failed: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     // Configure AP with Evil Twin SSID (with Zero Width Space)
@@ -659,7 +661,7 @@ esp_err_t wifi_attacks_start_evil_twin(const char *ssid, const char *password) {
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &evil_twin_event_handler, NULL);
     
     // Start DHCP server
-    ret = esp_netif_dhcps_start(ap_netif);
+    ret = ESP_OK; /* already started and verified by cym_dhcp_server_configure */
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to start DHCP server: %s", esp_err_to_name(ret));
     }
@@ -1918,7 +1920,7 @@ esp_err_t wifi_attacks_start_portal(const char *ssid) {
     }
     
     // Stop DHCP server to configure custom IP
-    esp_netif_dhcps_stop(ap_netif);
+    /* DHCP stop/set/start is checked below as one transaction. */
     
     // Set static IP 172.0.0.1 for AP
     esp_netif_ip_info_t ip_info;
@@ -1926,9 +1928,10 @@ esp_err_t wifi_attacks_start_portal(const char *ssid) {
     ip_info.gw.addr = esp_ip4addr_aton("172.0.0.1");
     ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
     
-    esp_err_t ret = esp_netif_set_ip_info(ap_netif, &ip_info);
+    esp_err_t ret = cym_dhcp_server_configure(ap_netif, &ip_info);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set AP IP to 172.0.0.1: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "AP DHCP configuration failed: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     // Configure AP with portal SSID (no Zero Width Space - this is not Evil Twin)
@@ -1950,7 +1953,7 @@ esp_err_t wifi_attacks_start_portal(const char *ssid) {
     esp_wifi_set_config(WIFI_IF_AP, &ap_config);
     
     // Start DHCP server
-    ret = esp_netif_dhcps_start(ap_netif);
+    ret = ESP_OK; /* already started and verified by cym_dhcp_server_configure */
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to start DHCP server: %s", esp_err_to_name(ret));
     }
@@ -2015,16 +2018,17 @@ esp_err_t wifi_attacks_start_rogue_ap(const char *ssid, const char *password,
         }
     }
     
-    esp_netif_dhcps_stop(ap_netif);
+    /* DHCP stop/set/start is checked below as one transaction. */
     
     esp_netif_ip_info_t ip_info;
     ip_info.ip.addr = esp_ip4addr_aton("172.0.0.1");
     ip_info.gw.addr = esp_ip4addr_aton("172.0.0.1");
     ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
     
-    esp_err_t ret = esp_netif_set_ip_info(ap_netif, &ip_info);
+    esp_err_t ret = cym_dhcp_server_configure(ap_netif, &ip_info);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to set AP IP: %s", esp_err_to_name(ret));
+        ESP_LOGW(TAG, "AP DHCP configuration failed: %s", esp_err_to_name(ret));
+        return ret;
     }
     
     wifi_config_t ap_config = {
@@ -2044,7 +2048,7 @@ esp_err_t wifi_attacks_start_rogue_ap(const char *ssid, const char *password,
     
     esp_wifi_set_config(WIFI_IF_AP, &ap_config);
     
-    ret = esp_netif_dhcps_start(ap_netif);
+    ret = ESP_OK; /* already started and verified by cym_dhcp_server_configure */
     if (ret != ESP_OK) {
         ESP_LOGW(TAG, "Failed to start DHCP server: %s", esp_err_to_name(ret));
     }

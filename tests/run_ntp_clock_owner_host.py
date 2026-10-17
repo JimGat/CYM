@@ -3,7 +3,7 @@
 from pathlib import Path
 import os, re, subprocess, resource
 resource.setrlimit(resource.RLIMIT_CORE,(0,0))
-r=Path(__file__).resolve().parents[1];e=Path('/home/dev/projects/cym-ntp-memory-evidence');os.environ['TMPDIR']=str(e)
+r=Path(__file__).resolve().parents[1];e=Path(os.environ.get('CYM_TEST_OUT','/home/dev/projects/cym-targeted-refactor-20261017'));os.environ['TMPDIR']=str(e)
 s=(r/'ESP32C5/main/main.c').read_text()
 def function(name):
     text=s
@@ -17,7 +17,7 @@ def function(name):
     while depth:
         depth+=(text[i]=='{')-(text[i]=='}');i+=1
     return text[start:i]
-names=['ntp_start_mdns_and_server']
+names=['clock_mdns_release','ntp_start_mdns_and_server']
 if 'static void clock_network_release(' in s: names+=['clock_network_release','clock_network_cleanup_poll','clock_stop','clock_radio_admit','clock_radio_reset_admit','clock_defer_radio_navigation','clock_cancel_radio_navigation','clock_radio_handoff_poll','ensure_wifi_mode','ensure_ble_mode','clock_attack_route_uses_radio']
 prod='\n'.join(function(n) for n in names)
 code=r"""
@@ -33,6 +33,7 @@ code=r"""
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_TIMEOUT 0x107
+#define ESP_ERR_NO_MEM 0x101
 #define ESP_ERR_INVALID_STATE 0x103
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 4
@@ -63,6 +64,7 @@ static void radio_reset_to_idle(void) { if(clock_radio_reset_admit()){resets++;}
 static void new_ble(void);
 static void new_wifi(void);
 
+static _Atomic(const char *) s_ntp_mdns_status;
 static bool s_ntp_mdns_ok,s_ntp_mdns_owned,s_ntp_udp_ok,s_ntp_wifi_connected,s_ntp_wifi_failed;
 static int s_clock_mode=CLOCK_MODE_AP_NTP,s_ntp_public_state;
 static char s_ntp_ip_str[20],s_ntp_ap_ssid[24];
@@ -87,7 +89,7 @@ static int cym_ntp_server_start(void) { assert(calls==0);int rc=boundary(1);ntp_
 static int mdns_init(void) { assert(ntp_started);return boundary(2); }
 static int mdns_hostname_set(const char *n) { assert(!strcmp(n,"cym-ntp"));return boundary(3); }
 static int mdns_service_add(const char *a,const char *b,const char *c,int p,void *d,int n) { (void)a;(void)b;(void)c;(void)p;(void)d;(void)n;assert(!s_ntp_stopping);advertised++;return boundary(4); }
-static void mdns_free(void) { freed++;s_ntp_mdns_owned=false; }
+static int mdns_free_wait(void) { freed++;return ESP_OK; }
 static int cym_ntp_server_stop_wait(uint32_t ms) { assert(ms==0);wait_calls++;if(running)return ESP_ERR_TIMEOUT;stopped++;return ESP_OK; }
 static void vTaskDelay(unsigned ms) { assert(ms);now+=100000;running=0; }
 static int64_t esp_timer_get_time(void) { return now; }
@@ -133,7 +135,7 @@ int main(int argc,char **argv) {
         ntp_start_mdns_and_server();
         assert(!s_ntp_mdns_ok || s_ntp_udp_ok);
         if(fail==1 || c==20)assert(!advertised && !s_ntp_mdns_ok);
-        if(fail>=2)assert(!s_ntp_mdns_ok);
+        if(fail>=2)assert(!s_ntp_mdns_ok && !s_ntp_mdns_owned && freed==1);
         if(cancel_at && cancel_at<4)assert(!advertised);
         if(!fail && !cancel_at && c!=20)assert(s_ntp_mdns_ok && advertised==1);
     }

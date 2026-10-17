@@ -54,7 +54,7 @@ extern const uint8_t OT_PROFILE_WEIGHTS[OT_PROFILE_COUNT][OT_SLOT_COUNT];
  * Set true when the scheduler is running.  main.c checks this at attack
  * screen entry points to prevent radio conflicts.
  */
-extern volatile bool g_ot_survey_active;
+extern _Atomic bool g_ot_survey_active;
 
 /* ── Function pointer hooks (injected from main.c) ───────────────────────── */
 
@@ -81,6 +81,7 @@ typedef enum {
     OT_SCHED_IDLE    = 0,
     OT_SCHED_RUNNING = 1,
     OT_SCHED_STOP_REQUESTED = 2,
+    OT_SCHED_PARKED = 3,
 } ot_sched_state_t;
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
@@ -100,9 +101,10 @@ esp_err_t ot_radio_scheduler_start(ot_survey_profile_t profile);
 
 /*
  * ot_radio_scheduler_stop — request task to stop and wait up to 3 s for it
- * to exit cleanly.  Clears g_ot_survey_active.
+ * to park and become off-core. Timeout retains storage and survey lock.
  */
 esp_err_t ot_radio_scheduler_stop(void);
+bool ot_radio_scheduler_owns_current_task(void);
 
 /*
  * ot_radio_current_slot — returns the slot currently being serviced, or

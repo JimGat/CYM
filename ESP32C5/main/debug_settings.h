@@ -10,5 +10,6 @@ esp_err_t cym_debug_load(void);
 esp_err_t cym_debug_set(bool enabled);
 int cym_debug_command(int argc, char **argv);
 esp_err_t cym_debug_console_start(void);
+const char *cym_debug_console_status(void);
 void cym_debug_memory_report(void);
 #endif
