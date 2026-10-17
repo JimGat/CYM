@@ -1,0 +1,39 @@
+name: publish-source
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish-source:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: true
+
+    - name: Create source archives
+      run: python .github/create_release_archive.py
+
+    - name: Create test samples tarball
+      run: tar -czf test_samples.tar.gz test/samples
+
+    - name: Upload workflow artifact
+      if: github.event_name != 'release'
+      uses: actions/upload-artifact@v6
+      with:
+        name: source-archives
+        path: |
+          *.zip
+          *.gz
+        if-no-files-found: error
+
+    - name: Upload to release
+      if: github.event_name == 'release'
+      run: |
+        tag='${{ github.event.release.tag_name }}'
+        version="${tag#v}"
+        gh release upload --clobber "$tag" "$GITHUB_WORKSPACE/zxing-cpp-$version.tar.gz" "$GITHUB_WORKSPACE/zxing-cpp-$version.zip" "$GITHUB_WORKSPACE/test_samples.tar.gz"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

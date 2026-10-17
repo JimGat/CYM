@@ -3,6 +3,8 @@
 #include "qr_decoder_ui.h"
 #include "cym_camera.h"
 #include "cym_qr.h"
+#include "cym_qr_zxing.h"
+#include "cym_zx_alloc.h"
 #include "qr_record.h"
 #include "qr_preview.h"
 #include "esp_heap_caps.h"
@@ -40,7 +42,7 @@ typedef struct {
     unsigned min_gray,max_gray,mean_gray,dark,light;
     int width,height,format,last_error;
     size_t stride;
-    int64_t report_at,started,decode_us,max_decode_us;
+    int64_t report_at,started,decode_us,max_decode_us,acquire_us,convert_us;
     bool result_shown,text_shown;
 
     TaskHandle_t task;
@@ -50,7 +52,7 @@ typedef struct {
     SemaphoreHandle_t preview_lock;
     void *bus;
     qr_ui_save_fn save;
-    uint8_t *gray,*payload;
+    uint8_t *gray,*payload,*raw_snapshot; /* at most one explicit 153600-byte PSRAM copy */
     uint16_t *latest,*display;
     char *text;
     char status[128];
@@ -62,13 +64,16 @@ typedef struct {
 static qr_session_t *session;
 static lv_obj_t *status_label,*result_label,*preview,*retry_button;
 static lv_timer_t *poll_timer;
+static lv_obj_t *result_backdrop,*result_card,*result_status;
 static lv_obj_t *capture_button,*capture_label,*activity_label;
 static qr_ui_options_t style;
 static void theme_button(lv_obj_t *button)
 {
-    lv_obj_set_style_bg_color(button,style.card,0);
-    lv_obj_set_style_bg_color(button,style.pressed,LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(button,style.text,0);
+    lv_obj_set_style_bg_color(button,style.action,0);
+    lv_obj_set_style_bg_opa(button,LV_OPA_COVER,0);
+    lv_obj_set_style_bg_color(button,style.action_pressed,LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(button,style.action_text,0);
+    lv_obj_set_style_text_font(button,style.font,0);
     lv_obj_set_style_text_color(button,style.muted,LV_STATE_DISABLED);
     lv_obj_set_style_bg_color(button,style.card,LV_STATE_DISABLED);
     lv_obj_set_style_border_color(button,style.accent,0);
@@ -79,6 +84,7 @@ static void theme_button(lv_obj_t *button)
 /* Finite transition markers; no payload or frame bytes ever enter logs. */
 static void transition(const char *stage,int value)
 {if(cym_debug_enabled())ESP_LOGI("qr","stage=%s value=%d",stage,value);}
+static void qr_diag(const char *stage,int error,unsigned caps,size_t bytes);
 static void report(qr_session_t *s,bool final)
 {
     if(!cym_debug_enabled())return;
@@ -87,8 +93,13 @@ static void report(qr_session_t *s,bool final)
         (unsigned)s->frames,(unsigned)s->timeouts,(unsigned)s->errors,s->last_error,s->width,s->height,(unsigned)s->stride,s->format,s->options.rotation*90,
         s->min_gray,s->max_gray,s->mean_gray,s->dark,s->light,(unsigned)s->processed,(unsigned)((now-s->started)/1000),(unsigned)(s->processed*1000000000ULL/(now>s->started?now-s->started:1)),(unsigned long long)s->decode_us,(unsigned)s->max_decode_us,
         (unsigned)s->candidates,(unsigned)s->normal,(unsigned)s->mirror);
-    ESP_LOGI("qr","SUCCESS=%u INVALID_GRID_SIZE=%u INVALID_VERSION=%u FORMAT_ECC=%u DATA_ECC=%u UNKNOWN_DATA_TYPE=%u DATA_OVERFLOW=%u DATA_UNDERFLOW=%u",
-        (unsigned)s->decode_errors[0],(unsigned)s->decode_errors[1],(unsigned)s->decode_errors[2],(unsigned)s->decode_errors[3],(unsigned)s->decode_errors[4],(unsigned)s->decode_errors[5],(unsigned)s->decode_errors[6],(unsigned)s->decode_errors[7]);
+    ESP_LOGI("qr","timing acquire_us=%llu convert_preview_us=%llu decode_wall_us=%llu",(unsigned long long)s->acquire_us,(unsigned long long)s->convert_us,(unsigned long long)s->decode_us);
+    // ZXing does not expose quirc normal/mirror error bins; do not mislabel zeros.
+    cym_zx_alloc_stats_t alloc=cym_zx_alloc_stats();
+    ESP_LOGI("qr_zx","scoped_live=%u scoped_peak=%u calls=%u alloc_failures=%u foreign_frees=%u stack_hwm=%u",
+        (unsigned)alloc.live,(unsigned)alloc.peak,(unsigned)alloc.calls,(unsigned)alloc.failures,(unsigned)alloc.foreign_frees,
+        (unsigned)uxTaskGetStackHighWaterMark(NULL));
+    qr_diag("decoder_report",0,0,0);
     if(xSemaphoreTake(s->preview_lock,0)==pdTRUE){
         snprintf(s->activity,sizeof(s->activity),"Debug: frames %u / decoded frames %u / candidates %u",(unsigned)s->frames,(unsigned)s->processed,(unsigned)s->candidates);
         xSemaphoreGive(s->preview_lock);
@@ -106,6 +117,8 @@ static void gray_stats(qr_session_t *s)
     s->mean_gray=sum/(240*320);
 }
 static void qr_diag(const char *stage,int error,unsigned caps,size_t bytes);
+static bool record_allowed(void *ctx)
+{return !atomic_load(&((qr_session_t *)ctx)->cancel);}
 static bool capture_allowed(void *ctx)
 {
     qr_session_t *s=ctx;
@@ -116,14 +129,20 @@ static bool capture_allowed(void *ctx)
  * SD. One pending request; toggling debug off or Back cancels before write. */
 static bool capture_frame(qr_session_t *s,const cym_qr_stats_t *stats)
 {
-    if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation()){atomic_store(&s->capture,0);return false;}
-    int expected=1;if(!atomic_compare_exchange_strong(&s->capture,&expected,2))return false;
+    if(!capture_allowed(s)){
+        if(s->raw_snapshot){memset(s->raw_snapshot,0,153600);free(s->raw_snapshot);s->raw_snapshot=NULL;}
+        atomic_store(&s->capture,0);return false;
+    }
+    int expected=1;if(!atomic_compare_exchange_strong(&s->capture,&expected,2)){
+        if(s->raw_snapshot){memset(s->raw_snapshot,0,153600);free(s->raw_snapshot);s->raw_snapshot=NULL;}
+        return false;
+    }
     uint8_t *snapshot=heap_caps_malloc(240*320,QR_STACK_CAPS);
     int e=ENOMEM;bool paused=false;char name[40]={0},meta[640];
-    if(snapshot){
+    if(snapshot&&(!s->options.save_pair||s->raw_snapshot)){
         memcpy(snapshot,s->gray,240*320);
-        snprintf(meta,sizeof(meta),"width=240 height=320 stride=240 source_stride=%u format=RGB565_LE rotation=%u decoder_rotation=0 min=%u max=%u mean=%u dark=%u light=%u frames=%u processed=%u candidates=%u normal=%u mirror=%u errors=%u,%u,%u,%u,%u,%u,%u,%u",
-            (unsigned)s->stride,s->options.rotation*90,s->min_gray,s->max_gray,s->mean_gray,s->dark,s->light,(unsigned)s->frames,(unsigned)s->processed,(unsigned)stats->candidates,(unsigned)stats->normal_attempts,(unsigned)stats->mirror_attempts,
+        snprintf(meta,sizeof(meta),"width=240 height=320 stride=240 source_stride=%u format=RGB565_LE rotation=%u decoder_rotation=0 frame_id=%u acquisition=wake_capture_standby min=%u max=%u mean=%u dark=%u light=%u frames=%u processed=%u candidates=%u normal=%u mirror=%u errors=%u,%u,%u,%u,%u,%u,%u,%u",
+            (unsigned)s->stride,s->options.rotation*90,(unsigned)s->frames,s->min_gray,s->max_gray,s->mean_gray,s->dark,s->light,(unsigned)s->frames,(unsigned)s->processed,(unsigned)stats->candidates,(unsigned)stats->normal_attempts,(unsigned)stats->mirror_attempts,
             (unsigned)stats->errors[0],(unsigned)stats->errors[1],(unsigned)stats->errors[2],(unsigned)stats->errors[3],(unsigned)stats->errors[4],(unsigned)stats->errors[5],(unsigned)stats->errors[6],(unsigned)stats->errors[7]);
         if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation())e=ECANCELED;
         else {
@@ -140,12 +159,14 @@ static bool capture_frame(qr_session_t *s,const cym_qr_stats_t *stats)
             else if(!cym_debug_enabled()||atomic_load(&s->cancel)||atomic_load(&s->capture_generation)!=cym_debug_generation())e=ECANCELED;
             else {
                 qr_diag("debug_save_begin",0,0,0);
-                e=s->options.save_frame?s->options.save_frame(snapshot,240,320,240,meta,name,sizeof(name),capture_allowed,s):ENOSYS;
+                e=s->options.save_pair?s->options.save_pair(snapshot,s->raw_snapshot,240,320,240,480,meta,name,sizeof(name),capture_allowed,s):
+                    s->options.save_frame?s->options.save_frame(snapshot,240,320,240,meta,name,sizeof(name),capture_allowed,s):ENOSYS;
                 qr_diag("debug_save_end",e,0,0);
             }
         }
-        memset(snapshot,0,240*320);free(snapshot);
     }
+    if(snapshot){memset(snapshot,0,240*320);free(snapshot);}
+    if(s->raw_snapshot){memset(s->raw_snapshot,0,153600);free(s->raw_snapshot);s->raw_snapshot=NULL;}
     if(!e)snprintf(s->capture_status,sizeof(s->capture_status),"Saved debug/%s",name);
     else snprintf(s->capture_status,sizeof(s->capture_status),"Frame not saved: %s. Retry.",strerror(e));
     if(paused){
@@ -194,17 +215,28 @@ static void worker(void *arg)
         esp_ptr_external_ram(s->stack),QR_STACK_BYTES,(unsigned)uxTaskGetStackHighWaterMark(NULL));
     /* No flash/NVS/OTA APIs on this external stack. Camera/I2C/PARLIO and
      * FAT/SD save keep caches enabled; ISR/control/DMA descriptors stay internal. */
-    esp_err_t error=atomic_load(&s->cancel)?ESP_OK:cym_camera_open(&s->camera,s->bus);
-    qr_diag("camera_open",error,0,0);
+    esp_err_t error=ESP_OK;
     if(atomic_load(&s->cancel))goto finish;
-    if(error)goto finish;
+    // Runtime guards/TLS may need internal memory; never first-touch at live DMA low-water.
+    if(heap_caps_get_free_size(QR_TCB_CAPS)<8192||heap_caps_get_largest_free_block(QR_TCB_CAPS)<4096){
+        error=ESP_ERR_NO_MEM;qr_diag("decoder_runtime_admission",error,QR_TCB_CAPS,8192);goto finish;
+    }
+    qr_diag("decoder_init_begin",0,0,0);
     s->decoder=cym_qr_create(240,320);
     if(!s->decoder){error=ESP_ERR_NO_MEM;qr_diag("decoder_create",error,QR_STACK_CAPS,0);goto finish;}
+    if(cym_debug_enabled())ESP_LOGI("qr_zx","engine=%s initialized_before_camera=1",cym_zx_identity());
+    qr_diag("decoder_init_end",0,0,0);
+    if(atomic_load(&s->cancel))goto finish;
+    error=cym_camera_open(&s->camera,s->bus);
+    qr_diag("camera_open",error,0,0);
+    if(atomic_load(&s->cancel)||error)goto finish;
     atomic_store(&s->phase,QR_SCANNING);
     unsigned failures=0;
     while(!atomic_load(&s->cancel)){
         cym_camera_frame_t frame;
+        int64_t acquire_start=esp_timer_get_time();
         error=cym_camera_acquire(s->camera,&frame,250);
+        s->acquire_us+=esp_timer_get_time()-acquire_start;
         if(error){
             s->last_error=error;if(error==ESP_ERR_TIMEOUT)s->timeouts++;else s->errors++;
             report(s,false);
@@ -218,12 +250,14 @@ static void worker(void *arg)
         if(frame.width!=240||frame.height!=320||frame.stride<480||frame.format!=CYM_CAMERA_RGB565_LE){
             cym_camera_release(s->camera);error=ESP_ERR_INVALID_RESPONSE;s->errors++;break;
         }
+        int64_t convert_start=esp_timer_get_time();
         cym_qr_rgb565_gray(frame.data,frame.stride,s->gray,frame.width,frame.height);
         if(xSemaphoreTake(s->preview_lock,0)==pdTRUE){
             qr_preview_rgb565(frame.data,frame.stride,frame.width,frame.height,s->options.rotation,
                               s->latest,s->preview_w,s->preview_h);
             s->fresh=true;xSemaphoreGive(s->preview_lock);
         }
+        s->convert_us+=esp_timer_get_time()-convert_start;
         cym_camera_release(s->camera);
         if(atomic_load(&s->cancel))break;
         cym_qr_stats_t stats;
@@ -233,8 +267,19 @@ static void worker(void *arg)
         if(elapsed>s->max_decode_us)s->max_decode_us=elapsed;
         s->processed++;s->candidates+=stats.candidates;s->normal+=stats.normal_attempts;s->mirror+=stats.mirror_attempts;
         for(unsigned i=0;i<CYM_QR_ERROR_COUNT;i++)s->decode_errors[i]+=stats.errors[i];
+        if(cym_debug_enabled()&&(s->processed<=3||n<0))ESP_LOGI("qr_zx","frame=%u status=%d symbols=%u valid=%u length=%u decode_us=%u",
+            (unsigned)s->processed,stats.engine_status,(unsigned)stats.candidates,(unsigned)stats.valid,(unsigned)stats.payload_length,(unsigned)elapsed);
+        if(n<0){error=stats.engine_status==CYM_ZX_NO_MEMORY?ESP_ERR_NO_MEM:ESP_FAIL;qr_diag("decoder_failed",error,0,0);break;}
         if(cym_debug_enabled())gray_stats(s);
         report(s,false);
+        /* release relinquishes the public held flag; this single owner has
+         * not reacquired/closed the backend, so frame.data is still immutable.
+         * Copy only on explicit consent, before either close path. The gray
+         * input and RGB bytes are from this same acquisition, never preview. */
+        if(s->options.save_pair&&atomic_load(&s->capture)==1&&capture_allowed(s)){
+            s->raw_snapshot=heap_caps_malloc(153600,QR_STACK_CAPS);
+            if(s->raw_snapshot)for(unsigned y=0;y<320;y++)memcpy(s->raw_snapshot+y*480,frame.data+y*frame.stride,480);
+        }
         if(n>=0&&stats.valid){
             /* Immutable escaped text is published BEFORE potentially slow close
              * or SD. UI may read it, but must never reclaim a live worker. */
@@ -244,9 +289,10 @@ static void worker(void *arg)
             int close_error=cym_camera_close(&s->camera);
             transition("camera_close_end",close_error);
             char name[40]={0};transition("record_save_begin",0);
-            int save_error=(close_error||s->camera)?EBUSY:atomic_load(&s->cancel)?ECANCELED:s->save(s->payload,(size_t)n,name,sizeof(name));
+            int save_error=(close_error||s->camera)?EBUSY:atomic_load(&s->cancel)?ECANCELED:
+                s->options.save_checked?s->options.save_checked(s->payload,(size_t)n,name,sizeof(name),record_allowed,s):s->save(s->payload,(size_t)n,name,sizeof(name));
             transition("record_save_end",save_error);
-            if(!save_error)snprintf(s->status,sizeof(s->status),"QR Code - %d bytes\nSaved %s%s",n,name,close_error?"\nCamera stop incomplete; restart blocked":"");
+            if(!save_error)snprintf(s->status,sizeof(s->status),"QR Code - %d bytes\nSaved /sdcard/lab/QR/%s%s",n,name,close_error?"\nCamera stop incomplete; restart blocked":"");
             else snprintf(s->status,sizeof(s->status),"QR Code - %d bytes\nNot saved: %s%s",n,strerror(save_error),close_error?"\nCamera stop incomplete; restart blocked":"");
             /* Successful decode wins: publish/save its record once before the
              * optional diagnostic image. A close failure admits neither SD
@@ -266,10 +312,11 @@ static void worker(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 finish:
+    if(s->raw_snapshot){memset(s->raw_snapshot,0,153600);free(s->raw_snapshot);s->raw_snapshot=NULL;}
     report(s,true);
     if(s->camera){esp_err_t e=cym_camera_close(&s->camera);if(e&&atomic_load(&s->phase)!=QR_RESULT)error=e;}
     if(s->decoder){cym_qr_destroy(s->decoder);s->decoder=NULL;}
-    if(error){snprintf(s->status,sizeof(s->status),"Camera unavailable (%s). Retry or Back.",esp_err_to_name(error));atomic_store(&s->phase,QR_ERROR);}
+    if(error){snprintf(s->status,sizeof(s->status),"Scan unavailable (%s). Retry or Back.",esp_err_to_name(error));atomic_store(&s->phase,QR_ERROR);}
     /* Retained camera blocks reentry. Publish after all context work; the UI
      * must still observe actual suspension before reclaiming task storage. */
     memset(s->payload,0,CYM_QR_MAX_PAYLOAD);
@@ -313,16 +360,20 @@ static void poll(lv_timer_t *timer)
             xSemaphoreGive(s->preview_lock);
         }
     }else if(phase==QR_SAVING){
+        lv_obj_clear_flag(result_backdrop,LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(result_status,"QR decoded - Saving record / stopping camera...");
         lv_obj_add_flag(preview,LV_OBJ_FLAG_HIDDEN);
         if(!s->text_shown){lv_label_set_text_static(result_label,s->text);lv_obj_clear_flag(result_label,LV_OBJ_FLAG_HIDDEN);s->text_shown=true;transition("decoded_displayed_saving",0);}
         lv_label_set_text(status_label,"QR decoded - Saving record / stopping camera...");
     }else if((phase==QR_RESULT||phase==QR_ERROR||phase==QR_CAPTURED)&&reap(s)){
         if(!s->result_shown){
+            lv_obj_clear_flag(result_backdrop,LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(result_status,s->status);
             lv_label_set_text(status_label,s->status);
             lv_obj_add_flag(preview,LV_OBJ_FLAG_HIDDEN);
             if(phase==QR_RESULT&&!s->text_shown){lv_label_set_text_static(result_label,s->text);lv_obj_clear_flag(result_label,LV_OBJ_FLAG_HIDDEN);s->text_shown=true;}
             lv_obj_clear_flag(retry_button,LV_OBJ_FLAG_HIDDEN);
-            transition(phase==QR_RESULT?"result_displayed":"error_displayed",phase);s->result_shown=true;
+            transition(phase==QR_RESULT?"result_displayed":phase==QR_CAPTURED?"capture_displayed":"error_displayed",phase);s->result_shown=true;
         }
     }
 }
@@ -332,6 +383,10 @@ void qr_decoder_ui_stop(void)
     if(result_label)lv_label_set_text_static(result_label,"");
     if(preview)lv_img_set_src(preview,NULL);
     if(session)lv_img_cache_invalidate_src(&session->image);
+    /* Page-owned overlay cannot survive Back/Home. Detach borrowed text/image
+     * first, then delete the modal before worker/context disposal. */
+    if(result_backdrop)lv_obj_del(result_backdrop);
+    result_backdrop=result_card=result_status=NULL;
     status_label=result_label=preview=retry_button=NULL;
     capture_button=capture_label=activity_label=NULL;
     transition("ui_stop",0);
@@ -352,8 +407,10 @@ static void start(void)
     memset(s->decode_errors,0,sizeof(s->decode_errors));
     s->min_gray=s->max_gray=s->mean_gray=s->dark=s->light=0;
     s->width=s->height=s->format=s->last_error=0;s->stride=0;
-    s->decode_us=s->max_decode_us=0;s->activity[0]=0;
+    s->decode_us=s->max_decode_us=s->acquire_us=s->convert_us=0;s->activity[0]=0;
     lv_label_set_text(capture_label,"Saves camera image; may contain private QR content. Press only to consent.");
+    lv_obj_add_flag(result_backdrop,LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(result_status,"");
     s->text[0]=0;memset(s->payload,0,CYM_QR_MAX_PAYLOAD);
     lv_label_set_text_static(result_label,"");lv_obj_add_flag(result_label,LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(preview,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(retry_button,LV_OBJ_FLAG_HIDDEN);
@@ -416,6 +473,7 @@ void qr_decoder_ui_open(lv_obj_t *page,void *bus,qr_ui_save_fn save,const qr_ui_
     s->bus=bus;s->save=save;s->options=*options;s->options.rotation&=3;session=s;
     qr_preview_size(PREVIEW_W,PREVIEW_H,s->options.rotation,&s->preview_w,&s->preview_h);
     lv_obj_t *body=lv_obj_create(page);
+    lv_obj_set_style_bg_opa(body,LV_OPA_COVER,0);
     lv_obj_set_style_bg_color(body,style.panel,0);lv_obj_set_style_border_color(body,style.border,0);
     lv_obj_set_style_text_color(body,style.text,0);lv_obj_set_style_text_font(body,style.font,0);
     lv_obj_set_style_pad_all(body,6,0);lv_obj_set_style_pad_gap(body,6,0);
@@ -431,8 +489,7 @@ void qr_decoder_ui_open(lv_obj_t *page,void *bus,qr_ui_save_fn save,const qr_ui_
     lv_obj_set_style_border_width(preview,2,0);lv_obj_set_style_border_color(preview,style.accent,0);
     /* Actions precede unbounded result text, keeping Scan Again visible. The
      * body scrolls below the existing global Back/Home title bar. ASCII only. */
-    retry_button=lv_btn_create(body);theme_button(retry_button);lv_obj_add_event_cb(retry_button,retry,LV_EVENT_CLICKED,NULL);
-    lv_obj_t *caption=lv_label_create(retry_button);lv_label_set_text(caption,"Scan Again / Retry");
+    lv_obj_t *caption;
     capture_button=lv_btn_create(body);theme_button(capture_button);lv_obj_add_event_cb(capture_button,request_capture,LV_EVENT_CLICKED,NULL);
     caption=lv_label_create(capture_button);lv_label_set_text(caption,"Save Debug Frame");
     capture_label=lv_label_create(body);lv_obj_set_width(capture_label,lv_pct(100));lv_label_set_long_mode(capture_label,LV_LABEL_LONG_WRAP);
@@ -441,7 +498,46 @@ void qr_decoder_ui_open(lv_obj_t *page,void *bus,qr_ui_save_fn save,const qr_ui_
     activity_label=lv_label_create(body);lv_obj_set_width(activity_label,lv_pct(100));lv_label_set_long_mode(activity_label,LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(activity_label,style.muted,0);
     if(!cym_debug_enabled()){lv_obj_add_flag(capture_button,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(capture_label,LV_OBJ_FLAG_HIDDEN);lv_obj_add_flag(activity_label,LV_OBJ_FLAG_HIDDEN);}
-    result_label=lv_label_create(body);lv_obj_set_width(result_label,lv_pct(100));lv_label_set_long_mode(result_label,LV_LABEL_LONG_WRAP);
+    /* A fully opaque, page-owned blocking window, below the global Back/Home
+     * bar. Never put private result text on the transparent scanning surface.
+     * Size follows the live portrait/landscape resolution and existing theme. */
+    result_backdrop=lv_obj_create(page);
+    lv_obj_set_width(result_backdrop,lv_pct(100));
+    lv_obj_set_height(result_backdrop,lv_disp_get_ver_res(NULL)-30);
+    lv_obj_align(result_backdrop,LV_ALIGN_BOTTOM_MID,0,0);
+    lv_obj_set_style_bg_color(result_backdrop,style.panel,0);
+    lv_obj_set_style_bg_opa(result_backdrop,LV_OPA_COVER,0);
+    lv_obj_set_style_border_width(result_backdrop,0,0);
+    lv_obj_set_style_pad_all(result_backdrop,8,0);
+    lv_obj_clear_flag(result_backdrop,LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(result_backdrop,LV_OBJ_FLAG_CLICKABLE|LV_OBJ_FLAG_HIDDEN);
+    result_card=lv_obj_create(result_backdrop);
+    lv_obj_set_size(result_card,lv_pct(100),lv_pct(100));
+    lv_obj_center(result_card);
+    lv_obj_set_style_bg_color(result_card,style.card,0);
+    lv_obj_set_style_bg_opa(result_card,LV_OPA_COVER,0);
+    lv_obj_set_style_text_color(result_card,style.text,0);
+    lv_obj_set_style_text_font(result_card,style.font,0);
+    lv_obj_set_style_border_color(result_card,style.border,0);
+    lv_obj_set_style_border_width(result_card,1,0);
+    lv_obj_set_style_pad_all(result_card,8,0);
+    lv_obj_set_style_pad_gap(result_card,6,0);
+    lv_obj_set_flex_flow(result_card,LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(result_card,LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(result_card,LV_SCROLLBAR_MODE_AUTO);
+    result_status=lv_label_create(result_card);
+    lv_obj_set_style_text_color(result_status,style.text,0);
+    lv_obj_set_style_text_font(result_status,style.font,0);
+    lv_obj_set_width(result_status,lv_pct(100));
+    lv_label_set_long_mode(result_status,LV_LABEL_LONG_WRAP);
+    lv_label_set_recolor(result_status,false);
+    retry_button=lv_btn_create(result_card);theme_button(retry_button);
+    lv_obj_add_event_cb(retry_button,retry,LV_EVENT_CLICKED,NULL);
+    caption=lv_label_create(retry_button);lv_label_set_text(caption,"Scan Again / Retry");
+    result_label=lv_label_create(result_card);lv_obj_set_width(result_label,lv_pct(100));
+    lv_obj_set_style_text_color(result_label,style.text,0);
+    lv_obj_set_style_text_font(result_label,style.font,0);
+    lv_label_set_long_mode(result_label,LV_LABEL_LONG_WRAP);
     lv_label_set_recolor(result_label,false);
     poll_timer=lv_timer_create(poll,100,NULL);
     if(!poll_timer){strcpy(s->status,"UI timer unavailable. Back to exit.");lv_label_set_text(status_label,s->status);atomic_store(&s->done,true);return;}

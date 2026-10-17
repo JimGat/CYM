@@ -61,6 +61,8 @@ typedef struct {
     atomic_bool armed;
     atomic_bool frame_complete;
     atomic_uint recv_bytes;
+    atomic_uint partial_events,partial_bytes,last_partial,fake_eofs,done_events;
+    atomic_int fake_error;
     unsigned incomplete,header_errors,row_errors,shape_errors;
     int64_t invalid_report_at;
     bool enabled,isr_added,owns_reservation;
@@ -70,12 +72,25 @@ static esp_err_t reg_write(ws_camera_t *c,uint8_t reg,uint8_t value)
 static bool receive_done(parlio_rx_unit_handle_t rx,const parlio_rx_event_data_t *event,void *ctx)
 {
     (void)rx;ws_camera_t *c=ctx;BaseType_t wake=pdFALSE;
-    if(atomic_load(&c->armed)){
+    if(atomic_exchange(&c->armed,false)){
+        atomic_fetch_add(&c->done_events,1);
         atomic_store(&c->recv_bytes,event->recv_bytes);
-        atomic_store(&c->frame_complete,event->recv_bytes >= PACKET_BYTES);
+        atomic_store(&c->frame_complete,event->recv_bytes >= PACKET_BYTES && event->recv_bytes <= c->packet_size);
         xSemaphoreGiveFromISR(c->done,&wake);
     }
     return wake==pdTRUE;
+}
+/* Descriptor observations are accounting, not an independent wire-byte meter.
+ * Never inspect pixels in ISR or accept an image based on partial counts. */
+static bool receive_partial(parlio_rx_unit_handle_t rx,const parlio_rx_event_data_t *event,void *ctx)
+{
+    (void)rx;ws_camera_t *c=ctx;
+    if(atomic_load(&c->armed)){
+        atomic_fetch_add(&c->partial_events,1);
+        atomic_fetch_add(&c->partial_bytes,event->recv_bytes);
+        atomic_store(&c->last_partial,event->recv_bytes);
+    }
+    return false;
 }
 static void end_frame(void *ctx)
 {
@@ -86,7 +101,9 @@ static void end_frame(void *ctx)
         bool wake=false;
         /* callback needs armed=true while fake EOF executes synchronously */
         atomic_store(&c->armed,true);
+        atomic_fetch_add(&c->fake_eofs,1);
         esp_err_t e=parlio_rx_unit_trigger_fake_eof(c->rx,&wake);
+        atomic_store(&c->fake_error,e);
         atomic_store(&c->armed,false);
         if(e){BaseType_t w=pdFALSE;xSemaphoreGiveFromISR(c->done,&w);wake|=w==pdTRUE;}
         if(wake)portYIELD_FROM_ISR();
@@ -118,6 +135,20 @@ esp_err_t camera_backend_close(void *ctx)
     free(c->packet);free(c->rgb);
     if(c->owns_reservation){portENTER_CRITICAL(&admission_lock);reserved=false;portEXIT_CRITICAL(&admission_lock);}
     memset(c,0,sizeof(*c));free(c);return ESP_OK;
+}
+/* Read-only comparison to the pinned vendor program. No exposure controls,
+ * no retry tuning and no acquisition gate inferred from this observation. */
+static void format_readback(ws_camera_t *c)
+{
+    if(!cym_debug_enabled())return;
+    const uint8_t regs[]={0x12,0x3a,0x0b,0x09},expected[]={0x04,0x05,0x03,0x13};
+    uint8_t values[4]={0};esp_err_t errors[4];bool match=true;
+    for(unsigned i=0;i<4;i++){
+        errors[i]=i2c_master_transmit_receive(c->sensor,regs+i,1,values+i,1,100);
+        if(errors[i]||values[i]!=expected[i])match=false;
+    }
+    ESP_LOGI("qr_camera","format_readback match=%d reg12=%u reg3a=%u reg0b=%u reg09=%u errors=%d,%d,%d,%d",
+        match,values[0],values[1],values[2],values[3],errors[0],errors[1],errors[2],errors[3]);
 }
 esp_err_t camera_backend_open(void **out,void *bus)
 {
@@ -153,6 +184,7 @@ esp_err_t camera_backend_open(void **out,void *bus)
         if(r.reg==BF3901_REG_DELAY)vTaskDelay(pdMS_TO_TICKS(r.val)+1);
         else {e=reg_write(c,r.reg,r.val);if(e)goto fail;}
     }
+    format_readback(c);
     parlio_rx_unit_config_t rx={.trans_queue_depth=1,.max_recv_size=c->packet_size,.dma_burst_size=32,.data_width=2,
         .clk_src=PARLIO_CLK_SRC_EXTERNAL,.ext_clk_freq_hz=24000000,.exp_clk_freq_hz=24000000,
         .clk_in_gpio_num=11,.clk_out_gpio_num=-1,.valid_gpio_num=CAMERA_CS};
@@ -162,7 +194,7 @@ esp_err_t camera_backend_open(void **out,void *bus)
     parlio_rx_level_delimiter_config_t delim={.valid_sig_line_id=PARLIO_RX_UNIT_MAX_DATA_WIDTH-1,
         .sample_edge=PARLIO_SAMPLE_EDGE_POS,.bit_pack_order=PARLIO_BIT_PACK_ORDER_MSB,.eof_data_len=0,.flags.active_low_en=1};
     e=parlio_new_rx_level_delimiter(&delim,&c->delimiter);if(e)goto fail;
-    parlio_rx_event_callbacks_t cb={.on_receive_done=receive_done};
+    parlio_rx_event_callbacks_t cb={.on_receive_done=receive_done,.on_partial_receive=receive_partial};
     e=parlio_rx_unit_register_event_callbacks(c->rx,&cb,c);if(e)goto fail;
     e=gpio_install_isr_service(0);if(e!=ESP_OK&&e!=ESP_ERR_INVALID_STATE)goto fail;
     e=gpio_set_intr_type(CAMERA_CS,GPIO_INTR_POSEDGE);if(e)goto fail;
@@ -186,8 +218,10 @@ static esp_err_t invalid_response(ws_camera_t *c,int unpack_error)
         int64_t now=esp_timer_get_time();
         if(!c->invalid_report_at||now-c->invalid_report_at>=5000000){
             c->invalid_report_at=now;
-            ESP_LOGI("qr_camera","invalid_response incomplete=%u header=%u row=%u shape=%u recv_bytes=%u",
-                c->incomplete,c->header_errors,c->row_errors,c->shape_errors,(unsigned)atomic_load(&c->recv_bytes));
+            ESP_LOGI("qr_camera","invalid_response incomplete=%u header=%u row=%u shape=%u recv_bytes=%u expected=155524 partial_events=%u partial_bytes=%u last_partial=%u fake_eofs=%u fake_error=%d done_events=%u",
+                c->incomplete,c->header_errors,c->row_errors,c->shape_errors,(unsigned)atomic_load(&c->recv_bytes),(unsigned)atomic_load(&c->partial_events),
+                (unsigned)atomic_load(&c->partial_bytes),(unsigned)atomic_load(&c->last_partial),
+                (unsigned)atomic_load(&c->fake_eofs),atomic_load(&c->fake_error),(unsigned)atomic_load(&c->done_events));
         }
     }
     return ESP_ERR_INVALID_RESPONSE;
@@ -199,6 +233,8 @@ esp_err_t camera_backend_acquire(void *ctx,cym_camera_frame_t *f,unsigned timeou
     while(xSemaphoreTake(c->done,0)==pdTRUE){}
     atomic_store(&c->frame_complete,false);
     atomic_store(&c->recv_bytes,0);
+    atomic_store(&c->partial_events,0);atomic_store(&c->partial_bytes,0);atomic_store(&c->last_partial,0);
+    atomic_store(&c->fake_eofs,0);atomic_store(&c->fake_error,0);atomic_store(&c->done_events,0);
     esp_err_t e=parlio_rx_unit_enable(c->rx,true);if(e)return e;c->enabled=true;
     parlio_receive_config_t recv={.delimiter=c->delimiter};
     e=parlio_rx_unit_receive(c->rx,c->packet,c->packet_size,&recv);if(e)goto done;
@@ -208,8 +244,9 @@ esp_err_t camera_backend_acquire(void *ctx,cym_camera_frame_t *f,unsigned timeou
     e=xSemaphoreTake(c->done,pdMS_TO_TICKS(timeout))==pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 done:
     {esp_err_t stop=halt(c);if(stop)return stop;}
-    reg_write(c,0x09,0x13);
+    esp_err_t standby=reg_write(c,0x09,0x13);
     if(e)return e;
+    if(standby)return standby;
     if(!atomic_load(&c->frame_complete))return invalid_response(c,0);
     int unpack=cym_camera_unpack_bf3901(c->packet,atomic_load(&c->recv_bytes),c->rgb,153600);
     if(unpack)return invalid_response(c,unpack);

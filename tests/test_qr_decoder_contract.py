@@ -1,4 +1,4 @@
-"""Decode actual generated public QR images through the production quirc adapter."""
+"""Decode actual generated public QR images through the production ZXing adapter."""
 import ctypes as C
 from pathlib import Path
 import subprocess
@@ -12,15 +12,14 @@ class DecoderTests(unittest.TestCase):
  @classmethod
  def setUpClass(cls):
   assert (BASE/'cym_qr.c').exists(),'QR adapter implementation missing'
-  cls.tmp=tempfile.TemporaryDirectory()
-  lib=Path(cls.tmp.name)/'decoder.so'
-  subprocess.run(['cc','-shared','-fPIC','-std=c11','-O2','-Wall','-Wextra','-I',str(BASE/'include'),'-I',str(BASE/'third_party/quirc'),str(BASE/'cym_qr.c'),*[str(BASE/'third_party/quirc'/f) for f in ['quirc.c','decode.c','identify.c','version_db.c']],'-lm','-o',str(lib)],check=True)
+  from qr_native import native_library
+  lib=native_library()
   cls.lib=C.CDLL(str(lib))
   cls.lib.cym_qr_create.argtypes=[C.c_int,C.c_int];cls.lib.cym_qr_create.restype=C.c_void_p
   cls.lib.cym_qr_destroy.argtypes=[C.c_void_p]
   cls.lib.cym_qr_decode_gray.argtypes=[C.c_void_p,C.c_void_p,C.c_size_t,C.c_void_p,C.c_size_t]
  @classmethod
- def tearDownClass(cls):cls.tmp.cleanup()
+ def tearDownClass(cls):pass
  def decode(self,image):
   image=image.convert('L');w,h=image.size
   ctx=self.lib.cym_qr_create(w,h);self.assertTrue(ctx)

@@ -1,10 +1,14 @@
 # WS-C5-35 QR Decoder: aiming and diagnostics
 
-Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35), v3.0.11 Development test candidate.
-The camera preview was confirmed visible by the owner on v3.0.9. The v3.0.10 physical log reproduced SD DMA allocation exhaustion during
-debug capture and long decode/UI wall times. v3.0.11 is a corrective candidate;
-physical frame recovery, UI timing, rotation and recognition acceptance remain
-pending. Host/build results are recorded separately in the cycle handoff. Synthetic QR images are not camera evidence.
+Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35), v3.0.12 Development diagnostic candidate.
+The owner confirmed v3.0.11 close-before-SD capture twice, recovered the files,
+and reopened with Scan Again. Preserve that established behavior. v3.0.12 adds
+matched native RGB565-LE plus exact decoder grayscale, once-only completion
+claiming, descriptor-accounting observations, format readback and offline
+independent-decoder replay. It is NOT a claimed physical camera repair.
+Settled-run/discard-startup and exposure changes remain evidence-gated; the
+current wake/capture/standby cycle and vendor register program are unchanged.
+Host/build results and hardware acceptance are separate gates.
 
 ## Normal operation
 
@@ -94,20 +98,29 @@ needed. The explicit warning states that the camera image may contain private
 QR content; pressing Save Debug Frame is consent for ONE image to be written.
 There is no automatic image capture, continuous recording, network or upload.
 
-The worker takes one PSRAM snapshot of the exact native decoder grayscale
-input, including the original full field of view and matching numeric metadata.
+The worker copies one native RGB565 frame (153600 bytes) and its exact decoder
+grayscale (76800 bytes) into bounded PSRAM: at most 230400 additional snapshot
+bytes, one pending request, no frame queue or background rearm. Both are from
+the same acquisition, NOT the rotated/reduced preview. The native buffer is
+immutable until this sole worker next acquires or closes. Raw is copied before
+close, grayscale remains the decoder input, and metadata includes frame_id.
+No internal DMA/ISR control storage moves into PSRAM.
 It then closes/quiesces the camera BEFORE any SD access. A close failure retains
 camera ownership and blocks SD/restart rather than freeing a live resource.
 The explicit capture pauses scanning after the save attempt; press Scan Again /
 Retry to resume. This deliberate pause avoids allocating camera resources again
 before the requested image has been recovered. A reopen failure is shown as a
 camera error; Back and retry remain available unless ownership is retained.
-It writes P5 PGM under:
+It writes a matched P5 PGM and headerless little-endian RGB565 pair under:
 
     /sdcard/lab/QR/debug/frame-0000.pgm
+    /sdcard/lab/QR/debug/frame-0000.rgb565
 
-The bounded exclusive filename search chooses the next free0000..1023; it never
-overwrites a prior image. Directory creation occurs only on this action; no
+The bounded exclusive filename search reserves BOTH names at the next free
+0000..1023 identity; an existing sibling reserves that identity across reboots.
+It never overwrites prior files. Success means both closes succeeded. Failure
+removes only the two files created by this attempt; power loss can leave an
+orphan, so the two-file operation is not filesystem-atomic. Directory creation occurs only on this action; no
 SD-Assets update is needed. PGM comments record numeric dimensions, source and
 gray stride, screen and decoder orientation, gray statistics and this frame's
 candidate/attempt/error counters. No payload is embedded as text metadata.
@@ -144,7 +157,12 @@ only a synthetic print target, not a captured camera frame.
 
 Summaries are rate-limited to five seconds plus one final summary on exit.
 Counters are per scan attempt and reset on Scan Again. `elapsed_ms`, `processed`
-and `decode_millifps` give throughput; `decode_us` and `max_decode_us` are decode
+and `decode_millifps` give throughput. The separate `timing acquire_us`,
+`convert_preview_us`, `decode_wall_us` counters are accumulated owner-task wall
+spans (including scheduling), not sensor frame duration or CPU utilization;
+acquire includes wake/wait/halt/standby/unpack. The decode wall span includes
+quirc identify AND normal/mirror decode; it does not isolate those internals.
+Existing `decode_us` and `max_decode_us` are decode
 work timing (including scheduling). Shape/stride/format are actual acquired
 frames, or zero shape if none arrived. Current format0 is RGB565 little-endian.
 
@@ -176,10 +194,23 @@ frames, or zero shape if none arrived. Current format0 is RGB565 little-endian.
 - qr_camera invalid_response: at most one summary per five seconds on errors;
   incomplete counts short/missing RX completion, header counts invalid frame
   headers, row counts invalid row headers, shape counts length/capacity errors.
-  recv_bytes is a byte count only, never packet content. Counters reset on
+  recv_bytes is the SDK's completion accounting, NOT an independent measurement
+  of bytes on the sensor wire. `partial_events`, `partial_bytes`, `last_partial`,
+  `fake_eofs`, `fake_error`, `done_events` describe this attempt's SDK callbacks.
+  IDF fake EOF accounts one current descriptor before publishing accumulated
+  bytes. Descriptor-sized short counts can therefore involve accounting/event
+  synchronization; they do not alone prove image bytes were dropped. Short or
+  over-capacity completions are rejected, never unpacked using stale tail data.
+  The first completion consumes armed ownership; a subsequent GPIO edge must
+  not run fake EOF against an already-finished transaction. Counters reset on
   camera reopen; a quiet error interval is not proof that a frame was valid.
 - record_save_begin/end: isolate SD save delay/failure. End value0 means success;
   nonzero is an errno. A failed save must not discard the displayed result.
+- format_readback: debug-only, four bounded read-only comparisons after vendor
+  setup. Expected reg12=4 reg3a=5 reg0b=3 reg09=19, match=1, errors=0,0,0,0.
+  Failure is observational, not permission to tune registers or bypass capture.
+- capture_displayed value=5: explicit capture paused normally, NOT an error.
+  error_displayed value=4 remains an actual QR_ERROR state.
 - result_published then result_displayed: completed worker publication and UI
   display. worker_park followed by owner reap is the only safe reclaim path;
   done alone is not a join. ui_stop records leaving the screen.
@@ -225,3 +256,75 @@ Do not select the merged full image for the first settings-preserving test.
 Match the exact SHA256 and path in the final handoff manifest before writing.
 Do not erase NVS, format SD, change partitions, or flash another board's package.
 This work does not itself authorize or perform flashing/publication.
+
+## Vendor/SDK evidence and bounded diagnostic selection (v3.0.12)
+
+Immutable vendor reference: waveshareteam/ESP32-C5-Touch-LCD-3.5 commit
+04e6134cf3e37309b2bec9915189efeace1161bc, under example/ESP-IDF-V554/01_factory/
+components/espressif__esp_cam_sensor/:
+
+- sensors/bf3901/bf3901.c: frame header 4 bytes, row header 6, 480 pixel
+  bytes/row, 320 rows, total155524. Row check covers four header bytes; the
+  next two are not pixel data. Controller spi_cam_decode copies pixel bytes
+  unchanged, consistent with CYM packet-unpack (no display byte swap).
+- sensors/bf3901/private_include/bf3901_settings.h defines RGB=0x04 and
+  G3LB5=0x05. The 2-bit RGB565 table is declared RGB565_LE, despite an
+  inconsistent human-readable 1bit/15fps mode name; use rx_lines and format.
+- bf3901_set_stream writes0x09=0x03 enabled and0x13 standby. Table starts
+  standby;0x0b=0x03 comment says skip2frames. Frame metadata also says drop
+  the first SPI packet (not image data). Neither comment proves settled AE,
+  repeated-wake behavior or safe rearm timing for CYM's PARLIO path.
+
+Installed IDF6.0.2 commit7101770dc6db2667b3c477cc31365dd1acd6db4e,
+components/esp_driver_parlio/src/parlio_rx.c: default_desc_done_callback adds
+one descriptor length; trigger_fake_eof stops/resets GDMA, resets shared PARLIO,
+then calls descriptor and EOF callbacks synchronously. It refuses a paired TX.
+Disable stops DMA and clears the transaction; CYM must retain callback/context
+and buffer ownership until teardown succeeds. No vendor rearm task/unsafe
+free/delete path or borrowed-I2C deletion was imported. Cache alignment,
+DMA-capability admission and TX exclusion are retained unchanged.
+
+Do not enable a continuously running sensor just by removing standby. Required
+before a settled acquisition experiment: trace clock/CS and SDK completion
+ordering with the new counters, establish a frame-boundary rearm contract,
+prove quiescence at cancel/timeout/short/close failure, then bound startup discard
+count and wall budget. No such hardware proof exists in this candidate.
+Exposure controls likewise need a sensor register specification (field meanings,
+ranges, auto/manual dependencies and readback) AFTER actual paired format
+verification. The vendor initialization table alone is not that specification.
+No guessed gain, shutter, threshold or sensor-format settings are provided.
+
+Select diagnostics without changing firmware registers:
+
+1. Normal/debug OFF: no voluntary snapshots, no new diagnostic logs.
+2. Debug ON plus Save Debug Frame: one matched pair, stop before SD, explicit
+   Scan Again. Exercise two cycles, missing/full SD, debug OFF while pending,
+   Back/Home while pending, and benign successful QR plus a pending image.
+   A valid result must remain visible, save once before the optional pair,
+   and survive pair failure. No write/reentry after a retained close failure.
+3. Offline replay: exact LE RGB (production), byte-swapped RGB, LE BGR and
+   byte-swapped BGR are four bounded interpretations of the SAME raw file.
+   These are diagnostic comparisons, NOT firmware or sensor tuning. Correct
+   production LE gray should match the PGM at every pixel. PGM alone cannot
+   establish original RGB byte order or row packing.
+
+On the authorized dev host (outputs may contain private image-derived hashes;
+keep them private; no payload text is printed):
+
+    cd /home/dev/projects/CYM-NM28C5-jarvis-ws35-docs
+    export TMPDIR=/home/dev/projects/cym-qr312-evidence
+    /home/dev/projects/cym-qr308-evidence/host-venv/bin/python tools/qr_frame_replay.py /path/to/frame-0000.pgm --rgb565 /path/to/frame-0000.rgb565 --output-dir /home/dev/projects/cym-qr312-evidence/operator-replay
+
+Expected: replay-results.json with production quirc counts/error histogram and
+independent ZXing validity/length/SHA256; `little_rgb` mismatch count0. No
+payload/URL is printed. Pillow and zxing-cpp3.1.1 are installed in that host venv;
+cc builds the checked-out production decoder into the output directory.
+Omit --rgb565 for older PGM-only captures. A successful independent decoder
+with failed quirc isolates a library limitation on that exact image; failure
+of both does NOT establish printing, optics, exposure or electrical cause.
+
+Repeat operator checks at0/90/180/270, dark-neon, Modern Tools and Classic Home.
+Preserve primary USB-C only, existing NVS and app offset0x10000, erase-all OFF,
+SD20MHz, disabled WS35 BOOT, GPS GPIO28 and audio/display/touch/radio ownership.
+Record actual touch/Back latency and acquire/convert/decode spans; no measured
+UI-speedup claim follows from equal-priority policy or a green host test.

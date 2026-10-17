@@ -11,3 +11,9 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # QR decode keeps its 24KB workspace on PSRAM; TCB/ISRs/DMA stay internal.
 CONFIG_FREERTOS_TASK_CREATE_ALLOW_EXT_MEM=y
+
+# Independent QR engine: runtime enabled only on WS35, code generation scoped
+# to its private archives by CMake. Keep the standard emergency reserve ABI.
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=2048
+# CONFIG_COMPILER_CXX_RTTI is not set

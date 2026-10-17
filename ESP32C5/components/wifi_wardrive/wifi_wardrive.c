@@ -343,6 +343,11 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
     slot_config.gpio_wp = -1;
     slot_config.host_id = (spi_host_device_t)BOARD_SD_SPI_HOST;
     
+    ESP_LOGI(TAG, "[SD] mem_boundary=before_mount internal_free=%u internal_largest=%u DMA_free=%u DMA_largest=%u",
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT),
+        (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA));
     ESP_LOGI(TAG, "[SD] Attempting to mount filesystem...");
     ESP_LOGI(TAG, "[SD] This may take a few seconds...");
     
@@ -360,7 +365,7 @@ esp_err_t wifi_wardrive_init_sd_ex(uint32_t freq_khz, bool format_if_failed) {
         // Specific error messages
         switch (ret) {
             case ESP_FAIL:
-                ESP_LOGE(TAG, "[SD] Filesystem mount failed - card may not be formatted as FAT");
+                ESP_LOGE(TAG, "[SD] Mount failed (ESP_FAIL); inspect preceding transport/DMA/FAT error. This does not establish card format.");
                 break;
             case ESP_ERR_NO_MEM:
                 ESP_LOGE(TAG, "[SD] Out of memory during mount operation");

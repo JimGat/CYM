@@ -33,7 +33,7 @@ class BackendDiagnostics311(unittest.TestCase):
 #include <string.h>
 typedef int esp_err_t;
 #define ESP_ERR_INVALID_RESPONSE 264
-typedef struct {atomic_uint recv_bytes;unsigned incomplete,header_errors,row_errors,shape_errors;int64_t invalid_report_at;} ws_camera_t;
+typedef struct {atomic_uint recv_bytes,partial_events,partial_bytes,last_partial,fake_eofs,done_events;atomic_int fake_error;unsigned incomplete,header_errors,row_errors,shape_errors;int64_t invalid_report_at;} ws_camera_t;
 static bool debug;static int64_t now=100000;static unsigned logs;static char output[512];
 static bool cym_debug_enabled(void){return debug;}
 static int64_t esp_timer_get_time(void){return now;}

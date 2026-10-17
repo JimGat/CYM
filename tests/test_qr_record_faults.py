@@ -39,4 +39,11 @@ int __wrap_open(const char *p,int f,...){va_list a;va_start(a,f);int m=va_arg(a,
     code=lib.cym_qr_debug_frame(os.fsencode(card),bytes(range(16)),4,4,4,b'rotation=180',out,len(out))
     if mode==4:self.assertEqual(code,0);self.assertTrue(out.value)
     else:self.assertNotEqual(code,0);self.assertEqual(out.value,b'');self.assertEqual(list((card/'lab/QR/debug').iterdir()),[])
+   lib.cym_qr_debug_pair.argtypes=[C.c_char_p,C.c_void_p,C.c_void_p,C.c_int,C.c_int,C.c_size_t,C.c_size_t,C.c_char_p,C.c_void_p,C.c_size_t]
+   for mode in [1,2,3,4]:
+    card=p/('pair'+str(mode));card.mkdir();out=C.create_string_buffer(80);lib.faults(mode)
+    code=lib.cym_qr_debug_pair(os.fsencode(card),bytes(range(16)),bytes(range(32)),4,4,4,8,b'frame_id=3',out,len(out))
+    if mode==4:
+     self.assertEqual(code,0);self.assertTrue(out.value);self.assertEqual((card/'lab/QR/debug/frame-0000.rgb565').read_bytes(),bytes(range(32)))
+    else:self.assertNotEqual(code,0);self.assertEqual(out.value,b'');self.assertEqual(list((card/'lab/QR/debug').iterdir()),[])
 if __name__=='__main__':unittest.main()

@@ -1,0 +1,37 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>netstandard2.0;net5.0</TargetFrameworks>
+    <LangVersion>9</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>  <!-- required for netstandard2.0 fallback implementation of Marshal.PtrToStringUTF8() -->
+    <!-- <ImplicitUsings>enable</ImplicitUsings> -->
+    <Nullable>enable</Nullable>
+
+    <PackageId>ZXingCpp</PackageId>
+    <Version>0.5.3</Version> <!-- contains zxing-cpp version 3.1.1 -->
+    <Authors>Axel Waggershauser</Authors>
+    <Company>zxing-cpp</Company>
+    <Description>
+      High-performance, open-source .NET barcode reader and writer based on the zxing-cpp library.
+      Supports all major linear/matrix barcode formats with industry-leading runtime performance and cross-platform support.
+    </Description>
+    <PackageProjectUrl>https://github.com/zxing-cpp/zxing-cpp</PackageProjectUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>zxing;zxing-cpp;barcode;barcode-reader;barcode-scanner;barcode-generator;qr;qrcode;datamatrix;pdf417;aztec;code128;ean;upc</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+      <None Include="README.md" Pack="true" PackagePath="README.md"/>
+      <None Include="../runtimes/win-x64/native/ZXing.dll" Pack="true" PackagePath="runtimes/win-x64/native/" />
+      <None Include="../runtimes/linux-x64/native/libZXing.so" Pack="true" PackagePath="runtimes/linux-x64/native/" />
+      <None Include="../runtimes/osx-x64/native/libZXing.dylib" Pack="true" PackagePath="runtimes/osx-x64/native/" />
+      <None Include="../runtimes/win-arm64/native/ZXing.dll" Pack="true" PackagePath="runtimes/win-arm64/native/" />
+      <None Include="../runtimes/linux-arm64/native/libZXing.so" Pack="true" PackagePath="runtimes/linux-arm64/native/" />
+      <None Include="../runtimes/osx-arm64/native/libZXing.dylib" Pack="true" PackagePath="runtimes/osx-arm64/native/" />
+  </ItemGroup>
+</Project>
+
+<!-- .NET Standard 2. (netstandard), see https://learn.microsoft.com/en-us/dotnet/standard/net-standard?tabs=net-standard-1-0#when-to-target-net80-vs-netstandard -->
+<!-- dotnet pack -->
+<!-- dotnet nuget push ZXingCpp/bin/Release/ZXingCpp.<version>.nupkg -s https://api.nuget.org/v3/index.json -k <api-key> -->

@@ -1,5 +1,6 @@
 #include "wifi_sniffer.h"
 #include "observer_memory.h"
+#include "observer_runtime.h"
 #include "wifi_scanner.h"
 #include "esp_wifi.h"
 #include "esp_log.h"
@@ -28,6 +29,31 @@ static uint8_t sniffer_current_channel = 1;
 static int sniffer_channel_index = 0;
 static uint32_t sniffer_last_channel_hop = 0;
 static TaskHandle_t sniffer_channel_task_handle = NULL;
+/* Callback admission closes before teardown. Late SDK callbacks can still enter
+ * the wrapper but cannot acquire table ownership after the gate closes. */
+static portMUX_TYPE sniffer_rx_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool sniffer_rx_enabled = false;
+static unsigned sniffer_rx_inflight = 0;
+static volatile bool sniffer_dog_active = false;
+static TaskHandle_t sniffer_dog_task_handle = NULL;
+static bool sniffer_rx_enter(void) {
+    portENTER_CRITICAL(&sniffer_rx_mux);
+    bool admitted = sniffer_rx_enabled;
+    if (admitted) ++sniffer_rx_inflight;
+    portEXIT_CRITICAL(&sniffer_rx_mux);
+    return admitted;
+}
+static void sniffer_rx_leave(void) {
+    portENTER_CRITICAL(&sniffer_rx_mux);
+    --sniffer_rx_inflight;
+    portEXIT_CRITICAL(&sniffer_rx_mux);
+}
+static bool sniffer_callbacks_idle(void) {
+    portENTER_CRITICAL(&sniffer_rx_mux);
+    bool idle = sniffer_rx_inflight == 0;
+    portEXIT_CRITICAL(&sniffer_rx_mux);
+    return idle;
+}
 
 // Channel hop control
 static volatile bool sniffer_channel_hop_paused = false;
@@ -153,7 +179,13 @@ static void add_probe_request(const uint8_t *sta_mac, const char *ssid, int8_t r
 }
 
 // WiFi promiscuous packet handler
+static void wifi_sniffer_packet_process(void *buff, wifi_promiscuous_pkt_type_t type);
 static void wifi_sniffer_packet_handler(void *buff, wifi_promiscuous_pkt_type_t type) {
+    if (!sniffer_rx_enter()) return;
+    wifi_sniffer_packet_process(buff, type);
+    sniffer_rx_leave();
+}
+static void wifi_sniffer_packet_process(void *buff, wifi_promiscuous_pkt_type_t type) {
     if (!sniffer_active) return;
     
     const wifi_promiscuous_pkt_t *ppkt = (wifi_promiscuous_pkt_t *)buff;
@@ -326,8 +358,7 @@ static void sniffer_channel_hop_task(void *pvParameters) {
     }
     
     ESP_LOGI(TAG, "Channel hop task stopped");
-    sniffer_channel_task_handle = NULL;
-    vTaskDelete(NULL);
+    vTaskSuspend(NULL);  // owner joins/deletes only after observed suspension
 }
 
 // Process scan results for normal mode
@@ -438,6 +469,9 @@ static void sniffer_init_selected_networks(void) {
 // ============================================================================
 
 esp_err_t wifi_sniffer_start(void) {
+    StackType_t *none = NULL;
+    if (sniffer_dog_active || !observer_task_reap(&sniffer_channel_task_handle, &none, true) ||
+            !sniffer_callbacks_idle()) return ESP_ERR_INVALID_STATE;
     if (sniffer_active) {
         ESP_LOGW(TAG, "Sniffer already running");
         return ESP_ERR_INVALID_STATE;
@@ -498,8 +532,11 @@ esp_err_t wifi_sniffer_start(void) {
         // though beacons still get through and the AP list looks populated.
         wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
         esp_wifi_set_promiscuous_filter(&filt);
-        esp_wifi_set_promiscuous(true);
+        portENTER_CRITICAL(&sniffer_rx_mux);
+        sniffer_rx_enabled = true;
+        portEXIT_CRITICAL(&sniffer_rx_mux);
         esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
+        esp_wifi_set_promiscuous(true);
 
         // Initialize channel hopping with selected channels
         sniffer_channel_index = 0;
@@ -508,7 +545,11 @@ esp_err_t wifi_sniffer_start(void) {
         sniffer_set_channel_verified((uint8_t)sniffer_current_channel);   // P4: retry silent reg-domain rejects
 
         // Start channel hopping task
-        xTaskCreate(sniffer_channel_hop_task, "sniffer_ch_hop", 4096, NULL, 5, &sniffer_channel_task_handle);
+        esp_err_t created = observer_hopper_start(&sniffer_channel_task_handle, sniffer_channel_hop_task, 4096);
+        if (created != ESP_OK) {
+            wifi_sniffer_stop();
+            return created;
+        }
         
         ESP_LOGI(TAG, "[Sniffer] Now monitoring selected networks (no scan performed)");
         
@@ -529,14 +570,21 @@ esp_err_t wifi_sniffer_start(void) {
         
         wifi_promiscuous_filter_t filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
         esp_wifi_set_promiscuous_filter(&filt);
-        esp_wifi_set_promiscuous(true);
+        portENTER_CRITICAL(&sniffer_rx_mux);
+        sniffer_rx_enabled = true;
+        portEXIT_CRITICAL(&sniffer_rx_mux);
         esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
+        esp_wifi_set_promiscuous(true);
 
         sniffer_active = true;
         sniffer_channel_index = 0;
 
         // Start channel hopping task
-        xTaskCreate(sniffer_channel_hop_task, "sniffer_ch_hop", 16384, NULL, 5, &sniffer_channel_task_handle);
+        esp_err_t created = observer_hopper_start(&sniffer_channel_task_handle, sniffer_channel_hop_task, 16384);
+        if (created != ESP_OK) {
+            wifi_sniffer_stop();
+            return created;
+        }
         
         ESP_LOGI(TAG, "[Sniffer] Started - monitoring packets...");
     }
@@ -545,35 +593,41 @@ esp_err_t wifi_sniffer_start(void) {
 }
 
 esp_err_t wifi_sniffer_stop(void) {
-    if (!sniffer_active) {
-        ESP_LOGW(TAG, "Sniffer not running");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    ESP_LOGI(TAG, "Stopping sniffer...");
-    
+    /* Stop preserves rows for viewing/noscan. A timeout retains all ownership;
+     * the UI owner can retry, never force-delete a live task or free its tables. */
     sniffer_active = false;
     sniffer_channel_hop_paused = false;
-    
-    // Wait for task to finish
-    int wait_count = 0;
-    while (sniffer_channel_task_handle != NULL && wait_count < 50) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        wait_count++;
-    }
-    
+    portENTER_CRITICAL(&sniffer_rx_mux);
+    sniffer_rx_enabled = false;
+    portEXIT_CRITICAL(&sniffer_rx_mux);
     esp_wifi_set_promiscuous(false);
-    
-    ESP_LOGI(TAG, "[Sniffer] Stopped | Total packets: %lu | APs: %d | Probes: %d", 
-             (unsigned long)sniffer_packet_count, sniffer_ap_count, probe_request_count);
-    
-    // Reset mode flags
-    sniffer_scan_phase = false;
-    sniffer_selected_mode = false;
-    
-    // NOTE: Do NOT free PSRAM buffers - preserve data for noscan restart
-    // Data will be preserved until explicitly cleared or process restart
-    
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    StackType_t *none = NULL;
+    for (unsigned i = 0; i < 50; ++i) {
+        bool joined = observer_task_reap(&sniffer_channel_task_handle, &none, true);
+        if (joined && sniffer_callbacks_idle()) {
+            sniffer_scan_phase = false;
+            sniffer_selected_mode = false;
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t wifi_sniffer_release_session(void) {
+    /* Only the UI session owner calls this AFTER destroying row consumers.
+     * SnifferDog shares the probe table: refuse while it owns those rows. */
+    if (sniffer_dog_active || sniffer_dog_task_handle) return ESP_ERR_TIMEOUT;
+    esp_err_t stopped = wifi_sniffer_stop();
+    if (stopped != ESP_OK) return stopped;
+    sniffer_new_client_cb = NULL;
+    heap_caps_free(sniffer_aps); sniffer_aps = NULL;
+    heap_caps_free(probe_requests); probe_requests = NULL;
+    sniffer_ap_count = probe_request_count = 0;
+    sniffer_packet_count = 0;
+    sniffer_selected_channels_count = 0;
+    memset(sniffer_selected_channels, 0, sizeof(sniffer_selected_channels));
     return ESP_OK;
 }
 
@@ -745,6 +799,9 @@ void wifi_sniffer_set_new_client_callback(sniffer_new_client_cb_t cb) {
 // ============================================================================
 
 esp_err_t wifi_sniffer_start_noscan(void) {
+    StackType_t *none = NULL;
+    if (sniffer_dog_active || !observer_task_reap(&sniffer_channel_task_handle, &none, true) ||
+            !sniffer_callbacks_idle()) return ESP_ERR_INVALID_STATE;
     if (sniffer_active) {
         ESP_LOGW(TAG, "Sniffer already running");
         return ESP_ERR_INVALID_STATE;
@@ -787,16 +844,21 @@ esp_err_t wifi_sniffer_start_noscan(void) {
     // previously-visited screen configured.
     wifi_promiscuous_filter_t noscan_filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA };
     esp_wifi_set_promiscuous_filter(&noscan_filt);
-    esp_wifi_set_promiscuous(true);
+    portENTER_CRITICAL(&sniffer_rx_mux);
+    sniffer_rx_enabled = true;
+    portEXIT_CRITICAL(&sniffer_rx_mux);
     esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
+    esp_wifi_set_promiscuous(true);
 
     sniffer_channel_index = 0;
     sniffer_current_channel = channel_list[0];
     esp_wifi_set_channel(sniffer_current_channel, WIFI_SECOND_CHAN_NONE);
     
     // Start channel hopping task
-    if (sniffer_channel_task_handle == NULL) {
-        xTaskCreate(sniffer_channel_hop_task, "sniffer_ch_hop", 8192, NULL, 5, &sniffer_channel_task_handle);
+    esp_err_t created = observer_hopper_start(&sniffer_channel_task_handle, sniffer_channel_hop_task, 8192);
+    if (created != ESP_OK) {
+        wifi_sniffer_stop();
+        return created;
     }
     
     ESP_LOGI(TAG, "[Sniffer] Started in noscan mode - preserved %d APs, %d probes", 
@@ -830,8 +892,8 @@ void wifi_sniffer_clear_data(void) {
 // SNIFFER DOG (Passive client detection)
 // ============================================================================
 
-static volatile bool sniffer_dog_active = false;
-static TaskHandle_t sniffer_dog_task_handle = NULL;
+
+
 static uint8_t sniffer_dog_current_channel = 1;
 static int sniffer_dog_channel_index = 0;
 static uint32_t sniffer_dog_last_channel_hop = 0;
@@ -879,8 +941,11 @@ esp_err_t wifi_sniffer_dog_start(void) {
     // still assert it explicitly rather than trust leftover driver state.
     wifi_promiscuous_filter_t dog_filt = { .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT };
     esp_wifi_set_promiscuous_filter(&dog_filt);
-    esp_wifi_set_promiscuous(true);
+    portENTER_CRITICAL(&sniffer_rx_mux);
+    sniffer_rx_enabled = true;
+    portEXIT_CRITICAL(&sniffer_rx_mux);
     esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_packet_handler);
+    esp_wifi_set_promiscuous(true);
 
     sniffer_dog_active = true;
     sniffer_dog_channel_index = 0;

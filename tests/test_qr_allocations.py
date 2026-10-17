@@ -28,6 +28,8 @@ int main(void){
 """
   with tempfile.TemporaryDirectory() as d:
    p=Path(d);(p/'test.c').write_text(code)
-   subprocess.run(['cc','-std=c11','-O1','-fno-builtin','-I',str(b/'include'),'-I',str(b/'third_party/quirc'),str(p/'test.c'),str(b/'cym_qr.c'),*[str(b/'third_party/quirc'/f) for f in ['quirc.c','decode.c','identify.c','version_db.c']],'-Wl,--wrap=malloc','-Wl,--wrap=calloc','-Wl,--wrap=free','-lm','-o',str(p/'test')],check=True)
+   from qr_native import native_library
+   lib=native_library()
+   subprocess.run(['cc','-std=c11','-O1','-fno-builtin','-I',str(b/'include'),str(p/'test.c'),str(b/'cym_qr.c'),str(lib),'-Wl,-rpath,'+str(lib.parent),'-Wl,--wrap=malloc','-Wl,--wrap=calloc','-Wl,--wrap=free','-o',str(p/'test')],check=True)
    subprocess.run([str(p/'test')],check=True)
 if __name__=='__main__':unittest.main()

@@ -4,7 +4,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class Release300(unittest.TestCase):
  def test_version_and_documentation(self):
   for soc in ['ESP32','ESP32C5','ESP32S3']:
-   self.assertIn('set(PROJECT_VER "v3.0.11")',(ROOT/soc/'CMakeLists.txt').read_text())
+   self.assertIn('set(PROJECT_VER "v3.0.13")',(ROOT/soc/'CMakeLists.txt').read_text())
   readme=(ROOT/'README.md').read_text()
   for s in ['v3.0.0','Off-grid amateur radio','Maidenhead','NTP server','NTP client','GPIO28','GPS LOCK','9600','@birolt29']:
    self.assertIn(s,readme)

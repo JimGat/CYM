@@ -14,6 +14,7 @@ int cym_qr_rgb565_gray(const uint8_t *rgb, size_t stride, uint8_t *gray, int wid
 #define CYM_QR_ERROR_COUNT 8
 typedef struct {
     uint32_t candidates,normal_attempts,mirror_attempts,valid,payload_length;
+    int engine_status; /* ZXing status; legacy quirc counters remain zero. */
     uint32_t errors[CYM_QR_ERROR_COUNT]; /* includes success at index 0 */
 } cym_qr_stats_t;
 /* valid distinguishes successful empty payload from no candidate/failed decode.

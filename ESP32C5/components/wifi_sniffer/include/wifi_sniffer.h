@@ -167,3 +167,6 @@ bool wifi_sniffer_dog_is_active(void);
 #endif
 
 #endif // WIFI_SNIFFER_H
+
+/* UI owner only: release tables after row consumers are destroyed. Stop alone preserves them. */
+esp_err_t wifi_sniffer_release_session(void);

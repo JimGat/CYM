@@ -1,0 +1,10 @@
+# Only true zero-init mutable tables/guards. NOT initialized data or rodata.
+[scheme:cym_zx_zero]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:cym_zx_tables]
+archive: libZXing_bound.a
+entries:
+    * (cym_zx_zero)

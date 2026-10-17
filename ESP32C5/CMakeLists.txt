@@ -7,7 +7,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 # Update ONLY this line when bumping the version. It is automatically propagated
 # to both the IDF boot log (app_init: App version) and to the FW_VERSION macro
 # used throughout the firmware — no need to edit wifi_common.h separately.
-set(PROJECT_VER "v3.0.11")
+set(PROJECT_VER "v3.0.13")
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
@@ -23,6 +23,20 @@ idf_build_set_property(COMPILE_OPTIONS "-I${CMAKE_SOURCE_DIR}/main" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-error" APPEND)
 
 project(CYM-NM28C5)
+
+# WS35 QR engine: enable exception runtime, not application-wide
+# exception code generation. Explicit final per-component flags preserve all
+# existing non-decoder C++ policies; only private decoder sources opt in.
+if(CONFIG_BOARD_WS_C5_35)
+    idf_build_get_property(cym_components BUILD_COMPONENTS)
+    foreach(cym_component ${cym_components})
+        idf_component_get_property(cym_lib ${cym_component} COMPONENT_LIB)
+        get_target_property(cym_type ${cym_lib} TYPE)
+        if(NOT cym_type STREQUAL "INTERFACE_LIBRARY" AND NOT cym_component STREQUAL "cym_qr")
+            target_compile_options(${cym_lib} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions;-fno-rtti>")
+        endif()
+    endforeach()
+endif()
 
 # Expose PROJECT_VER as FW_VERSION compile definition so wifi_common.h picks it
 # up without a separate hardcoded string.  All translation units see this.

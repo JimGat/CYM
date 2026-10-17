@@ -137,3 +137,46 @@ int cym_qr_debug_frame(const char *root,const uint8_t *gray,int w,int h,
     if(e){unlink(path);return e;}
     snprintf(filename,cap,"%s",name);return 0;
 }
+
+/* Both names are exclusively reserved before writing. An orphan from power
+ * loss reserves its identity; never combine a new frame with an old sibling.
+ * This is not power-loss atomic: failure removes only files created here. */
+int cym_qr_debug_pair(const char *root,const uint8_t *gray,const uint8_t *rgb,
+                      int w,int h,size_t gray_stride,size_t rgb_stride,
+                      const char *meta,char *filename,size_t cap)
+{
+    char raw[256],pgm[256],name[40],header[768];struct stat st;
+    if(filename&&cap)filename[0]=0;
+    if(!root||!gray||!rgb||!meta||!filename||cap<32||w<1||h<1||w>1024||h>1024||
+       gray_stride<(size_t)w||rgb_stride<(size_t)w*2||strlen(meta)>640||strchr(meta,'\n')||strchr(meta,'\r'))return EINVAL;
+    if(stat(root,&st))return errno;
+    if(!S_ISDIR(st.st_mode))return ENOTDIR;
+    const char *dirs[]={"lab","lab/QR","lab/QR/debug"};
+    for(unsigned i=0;i<3;i++){
+        if(snprintf(raw,sizeof(raw),"%s/%s",root,dirs[i])>=(int)sizeof(raw))return ENAMETOOLONG;
+        int e=directory(raw);if(e)return e;
+    }
+    int rf=-1,gf=-1;
+    for(unsigned i=0;i<1024;i++){
+        snprintf(name,sizeof(name),"frame-%04u.pgm",i);
+        if(snprintf(raw,sizeof(raw),"%s/lab/QR/debug/frame-%04u.rgb565",root,i)>=(int)sizeof(raw)||
+           snprintf(pgm,sizeof(pgm),"%s/lab/QR/debug/%s",root,name)>=(int)sizeof(pgm))return ENAMETOOLONG;
+        rf=open(raw,O_WRONLY|O_CREAT|O_EXCL,0664);
+        if(rf<0){if(errno==EEXIST)continue;return errno;}
+        gf=open(pgm,O_WRONLY|O_CREAT|O_EXCL,0664);
+        if(gf>=0)break;
+        int e=errno;close(rf);rf=-1;unlink(raw);
+        if(e!=EEXIST)return e;
+    }
+    if(rf<0||gf<0)return EEXIST;
+    int n=snprintf(header,sizeof(header),"P5\n# %s\n%d %d\n255\n",meta,w,h);
+    int e=n<0||n>=(int)sizeof(header)?EINVAL:all(gf,header,(size_t)n);
+    for(int y=0;!e&&y<h;y++){
+        e=all(rf,(const char *)rgb+y*rgb_stride,(size_t)w*2);
+        if(!e)e=all(gf,(const char *)gray+y*gray_stride,(size_t)w);
+    }
+    if(close(rf)&&!e)e=errno?errno:EIO;
+    if(close(gf)&&!e)e=errno?errno:EIO;
+    if(e){unlink(raw);unlink(pgm);return e;}
+    snprintf(filename,cap,"%s",name);return 0;
+}

@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v3.0.11 |
-| Build date | 2026-10-16 |
-| .iram0.text | 142,742 B (139.4 KB) |
-| .dram0.data | 46,145 B (45.1 KB) |
-| .dram0.bss  (internal) | 107,320 B (104.8 KB) |
-| .ext_ram.bss  (PSRAM) | 312,392 B (305.1 KB) |
-| App binary size | 3,912,128 B (3820.4 KB) |
+| Version | v3.0.13 |
+| Build date | 2026-10-17 |
+| .iram0.text | 142,768 B (139.4 KB) |
+| .dram0.data | 46,249 B (45.2 KB) |
+| .dram0.bss  (internal) | 100,256 B (97.9 KB) |
+| .ext_ram.bss  (PSRAM) | 334,760 B (326.9 KB) |
+| App binary size | 4,131,312 B (4034.5 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -25,10 +25,12 @@
 | Library / object | Internal BSS |
 |-----------------|-------------|
 | `libcym_doom_engine.a` | 98,086 B (95.8 KB) |
-| `libmain.a` | 64,221 B (62.7 KB) |
+| `libmain.a` | 56,125 B (54.8 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
+| `libZXing_bound.a` | 10,112 B (9.9 KB) |
 | `libcym_doom.a` | 7,376 B (7.2 KB) |
+| `libstdc++.a` | 4,256 B (4.2 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |
 | `liblwip.a` | 3,940 B (3.8 KB) |
 | `libieee802154.a` | 3,590 B (3.5 KB) |
@@ -37,8 +39,6 @@
 | `libwifi_scanner.a` | 2,400 B (2.3 KB) |
 | `libfreertos.a` | 2,148 B (2.1 KB) |
 | `libwifi_attacks.a` | 1,935 B (1.9 KB) |
-| `libwpa_supplicant.a` | 1,722 B (1.7 KB) |
-| `liblvgl__lvgl.a` | 840 B |
 <!-- BSS_TABLE_END -->
 
 

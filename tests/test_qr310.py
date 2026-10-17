@@ -49,7 +49,7 @@ class Recognition310(unittest.TestCase):
   cls.base=DecoderTests;cls.base.setUpClass();cls.lib=cls.base.lib
   cls.lib.cym_qr_rgb565_gray.argtypes=[C.c_void_p,C.c_size_t,C.c_void_p,C.c_int,C.c_int]
   class Stats(C.Structure):
-   _fields_=[(x,C.c_uint32) for x in ['candidates','normal_attempts','mirror_attempts','valid','payload_length']]+[('errors',C.c_uint32*8)]
+   _fields_=[(x,C.c_uint32) for x in ['candidates','normal_attempts','mirror_attempts','valid','payload_length']]+[('engine_status',C.c_int),('errors',C.c_uint32*8)]
   cls.Stats=Stats;cls.lib.cym_qr_decode_gray_ex.argtypes=[C.c_void_p,C.c_void_p,C.c_size_t,C.c_void_p,C.c_size_t,C.POINTER(Stats)]
  @classmethod
  def tearDownClass(cls):cls.base.tearDownClass()
@@ -68,7 +68,9 @@ class Recognition310(unittest.TestCase):
   ctx=self.lib.cym_qr_create(w,h);out=C.create_string_buffer(8896);stats=self.Stats()
   try:
    n=self.lib.cym_qr_decode_gray_ex(ctx,gray,stride,out,8896,C.byref(stats))
-   self.assertEqual(sum(stats.errors),stats.normal_attempts+stats.mirror_attempts)
+   self.assertEqual(sum(stats.errors),0)
+   self.assertEqual(stats.normal_attempts+stats.mirror_attempts,0)
+   self.assertEqual(stats.engine_status,0 if stats.valid else 1)
    self.assertEqual(stats.payload_length,max(0,n));return n,out.raw[:max(0,n)],stats
   finally:self.lib.cym_qr_destroy(ctx)
  def test_native_camera_sized_versions_ecc_rotation_mirror_stride_rgb(self):
@@ -98,10 +100,18 @@ class Recognition310(unittest.TestCase):
     image=ImageEnhance.Contrast(tile.filter(ImageFilter.GaussianBlur(radius))).enhance(0.65)
     self.assertEqual(self.decode(image,7,True)[1],b'https://example.com/cym-test')
   n,out,stats=self.decode(Image.new('L',(240,320),255));self.assertEqual(n,0);self.assertFalse(stats.valid);self.assertEqual(stats.candidates,0)
- def test_empty_is_valid_and_dense_limitation_reported(self):
+ def test_pinned_engine_empty_policy_and_dense_recognition(self):
   import qrcode,json
   im=qrcode.make(b'',box_size=4,border=4).convert('L');n,out,stats=self.decode(im)
-  self.assertEqual(n,0);self.assertTrue(stats.valid);self.assertEqual(stats.errors[0],1)
+  # Pinned ZXing intentionally excludes empty content in DecoderResult::isValid.
+  # Do not invent validity/error bins or modify upstream bytes to mimic quirc.
+  policy=(ROOT/'ESP32C5/components/cym_qr/third_party/zxing-cpp/core/src/DecoderResult.h').read_text()
+  self.assertIn('!_content.bytes.empty()',policy)
+  self.assertEqual(n,0);self.assertFalse(stats.valid);self.assertEqual(stats.engine_status,1);self.assertEqual(stats.payload_length,0)
+  # UI/record handling of valid-empty results remains covered by Worker309.
+  # An encoded zero byte is non-empty content and must still round-trip.
+  n,out,stats=self.decode(qrcode.make(b'\x00',box_size=4,border=4).convert('L'))
+  self.assertEqual(n,1);self.assertEqual(out,b'\x00');self.assertTrue(stats.valid)
   data=b'Long text '*120;qr=qrcode.QRCode(box_size=4,border=4);qr.add_data(data);qr.make();im=qr.make_image().convert('L')
   rows=[]
   for angle in [0,90,180,270]:
@@ -144,7 +154,7 @@ class ThemeNavigation310(unittest.TestCase):
   for token in ['apply_menu_bg()','ui_panel_color()','ui_card_color()','ui_card_pressed_color()','ui_border_color()','ui_text_color()','ui_muted_color()','UI_ACCENT_CYAN','g_font_icon14','screen_orientation']:self.assertIn(token,screen)
   self.assertIn('LV_PART_SCROLLBAR',ui);self.assertIn('LV_STATE_DISABLED',ui);self.assertIn('LV_STATE_PRESSED',ui)
   self.assertIn('lv_label_set_recolor(result_label,false)',ui)
-  self.assertLess(ui.index('retry_button=lv_btn_create(body)'),ui.index('result_label=lv_label_create(body)'))
+  self.assertLess(ui.index('retry_button=lv_btn_create(result_card)'),ui.index('result_label=lv_label_create(result_card)'))
   for w,h in [(320,480),(480,320)]:
    body_h=h-40;preview_h=160 if h>w else 120
    # 12 padding + 34 two-line scan prompt + 6 gap + preview. Debug controls

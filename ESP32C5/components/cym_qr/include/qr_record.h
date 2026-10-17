@@ -17,3 +17,10 @@ int cym_qr_record(const char *root, const uint8_t *data, size_t len,
  * Caller serializes mounted SD; no automatic capture or upload. */
 int cym_qr_debug_frame(const char *root,const uint8_t *gray,int width,int height,
                        size_t stride,const char *metadata,char *filename,size_t cap);
+
+/* Explicit matched native RGB565_LE bytes + exact decoder gray. Same basename,
+ * exclusive reservation of BOTH files; caller owns camera-close/SD admission.
+ * PGM metadata identifies the acquisition; raw rows contain no padding. */
+int cym_qr_debug_pair(const char *root,const uint8_t *gray,const uint8_t *rgb,
+                     int width,int height,size_t gray_stride,size_t rgb_stride,
+                     const char *metadata,char *filename,size_t cap);

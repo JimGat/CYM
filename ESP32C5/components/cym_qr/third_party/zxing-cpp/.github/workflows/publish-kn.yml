@@ -1,0 +1,97 @@
+name: publish-kn
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish package (y/n)'
+        default: 'n'
+
+jobs:
+  publish:
+    name: Library Publish
+
+    runs-on: macos-latest # at least macos-13 is required to enable c++20 support
+
+    defaults:
+      run:
+        working-directory: ./wrappers/kn
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Prepare Zig toolchain
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Checkout toolchain initializer repository
+        uses: actions/checkout@v6
+        with:
+          repository: ISNing/kn-toolchain-initializer
+          path: wrappers/kn/.kn-toolchain-initializer
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v5
+
+      - name: Initialize Kotlin/Native toolchain
+        working-directory: wrappers/kn/.kn-toolchain-initializer
+        run: ./gradlew build -DkotlinVersion=2.2.0
+
+      - name: Export Toolchain properties
+        run: |
+          echo -e "konan.dir=$HOME/.konan/kotlin-native-prebuilt-macos-aarch64-2.2.0" >> local.properties
+
+      - name: Build Library
+        run: |
+          export PATH="$PATH:$(brew --prefix llvm@15)/bin"
+          ./gradlew assemble
+
+      - name: Run All Library Tests
+        run: |
+          export PATH="$PATH:$(brew --prefix llvm@15)/bin"
+          ./gradlew allTests
+
+      - name: Upload Library Test Reports
+        uses: actions/upload-artifact@v6
+        with:
+          name: allTests-reports
+          path: wrappers/kn/build/reports/tests/allTests
+
+      - name: Upload Built LinuxArm64 shared library
+        uses: actions/upload-artifact@v6
+        with:
+          name: linuxArm64-shared
+          path: wrappers/kn/build/cmake/libZXing/linuxArm64
+
+      - name: Upload Built LinuxX64 shared library
+        uses: actions/upload-artifact@v6
+        with:
+          name: linuxX64-shared
+          path: wrappers/kn/build/cmake/libZXing/linuxX64
+
+      - name: Publish Library
+        if: ${{ github.event.inputs.publish == 'y' }}
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.ORG_GRADLE_PROJECT_MAVENCENTRALUSERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.ORG_GRADLE_PROJECT_MAVENCENTRALPASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyId: ${{ secrets.GPG_KEY_ID }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_KEY_PASSWORD }}
+        run: |
+          export PATH="$PATH:$(brew --prefix llvm@15)/bin"
+          ./gradlew publishToMavenCentral
+
+# To actually publish the blob, login to https://central.sonatype.com/publishing/deployments.

@@ -1,55 +1,36 @@
 #include "cym_qr.h"
-#include "quirc.h"
+#include "cym_qr_zxing.h"
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 #include "qr_alloc.h"
-struct cym_qr {
-    struct quirc *decoder;
-    struct quirc_code code;
-    struct quirc_data data;
-    int width, height;
-};
-cym_qr_t *cym_qr_create(int width, int height)
+struct cym_qr {cym_zx_t *decoder;int width,height;};
+cym_qr_t *cym_qr_create(int width,int height)
 {
-    if (width < 1 || height < 1 || width > 1024 || height > 1024) return NULL;
-    cym_qr_t *q = calloc(1, sizeof(*q));
-    if (!q) return NULL;
-    q->decoder = quirc_new(); q->width = width; q->height = height;
-    if (!q->decoder || quirc_resize(q->decoder,width,height)) { cym_qr_destroy(q); return NULL; }
-    return q;
+    if(width<1||height<1||width>1024||height>1024)return NULL;
+    cym_qr_t *q=calloc(1,sizeof(*q));if(!q)return NULL;
+    cym_zx_config_t config={1,width,height,1,1,1,1};
+    if(cym_zx_create(&config,&q->decoder)!=CYM_ZX_OK){free(q);return NULL;}
+    q->width=width;q->height=height;return q;
 }
 void cym_qr_destroy(cym_qr_t *q)
 {
-    if (!q) return;
-    if (q->decoder) quirc_destroy(q->decoder);
-    memset(q,0,sizeof(*q)); free(q);
+    if(!q)return;
+    // Caller owns lifecycle; never free the wrapper if the engine is busy.
+    if(cym_zx_destroy(q->decoder)!=CYM_ZX_OK)return;
+    memset(q,0,sizeof(*q));free(q);
 }
-int cym_qr_decode_gray_ex(cym_qr_t *q, const uint8_t *gray, size_t stride, uint8_t *out, size_t cap,cym_qr_stats_t *stats)
+int cym_qr_decode_gray_ex(cym_qr_t *q,const uint8_t *gray,size_t stride,uint8_t *out,size_t cap,cym_qr_stats_t *stats)
 {
     cym_qr_stats_t local={0};if(!stats)stats=&local;memset(stats,0,sizeof(*stats));
-    if (!q || !gray || !out || cap < CYM_QR_MAX_PAYLOAD || stride < (size_t)q->width) return -1;
-    uint8_t *dst = quirc_begin(q->decoder,NULL,NULL);
-    for (int y=0; y<q->height; ++y) memcpy(dst+y*q->width,gray+y*stride,q->width);
-    quirc_end(q->decoder);
-    int best = INT_MAX, len = 0;
-    stats->candidates=quirc_count(q->decoder);
-    for (int i=0; i<(int)stats->candidates; ++i) {
-        quirc_extract(q->decoder,i,&q->code);
-        quirc_decode_error_t err = quirc_decode(&q->code,&q->data);
-        stats->normal_attempts++;stats->errors[err]++;
-        if (err) {
-            quirc_flip(&q->code);err=quirc_decode(&q->code,&q->data);
-            stats->mirror_attempts++;stats->errors[err]++;
-        }
-        if (err || q->data.payload_len < 0 || (size_t)q->data.payload_len > cap) continue;
-        int x=0,y=0;
-        for (int j=0;j<4;++j) { x+=q->code.corners[j].x; y+=q->code.corners[j].y; }
-        x=x/4-q->width/2; y=y/4-q->height/2;
-        int distance=x*x+y*y;
-        if (distance < best) { best=distance;len=q->data.payload_len;memcpy(out,q->data.payload,len);stats->valid=1;stats->payload_length=len; }
-    }
-    return len;
+    if(!q||!gray||!out||cap<CYM_QR_MAX_PAYLOAD||stride<(size_t)q->width||
+       stride>INT_MAX||stride>(SIZE_MAX-(size_t)q->width)/(size_t)(q->height>1?q->height-1:1))return -1;
+    cym_zx_result_t result;
+    cym_zx_status_t rc=cym_zx_decode(q->decoder,gray,(q->height-1)*stride+q->width,q->width,q->height,stride,out,cap,&result);
+    stats->engine_status=rc;stats->candidates=result.candidates;
+    stats->valid=result.valid;stats->payload_length=result.valid?result.length:0;
+    // ZXing supplies returned symbols, not quirc finder/normal/mirror counts.
+    return rc==CYM_ZX_OK?(int)result.length:rc==CYM_ZX_NOT_FOUND?0:-1;
 }
 int cym_qr_rgb565_gray(const uint8_t *rgb, size_t stride, uint8_t *gray, int w, int h)
 {

@@ -21,7 +21,7 @@ class ObserverStartupBuffers95(unittest.TestCase):
  def test_actual_production_buffer_admission_with_faults(self):
   s=(ROOT/'ESP32C5/components/wifi_sniffer/wifi_sniffer.c').read_text()
   start=s.index('esp_err_t wifi_sniffer_start(void) {');end=s.index('    // Clear previous data',start)
-  body=s[start:end]+'return ESP_OK;\n}\n'
+  body='esp_err_t wifi_sniffer_start(void) {\n'+s[s.index('    if (sniffer_active)',start):end]+'return ESP_OK;\n}\n'
   common=(ROOT/'ESP32C5/components/wifi_cli/include/wifi_common.h').read_text()
   macros=common[common.index('#if CONFIG_BOARD_HAS_PSRAM\n#define MAX_CLIENTS_PER_AP'):common.index('#define MAX_TARGET_BSSIDS')]
   structs=common[common.index('// Probe request structure'):common.index('// GPS data structure')]

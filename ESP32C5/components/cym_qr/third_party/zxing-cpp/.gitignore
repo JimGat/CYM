@@ -1,0 +1,27 @@
+*.o
+*.so
+*.lib
+*.d
+*.a
+compile_commands.json
+/build
+
+# QtCreator
+CMakeLists.txt.user
+
+# Vim
+*.swp
+
+# XCode/Swift
+.swiftpm
+.build
+
+# JetBrain (AndroidStudio, clion)
+.idea
+
+# Visual Studio
+/.vs
+/CMakeUserPresets.json
+
+# Visual Studio Code
+/.vscode

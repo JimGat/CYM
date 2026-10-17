@@ -1,0 +1,752 @@
+/*
+* Copyright 2016 Nu-book Inc.
+* Copyright 2019 Axel Waggershauser
+*/
+// SPDX-License-Identifier: Apache-2.0
+
+#include "BlackboxTestRunner.h"
+
+#include "ByteArray.h"
+#include "ImageLoader.h"
+#include "ReadBarcode.h"
+#include "Utf.h"
+#include "ZXAlgorithms.h"
+#include "StdPrint.h"
+#include "Version.h"
+
+#include <chrono>
+#include <exception>
+#include <format>
+#include <fstream>
+#include <map>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#ifdef __GNUC__
+// turns out that libstdc++ is depending on TBB without even linking against it, so this fails to link :-/
+#undef __cpp_lib_execution
+#endif
+
+#ifdef __cpp_lib_execution
+#include <execution>
+#else
+#include <future>
+#endif
+
+namespace ZXing::Test {
+
+namespace {
+
+	struct PureTag {} pure;
+
+	struct TestCase
+	{
+		struct TC
+		{
+			std::string name = {};
+			int minPassCount = 0; // The number of images which must decode for the test to pass.
+			int maxMisreads = 0; // Maximum number of successfully read images with the wrong contents.
+			std::set<fs::path> notDetectedFiles = {};
+			std::map<fs::path, std::string> misReadFiles = {};
+		};
+
+		TC tc[2] = {};
+		int rotation = 0; // The rotation in degrees clockwise to use for this test.
+
+		TestCase(int mntf, int mnts, int mmf, int mms, int r) : tc{{"fast", mntf, mmf}, {"slow", mnts, mms}}, rotation(r) {}
+		TestCase(int mntf, int mnts, int r) : TestCase(mntf, mnts, 0, 0, r) {}
+		TestCase(int mntp, int mmp, PureTag) : tc{{"pure", mntp, mmp}} {}
+	};
+
+	struct FalsePositiveTestCase
+	{
+		int maxAllowed; // Maximum number of images which can fail due to successfully reading the wrong contents
+		int rotation;   // The rotation in degrees clockwise to use for this test.
+	};
+}
+
+// Helper for `compareResult()` - map `key` to Barcode property, converting value to std::string
+static std::string getBarcodeValue(const Barcode& barcode, const std::string& key)
+{
+	if (key == "format")
+		return ToString(barcode.format());
+	if (key == "contentType")
+		return ToString(barcode.contentType());
+	if (key == "ecLevel")
+		return barcode.ecLevel();
+	if (key == "orientation")
+		return std::to_string(barcode.orientation());
+	if (key == "symbologyIdentifier")
+		return barcode.symbologyIdentifier();
+	if (key == "sequenceSize")
+		return std::to_string(barcode.sequenceSize());
+	if (key == "sequenceIndex")
+		return std::to_string(barcode.sequenceIndex());
+	if (key == "sequenceId")
+		return barcode.sequenceId();
+	if (key == "isLastInSequence")
+		return barcode.isLastInSequence() ? "true" : "false";
+	if (key == "isPartOfSequence")
+		return barcode.isPartOfSequence() ? "true" : "false";
+	if (key == "isMirrored")
+		return barcode.isMirrored() ? "true" : "false";
+	if (key == "isInverted")
+		return barcode.isInverted() ? "true" : "false";
+	if (key == "readerInit")
+		return barcode.readerInit() ? "true" : "false";
+
+	return std::format("***Unknown key '{}'***", key);
+}
+
+// Read ".result.txt" file contents `expected` with lines "key=value" and compare to `actual`
+static bool compareResult(const Barcode& barcode, const std::string& expected, std::string& actual)
+{
+	bool ret = true;
+
+	actual.clear();
+	actual.reserve(expected.size());
+
+	std::stringstream expectedLines(expected);
+	std::string expectedLine;
+	while (std::getline(expectedLines, expectedLine)) {
+		if (expectedLine.empty() || expectedLine[0] == '#')
+			continue;
+		auto equals = expectedLine.find('=');
+		if (equals == std::string::npos) {
+			actual += "***Bad format, missing equals***\n";
+			return false;
+		}
+		std::string key = expectedLine.substr(0, equals);
+		std::string expectedValue = expectedLine.substr(equals + 1);
+		std::string actualValue = getBarcodeValue(barcode, key);
+		if (actualValue != expectedValue) {
+			ret = false;
+			actualValue += " ***Mismatch***";
+		}
+		actual += StrCat(key, '=', actualValue, '\n');
+	}
+	return ret;
+}
+
+static std::string checkResult(const fs::path& imgPath, BarcodeFormat expectedFormat, const Barcode& barcode)
+{
+	if (expectedFormat != barcode.format() && expectedFormat != barcode.symbology()) // allow matching either format or symbology
+		return std::format("Format mismatch: expected '{}' but got '{}'", ToString(expectedFormat), ToString(barcode.format()));
+
+	auto readFile = [imgPath](const char* ending) {
+		std::ifstream ifs(fs::path(imgPath).replace_extension(ending), std::ios::binary);
+		return ifs ? std::optional(std::string(std::istreambuf_iterator<char>(ifs), std::istreambuf_iterator<char>())) : std::nullopt;
+	};
+
+	if (auto expected = readFile(".result.txt")) {
+		std::string actual;
+		if (!compareResult(barcode, *expected, actual))
+			return std::format("Result mismatch: expected\n{} but got\n{}", *expected, actual);
+	}
+
+	if (auto expected = readFile(".txt")) {
+		expected = EscapeNonGraphical(*expected);
+		auto utf8Result = barcode.text(TextMode::Escaped);
+		return utf8Result != *expected ? std::format("Content mismatch: expected '{}' but got '{}'", *expected, utf8Result) : "";
+	}
+
+	if (auto expected = readFile(".bin")) {
+		ByteArray binaryExpected(*expected);
+		return barcode.bytes() != binaryExpected
+				   ? std::format("Content mismatch: expected '{}' but got '{}'", ToHex(binaryExpected), ToHex(barcode.bytes()))
+				   : "";
+	}
+
+	return "Error reading file";
+}
+
+static int failed = 0;
+static int extra = 0;
+static int totalImageLoadTime = 0;
+
+int timeSince(std::chrono::steady_clock::time_point startTime)
+{
+	auto duration = std::chrono::steady_clock::now() - startTime;
+	return narrow_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count());
+}
+
+// pre-load images into cache, so the disc io time does not end up in the timing measurement
+void preloadImageCache(const std::vector<fs::path>& imgPaths)
+{
+	auto startTime = std::chrono::steady_clock::now();
+	ImageLoader::clearCache();
+	for (const auto& imgPath : imgPaths)
+		ImageLoader::load(imgPath);
+	totalImageLoadTime += timeSince(startTime);
+}
+
+static std::string printPositiveTestStats(int imageCount, const TestCase::TC& tc)
+{
+	int passCount = imageCount - Size(tc.misReadFiles) - Size(tc.notDetectedFiles);
+
+	std::print(" | {}: {:3} of {:3}, misread {} of {}", tc.name, passCount, tc.minPassCount, Size(tc.misReadFiles), tc.maxMisreads);
+
+	std::string failures;
+	if (passCount < tc.minPassCount && !tc.notDetectedFiles.empty()) {
+		failures += std::format("    Not detected ({}):", tc.name);
+		for (const auto& f : tc.notDetectedFiles)
+			failures += std::format(" {}", f.filename().string());
+		failures += "\n";
+		failed += tc.minPassCount - passCount;
+	}
+
+	extra += std::max(0, passCount - tc.minPassCount);
+	if (passCount > tc.minPassCount)
+		failures += std::format("    Unexpected detections ({}): {}\n", tc.name, passCount - tc.minPassCount);
+
+	if (Size(tc.misReadFiles) > tc.maxMisreads) {
+		failures += std::format("    Read error ({}):", tc.name);
+		for (const auto& [path, error] : tc.misReadFiles)
+			failures += std::format("      {}: {}\n", path.filename().string(), error);
+		failed += Size(tc.misReadFiles) - tc.maxMisreads;
+	}
+	return failures;
+}
+
+static std::vector<fs::path> getImagesInDirectory(const fs::path& directory)
+{
+	std::vector<fs::path> result;
+	for (const auto& entry : fs::directory_iterator(directory))
+		if (fs::is_regular_file(entry.status()) && Contains({".webp", ".png", ".jpg", ".pgm", ".gif"}, entry.path().extension()))
+			result.push_back(entry.path());
+
+	preloadImageCache(result);
+
+	return result;
+}
+
+static void doRunTests(const fs::path& directory, BarcodeFormat format, int totalTests, const std::vector<TestCase>& tests,
+					   ReaderOptions opts)
+{
+	auto imgPaths = getImagesInDirectory(directory);
+	auto folderName = directory.stem();
+
+	if (Size(imgPaths) != totalTests)
+		std::println("TEST {} => Expected number of tests: {}, got: {} => FAILED", folderName.string(), totalTests, imgPaths.size());
+
+	for (auto& test : tests) {
+		std::print("{:20} @ {:3}, {:3}", folderName.string(), test.rotation, Size(imgPaths));
+		std::vector<int> times;
+		std::string failures;
+		for (auto tc : test.tc) {
+			if (tc.name.empty())
+				break;
+			auto startTime = std::chrono::steady_clock::now();
+			opts.tryDownscale(tc.name == "slow_");
+			opts.downscaleFactor(2);
+			opts.downscaleThreshold(180);
+			opts.tryHarder(tc.name == "slow");
+			opts.tryRotate(tc.name == "slow");
+			opts.tryInvert(tc.name == "slow");
+			opts.isPure(tc.name == "pure");
+			if (opts.isPure())
+				opts.binarizer(Binarizer::FixedThreshold);
+#ifndef PRINT_DEBUG
+#ifdef __cpp_lib_execution
+			std::vector<Barcode> barcodes(imgPaths.size());
+			std::transform(std::execution::par, imgPaths.begin(), imgPaths.end(), barcodes.begin(), [&](const fs::path& imgPath) {
+				return ReadBarcode(ImageLoader::load(imgPath).rotated(test.rotation), opts);
+			});
+			for (size_t i = 0; i < imgPaths.size(); ++i) {
+				const auto& imgPath = imgPaths[i];
+				const auto& barcode = barcodes[i];
+#else
+			auto futures = std::vector<std::pair<fs::path, std::future<Barcode>>>{};
+			for (const auto& imgPath : imgPaths) {
+				futures.push_back(std::make_pair(imgPath, std::async(std::launch::async, [&](const fs::path& path) {
+					return ReadBarcode(ImageLoader::load(path).rotated(test.rotation), opts);
+				}, imgPath)));
+			}
+			for (auto& [imgPath, fut] : futures) {
+				auto barcode = fut.get();
+#endif // __cpp_lib_execution
+#else
+			for (const auto& imgPath : imgPaths) {
+				auto barcode = ReadBarcode(ImageLoader::load(imgPath).rotated(test.rotation), opts);
+#endif
+				if (barcode.isValid()) {
+					auto error = checkResult(imgPath, format, barcode);
+					if (!error.empty())
+						tc.misReadFiles[imgPath] = error;
+				} else {
+					tc.notDetectedFiles.insert(imgPath);
+				}
+			}
+
+			times.push_back(timeSince(startTime));
+			failures += printPositiveTestStats(Size(imgPaths), tc);
+		}
+		std::println(" | time: {:3} vs {:3} ms", times.front(), times.back());
+		if (!failures.empty())
+			std::println("\n{}", failures);
+	}
+}
+
+static Barcode readMultiple(const std::vector<fs::path>& imgPaths, BarcodeFormat format)
+{
+	Barcodes allBarcodes;
+	for (const auto& imgPath : imgPaths) {
+		auto barcodes = ReadBarcodes(ImageLoader::load(imgPath),
+									 ReaderOptions().formats(format).tryDownscale(false));
+		allBarcodes.insert(allBarcodes.end(), barcodes.begin(), barcodes.end());
+	}
+
+	return MergeStructuredAppendSequence(allBarcodes);
+}
+
+static void doRunStructuredAppendTest(const fs::path& directory, BarcodeFormat format, int totalTests,
+									  const std::vector<TestCase>& tests)
+{
+	auto imgPaths = getImagesInDirectory(directory);
+	auto folderName = directory.stem();
+
+	std::map<fs::path, std::vector<fs::path>> imageGroups;
+	for (const auto& imgPath : imgPaths) {
+		std::string fn = imgPath.filename().string();
+		auto p = fn.find_last_of('-');
+		imageGroups[imgPath.parent_path() / fn.substr(0, p)].push_back(imgPath);
+	}
+
+	if (Size(imageGroups) != totalTests)
+		std::println("TEST {} => Expected number of tests: {}, got: {} => FAILED", folderName.string(), totalTests,
+					 imageGroups.size());
+
+	for (auto& test : tests) {
+		std::print("{:20} @ {:3}, {:3}", folderName.string(), test.rotation, Size(imgPaths));
+		auto tc = test.tc[0];
+		auto startTime = std::chrono::steady_clock::now();
+
+		for (const auto& [testPath, testImgPaths] : imageGroups) {
+			auto barcode = readMultiple(testImgPaths, format);
+			if (barcode.isValid()) {
+				auto error = checkResult(testPath, format, barcode);
+				if (!error.empty())
+					tc.misReadFiles[testPath] = error;
+			} else {
+				tc.notDetectedFiles.insert(testPath);
+			}
+		}
+
+		auto failures = printPositiveTestStats(Size(imageGroups), tc);
+		std::println(" | time: {:3} ms", timeSince(startTime));
+		if (!failures.empty())
+			std::println("\n{}", failures);
+	}
+}
+
+int runBlackBoxTests(const fs::path& testPathPrefix, const std::set<std::string>& includedTests)
+{
+	auto hasTest = [&includedTests](const fs::path& dir) {
+		auto stem = dir.stem().string();
+		return includedTests.empty() || Contains(includedTests, stem) ||
+				Contains(includedTests, stem.substr(0, stem.size() - 2));
+	};
+
+	auto runTests = [&](std::string_view directory, BarcodeFormat format, int total,
+						const std::vector<TestCase>& tests, const ReaderOptions& opts = ReaderOptions()) {
+		if (hasTest(directory) && format & (BarcodeFormat::AllReadable | BarcodeFormat::None))
+			doRunTests(testPathPrefix / directory, format, total, tests, opts);
+	};
+
+	auto runStructuredAppendTest = [&](std::string_view directory, BarcodeFormat format, int total,
+									   const std::vector<TestCase>& tests) {
+		if (hasTest(directory) && format & (BarcodeFormat::AllReadable | BarcodeFormat::None))
+			doRunStructuredAppendTest(testPathPrefix / directory, format, total, tests);
+	};
+
+	try
+	{
+		auto startTime = std::chrono::steady_clock::now();
+
+		using enum BarcodeFormat;
+		// clang-format off
+
+		// Expected failures:
+		// abc-inverted.png (fast) - fast does not try inverted
+		// az-thick.png (pure)
+		runTests("aztec-1", Aztec, 32, {
+			{ 31, 32, 0   },
+			{ 31, 32, 90  },
+			{ 31, 32, 180 },
+			{ 31, 32, 270 },
+			{ 30, 0, pure },
+		});
+
+		runTests("aztec-2", Aztec, 16, {
+			{ 16, 16, 0   },
+			{ 16, 16, 90  },
+			{ 16, 16, 180 },
+			{ 16, 16, 270 },
+		});
+
+		runTests("datamatrix-1", DataMatrix, 30, {
+			{ 30, 30, 0   },
+			{  0, 28, 90  },
+			{  0, 28, 180 },
+			{  0, 28, 270 },
+			{ 28, 0, pure },
+		});
+
+		runTests("datamatrix-2", DataMatrix, 13, {
+			{ 13, 13, 0   },
+			{  0, 13, 90  },
+			{  0, 13, 180 },
+			{  0, 13, 270 },
+		});
+
+		runTests("datamatrix-3", DataMatrix, 28, {
+			{ 26, 27, 0   },
+			{  0, 27, 90  },
+			{  0, 27, 180 },
+			{  0, 27, 270 },
+		});
+
+		runTests("datamatrix-4", DataMatrix, 21, {
+			{ 21, 21, 0   },
+			{  0, 21, 90  },
+			{  0, 21, 180 },
+			{  0, 21, 270 },
+			{ 19, 0, pure },
+		});
+
+		runTests("dxfilmedge-1", DXFilmEdge, 3, {
+			{ 1, 3, 0 },
+			{ 0, 3, 180 },
+		});
+
+		runTests("codabar-1", Codabar, 11, {
+			{ 11, 11, 0   },
+			{ 11, 11, 180 },
+		});
+
+		runTests("codabar-2", Codabar, 4, {
+			{ 3, 4, 0   },
+			{ 3, 4, 180 },
+		});
+
+		runTests("code39-1", Code39, 6, {
+			{ 6, 6, 0   },
+			{ 6, 6, 180 },
+		});
+
+		runTests("code39-2", Code39Ext, 3, {
+			{ 3, 3, 0   },
+			{ 3, 3, 180 },
+		});
+
+		runTests("code39-3", Code39, 5, {
+			{ 5, 5, 0   },
+			{ 5, 5, 180 },
+		});
+
+		runTests("code93-1", Code93, 3, {
+			{ 3, 3, 0   },
+			{ 3, 3, 180 },
+		});
+
+		runTests("code128-1", Code128, 6, {
+			{ 6, 6, 0   },
+			{ 6, 6, 180 },
+		});
+
+		runTests("code128-2", Code128, 14, {
+			{ 13, 14, 0   },
+			{ 13, 14, 180 },
+		});
+
+		runTests("code128-3", Code128, 2, {
+			{ 2, 2, 0   },
+			{ 2, 2, 180 },
+		});
+
+		runTests("ean8-1", EAN8, 9, {
+			{ 9, 9, 0   },
+			{ 9, 9, 180 },
+			{ 8, 0, pure },
+		});
+
+		runTests("ean13-1", EAN13, 16, {
+			{ 10, 14, 0   },
+			{ 11, 14, 180 },
+		});
+
+		runTests("ean13-2", EAN13, 16, {
+			{ 1, 6, 0   },
+			{ 1, 6, 180 },
+		});
+
+		runTests("ean13-3", EAN13, 8, {
+			{ 8, 8, 0   },
+			{ 8, 8, 180 },
+		});
+
+		runTests("ean13-4", EAN13, 20, {
+			{ 8, 12, 0   },
+			{ 7, 12, 180 },
+		});
+
+		runTests("ean13-extension-1", EAN13, 5, {
+			{ 4, 5, 0 },
+			{ 4, 5, 180 },
+		}, ReaderOptions().eanAddOnSymbol(EanAddOnSymbol::Require));
+
+		runTests("itf-1", ITF, 14, {
+			{ 13, 14, 0   },
+			{ 13, 14, 180 },
+		});
+
+		runTests("itf-2", ITF, 6, {
+			{ 6, 6, 0   },
+			{ 6, 6, 180 },
+		});
+
+		runTests("telepen-1", Telepen, 4, {
+			{ 4, 4, 0   },
+			{ 4, 4, 180 },
+		});
+
+		runTests("upca-1", UPCA, 5, {
+			{ 4, 5, 0   },
+			{ 4, 5, 180 },
+		}, ReaderOptions().formats(UPCA));
+
+		runTests("upca-2", UPCA, 26, {
+			{ 10, 16, 0   },
+			{ 12, 16, 180 },
+		}, ReaderOptions().formats(UPCA));
+
+		runTests("upca-3", UPCA, 6, {
+			{ 3, 6, 0   },
+			{ 3, 6, 180 },
+		}, ReaderOptions().formats(UPCA));
+
+		runTests("upca-4", UPCA, 13, {
+			{ 5, 9, 0 },
+			{ 6, 9, 180 },
+		}, ReaderOptions().formats(UPCA));
+
+		runTests("upca-5", UPCA, 20, {
+			{ 7, 9, 0   },
+			{ 7, 9, 180 },
+		}, ReaderOptions().formats(UPCA));
+
+		runTests("upca-extension-1", UPCA, 6, {
+			{ 4, 5, 0 },
+			{ 4, 5, 180 },
+		}, ReaderOptions().eanAddOnSymbol(EanAddOnSymbol::Require).formats(UPCA));
+
+		runTests("upce-1", UPCE, 3, {
+			{ 3, 3, 0   },
+			{ 3, 3, 180 },
+			{ 3, 0, pure },
+		});
+
+		runTests("upce-2", UPCE, 15, {
+			{ 9, 10, 0   },
+			{ 9, 10, 180 },
+		});
+
+		runTests("upce-3", UPCE, 11, {
+			{ 5, 7, 0   },
+			{ 5, 7, 180 },
+		});
+
+		runTests("rss14-1", DataBarOmni, 13, {
+			{ 10, 11, 0   },
+			{ 10, 11, 180 },
+		});
+
+		runTests("rss14-2", DataBarStk, 7, {
+			{ 5, 6, 0   },
+			{ 5, 6, 180 },
+		});
+
+		runTests("rssexpanded-1", DataBarExp, 37, {
+			{ 37, 37, 0   },
+			{ 37, 37, 180 },
+			{ 37, 0, pure },
+		});
+
+		runTests("rssexpanded-2", DataBarExp, 7, {
+			{ 5, 7, 0   },
+			{ 5, 7, 180 },
+		});
+
+		runTests("rssexpanded-3", DataBarExp, 118, {
+			{ 118, 118, 0   },
+			{ 118, 118, 180 },
+			{ 118, 0, pure },
+		});
+
+		runTests("rssexpandedstacked-1", DataBarExpStk, 62, {
+			{ 52, 62, 0   },
+			{ 52, 62, 180 },
+			{ 57, 0, pure },
+		});
+
+		runTests("rssexpandedstacked-2", DataBarExpStk, 2, {
+			{ 2, 2, 0   },
+			{ 2, 2, 180 },
+		});
+
+		runTests("databarltd-1", DataBarLtd, 2, {
+			{ 2, 2, 0   },
+			{ 2, 2, 180 },
+			{ 1, 0, pure },
+		});
+
+		runTests("maxicode-1", MaxiCode, 9, {
+			{ 9, 9, 0 },
+		});
+
+		runTests("maxicode-2", MaxiCode, 4, {
+			{ 0, 0, 0 },
+		});
+
+		runTests("qrcode-1", QRCode, 8, {
+			{ 8, 8, 0   },
+			{ 8, 8, 90  },
+			{ 8, 8, 180 },
+			{ 8, 8, 270 },
+		});
+
+		runTests("qrcode-2", QRCode, 56, {
+			{ 50, 53, 0   },
+			{ 51, 54, 90  },
+			{ 50, 53, 180 },
+			{ 50, 53, 270 },
+			{ 23, 1, pure }, // the misread is the 'outer' symbol in 16.png
+		});
+
+		runTests("qrcode-3", QRCode, 18, {
+			{ 18, 18, 0   },
+			{ 18, 18, 90  },
+			{ 18, 18, 180 },
+			{ 18, 18, 270 },
+		});
+
+		runTests("qrcode-4", QRCode, 24, {
+			{ 15, 15, 0   },
+			{ 15, 15, 90  },
+			{ 15, 15, 180 },
+			{ 15, 15, 270 },
+		});
+
+		runTests("qrcode-5", QRCode, 16, {
+			{ 16, 16, 0   },
+			{ 16, 16, 90  },
+			{ 16, 16, 180 },
+			{ 16, 16, 270 },
+			{ 4, 0, pure },
+		});
+
+		runTests("qrcode-6", QRCode, 15, {
+			{ 15, 15, 0   },
+			{ 15, 15, 90  },
+			{ 15, 15, 180 },
+			{ 15, 15, 270 },
+		});
+
+		runStructuredAppendTest("qrcode-7", QRCode, 1, {
+			{ 1, 1, 0   },
+		});
+
+		runTests("microqrcode-1", MicroQRCode, 16, {
+			{ 15, 15, 0   },
+			{ 14, 14, 90  },
+			{ 14, 14, 180 }, // ughs: 1 result is platform/compiler dependent (e.g. -march=core2 vs. haswell)
+			{ 15, 15, 270 },
+			{ 9, 0, pure },
+		});
+
+		runTests("rmqrcode-1", RMQRCode, 3, {
+			{  2,  3, 0   },
+			{  2,  3, 90  },
+			{  2,  3, 180 },
+			{  2,  3, 270 },
+			{  2,  2, pure },
+		});
+
+		runTests("pdf417-1", PDF417, 17, {
+			{ 16, 17, 0   },
+			{  1, 17, 90  },
+			{ 16, 17, 180 },
+			{  1, 17, 270 },
+			{ 16, 0, pure },
+		});
+
+		runTests("pdf417-2", PDF417, 25, {
+			{ 25, 25, 0   },
+			{  0, 25, 90   },
+			{ 25, 25, 180 },
+			{  0, 25, 270   },
+		});
+
+		runTests("pdf417-3", PDF417, 16, {
+			{ 16, 16, 0   },
+			{  0, 16, 90  },
+			{ 16, 16, 180 },
+			{  0, 16, 270 },
+			{ 7, 0, pure },
+		});
+
+		runStructuredAppendTest("pdf417-4", PDF417, 3, {
+			{ 3, 3, 0   },
+		});
+
+		runTests("micropdf417-1", MicroPDF417, 10, {
+			{ 9, 9, 0   },
+			{ 0, 9, 90  },
+			{ 9, 9, 180 },
+			{ 0, 9, 270 },
+			{ 3, 0, pure },
+		});
+
+		runTests("falsepositives-1", None, 21, {
+			{ 0, 0, 0, 0, 0   },
+			{ 0, 0, 0, 0, 90  },
+			{ 0, 0, 0, 0, 180 },
+			{ 0, 0, 0, 0, 270 },
+			{ 0, 0, pure },
+		});
+
+		runTests("falsepositives-2", None, 25, {
+			{ 0, 0, 0, 0, 0   },
+			{ 0, 0, 0, 0, 90  },
+			{ 0, 0, 0, 0, 180 },
+			{ 0, 0, 0, 0, 270 },
+			{ 0, 0, pure },
+		});
+		// clang-format on
+
+		int totalTime = timeSince(startTime);
+		int decodeTime = totalTime - totalImageLoadTime;
+		std::println("load time:   {} ms.", totalImageLoadTime);
+		std::println("decode time: {} ms.", decodeTime);
+		std::println("total time:  {} ms.", totalTime);
+		if (failed)
+			std::println("WARNING: {} tests failed.", failed);
+		if (extra)
+			std::println("INFO: {} tests succeeded unexpectedly.", extra);
+
+		return failed;
+	}
+	catch (const std::exception& e) {
+		std::println("{}", e.what());
+	}
+	catch (...) {
+		std::println("Internal error");
+	}
+	return -1;
+}
+
+} // ZXing::Test

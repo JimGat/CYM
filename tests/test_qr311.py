@@ -1,7 +1,10 @@
 """v3.0.11: execute complete production QR UI, not a copied state machine."""
 from pathlib import Path
 import subprocess,tempfile,unittest
-from test_qr_worker309 import PRE,ROOT
+from test_qr_worker309 import PRE as LOW_MEMORY_PRE,ROOT
+# Successful decoder scenarios must meet production 8192/4096 admission.
+# Worker309 separately exercises the original low-memory profile.
+PRE=LOW_MEMORY_PRE.replace("internal_free=4734,internal_largest=2304","internal_free=32768,internal_largest=16384")
 
 def production():
  text=(ROOT/'ESP32C5/main/qr_decoder_ui.c').read_text()

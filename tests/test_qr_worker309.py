@@ -70,9 +70,15 @@ typedef struct {uint8_t *data;size_t stride;int width,height;int format;} cym_ca
 typedef int (*qr_ui_save_fn)(const uint8_t*,size_t,char*,size_t);
 typedef bool (*qr_ui_capture_valid_fn)(void *);
 typedef int (*qr_ui_frame_save_fn)(const uint8_t *,int,int,size_t,const char *,char *,size_t,qr_ui_capture_valid_fn,void *);
-typedef struct {unsigned rotation;lv_color_t panel,card,pressed,border,text,muted,accent;const lv_font_t *font;qr_ui_frame_save_fn save_frame;} qr_ui_options_t;
+typedef int (*qr_ui_pair_save_fn)(const uint8_t*,const uint8_t*,int,int,size_t,size_t,const char*,char*,size_t,qr_ui_capture_valid_fn,void*);
+typedef int (*qr_ui_checked_save_fn)(const uint8_t*,size_t,char*,size_t,qr_ui_capture_valid_fn,void*);
+typedef struct {unsigned rotation;lv_color_t panel,card,pressed,border,text,muted,accent;lv_color_t action,action_pressed,action_text;const lv_font_t *font;qr_ui_frame_save_fn save_frame;qr_ui_pair_save_fn save_pair;qr_ui_checked_save_fn save_checked;} qr_ui_options_t;
 #define CYM_QR_ERROR_COUNT 8
-typedef struct {uint32_t candidates,normal_attempts,mirror_attempts,valid,payload_length;uint32_t errors[8];} cym_qr_stats_t;
+typedef struct {uint32_t candidates,normal_attempts,mirror_attempts,valid,payload_length;int engine_status;uint32_t errors[8];} cym_qr_stats_t;
+#define CYM_ZX_NO_MEMORY -3
+typedef struct {size_t live,peak,calls,failures,foreign_frees;} cym_zx_alloc_stats_t;
+static cym_zx_alloc_stats_t cym_zx_alloc_stats(void){return (cym_zx_alloc_stats_t){0};}
+static const char *cym_zx_identity(void){return "SDK-DOUBLE";}
 static int64_t esp_timer_get_time(void){static int64_t t;return t+=10000;}
 static int debug_on,diag_calls,open_calls,close_fail,create_fail,live,deletes,ticks,finish_at;
 static int stop_before_suspend,hold_camera,scan_success,save_error,save_calls,frame_calls,frame_error,acquire_error;
@@ -125,6 +131,13 @@ static size_t cym_qr_escape(const uint8_t *data,size_t len,char *out,size_t cap)
 
 static int cym_qr_decode_gray_ex(cym_qr_t*a,void*b,int c,uint8_t*d,int e,cym_qr_stats_t *stats){memset(stats,0,sizeof(*stats));stats->valid=stats->candidates=stats->normal_attempts=stats->errors[0]=1;stats->payload_length=test_length;return cym_qr_decode_gray(a,b,c,d,e);}
 static lv_obj_t obj;
+#define LV_OPA_COVER 255
+#define LV_OBJ_FLAG_CLICKABLE 4
+#define LV_ALIGN_CENTER 1
+#define lv_obj_set_style_bg_opa(...) ((void)0)
+#define lv_obj_del(...) ((void)0)
+#define lv_obj_set_size(...) ((void)0)
+#define lv_obj_center(...) ((void)0)
 #define lv_obj_set_style_bg_color(...) ((void)0)
 #define lv_obj_set_style_text_color(...) ((void)0)
 #define lv_obj_set_style_text_font(...) ((void)0)
@@ -163,9 +176,15 @@ static void lv_label_set_text(lv_obj_t*p,const char*s){(void)p;snprintf(displaye
 POST=r"""
 static int save(const uint8_t*p,size_t n,char*out,size_t cap){save_calls++;assert(atomic_load(&session->phase)==QR_SAVING);poll(NULL);assert(strstr(displayed,"Saving"));assert(n==test_length&&!memcmp(p,test_payload,n));snprintf(out,cap,"test.txt");return save_error;}
 static int frame_save(const uint8_t *gray,int w,int h,size_t stride,const char *meta,char *name,size_t cap,qr_ui_capture_valid_fn valid,void *ctx){assert(valid(ctx));assert(esp_ptr_external_ram(gray));assert(w==240&&h==320&&stride==240);assert(strstr(meta,"decoder_rotation=0"));assert(cym_debug_enabled());frame_calls++;snprintf(name,cap,"frame-0000.pgm");return frame_error;}
-static void reset(void){assert(!session&&!live);internal_free=4734;internal_largest=2304;psram_free=5723232;psram_largest=5636096;create_fail=close_fail=hold_camera=scan_success=stop_before_suspend=finish_at=ticks=save_error=save_calls=frame_calls=frame_error=acquire_error=0;test_payload=(const uint8_t*)"x";test_length=1;}
+static void reset(void){assert(!session&&!live);internal_free=32768;internal_largest=16384;psram_free=5723232;psram_largest=5636096;create_fail=close_fail=hold_camera=scan_success=stop_before_suspend=finish_at=ticks=save_error=save_calls=frame_calls=frame_error=acquire_error=0;test_payload=(const uint8_t*)"x";test_length=1;}
 static void start_open(void){qr_ui_options_t opts={.save_frame=frame_save};qr_decoder_ui_open(&obj,(void*)1,save,&opts);}
 int main(void){
+ /* Original observed low memory must reject decoder admission without camera. */
+ reset();internal_free=4734;internal_largest=2304;int before_open=open_calls;start_open();run_worker();
+ assert(atomic_load(&session->phase)==QR_ERROR&&open_calls==before_open);qr_decoder_ui_stop();assert(!session&&!live);
+ reset();internal_free=32768;internal_largest=4095;before_open=open_calls;start_open();run_worker();
+ assert(atomic_load(&session->phase)==QR_ERROR&&open_calls==before_open);qr_decoder_ui_stop();assert(!session&&!live);
+ deletes=0;
  reset();start_open();assert(session&&atomic_load(&session->phase)==QR_STARTING);assert(!open_calls); /* RED: dynamic internal 24KB fails here */
  run_worker();poll(NULL);assert(atomic_load(&session->done));qr_decoder_ui_stop();assert(!session&&!live&&deletes==1);
  /* Partial start failures must release allocations, permit retry, no extra task. */
@@ -188,7 +207,7 @@ int main(void){
  reset();scan_success=1;test_length=0;start_open();run_worker();poll(NULL);assert(atomic_load(&session->phase)==QR_RESULT&&save_calls==1&&!session->text[0]);qr_decoder_ui_stop();assert(!session&&!live);
  /* No-frame timeout path remains bounded and emits one final aggregate. */
  reset();scan_success=1;acquire_error=ESP_ERR_TIMEOUT;start_open();run_worker();assert(session->timeouts==12&&session->frames==0&&session->processed==0);assert(atomic_load(&session->phase)==QR_ERROR);qr_decoder_ui_stop();assert(!session&&!live);
- reset();start_open();session->started=session->report_at=esp_timer_get_time();int before_logs=diag_calls;for(int i=0;i<100;i++)report(session,false);assert(diag_calls==before_logs);report(session,true);assert(diag_calls==before_logs+2);run_worker();qr_decoder_ui_stop();assert(!session&&!live);
+ reset();start_open();session->started=session->report_at=esp_timer_get_time();int before_logs=diag_calls;for(int i=0;i<100;i++)report(session,false);assert(diag_calls==before_logs);report(session,true);assert(diag_calls==before_logs+4);run_worker();qr_decoder_ui_stop();assert(!session&&!live);
  /* Slow/failed save retains immutable inert result; close failure retains owner. */
  reset();scan_success=1;save_error=ENOSPC;start_open();run_worker();assert(save_calls==1&&atomic_load(&session->phase)==QR_RESULT);assert(strstr(session->status,"Not saved"));assert(!strcmp(session->text,"x"));qr_decoder_ui_stop();assert(!session&&!live);
  reset();scan_success=1;close_fail=1;start_open();run_worker();poll(NULL);assert(atomic_load(&session->phase)==QR_RESULT&&session->camera);assert(strstr(session->status,"Camera stop incomplete"));assert(!strcmp(session->text,"x"));close_fail=0;session->camera=NULL;qr_decoder_ui_stop();assert(!session&&!live);
