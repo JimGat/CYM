@@ -61,7 +61,13 @@ static void vTaskDelay(unsigned n){(void)n;}
 static bool usb_serial_jtag_is_driver_installed(void){return borrowed||installed;}
 static int usb_serial_jtag_driver_install(void *c){assert(c);if(fail==1)return 2;installed++;return 0;}
 static int usb_serial_jtag_driver_uninstall(void){assert(!borrowed);uninstalled++;installed--;return 0;}
-static FILE *mock_fopen(const char *p,const char *mode){assert(!strcmp(p,"/dev/usbserjtag"));int stage=!strcmp(mode,"r")?2:3;if(fail==stage){errno=EMFILE;return NULL;}opened++;return (FILE*)(uintptr_t)stage;}
+static FILE *mock_fopen(const char *p,const char *mode){
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+ const char *registered_path="/dev/secondary";
+#else
+ const char *registered_path="/dev/usbserjtag";
+#endif
+ if(strcmp(p,registered_path)){errno=ENOENT;return NULL;}int stage=!strcmp(mode,"r")?2:3;if(fail==stage){errno=EMFILE;return NULL;}opened++;return (FILE*)(uintptr_t)stage;}
 static int mock_fclose(FILE *f){assert(f);closed++;return 0;}
 #define fopen mock_fopen
 #define fclose mock_fclose
@@ -84,9 +90,12 @@ int main(int argc,char **argv){assert(argc==3);fail=atoi(argv[1]);borrowed=atoi(
  if(fail){assert(rc!=0);assert(opened==closed&&!parser&&!registered);assert(uninstalled==(!borrowed&&fail!=1));if(borrowed&&static_tasks)assert(route==1);fail=0;rc=cym_debug_console_start();assert(rc==0);}
  assert(rc==0);assert(dynamic_tasks==0);assert(static_tasks>=1);int count=static_tasks;assert(cym_debug_console_start()==0&&static_tasks==count);assert(opened-closed==2&&parser==1&&registered==1);puts("PASS console boundary/retry/borrowed-driver/static-reservation");}
 """
-p=d/'console.c';p.write_text(stub+s+main);exe=d/'console'
-subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Wno-unused-function','-Wno-unused-variable','-fsanitize=address,undefined','-g',str(p),'-o',str(exe)],check=True)
-for borrowed in [0,1]:
- for stage in range(7):
-  if borrowed and stage==1:continue
-  subprocess.run([str(exe),str(stage),str(borrowed)],check=True)
+p=d/'console.c';p.write_text(stub+s+main)
+for secondary in [0,1]:
+ exe=d/('console-secondary' if secondary else 'console-primary')
+ print('USB route:', 'secondary' if secondary else 'primary', flush=True)
+ subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Wno-unused-function','-Wno-unused-variable','-fsanitize=address,undefined','-g',f'-DCONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG={secondary}',f'-DCONFIG_ESP_CONSOLE_USB_SERIAL_JTAG={1-secondary}',str(p),'-o',str(exe)],check=True)
+ for borrowed in [0,1]:
+  for stage in range(7):
+   if borrowed and stage==1:continue
+   subprocess.run([str(exe),str(stage),str(borrowed)],check=True)

@@ -20,6 +20,12 @@ static void console_set_status(const char *status)
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+/* IDF registers secondary USB on a different VFS path; physical USB is unchanged. */
+#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+#define DEBUG_USB_VFS_PATH "/dev/secondary"
+#else
+#define DEBUG_USB_VFS_PATH "/dev/usbserjtag"
+#endif
 /* Reliability reservation, not RAM savings. NVS commands require internal stack. */
 static DRAM_ATTR StackType_t debug_usb_stack[4096 / sizeof(StackType_t)];
 static DRAM_ATTR StaticTask_t debug_usb_tcb;
@@ -69,7 +75,7 @@ esp_err_t cym_debug_console_start(void)
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
     /* IDF convenience esp_console_new_repl_usb_serial_jtag is unavailable
      * when USB is secondary. Use installed linenoise + esp_console parser,
-     * with explicit /dev/usbserjtag instead of changing primary Kconfig. */
+     * with the configured USB VFS path instead of changing primary Kconfig. */
     static bool started;
     if(__atomic_test_and_set(&console_start_busy,__ATOMIC_ACQUIRE))return ESP_ERR_INVALID_STATE;
     if(started){__atomic_clear(&console_start_busy,__ATOMIC_RELEASE);return ESP_OK;}
@@ -81,10 +87,10 @@ esp_err_t cym_debug_console_start(void)
     if(own_driver){usb_serial_jtag_driver_config_t hw=USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();rc=usb_serial_jtag_driver_install(&hw);}
     if(rc!=ESP_OK)goto start_failure;
     stage="Input stream failed";errno=0;
-    debug_usb_in=fopen("/dev/usbserjtag","r");
+    debug_usb_in=fopen(DEBUG_USB_VFS_PATH,"r");
     if(!debug_usb_in){saved_errno=errno;rc=ESP_FAIL;goto io_failure;}
     stage="Output stream failed";errno=0;
-    debug_usb_out=fopen("/dev/usbserjtag","w");
+    debug_usb_out=fopen(DEBUG_USB_VFS_PATH,"w");
     if(!debug_usb_out){saved_errno=errno;rc=ESP_FAIL;goto io_failure;}
     stage="Parser failed";
     esp_console_config_t cfg=ESP_CONSOLE_CONFIG_DEFAULT();cfg.max_cmdline_length=100;

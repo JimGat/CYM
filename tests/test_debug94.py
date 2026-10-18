@@ -143,7 +143,7 @@ enabled=false;hardware_debug_sync(NULL);assert(!second.checked);hardware_debug_s
   self.assertIn('lv_timer_create(hardware_debug_sync,200,NULL)',screen);self.assertIn('Debug diagnostics',screen);self.assertIn('lv_disp_get_ver_res(NULL)',screen)
   for w,h in [(240,320),(320,240),(320,480),(480,320),(800,480)]:
    self.assertGreater(h-30-90,0);self.assertGreater(w-12-44,140)
-  console=(ROOT/'ESP32C5/main/debug_console.c').read_text();self.assertIn('esp_console_run(line,&result)',console);self.assertIn('fopen("/dev/usbserjtag","r")',console);self.assertIn('CONFIG_ESP_CONSOLE_NONE',console)
+  console=(ROOT/'ESP32C5/main/debug_console.c').read_text();self.assertIn('esp_console_run(line,&result)',console);self.assertIn('fopen(DEBUG_USB_VFS_PATH,"r")',console);self.assertIn('fopen(DEBUG_USB_VFS_PATH,"w")',console);self.assertIn('#if CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG\n#define DEBUG_USB_VFS_PATH "/dev/secondary"\n#else\n#define DEBUG_USB_VFS_PATH "/dev/usbserjtag"',console);self.assertIn('CONFIG_ESP_CONSOLE_NONE',console)
   self.assertNotIn('GPS_UART',console);self.assertNotIn('lv_',console);self.assertNotIn('wifi_cli_register_commands',console)
   settings=(ROOT/'ESP32C5/main/debug_settings.c').read_text();self.assertNotIn('lv_',settings);self.assertNotIn('nvs_erase',settings)
   game=(ROOT/'ESP32C5/components/cym_doom/doom_ui.c').read_text();self.assertIn('if(cym_debug_enabled()&&(uint32_t)(now-ui_last_log)>=5000)',game)
