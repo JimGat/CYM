@@ -64595,7 +64595,11 @@ static lv_timer_t    *s_det_tmr         = NULL;
 static lv_obj_t      *s_det_status      = NULL;
 static lv_obj_t      *s_det_count_lbl   = NULL;
 static lv_obj_t      *s_det_enable_btn  = NULL;
-static s_det_record_t s_det_records[DETECT_MAX_RECORDS];
+/* Retained decoded records are UI-task data, not a DMA/RX buffer.
+ * cham_poll dispatches the parser and export reads it in the same LVGL task.
+ * Keep lifetime/capacity unchanged; PSRAM boards must not spend 5120 internal
+ * bytes on this idle table. No-PSRAM boards retain their 32-record DRAM table. */
+PSRAM_ATTR static s_det_record_t s_det_records[DETECT_MAX_RECORDS];
 static int             s_det_count       = 0;
 static int             s_det_remote_count = 0; /* total records on Chameleon */
 static bool            s_det_enabled     = false;

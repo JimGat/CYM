@@ -33,6 +33,14 @@
 
 ---
 
+## Development Clock mDNS headroom candidate (v3.0.20)
+
+A narrow task-data placement correction frees 5120 linked internal bytes on
+PSRAM boards without changing the mDNS stack, display buffers or feature
+availability. Physical AP discovery/UDP and repeated lifecycle acceptance remain
+open. [Evidence, scope and bench checks](docs/operators/clock-mdns-headroom-v3.0.20.md).
+Stable is unchanged; this is not a hardware-fix acceptance claim.
+
 ## Development USB UI control (v3.0.19)
 
 Normal console-capable Development firmware includes the FSD USB UI driver and
