@@ -1,3 +1,5 @@
 {
-  "mdns_service.c": "4d9c60e84e3557e774f13b3364515ca9d995d9a8fee839d875e1ffcdd08c7fde"
+  "mdns_service.c": "4d9c60e84e3557e774f13b3364515ca9d995d9a8fee839d875e1ffcdd08c7fde",
+  "mdns_responder.c": "6b979631550f23ba66389d1a5c011b59fc3051e8bdbcc2c97865d9fe2c3fad28",
+  "mdns_mem_caps.c": "eeaf91732c95432c97bd44cd1211e017f5d6e9bf9d52fe13b988099a9c9fc9ad"
 }

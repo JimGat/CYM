@@ -8,5 +8,7 @@ for name,digest in json.loads((patches/'upstream.json').read_text()).items():
     if hashlib.sha256(source.read_bytes()).hexdigest()!=digest:
         raise SystemExit('mDNS upstream changed; review lifecycle patch before building')
 out.mkdir(parents=True,exist_ok=True)
-(out/'mdns_service.c').write_bytes((upstream/'mdns_service.c').read_bytes())
-subprocess.run(['patch','--batch','--fuzz=0','-d',str(out),'-p0','-i',str(patches/'service-lifecycle.patch')],check=True)
+for source, patch in [('mdns_service.c', 'service-lifecycle.patch'), ('mdns_responder.c', 'responder-safety.patch'), ('mdns_mem_caps.c', 'memory-boundaries.patch')]:
+    (out/source).write_bytes((upstream/source).read_bytes())
+    subprocess.run(['patch','--batch','--fuzz=0','-d',str(out),'-p0','-i',str(patches/patch)],check=True)
+(out/'cym_mdns_diag.h').write_bytes((patches/'cym_mdns_diag.h').read_bytes())

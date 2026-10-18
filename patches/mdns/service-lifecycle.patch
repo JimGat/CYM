@@ -1,6 +1,14 @@
 --- mdns_service.c
 +++ mdns_service.c
-@@ -53,6 +53,11 @@
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ #include <string.h>
++#include "cym_mdns_diag.h"
+ #include "sdkconfig.h"
+ #include "mdns_private.h"
+ #include "freertos/FreeRTOS.h"
+@@ -53,6 +54,11 @@
  #endif
  static QueueHandle_t s_action_queue;
  static esp_timer_handle_t s_timer_handle;
@@ -9,10 +17,10 @@
 +static unsigned s_timer_inflight;
 +static portMUX_TYPE s_admission_mux = portMUX_INITIALIZER_UNLOCKED;
 +esp_err_t mdns_free_wait(void);
- 
+
  static const char *TAG = "mdns_service";
- 
-@@ -152,7 +157,7 @@
+
+@@ -152,7 +158,7 @@
          break;
  #endif
      case ACTION_TX_HANDLE:
@@ -21,7 +29,7 @@
          break;
      case ACTION_RX_HANDLE:
          mdns_priv_receive_action(action, ACTION_CLEANUP);
-@@ -220,30 +225,36 @@
+@@ -220,30 +226,36 @@
   */
  static void service_task(void *pvParameters)
  {
@@ -54,7 +62,7 @@
 +    /* The owner must observe suspension AND absence from every CPU. */
 +    for (;;) vTaskSuspend(NULL);
  }
- 
+
  static void timer_cb(void *arg)
  {
 +    (void)arg;
@@ -71,10 +79,20 @@
 +    --s_timer_inflight;
 +    portEXIT_CRITICAL(&s_admission_mux);
  }
- 
+
  static esp_err_t start_timer(void)
-@@ -263,14 +274,15 @@
- 
+@@ -254,7 +266,9 @@
+         .dispatch_method = ESP_TIMER_TASK,
+         .name = "mdns_timer"
+     };
++    CYM_MDNS_BOUNDARY("timer-create", "before", 0, ESP_OK);
+     esp_err_t err = esp_timer_create(&timer_conf, &(s_timer_handle));
++    CYM_MDNS_BOUNDARY("timer-create", "after", 0, err);
+     if (err) {
+         return err;
+     }
+@@ -263,14 +277,15 @@
+
  static esp_err_t stop_timer(void)
  {
 -    esp_err_t err = ESP_OK;
@@ -96,8 +114,37 @@
 +    if (err == ESP_OK) s_timer_handle = NULL;
      return err;
  }
- 
-@@ -299,6 +311,7 @@
+
+@@ -279,18 +294,25 @@
+     esp_err_t ret = ESP_OK;
+
+ #if MDNS_TASK_USE_SIMPLE_CREATE
++    CYM_MDNS_BOUNDARY("dynamic-task", "before", MDNS_SERVICE_STACK_DEPTH, ESP_OK);
+     BaseType_t res = xTaskCreatePinnedToCore(service_task, "mdns", MDNS_SERVICE_STACK_DEPTH, NULL, MDNS_TASK_PRIORITY,
+                                              (TaskHandle_t *)&s_service_task_handle, MDNS_TASK_AFFINITY);
+-    ESP_RETURN_ON_FALSE(res == pdPASS && s_service_task_handle != NULL, ESP_FAIL, TAG, "failed to create task for the mDNS");
++    CYM_MDNS_BOUNDARY("dynamic-task", "after", MDNS_SERVICE_STACK_DEPTH, res == pdPASS && s_service_task_handle ? ESP_OK : ESP_ERR_NO_MEM);
++    ESP_RETURN_ON_FALSE(res == pdPASS && s_service_task_handle != NULL, ESP_ERR_NO_MEM, TAG, "failed to create task for the mDNS");
+     return ret;
+ #else
+     static StaticTask_t mdns_task_buffer;
+
++    CYM_MDNS_BOUNDARY("stack", "before", MDNS_SERVICE_STACK_DEPTH, ESP_OK);
+     s_stack_buffer = mdns_mem_task_malloc(MDNS_SERVICE_STACK_DEPTH);
+-    ESP_GOTO_ON_FALSE(s_stack_buffer != NULL, ESP_FAIL, alloc_failed, TAG, "failed to allocate memory for the mDNS task's stack");
+-
++    CYM_MDNS_BOUNDARY("stack", "after", MDNS_SERVICE_STACK_DEPTH, s_stack_buffer ? ESP_OK : ESP_ERR_NO_MEM);
++    ESP_GOTO_ON_FALSE(s_stack_buffer != NULL, ESP_ERR_NO_MEM, alloc_failed, TAG, "failed to allocate memory for the mDNS task's stack");
++
++    /* Static internal TCB: no heap allocation or claimed reclaimed bytes. */
++    CYM_MDNS_BOUNDARY("static-tcb-task-create", "before", sizeof(mdns_task_buffer), ESP_OK);
+     s_service_task_handle = xTaskCreateStaticPinnedToCore(service_task, "mdns", MDNS_SERVICE_STACK_DEPTH, NULL, MDNS_TASK_PRIORITY,
+                                                           s_stack_buffer, &mdns_task_buffer, MDNS_TASK_AFFINITY);
++    CYM_MDNS_BOUNDARY("static-tcb-task-create", "after", sizeof(mdns_task_buffer), s_service_task_handle ? ESP_OK : ESP_FAIL);
+     ESP_GOTO_ON_FALSE(s_service_task_handle != NULL, ESP_FAIL, err, TAG, "failed to create task for the mDNS");
+
+     return ret;
+@@ -299,6 +321,7 @@
      HOOK_MALLOC_FAILED;
  err:
      mdns_mem_task_free(s_stack_buffer);
@@ -105,18 +152,28 @@
      return ret;
  #endif
  }
-@@ -318,7 +331,7 @@
-         ESP_RETURN_ON_FALSE(s_service_semaphore != NULL, ESP_FAIL, TAG, "Failed to create the mDNS service lock");
+@@ -314,11 +337,16 @@
+ {
+     esp_err_t ret = ESP_OK;
+     if (!s_service_semaphore) {
++        CYM_MDNS_BOUNDARY("service-mutex", "before", 0, ESP_OK);
+         s_service_semaphore = xSemaphoreCreateMutex();
+-        ESP_RETURN_ON_FALSE(s_service_semaphore != NULL, ESP_FAIL, TAG, "Failed to create the mDNS service lock");
++        CYM_MDNS_BOUNDARY("service-mutex", "after", 0, s_service_semaphore ? ESP_OK : ESP_ERR_NO_MEM);
++        ESP_RETURN_ON_FALSE(s_service_semaphore != NULL, ESP_ERR_NO_MEM, TAG, "Failed to create the mDNS service lock");
      }
      MDNS_SERVICE_LOCK();
 -    ESP_GOTO_ON_ERROR(start_timer(), err, TAG, "Failed to start the mDNS service timer");
-+    ESP_GOTO_ON_ERROR(start_timer(), err_stop_timer, TAG, "Failed to start the mDNS service timer");
- 
++    CYM_MDNS_BOUNDARY("timer-start", "before", 0, ESP_OK);
++    ret = start_timer();
++    CYM_MDNS_BOUNDARY("timer-start", "after", 0, ret);
++    ESP_GOTO_ON_ERROR(ret, err_stop_timer, TAG, "Failed to start the mDNS service timer");
+
      if (!s_service_task_handle) {
          ESP_GOTO_ON_ERROR(create_task_with_caps(), err_stop_timer, TAG, "Failed to start the mDNS service task");
-@@ -333,11 +346,7 @@
+@@ -333,11 +361,7 @@
      return ret;
- 
+
  err_stop_timer:
 -    stop_timer();
 -err:
@@ -125,8 +182,8 @@
 -    s_service_semaphore = NULL;
      return ret;
  }
- 
-@@ -349,23 +358,23 @@
+
+@@ -349,23 +373,23 @@
   */
  static esp_err_t service_task_stop(void)
  {
@@ -163,32 +220,56 @@
 +    }
 +    return ESP_ERR_TIMEOUT; /* No release, no conflicting reentry. */
  }
- 
+
  void mdns_priv_service_lock(void)
-@@ -382,9 +391,8 @@
+@@ -382,63 +406,59 @@
  {
      esp_err_t err = ESP_OK;
- 
+
 -    if (mdns_priv_is_server_init()) {
 -        return err;
 -    }
+-
+-    if (mdns_priv_responder_init() != ESP_OK) {
+-        return ESP_ERR_NO_MEM;
+-    }
+-
 +    if (__atomic_load_n(&s_stopping, __ATOMIC_ACQUIRE)) return ESP_ERR_INVALID_STATE;
 +    if (mdns_priv_is_server_init()) return err;
- 
-     if (mdns_priv_responder_init() != ESP_OK) {
-         return ESP_ERR_NO_MEM;
-@@ -398,7 +406,7 @@
- 
-     if (mdns_priv_netif_init() != ESP_OK) {
-         err = ESP_FAIL;
--        goto free_queue;
-+        goto free_all_and_disable_pcbs;
++
++    err = mdns_priv_responder_init();
++    if (err != ESP_OK) return err;
++
++    CYM_MDNS_BOUNDARY("action-queue", "before", MDNS_ACTION_QUEUE_LEN * sizeof(mdns_action_t *), ESP_OK);
+     s_action_queue = xQueueCreate(MDNS_ACTION_QUEUE_LEN, sizeof(mdns_action_t *));
++    CYM_MDNS_BOUNDARY("action-queue", "after", MDNS_ACTION_QUEUE_LEN * sizeof(mdns_action_t *), s_action_queue ? ESP_OK : ESP_ERR_NO_MEM);
+     if (!s_action_queue) {
+         err = ESP_ERR_NO_MEM;
+         goto free_responder;
      }
- 
-     if (service_task_start()) {
-@@ -410,35 +418,30 @@
+
+-    if (mdns_priv_netif_init() != ESP_OK) {
+-        err = ESP_FAIL;
+-        goto free_queue;
+-    }
+-
+-    if (service_task_start()) {
+-        //service start failed!
+-        err = ESP_FAIL;
++    CYM_MDNS_BOUNDARY("netif-init", "before", 0, ESP_OK);
++    err = mdns_priv_netif_init();
++    CYM_MDNS_BOUNDARY("netif-init", "after", 0, err);
++    if (err != ESP_OK) {
+         goto free_all_and_disable_pcbs;
+     }
+
++    err = service_task_start();
++    if (err != ESP_OK) {
++        goto free_all_and_disable_pcbs;
++    }
++
      return ESP_OK;
- 
+
  free_all_and_disable_pcbs:
 -    mdns_priv_netif_deinit();
 -free_queue:
@@ -199,7 +280,7 @@
 +    if (mdns_free_wait() != ESP_OK) return ESP_ERR_INVALID_STATE;
      return err;
  }
- 
+
 -void mdns_free(void)
 -{
 -    if (!mdns_priv_is_server_init()) {
@@ -238,7 +319,7 @@
      }
      mdns_priv_clear_tx_queue();
      mdns_priv_query_free();
-@@ -447,12 +450,27 @@
+@@ -447,12 +467,27 @@
      mdns_priv_cache_clear();
  #endif
      mdns_priv_responder_free();
@@ -257,7 +338,7 @@
 +    if (mdns_free_wait() != ESP_OK)
 +        ESP_LOGW(TAG, "mDNS stop pending; retaining resources and blocking reentry");
  }
- 
+
  bool mdns_priv_queue_action(mdns_action_t *action)
  {
 -    if (xQueueSend(s_action_queue, &action, (TickType_t)0) != pdPASS) {

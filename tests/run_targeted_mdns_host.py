@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import subprocess,re,os
-r=Path(__file__).resolve().parents[1];d=Path('/home/dev/projects/cym-targeted-refactor-20261017/mdns');d.mkdir(parents=True,exist_ok=True)
+r=Path(__file__).resolve().parents[1];d=Path(os.environ.get('CYM_TEST_OUT','/home/dev/projects/cym-targeted-refactor-20261017'))/'mdns';d.mkdir(parents=True,exist_ok=True)
 s=Path(os.environ.get('CYM_MDNS_SOURCE',str(r/'ESP32C5/managed_components/espressif__mdns/mdns_service.c'))).read_text()
 def fn(name):
  m=re.search(r'^(?:static )?(?:esp_err_t|bool|void) '+name+r'\([^;]*?\)\s*\{',s,re.M);assert m,name
@@ -18,6 +18,7 @@ typedef struct {int type;} mdns_action_t;
 #define ACTION_TASK_STOP 1
 #define pdPASS 1
 #define pdTRUE 1
+#define CYM_MDNS_BOUNDARY(...) ((void)0)
 #define ESP_OK 0
 #define ESP_ERR_TIMEOUT 9
 #define ESP_ERR_INVALID_STATE 10
@@ -60,6 +61,7 @@ extra=r"""
 #include <stdio.h>
 typedef int esp_err_t;typedef void* QueueHandle_t;
 typedef struct {int type;}mdns_action_t;
+#define CYM_MDNS_BOUNDARY(...) ((void)0)
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_NO_MEM 1

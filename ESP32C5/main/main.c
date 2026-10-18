@@ -28793,6 +28793,16 @@ static void show_clock_or_mode_prompt(void (*return_fn)(void))
 #if BOARD_TIME_HAS_MDNS
 extern esp_err_t mdns_free_wait(void);
 #endif
+/* Called immediately around dependency allocations, never from an ISR.
+ * Debug OFF returns before either heap sampling or log formatting. */
+void cym_mdns_alloc_boundary(const char *stage, const char *phase, size_t bytes, esp_err_t error)
+{
+    if (!cym_debug_enabled()) return;
+    ESP_LOGW(TAG, "mDNS boundary stage=%s phase=%s bytes=%u rc=%s (%d) internal free=%u largest=%u",
+             stage, phase, (unsigned)bytes, esp_err_to_name(error), (int)error,
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+}
 static _Atomic(const char *) s_ntp_mdns_status = "mDNS: Idle";
 static void clock_mdns_release(void)
 {
@@ -28830,7 +28840,7 @@ static void ntp_start_mdns_and_server(void)
     /* A failed init may retain a timed-out producer; always drain our attempt. */
     s_ntp_mdns_owned = true;
     if (rc != ESP_OK || cym_debug_enabled()) {
-        ESP_LOGW(TAG, "Clock mdns_init rc=%s (%d) internal free=%u largest=%u",
+        ESP_LOGW(TAG, "Clock mdns_init post-return/post-unwind rc=%s (%d) internal free=%u largest=%u",
                  esp_err_to_name(rc), (int)rc,
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));

@@ -1,0 +1,46 @@
+--- mdns_responder.c
++++ mdns_responder.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <string.h>
++#include "cym_mdns_diag.h"
+ #include "esp_log.h"
+ #include "esp_check.h"
+ #include "mdns.h"
+@@ -37,16 +38,21 @@
+ 
+ esp_err_t mdns_priv_responder_init(void)
+ {
++    CYM_MDNS_BOUNDARY("responder-data", "before", sizeof(mdns_server_t), ESP_OK);
+     s_server = (mdns_server_t *)mdns_mem_malloc(sizeof(mdns_server_t));
++    CYM_MDNS_BOUNDARY("responder-data", "after", sizeof(mdns_server_t), s_server ? ESP_OK : ESP_ERR_NO_MEM);
+     if (!s_server) {
+         HOOK_MALLOC_FAILED;
+         return ESP_ERR_NO_MEM;
+     }
+     memset((uint8_t *)s_server, 0, sizeof(mdns_server_t));
+ 
++    CYM_MDNS_BOUNDARY("responder-semaphore", "before", 0, ESP_OK);
+     s_server->action_sema = xSemaphoreCreateBinary();
++    CYM_MDNS_BOUNDARY("responder-semaphore", "after", 0, s_server->action_sema ? ESP_OK : ESP_ERR_NO_MEM);
+     if (!s_server->action_sema) {
+         mdns_mem_free(s_server);
++        s_server = NULL;
+         return ESP_ERR_NO_MEM;
+     }
+ 
+@@ -79,12 +85,10 @@
+ 
+ void mdns_priv_responder_free(void)
+ {
++    if (s_server == NULL) return;
+     if (s_server->action_sema != NULL) {
+         vSemaphoreDelete(s_server->action_sema);
+         s_server->action_sema = NULL;
+-    }
+-    if (s_server == NULL) {
+-        return;
+     }
+     mdns_mem_free((char *)s_server->hostname);
+     mdns_mem_free((char *)s_server->instance);

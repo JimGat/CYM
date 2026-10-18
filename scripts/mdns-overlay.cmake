@@ -8,10 +8,13 @@ if(NOT cym_mdns_result EQUAL 0)
     message(FATAL_ERROR "Pinned mDNS lifecycle overlay failed")
 endif()
 get_target_property(cym_mdns_sources ${cym_mdns_lib} SOURCES)
-list(FILTER cym_mdns_sources EXCLUDE REGEX "(^|/)mdns_service\.c$")
-list(APPEND cym_mdns_sources "${cym_mdns_overlay}/mdns_service.c")
+list(FILTER cym_mdns_sources EXCLUDE REGEX "(^|/)(mdns_service|mdns_responder|mdns_mem_caps)\.c$")
+list(APPEND cym_mdns_sources "${cym_mdns_overlay}/mdns_service.c" "${cym_mdns_overlay}/mdns_responder.c" "${cym_mdns_overlay}/mdns_mem_caps.c")
 set_property(TARGET ${cym_mdns_lib} PROPERTY SOURCES "${cym_mdns_sources}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_LIST_DIR}/../patches/mdns/service-lifecycle.patch"
     "${CMAKE_CURRENT_LIST_DIR}/../patches/mdns/upstream.json"
+    "${CMAKE_CURRENT_LIST_DIR}/../patches/mdns/responder-safety.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/../patches/mdns/memory-boundaries.patch"
+    "${CMAKE_CURRENT_LIST_DIR}/../patches/mdns/cym_mdns_diag.h"
     "${CMAKE_CURRENT_LIST_DIR}/mdns-overlay.py")

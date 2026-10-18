@@ -1,7 +1,7 @@
 {
   "name": "CYM Waveshare ESP32-S3-Touch-LCD-5B beta v2.15.93",
-  "version": "v3.0.17",
-  "build": "v3.0.17",
+  "version": "v3.0.18",
+  "build": "v3.0.18",
   "chipFamily": "ESP32-S3",
   "parts": [
     {

@@ -14,6 +14,14 @@ Last updated: 2026-09-23.
 
 ## Features (firmware)
 
+- **Clock mDNS deterministic internal headroom — OPEN, not repaired.** v3.0.18
+  diagnostic/safety candidate fixes responder semaphore-OOM ownership and preserves
+  `ESP_ERR_NO_MEM` through startup. Debug-only allocation boundaries distinguish
+  pre-allocation capacity from post-unwind values. Internal 4096-byte stack and
+  internal RTOS controls are unchanged; largest-block failure still requires a
+  separately approved measured remedy and physical qualification.
+  Manual: `docs/mdns-diagnostic-safety-v3.0.18.md`. Classic/HackerBox stay Disabled.
+
 - **All-board startup SD sentinels / consent** — DEVELOPMENT CANDIDATE v2.15.86.
   Three read-only directory checks after initial mount; Later is non-provisioning,
   Provision reuses non-formatting Validate & Provision. Host consent/geometry tests
