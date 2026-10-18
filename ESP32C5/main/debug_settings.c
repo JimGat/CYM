@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include <stdio.h>
+#include "debug_console_stdio.h"
 #include <string.h>
 /* Single word publishes state and transition generation together. Setters
  * serialize flash writes; readers are bounded aligned atomic loads only. */
@@ -41,10 +42,10 @@ esp_err_t cym_debug_set(bool enabled)
 int cym_debug_command(int argc,char **argv)
 {
     if(argc==1 || (argc==2 && (!strcmp(argv[1],"status") || !strcmp(argv[1],"query")))){
-        printf("Debug %s\n",cym_debug_enabled()?"ON":"OFF");return 0;
+        fprintf(cym_console_output(),"Debug %s\n",cym_debug_enabled()?"ON":"OFF");return 0;
     }
-    if(argc!=2 || (strcmp(argv[1],"on") && strcmp(argv[1],"off"))){printf("Usage: debug [on|off|status|query]\n");return 1;}
+    if(argc!=2 || (strcmp(argv[1],"on") && strcmp(argv[1],"off"))){fprintf(cym_console_output(),"Usage: debug [on|off|status|query]\n");return 1;}
     esp_err_t rc=cym_debug_set(!strcmp(argv[1],"on"));
-    if(rc!=ESP_OK){printf("Debug persistence failed: %s; unchanged %s\n",esp_err_to_name(rc),cym_debug_enabled()?"ON":"OFF");return 1;}
-    printf("Debug %s persisted; applied immediately\n",cym_debug_enabled()?"ON":"OFF");return 0;
+    if(rc!=ESP_OK){fprintf(cym_console_output(),"Debug persistence failed: %s; unchanged %s\n",esp_err_to_name(rc),cym_debug_enabled()?"ON":"OFF");return 1;}
+    fprintf(cym_console_output(),"Debug %s persisted; applied immediately\n",cym_debug_enabled()?"ON":"OFF");return 0;
 }

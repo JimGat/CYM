@@ -107,7 +107,7 @@ class PancakePackagingContract(unittest.TestCase):
         self.assertIn("pancake-c5)", text("scripts/build.sh"))
         self.assertIn("all-boards: nm-cyd-c5 ws-c5-28 ws-c5-35 pancake-c5 cyd-2432s028 hosyond-s3-35", text("Makefile"))
         for rel in ("ESP32C5/CMakeLists.txt", "ESP32/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
-            self.assertIn('set(PROJECT_VER "v3.0.16")', text(rel), rel)
+            self.assertIn('set(PROJECT_VER "v3.0.17")', text(rel), rel)
 
     def test_cmake_exports_pancake_package(self):
         c = text("ESP32C5/CMakeLists.txt")

@@ -9,6 +9,9 @@
 #include "freertos/task.h"
 #include <stdio.h>
 #include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include "debug_console_stdio.h"
 #include "esp_attr.h"
 
 static const char *console_status = "Not started";
@@ -41,27 +44,49 @@ static void console_failure(const char *stage, esp_err_t rc, int saved_errno)
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT),
         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA|MALLOC_CAP_8BIT));
 }
+/* Keep IDF's line editor/parser. Retry idle reads inside its read callback,
+ * not by re-entering linenoise, which emits a new prompt on every call.
+ * Nonblocking VFS reads bound disconnect checks to one scheduler interval. */
+static ssize_t debug_usb_read(int fd, void *data, size_t size)
+{
+    for(;;){
+        if(!usb_serial_jtag_is_connected()){errno=ENOTCONN;return -1;}
+        errno=0;
+        ssize_t n=read(fd,data,size);
+        if(n>0)return n;
+        if(!usb_serial_jtag_is_connected()){errno=ENOTCONN;return -1;}
+        if(n<0 && errno!=EAGAIN && errno!=EWOULDBLOCK && errno!=EINTR)return -1;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
 static void debug_usb_worker(void *unused)
 {
     (void)unused;
-    /* IDF libc compatibility stdio is task-local, as in the installed REPL.
-     * Other tasks' stdout/log routes and all UART pin configuration stay intact. */
-    stdin=debug_usb_in;stdout=debug_usb_out;stderr=debug_usb_out;
-    setvbuf(stdin,NULL,_IONBF,0);setvbuf(stdout,NULL,_IONBF,0);
+    /* Bind exactly the TLS streams used by IDF linenoise, never libc globals. */
+    cym_console_bind(debug_usb_in,debug_usb_out);
+    setvbuf(debug_usb_in,NULL,_IONBF,0);setvbuf(debug_usb_out,NULL,_IONBF,0);
+    linenoiseSetReadFunction(debug_usb_read);
     console_set_status("Ready (USB)");
-    printf("Debug USB console ready: debug [on|off|status]\n");
+    fprintf(cym_console_output(),"Debug USB console ready: debug [on|off|status]\n");
     bool input_failed=false;
+    bool prompt=true;
     for(;;){
+        /* linenoise discards a disconnected partial line; never execute it. */
+        while(!usb_serial_jtag_is_connected())vTaskDelay(pdMS_TO_TICKS(20));
+        clearerr(debug_usb_in);clearerr(debug_usb_out);
         errno=0;
-        char *line=linenoise("debug> ");
+        char *line=linenoise(prompt?"debug> ":"");
         if(!line){
-            if(!input_failed){console_failure("Input unavailable (line/stream)",ESP_FAIL,errno);input_failed=true;}
+            int saved_errno=errno;
+            prompt=saved_errno==0; /* an empty line is not an input failure */
+            if(saved_errno && !input_failed){console_failure("Input unavailable (line/stream)",ESP_FAIL,saved_errno);input_failed=true;}
             vTaskDelay(pdMS_TO_TICKS(20));continue;
         }
+        prompt=true;
         if(input_failed){console_set_status("Ready (USB)");input_failed=false;}
         int result=0;esp_err_t rc=esp_console_run(line,&result);
-        if(rc==ESP_ERR_NOT_FOUND)printf("Unrecognized command\n");
-        else if(rc!=ESP_OK&&rc!=ESP_ERR_INVALID_ARG)printf("Console error: %s\n",esp_err_to_name(rc));
+        if(rc==ESP_ERR_NOT_FOUND)fprintf(cym_console_output(),"Unrecognized command\n");
+        else if(rc!=ESP_OK&&rc!=ESP_ERR_INVALID_ARG)fprintf(cym_console_output(),"Console error: %s\n",esp_err_to_name(rc));
         linenoiseFree(line);
     }
 }
@@ -84,6 +109,7 @@ esp_err_t cym_debug_console_start(void)
     int saved_errno=0;
     bool own_driver=!usb_serial_jtag_is_driver_installed();
     esp_err_t rc=ESP_OK;
+    int input_flags=-1;
     if(own_driver){usb_serial_jtag_driver_config_t hw=USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();rc=usb_serial_jtag_driver_install(&hw);}
     if(rc!=ESP_OK)goto start_failure;
     stage="Input stream failed";errno=0;
@@ -100,6 +126,9 @@ esp_err_t cym_debug_console_start(void)
     stage="Command registration failed";
     rc=esp_console_cmd_register(&cmd);
     if(rc!=ESP_OK)goto parser_failure;
+    stage="Input flags failed";errno=0;
+    input_flags=fcntl(fileno(debug_usb_in),F_GETFL);
+    if(input_flags<0 || fcntl(fileno(debug_usb_in),F_SETFL,input_flags|O_NONBLOCK)<0){saved_errno=errno;rc=ESP_FAIL;goto parser_failure;}
     linenoiseSetDumbMode(1);linenoiseSetMaxLineLen(100);
     usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_CR);
     usb_serial_jtag_vfs_use_driver();
@@ -112,6 +141,7 @@ esp_err_t cym_debug_console_start(void)
     }
     started=true;__atomic_clear(&console_start_busy,__ATOMIC_RELEASE);return ESP_OK;
 parser_failure:
+    if(input_flags>=0)(void)fcntl(fileno(debug_usb_in),F_SETFL,input_flags);
     (void)esp_console_deinit();
 io_failure:
     if(debug_usb_in)fclose(debug_usb_in);

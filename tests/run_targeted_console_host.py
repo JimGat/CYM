@@ -16,6 +16,8 @@ stub=r"""
 #include <errno.h>
 #include <stdarg.h>
 #include <assert.h>
+#include <unistd.h>
+#include <fcntl.h>
 #define CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED 1
 #define CONFIG_ESP_CONSOLE_NONE 0
 #define MALLOC_CAP_INTERNAL 1
@@ -76,6 +78,14 @@ static int esp_console_deinit(void){assert(parser);parser--;registered=0;return 
 static int esp_console_cmd_register(const esp_console_cmd_t *c){assert(!strcmp(c->command,"debug"));if(fail==5)return 2;registered++;return 0;}
 static void linenoiseSetDumbMode(int n){assert(n==1);}
 static void linenoiseSetMaxLineLen(int n){assert(n==100);}
+static void linenoiseSetReadFunction(ssize_t (*f)(int,void*,size_t)){assert(f);}
+static bool usb_serial_jtag_is_connected(void){return true;}
+static int mock_fileno(FILE *f){assert(f);return 7;}
+#define fileno mock_fileno
+static int mock_clearerr(FILE *f){assert(f);return 0;}
+#define clearerr mock_clearerr
+static int mock_fcntl(int fd,int cmd,...){assert(fd==7);if((cmd==F_GETFL&&fail==7)||(cmd==F_SETFL&&fail==8)){errno=EIO;return -1;}return 0;}
+#define fcntl mock_fcntl
 static char *linenoise(const char *p){(void)p;return NULL;}
 static void linenoiseFree(void *p){free(p);}
 static int esp_console_run(char *l,int *r){(void)l;(void)r;return 0;}
@@ -90,12 +100,12 @@ int main(int argc,char **argv){assert(argc==3);fail=atoi(argv[1]);borrowed=atoi(
  if(fail){assert(rc!=0);assert(opened==closed&&!parser&&!registered);assert(uninstalled==(!borrowed&&fail!=1));if(borrowed&&static_tasks)assert(route==1);fail=0;rc=cym_debug_console_start();assert(rc==0);}
  assert(rc==0);assert(dynamic_tasks==0);assert(static_tasks>=1);int count=static_tasks;assert(cym_debug_console_start()==0&&static_tasks==count);assert(opened-closed==2&&parser==1&&registered==1);puts("PASS console boundary/retry/borrowed-driver/static-reservation");}
 """
-p=d/'console.c';p.write_text(stub+s+main)
+p=d/'console.c';p.write_text(stub+re.sub(r'^#include .*$', '', (r/'ESP32C5/main/debug_console_stdio.h').read_text(), flags=re.M)+s+main)
 for secondary in [0,1]:
  exe=d/('console-secondary' if secondary else 'console-primary')
  print('USB route:', 'secondary' if secondary else 'primary', flush=True)
  subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Wno-unused-function','-Wno-unused-variable','-fsanitize=address,undefined','-g',f'-DCONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG={secondary}',f'-DCONFIG_ESP_CONSOLE_USB_SERIAL_JTAG={1-secondary}',str(p),'-o',str(exe)],check=True)
  for borrowed in [0,1]:
-  for stage in range(7):
+  for stage in range(9):
    if borrowed and stage==1:continue
    subprocess.run([str(exe),str(stage),str(borrowed)],check=True)
