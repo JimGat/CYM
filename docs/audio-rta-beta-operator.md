@@ -1,15 +1,20 @@
 # Audio RTA beta operator guide
 
-Development v3.0.23, initially enabled only for the **Waveshare
+Development v3.0.24 source cycle, initially enabled only for the **Waveshare
 ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
 testing, not hardware-qualified acoustic instrumentation. Existing co-developer
 attribution to @birolt29 is preserved.
+
+This repair is a source/test candidate until the parent completes independent review,
+all-eight-board build gates and Dev publication. Source/manifests express the intended
+cycle; they do not prove other board packages or the public installer were rebuilt.
+Do not install until the parent supplies the verified published image/hash.
 
 ## Install the Development beta
 
 Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
 Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.23** before installing. Leave **Erase OFF** for a normal update.
+**WS-C5-35 / v3.0.24** before installing. Leave **Erase OFF** for a normal update.
 Do not use a different board image or double-press BOOT. No device was flashed by
 the development/verification process; owner flashing and physical checks are separate.
 
@@ -169,3 +174,108 @@ Production-code host tests reproduce the overrun feedback and missing blocking
 points, check cancellation before I2S acquisition, and verify history reset against
 fresh numerical initialization. Those tests do not measure target CPU load, actual
 microphone input, display response, power use or physical teardown reliability.
+
+## v3.0.24 scoped responsiveness repair
+
+The owner's v3.0.23 capture showed approximately 2.69 UI handler calls/second and
+99.2% handler wall occupancy, including worker preemption. Audio initialization
+succeeded; neither a dead microphone nor a particular overrun rate was proven.
+The repair reduces both compute and rendering workload without changing microphone
+pins, 48k mono16, the 4x256 DMA ring, display buffers, 6144-byte internal stack,
+watchdog, clocks, SD20MHz, NVS or background services. No new task is added.
+
+FIR/FFT hot loops now use integer histories, Q27 FFT values, Q30 coefficients and
+64-bit intermediate products; FFT scaling is one half per stage (FFT/N).
+Immutable band-bin weights, Hann windows and smoothing coefficients are prepared
+before I2S, never rebuilt after a gap. The 193-tap filter and 24 exact logarithmic
+bands remain unchanged. RMS uses an exact rolling PCM square sum; sample peak
+uses integer comparisons. Floating point remains at preparation and band power/dB
+conversion, not the per-sample FIR/FFT butterflies. Both sample windows/hops and
+the documented crossover limitation above remain. These are implementation
+reductions, NOT measured C5 CPU percentages or proof of microphone response.
+
+The chart's newest scalar snapshot is checked every 50ms (about 20 visual updates/s
+is a target, not hardware evidence). Only changed bar/peak rectangles are damaged;
+unchanged model data causes no invalidation. Static titles/axes are clipped away
+from bar-only draws. Metadata is limited to 250ms except state, validity, gain,
+staleness and direct selection changes. Back/Home detaches immediately and requests
+cancellation; DSP now checks that request between input/window chunks and FFT stages.
+The existing 50ms cooperative scheduling budget does not force a 10ms sleep per
+512-sample block. Neither mocks nor this budget guarantee exact touch/stop latency.
+
+Starting means no processed input yet. Warming means no valid bands; Partial means
+full-rate bands are ready while bass warms. Live requires all bands valid, not
+merely one successful read. No signal means valid windows at the digital floor,
+not proof of an absent microphone. Stale means the most recent RUNNING copy is
+over 500ms old. Frozen deliberately holds its entire spectrum/peaks, including
+when draining reports a gap; Resume resets history. Zero-length successful reads
+do not advance sequence, analysis frames or window validity.
+
+### Bounded primary-USB diagnostics
+
+With the existing debug setting ON, `AUDIO_RTA: diag` appears at most once/second
+while the worker is actively reading (no catch-up queue). Debug OFF suppresses
+these new periodic lines immediately at the next emission check. Existing startup,
+error and cleanup logs retain their prior behavior. No PCM, raw payload, file,
+network upload or expansion/JST UART output is added. Stop/preparation/errors may
+end before a periodic line is due; absence of that line alone is not a mic diagnosis.
+
+Field contract (all counters scoped to generation unless stated otherwise):
+
+- generation: session identity; state: CLOSED=0, STARTING=1, RUNNING=2, FROZEN=3,
+  STOPPING=4, ERROR=5. RUNNING alone still does not prove valid bands.
+- samples: cumulative PCM samples returned by reads, including Frozen, discarded
+  gap data and the final cancelled read. Not total ADC-produced or missing samples.
+- history_samples: processed contiguous samples since the last history reset;
+  held while Frozen. It is not the lifetime capture count.
+- sequence: accepted nonempty processed snapshots, not FFT frames or UI draws.
+- frames: cumulative completed full OR bass analyses from published snapshots;
+  a partial/cancelled analysis is not published or counted here.
+- valid: hexadecimal 24-bit mask; first nine bits are bass. `fffe00` is full-rate
+  only, `ffffff` all ready, `000000` warming/no valid windows.
+- overruns: reads reporting a discontinuity, NOT the number of raw ISR overflows,
+  lost samples or DMA descriptors. resets: actual gap/gain/Resume history resets.
+- reads: all completed board reads. read_us/process_us: cumulative elapsed
+  read/DSP+snapshot time, with max_read_us/max_process_us maxima.
+- max_work_us: maximum one loop body's elapsed work (gain/read/process/publish);
+  excludes the top-of-loop scheduling pause and the log's own output time.
+- All timing is microseconds of WALL time including preemption, read blocking and
+  any in-DSP cooperative pause. It is not exclusive CPU time; do not add overlapping
+  maxima, equate read waits to CPU load or treat host simulated time as C5 timing.
+- rms_x10/peak_x10: held spectrum's overall input level in tenths of dBFS, not SPL;
+  -1200 is the floor. clips counts near-saturated original processed PCM samples
+  since history reset, held while Frozen. Never a raw/private signal dump.
+
+Ask for a complete 10-second primary-USB capture with debug ON, then repeat OFF.
+Expected healthy interpretation: samples grow at roughly 48000/s under real input,
+sequence and frames progress, full bits become valid after 4096 contiguous samples,
+bass after 32768, and overruns/resets do not repeatedly clear the windows. The
+85/683ms windows are sample requirements, not promised wall-time from tapping.
+Increasing samples but history_samples repeatedly low with overruns/resets identifies
+a continuity-reset loop. Growing samples/sequence but few frames or large process
+maxima suggests compute backlog. Stable valid masks and progressing frames with
+no visible motion points toward render/level/gain inspection; correlate existing
+UI_DIAG/DISPLAY_DIAG rather than declaring a microphone fault. Valid windows at the
+floor suggest zero/very quiet input; positive clipping levels suggest gain/format
+inspection. Frozen has growing samples/reads but held history/sequence/levels by
+design. samples=0 plus errors or nonprogress requires checking I/O/init first.
+
+### Regression impact and owner retest
+
+Host regression uses production DSP/session and real pinned LVGL under sanitizers:
+independent tones/noise/floor/DC/alias/crossover/partition references, cancellation,
+no-data/gap readiness, debug gating and delayed kernel reap/reentry. Chart tests
+compare partial and forced-full framebuffer output for decreases, peaks, validity
+loss, floor/clipping and gain-overlay expose across both menus/all four rotations.
+Host pixel/work reductions and numeric references are not target refresh, power,
+heap, acoustic or leak measurements. DSP workspace increases slightly to cache
+immutable quantities; exact old/new target sizes belong in the delivery handoff.
+
+Parent/operator must run the mandatory physical bench above. Especially retest
+Back/Home during preparation AND active FFT, silence/speech/known bass/mid/treble
+input, gain/Freeze/Resume/Reset Peaks, debug ON/OFF, visible throughput and 15-minute
+continuity. Record diag sample/frame/valid/overrun/reset deltas and elapsed maxima
+alongside UI_DIAG; verify settled resources and unchanged Clock AP/mDNS/NTP,
+Client time/GPS/RTC, SD20MHz, display/touch, QR camera, audio/radio transitions.
+No microphone capture, 20Hz-20kHz acoustic fidelity, 20fps, stop bound or no-leak
+endurance is hardware-qualified by the software repair alone.

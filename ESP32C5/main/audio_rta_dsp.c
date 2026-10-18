@@ -43,11 +43,22 @@ static const float taps[FIR_N]={
  -1.616816887436e-05f, -1.521918215996e-05f, -1.340450140318e-05f, -1.110871974677e-05f, -8.654091412529e-06f, -6.292171769060e-06f,
  -4.201840221897e-06f
 };
+
+/* PCM histories are integer: full/FIR are signed PCM16 units, low is Q27.
+ * FFT samples are Q27 with one /2 per radix-2 stage (FFT/N). Coefficients
+ * are Q30. All products/sums use 64 bits; even mean-subtracted full-scale
+ * input has 3 guard bits in int32. No floating arithmetic in FIR/FFT loops.
+ * Floating point remains at immutable preparation and 24-band power/dB edges.
+ */
+typedef struct {unsigned first,last;double first_weight,last_weight;} band_bins_t;
 typedef struct {
- float full[4096],low[2048],fir[FIR_N];
- float real[4096],imag[4096],wr[2048],wi[2048];
- float win[4096],low_win[2048],smooth[24];
- uint64_t last[24],total;
+ int32_t full[4096],low[2048],fir[FIR_N];
+ int32_t real[4096],imag[4096],wr[2048],wi[2048];
+ int32_t win[4096],low_win[2048],fir_taps[FIR_N];
+ band_bins_t bins[24];
+ float smooth[24];
+ double alpha[2][2]; /* full/low x Fast/Slow, fixed sample-hop time */
+ uint64_t last[24],total,sum_squares;
  unsigned pos,low_pos,fir_pos,phase,full_count,low_count,full_hop,low_hop;
  bool slow;
  audio_rta_spectrum_t out;
@@ -56,33 +67,45 @@ size_t audio_rta_dsp_bytes(void){return sizeof(dsp_t);}
 double audio_rta_dsp_edge(unsigned i){return 20.0*pow(1000.0,(double)i/24.0);}
 double audio_rta_dsp_filter(double f){
  double re=0,im=0;
- for(unsigned i=0;i<FIR_N;i++){double a=2*PI*f*i/48000;re+=taps[i]*cos(a);im-=taps[i]*sin(a);}
+ /* Report the actual quantized FIR, not the original design coefficients. */
+ for(unsigned i=0;i<FIR_N;i++){double t=round(taps[i]*1073741824.0)/1073741824.0,a=2*PI*f*i/48000;re+=t*cos(a);im-=t*sin(a);}
  return hypot(re,im);
 }
 void audio_rta_dsp_reset(void *memory){
  dsp_t*d=memory;
  memset(d->full,0,sizeof(d->full));memset(d->low,0,sizeof(d->low));memset(d->fir,0,sizeof(d->fir));
  memset(d->smooth,0,sizeof(d->smooth));memset(d->last,0,sizeof(d->last));memset(&d->out,0,sizeof(d->out));
- d->total=0;d->pos=d->low_pos=d->fir_pos=d->phase=0;
+ d->total=d->sum_squares=0;d->pos=d->low_pos=d->fir_pos=d->phase=0;
  d->full_count=d->low_count=d->full_hop=d->low_hop=0;d->slow=false;
  for(unsigned i=0;i<24;i++)d->out.band[i]=d->out.peak[i]=AUDIO_RTA_FLOOR;
  d->out.rms=d->out.sample_peak=AUDIO_RTA_FLOOR;
- /* FFT scratch is overwritten by analyze(); immutable windows/twiddles stay. */
+ /* Scratch is overwritten; prepared windows/twiddles/bins/FIR stay. */
 }
 bool audio_rta_dsp_prepare(void *memory,bool (*checkpoint)(void *),void *arg){
  dsp_t*d=memory;memset(d,0,sizeof(*d));
  for(unsigned i=0;i<2048;i++){
   if(checkpoint&&!(i%128)&&!checkpoint(arg))return false;
-  d->wr[i]=(float)cos(2*PI*i/4096);d->wi[i]=(float)-sin(2*PI*i/4096);
+  d->wr[i]=(int32_t)llround(cos(2*PI*i/4096)*1073741824.0);
+  d->wi[i]=(int32_t)llround(-sin(2*PI*i/4096)*1073741824.0);
  }
  for(unsigned i=0;i<4096;i++){
   if(checkpoint&&!(i%128)&&!checkpoint(arg))return false;
-  d->win[i]=(float)(.5-.5*cos(2*PI*i/4096));
+  d->win[i]=(int32_t)llround((.5-.5*cos(2*PI*i/4096))*1073741824.0);
  }
  for(unsigned i=0;i<2048;i++){
   if(checkpoint&&!(i%128)&&!checkpoint(arg))return false;
-  d->low_win[i]=(float)(.5-.5*cos(2*PI*i/2048));
+  d->low_win[i]=(int32_t)llround((.5-.5*cos(2*PI*i/2048))*1073741824.0);
  }
+ for(unsigned i=0;i<FIR_N;i++)d->fir_taps[i]=(int32_t)llround(taps[i]*1073741824.0);
+ for(unsigned b=0;b<24;b++){
+  double df=b<9?3000.0/2048:48000.0/4096;
+  double lo=audio_rta_dsp_edge(b)/df,hi=audio_rta_dsp_edge(b+1)/df;
+  band_bins_t*q=&d->bins[b];q->first=(unsigned)floor(lo+.5);q->last=(unsigned)ceil(hi-.5);
+  q->first_weight=fmin(hi,q->first+.5)-lo;
+  q->last_weight=hi-fmax(lo,q->last-.5);
+ }
+ for(unsigned low=0;low<2;low++)for(unsigned slow=0;slow<2;slow++)
+  d->alpha[low][slow]=-expm1(-(low?4096.0:2048.0)/48000/(slow?1.0:.125));
  audio_rta_dsp_reset(d);
  return !checkpoint||checkpoint(arg);
 }
@@ -90,67 +113,86 @@ void audio_rta_dsp_init(void *memory){(void)audio_rta_dsp_prepare(memory,NULL,NU
 void audio_rta_dsp_slow(void *memory,bool slow){((dsp_t*)memory)->slow=slow;}
 void audio_rta_dsp_reset_peaks(void *memory){dsp_t*d=memory;for(unsigned i=0;i<24;i++)d->out.peak[i]=AUDIO_RTA_FLOOR;}
 static float db(double power){return (float)(10*log10(fmax(power,1e-12)));}
-/* One reusable FFT workspace, never borrowed by the UI. */
-static void fft(dsp_t*d,unsigned n){
+/* Symmetric rounding avoids signed shifts, negative left shifts and systematic
+ * negative bias near the noise floor. Bounds leave ample int64 headroom. */
+static int32_t q30(int64_t v){return (int32_t)((v+(v>=0?536870912:-536870912))/1073741824);}
+static bool check(bool (*checkpoint)(void*),void*arg){return !checkpoint||checkpoint(arg);}
+/* One reusable FFT workspace. Check cancellation each stage, without forcing
+ * a tick sleep per stage: the session callback blocks only on its time budget. */
+static bool fft(dsp_t*d,unsigned n,bool (*checkpoint)(void*),void*arg){
  for(unsigned i=1,j=0;i<n;i++){
   unsigned bit=n>>1;for(;j&bit;bit>>=1)j^=bit;j^=bit;
-  if(i<j){float t=d->real[i];d->real[i]=d->real[j];d->real[j]=t;t=d->imag[i];d->imag[i]=d->imag[j];d->imag[j]=t;}
+  if(i<j){int32_t t=d->real[i];d->real[i]=d->real[j];d->real[j]=t;t=d->imag[i];d->imag[i]=d->imag[j];d->imag[j]=t;}
  }
  for(unsigned len=2;len<=n;len<<=1){unsigned step=4096/len;
+  if(!check(checkpoint,arg))return false;
   for(unsigned base=0;base<n;base+=len)for(unsigned j=0;j<len/2;j++){
    unsigned k=j*step,a=base+j,b=a+len/2;
-   float re=d->wr[k]*d->real[b]-d->wi[k]*d->imag[b],im=d->wr[k]*d->imag[b]+d->wi[k]*d->real[b];
-   d->real[b]=d->real[a]-re;d->imag[b]=d->imag[a]-im;d->real[a]+=re;d->imag[a]+=im;
+   int32_t re=q30((int64_t)d->wr[k]*d->real[b]-(int64_t)d->wi[k]*d->imag[b]);
+   int32_t im=q30((int64_t)d->wr[k]*d->imag[b]+(int64_t)d->wi[k]*d->real[b]);
+   int32_t ar=d->real[a],ai=d->imag[a];
+   d->real[b]=(ar-re)/2;d->imag[b]=(ai-im)/2;d->real[a]=(ar+re)/2;d->imag[a]=(ai+im)/2;
   }
  }
+ return true;
 }
-static void analyze(dsp_t*d,bool low){
+static uint64_t bin_power(dsp_t*d,unsigned k){return (uint64_t)((int64_t)d->real[k]*d->real[k])+(uint64_t)((int64_t)d->imag[k]*d->imag[k]);}
+static bool analyze(dsp_t*d,bool low,bool (*checkpoint)(void*),void*arg){
  unsigned n=low?2048:4096,pos=low?d->low_pos:d->pos;
- float*ring=low?d->low:d->full,*w=low?d->low_win:d->win;
- double mean=0,energy=0;for(unsigned i=0;i<n;i++)mean+=ring[i];mean/=n;
- for(unsigned i=0;i<n;i++){d->real[i]=(float)((ring[(pos+i)%n]-mean)*w[i]);d->imag[i]=0;energy+=(double)w[i]*w[i];}
- fft(d,n);
- double df=(low?3000.0:48000.0)/n,norm=1.0/(n*energy);
+ int32_t*ring=low?d->low:d->full,*w=low?d->low_win:d->win;
+ int64_t sum=0;for(unsigned i=0;i<n;i++)sum+=ring[i];
+ int32_t mean=(int32_t)(sum*(low?1:4096)/n);
+ for(unsigned i=0;i<n;i++){
+  if(!(i%256)&&!check(checkpoint,arg))return false;
+  int32_t x=ring[(pos+i)%n]*(low?1:4096)-mean;
+  d->real[i]=q30((int64_t)x*w[i]);d->imag[i]=0;
+ }
+ if(!fft(d,n,checkpoint,arg))return false;
+ /* Periodic Hann energy =3N/8; FFT/N and Q27 yield normalization
+  * (8/3)/2^54. All bands exclude DC/Nyquist, so one-sided factor is 2. */
+ const double norm=(16.0/3.0)/18014398509481984.0;
  for(unsigned b=low?0:9;b<(low?9:24);b++){
-  double lo=audio_rta_dsp_edge(b),hi=audio_rta_dsp_edge(b+1),p=0;
-  unsigned first=(unsigned)fmax(0,floor(lo/df-.5)),last=(unsigned)fmin(n/2,ceil(hi/df+.5));
-  for(unsigned k=first;k<=last;k++){
-   double cl=fmax(0,(k-.5)*df),ch=fmin(low?1500.0:24000.0,(k+.5)*df);
-   double fraction=fmax(0,fmin(hi,ch)-fmax(lo,cl))/(ch-cl);
-   double bin=((double)d->real[k]*d->real[k]+(double)d->imag[k]*d->imag[k])*norm;
-   p+=bin*fraction*((k==0||k==n/2)?1:2);
-  }
+  band_bins_t*q=&d->bins[b];uint64_t interior=0;
+  for(unsigned k=q->first+1;k<q->last;k++)interior+=bin_power(d,k);
+  double p=(interior+bin_power(d,q->first)*q->first_weight+
+   (q->last!=q->first?bin_power(d,q->last)*q->last_weight:0))*norm;
   uint32_t mask=1u<<b;
   if(!(d->out.valid&mask))d->smooth[b]=(float)p;
-  else{double dt=(double)(d->total-d->last[b])/48000.0,alpha=-expm1(-dt/(d->slow?1.0:.125));d->smooth[b]+=(float)(alpha*(p-d->smooth[b]));}
+  else d->smooth[b]+=(float)(d->alpha[low][d->slow]*(p-d->smooth[b]));
   d->last[b]=d->total;d->out.valid|=mask;d->out.band[b]=db(d->smooth[b]);
   if(d->out.band[b]>d->out.peak[b])d->out.peak[b]=d->out.band[b];
  }
+ d->out.frames++;return check(checkpoint,arg);
 }
-void audio_rta_dsp_push(void*memory,const int16_t*pcm,size_t count){
+bool audio_rta_dsp_push_checked(void*memory,const int16_t*pcm,size_t count,bool (*checkpoint)(void*),void*arg){
  dsp_t*d=memory;
  for(size_t i=0;i<count;i++){
-  double x=(double)pcm[i]/32768.0;
-  if(pcm[i]>=32760||pcm[i]<=-32760)d->out.clips++;
+  if(!(i%256)&&!check(checkpoint,arg))return false;
+  int32_t x=pcm[i],old=d->full[d->pos];
+  if(x>=32760||x<=-32760)d->out.clips++;
+  d->sum_squares-=(uint64_t)((int64_t)old*old);d->sum_squares+=(uint64_t)((int64_t)x*x);
   d->total++;d->full[d->pos]=x;d->pos=(d->pos+1)%4096;
   d->fir[d->fir_pos]=x;d->fir_pos=(d->fir_pos+1)%FIR_N;
   if(d->full_count<4096)d->full_count++;
   if(++d->phase==16){
-   d->phase=0;double y=0;unsigned k=d->fir_pos;
-   for(unsigned j=0;j<FIR_N;j++){k=k?k-1:FIR_N-1;y+=taps[j]*d->fir[k];}
-   d->low[d->low_pos]=y;d->low_pos=(d->low_pos+1)%2048;
+   d->phase=0;int64_t y=0;unsigned k=d->fir_pos;
+   for(unsigned j=0;j<FIR_N;j++){k=k?k-1:FIR_N-1;y+=(int64_t)d->fir_taps[j]*d->fir[k];}
+   /* Q30 taps x PCM16 -> Q27 (12 fractional PCM bits retained). */
+   d->low[d->low_pos]=(int32_t)((y+(y>=0?131072:-131072))/262144);d->low_pos=(d->low_pos+1)%2048;
    if(d->low_count<2048)d->low_count++;
-   if(++d->low_hop>=256&&d->low_count==2048){analyze(d,true);d->low_hop=0;}
+   if(++d->low_hop>=256&&d->low_count==2048){if(!analyze(d,true,checkpoint,arg))return false;d->low_hop=0;}
   }
-  if(++d->full_hop>=2048&&d->full_count==4096){analyze(d,false);d->full_hop=0;}
+  if(++d->full_hop>=2048&&d->full_count==4096){if(!analyze(d,false,checkpoint,arg))return false;d->full_hop=0;}
  }
- d->out.samples=d->total;
+ d->out.samples=d->total;return true;
 }
+void audio_rta_dsp_push(void*memory,const int16_t*pcm,size_t count){(void)audio_rta_dsp_push_checked(memory,pcm,count,NULL,NULL);}
 void audio_rta_dsp_snapshot(void*memory,audio_rta_spectrum_t*out){
  dsp_t*d=memory;*out=d->out;
- /* Unwindowed latest85ms input, distinct from asynchronous band ages. */
- double sum=0,peak=0;
- for(unsigned i=0;i<d->full_count;i++){double x=d->full[i];sum+=x*x;if(fabs(x)>peak)peak=fabs(x);}
- if(d->full_count){out->rms=db(sum/d->full_count);out->sample_peak=db(peak*peak);}
+ /* RMS uses an O(1) rolling exact PCM square sum; peak scans integers only,
+  * no per-sample software float/double or full-history RMS rescan. */
+ int32_t peak=0;
+ for(unsigned i=0;i<d->full_count;i++){int32_t x=d->full[i];if(x<0)x=-x;if(x>peak)peak=x;}
+ if(d->full_count){out->rms=db((double)d->sum_squares/(d->full_count*1073741824.0));out->sample_peak=db((double)peak*peak/1073741824.0);}
  for(unsigned i=0;i<24;i++)out->age[i]=(uint32_t)(d->total-d->last[i]);
 }

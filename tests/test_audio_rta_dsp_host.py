@@ -5,14 +5,14 @@ import numpy as np
 R = pathlib.Path(__file__).resolve().parents[1]
 OUT = pathlib.Path(os.environ.get("CYM_TEST_OUT", "/home/dev/projects/cym-audio-rta-beta")) / "rta-host"
 class Snapshot(C.Structure):
-    _fields_=[("band",C.c_float*24),("peak",C.c_float*24),("valid",C.c_uint32),("age",C.c_uint32*24),("rms",C.c_float),("sample_peak",C.c_float),("clips",C.c_uint32),("samples",C.c_uint64)]
+    _fields_=[("band",C.c_float*24),("peak",C.c_float*24),("valid",C.c_uint32),("age",C.c_uint32*24),("rms",C.c_float),("sample_peak",C.c_float),("clips",C.c_uint32),("samples",C.c_uint64),("frames",C.c_uint32)]
 class DSP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         p=R/"ESP32C5/main/audio_rta_dsp.c"
         assert p.exists(), "production audio_rta_dsp.c missing (expected initial RED)"
         OUT.mkdir(parents=True,exist_ok=True)
-        subprocess.run(["gcc","-std=c11","-O2","-Wall","-Wextra","-Werror","-shared","-fPIC",str(p),"-lm","-o",str(OUT/"dsp.so")],check=True)
+        subprocess.run(["gcc","-std=c11","-O2","-Wall","-Wextra","-Werror","-fsanitize=undefined","-fno-sanitize-recover=all","-shared","-fPIC",str(p),"-lm","-o",str(OUT/"dsp.so")],check=True)
         cls.lib=C.CDLL(str(OUT/"dsp.so")); cls.lib.audio_rta_dsp_bytes.restype=C.c_size_t
         cls.lib.audio_rta_dsp_init.argtypes=[C.c_void_p]
         cls.lib.audio_rta_dsp_reset.argtypes=[C.c_void_p]
@@ -41,6 +41,44 @@ class DSP(unittest.TestCase):
         x=self.tone(70,seconds=2)+self.tone(3000,amp=.1,seconds=2)
         reset=self.feed(x);self.setUp();fresh=self.feed(x)
         self.assertEqual(bytes(reset),bytes(fresh))
+    def test_exact_readiness_and_empty_reads(self):
+        s=self.feed(np.zeros(4095));self.assertEqual(s.valid,0)
+        s=self.feed([0]);self.assertEqual(s.valid,0xfffe00)
+        s=self.feed(np.zeros(32767-4096));self.assertEqual(s.valid,0xfffe00)
+        s=self.feed([0]);self.assertEqual(s.valid,0xffffff)
+        before=bytes(s);s=self.feed([]);self.assertEqual(bytes(s),before)
+        self.lib.audio_rta_dsp_reset(self.mem)
+        s=self.feed(np.zeros(4095));self.assertEqual(s.valid,0)
+    def test_low_level_fullscale_and_dc_numeric_reference(self):
+        for amplitude in [1., .01, .0001, 1/32768]:
+            for frequency in [70.,1000.,13000.]:
+                self.setUp();x=self.tone(frequency,amp=amplitude,seconds=2)
+                quant=np.clip(np.rint(x*32768),-32768,32767)/32768
+                s=self.feed(x);b=int(np.log(frequency/20)/np.log(1000)*24)
+                expected=10*np.log10(np.mean(quant**2))
+                self.assertAlmostEqual(s.band[b],expected,delta=.5)
+                latest=quant[-4096:]
+                self.assertAlmostEqual(s.rms,10*np.log10(np.mean(latest**2)),delta=.001)
+                self.assertAlmostEqual(s.sample_peak,20*np.log10(np.max(np.abs(latest))),delta=.001)
+        for value in [-1.,1.,0.,1/32768]:
+            self.setUp();s=self.feed(np.full(48000*6,value))
+            self.assertTrue(all(v<=-119 for v in s.band))
+    def test_processing_cancellation_and_reset(self):
+        callback=C.CFUNCTYPE(C.c_bool,C.c_void_p)
+        self.lib.audio_rta_dsp_push_checked.argtypes=[C.c_void_p,C.POINTER(C.c_int16),C.c_size_t,callback,C.c_void_p]
+        self.lib.audio_rta_dsp_push_checked.restype=C.c_bool
+        pcm=np.full(32768,32767,dtype=np.int16)
+        # Includes startup, input chunks, window setup, early/mid/last FFT stage.
+        for stop in [1,16,17,25,35,65,100,150,200]:
+            self.setUp();calls=[]
+            @callback
+            def check(_):
+                calls.append(1);return len(calls)<stop
+            ok=self.lib.audio_rta_dsp_push_checked(self.mem,pcm.ctypes.data_as(C.POINTER(C.c_int16)),len(pcm),check,None)
+            self.assertFalse(ok);self.assertEqual(len(calls),stop)
+            self.lib.audio_rta_dsp_reset(self.mem)
+            a=self.feed(self.tone(70,seconds=1));self.setUp();b=self.feed(self.tone(70,seconds=1))
+            self.assertEqual(bytes(a),bytes(b))
     def test_budget_and_edges(self):
         self.assertLessEqual(self.lib.audio_rta_dsp_bytes(),256*1024)
         for i in range(25): self.assertAlmostEqual(self.lib.audio_rta_dsp_edge(i),20*1000**(i/24),places=7)

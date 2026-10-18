@@ -9,6 +9,11 @@ typedef struct {
  audio_rta_state_t state;
  int gain_db,error;
  size_t internal_delta,psram_bytes;
+ /* Lifetime session counters never reset at a continuity break. Elapsed work
+  * includes read blocking, preemption and cooperative scheduling, not CPU time. */
+ uint64_t input_samples,read_calls,read_us,process_us,analysis_frames;
+ uint32_t history_resets,max_read_us,max_process_us,max_work_us;
+ bool stale; /* copied RUNNING data older than 500 ms; Frozen is intentional */
 } audio_rta_snapshot_t;
 esp_err_t audio_rta_start(void *shared_bus,uint32_t *generation);
 bool audio_rta_snapshot(uint32_t generation,audio_rta_snapshot_t *copy);

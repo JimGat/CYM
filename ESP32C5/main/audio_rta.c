@@ -10,6 +10,7 @@
 #ifdef AUDIO_RTA_HOST
 #include "audio_rta_host_port.h"
 #else
+#include "debug_settings.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -28,7 +29,8 @@ typedef struct {
  TaskHandle_t worker;
  uint32_t generation;
  size_t initial_internal;
- int64_t last_yield_us;
+ int64_t last_yield_us,last_diag_us;
+ uint32_t last_frames;
 } session_t;
 static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;
 static session_t *owner;
@@ -64,9 +66,36 @@ static void memory_boundary(const char*stage){
 static bool prepare_checkpoint(void *arg){
  session_t*c=arg;vTaskDelay(1);c->last_yield_us=esp_timer_get_time();return !stopping(c);
 }
+/* Runtime checkpoints check cancellation often; unlike immutable preparation,
+ * they block only when the scheduling budget expires, never once per read/FFT. */
+static bool work_checkpoint(void*arg){
+ session_t*c=arg;if(stopping(c))return false;
+ if(esp_timer_get_time()-c->last_yield_us>=50000)return prepare_checkpoint(c);
+ return true;
+}
+static void reset_history(session_t*c,bool keep_display){
+ audio_rta_dsp_reset(c->dsp);c->last_frames=0;
+ portENTER_CRITICAL(&mux);latest.history_resets++;if(!keep_display)latest.spectrum.valid=0;portEXIT_CRITICAL(&mux);
+}
+static void record_work(session_t*c,int64_t start){
+ uint32_t elapsed=(uint32_t)(esp_timer_get_time()-start);
+ portENTER_CRITICAL(&mux);if(elapsed>latest.max_work_us)latest.max_work_us=elapsed;portEXIT_CRITICAL(&mux);
+ int64_t now=esp_timer_get_time();if(now-c->last_diag_us<1000000)return;c->last_diag_us=now;
+ if(!cym_debug_enabled())return;
+ audio_rta_snapshot_t s;portENTER_CRITICAL(&mux);s=latest;portEXIT_CRITICAL(&mux);
+ /* Existing primary USB logger only. No raw PCM, files, upload or UART change.
+  * Deci-dB integers avoid expensive/unsupported logging float format paths. */
+ ESP_LOGI("AUDIO_RTA","diag generation=%lu state=%d samples=%llu history_samples=%llu sequence=%lu frames=%llu valid=%06lx overruns=%lu resets=%lu reads=%llu read_us=%llu process_us=%llu max_read_us=%lu max_process_us=%lu max_work_us=%lu rms_x10=%d peak_x10=%d clips=%lu",
+ (unsigned long)s.generation,s.state,(unsigned long long)s.input_samples,(unsigned long long)s.spectrum.samples,
+ (unsigned long)s.sequence,(unsigned long long)s.analysis_frames,(unsigned long)s.spectrum.valid,
+ (unsigned long)s.overruns,(unsigned long)s.history_resets,(unsigned long long)s.read_calls,
+ (unsigned long long)s.read_us,(unsigned long long)s.process_us,(unsigned long)s.max_read_us,
+ (unsigned long)s.max_process_us,(unsigned long)s.max_work_us,(int)(s.spectrum.rms*10),
+ (int)(s.spectrum.sample_peak*10),(unsigned long)s.spectrum.clips);
+}
 static void session_worker(void *arg){
  session_t*c=arg;ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
- int error=ESP_OK,actual_gain=0;bool was_frozen=false;
+ int error=ESP_OK,actual_gain=0;bool was_frozen=false;c->last_diag_us=esp_timer_get_time();
  if(stopping(c))goto finish;
  memory_boundary("before_dsp_prepare");
  /* Prepare before enabling RX: software-float table work must not overflow it. */
@@ -83,36 +112,50 @@ static void session_worker(void *arg){
   /* Applies to every path, even frozen/overrun/empty immediately-ready reads.
    * Do not sleep per read: a 100-Hz tick nearly fills the 512-sample period. */
   if(esp_timer_get_time()-c->last_yield_us>=50000&&!prepare_checkpoint(c))break;
+  int64_t work_start=esp_timer_get_time();
   bool frozen,slow,reset;int gain;
   portENTER_CRITICAL(&mux);frozen=c->freeze;slow=c->slow;gain=c->gain;reset=c->reset;c->reset=false;portEXIT_CRITICAL(&mux);
   if(gain!=actual_gain){
-   if((error=audio_rta_board_gain(c->board,gain)))break;
-   actual_gain=gain;audio_rta_dsp_reset(c->dsp);frozen=false;
+   if((error=audio_rta_board_gain(c->board,gain))){record_work(c,work_start);break;}
+   actual_gain=gain;reset_history(c,false);frozen=false;
    portENTER_CRITICAL(&mux);c->freeze=false;latest.spectrum.valid=0;latest.gain_db=gain;portEXIT_CRITICAL(&mux);
   }
-  if(was_frozen&&!frozen)audio_rta_dsp_reset(c->dsp);
+  if(was_frozen&&!frozen)reset_history(c,false);
   was_frozen=frozen;
   if(reset)audio_rta_dsp_reset_peaks(c->dsp);
   audio_rta_dsp_slow(c->dsp,slow);
+  int64_t read_start=esp_timer_get_time();
   size_t count=0;int rc=audio_rta_board_read(c->board,c->pcm,512,&count);
-  if(stopping(c))break;
+  uint32_t read_elapsed=(uint32_t)(esp_timer_get_time()-read_start);
+  portENTER_CRITICAL(&mux);latest.read_calls++;latest.input_samples+=count;latest.read_us+=read_elapsed;
+  if(read_elapsed>latest.max_read_us)latest.max_read_us=read_elapsed;
+  portEXIT_CRITICAL(&mux);
+  if(stopping(c)){record_work(c,work_start);break;}
   if(rc==ESP_ERR_INVALID_STATE){
-   audio_rta_dsp_reset(c->dsp);
-   portENTER_CRITICAL(&mux);latest.overruns++;latest.spectrum.valid=0;portEXIT_CRITICAL(&mux);
-   continue;
+   reset_history(c,frozen);
+   portENTER_CRITICAL(&mux);latest.overruns++;if(frozen)latest.state=RTA_FROZEN;portEXIT_CRITICAL(&mux);
+   record_work(c,work_start);continue;
   }
-  if(rc!=ESP_OK&&rc!=ESP_ERR_TIMEOUT){error=rc;break;}
-  if(rc==ESP_ERR_TIMEOUT&&!count){error=rc;break;}
+  if(rc!=ESP_OK&&rc!=ESP_ERR_TIMEOUT){error=rc;record_work(c,work_start);break;}
+  if(rc==ESP_ERR_TIMEOUT&&!count){error=rc;record_work(c,work_start);break;}
   /* Keep clocking/draining while Frozen, but leave the entire displayed model
    * and peak history alone. Re-entering Live warms fresh windows. */
-  if(frozen){portENTER_CRITICAL(&mux);latest.state=RTA_FROZEN;portEXIT_CRITICAL(&mux);continue;}
-  if(count)audio_rta_dsp_push(c->dsp,c->pcm,count);
-  audio_rta_snapshot_t copy={0};audio_rta_dsp_snapshot(c->dsp,&copy.spectrum);
+  if(frozen){portENTER_CRITICAL(&mux);latest.state=RTA_FROZEN;portEXIT_CRITICAL(&mux);record_work(c,work_start);continue;}
+  if(!count){record_work(c,work_start);continue;}
+  int64_t process_start=esp_timer_get_time();
+  bool processed=audio_rta_dsp_push_checked(c->dsp,c->pcm,count,work_checkpoint,c);
+  audio_rta_snapshot_t copy={0};if(processed)audio_rta_dsp_snapshot(c->dsp,&copy.spectrum);
+  uint32_t process_elapsed=(uint32_t)(esp_timer_get_time()-process_start);
+  portENTER_CRITICAL(&mux);latest.process_us+=process_elapsed;
+  if(process_elapsed>latest.max_process_us)latest.max_process_us=process_elapsed;
+  portEXIT_CRITICAL(&mux);
+  if(!processed||stopping(c)){record_work(c,work_start);break;}
   copy.timestamp_us=esp_timer_get_time();
   portENTER_CRITICAL(&mux);
+  latest.analysis_frames+=copy.spectrum.frames-c->last_frames;c->last_frames=copy.spectrum.frames;
   latest.spectrum=copy.spectrum;latest.timestamp_us=copy.timestamp_us;latest.sequence++;
   latest.state=RTA_RUNNING;latest.gain_db=actual_gain;
-  portEXIT_CRITICAL(&mux);
+  portEXIT_CRITICAL(&mux);record_work(c,work_start);
  }
 finish:
  if(error){memory_boundary("failure");report_error(c,error);}
@@ -134,6 +177,7 @@ esp_err_t audio_rta_start(void*bus,uint32_t*generation){
  portENTER_CRITICAL(&mux);
  if(busy){portEXIT_CRITICAL(&mux);return ESP_ERR_INVALID_STATE;}
  busy=true;uint32_t gen=++next_generation;memset(&latest,0,sizeof(latest));latest.generation=gen;latest.state=RTA_STARTING;
+ latest.spectrum.rms=latest.spectrum.sample_peak=AUDIO_RTA_FLOOR;
  portEXIT_CRITICAL(&mux);
  *generation=gen;
  size_t before=heap_caps_get_free_size(INTERNAL);
@@ -160,7 +204,9 @@ fail:
 }
 bool audio_rta_snapshot(uint32_t gen,audio_rta_snapshot_t*copy){
  if(!copy)return false;
- portENTER_CRITICAL(&mux);bool ok=gen==latest.generation;if(ok)*copy=latest;portEXIT_CRITICAL(&mux);return ok;
+ portENTER_CRITICAL(&mux);bool ok=gen==latest.generation;if(ok)*copy=latest;portEXIT_CRITICAL(&mux);
+ if(ok)copy->stale=copy->state==RTA_RUNNING&&copy->sequence&&esp_timer_get_time()-copy->timestamp_us>500000;
+ return ok;
 }
 void audio_rta_controls(uint32_t gen,bool freeze,bool slow,int gain,bool reset){
  portENTER_CRITICAL(&mux);

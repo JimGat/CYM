@@ -11,6 +11,7 @@ typedef struct {
  float rms, sample_peak;
  uint32_t clips;
  uint64_t samples;
+ uint32_t frames; /* completed full OR low analyses since history reset */
 } audio_rta_spectrum_t;
 size_t audio_rta_dsp_bytes(void);
 /* Prepare immutable tables once; optional checkpoints can block/cancel.
@@ -19,6 +20,9 @@ bool audio_rta_dsp_prepare(void *memory,bool (*checkpoint)(void *),void *arg);
 void audio_rta_dsp_init(void *memory);
 /* Reset stream history only; preserve prepared windows/twiddles. */
 void audio_rta_dsp_reset(void *memory);
+/* A false checkpoint cancels in bounded chunks/stages. Discard/reset the
+ * partial workspace before reuse; no snapshot may be published on false. */
+bool audio_rta_dsp_push_checked(void *memory,const int16_t *pcm,size_t count,bool (*checkpoint)(void *),void *arg);
 void audio_rta_dsp_push(void *memory,const int16_t *pcm,size_t count);
 void audio_rta_dsp_snapshot(void *memory,audio_rta_spectrum_t *out);
 void audio_rta_dsp_slow(void *memory,bool slow);

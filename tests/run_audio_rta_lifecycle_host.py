@@ -12,10 +12,14 @@ R=Path(__file__).resolve().parents[1];D=Path(os.environ['CYM_TEST_OUT'])/'rta-li
 #include <assert.h>
 #include <stdio.h>
 #include <time.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdarg.h>
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_SPIRAM 2
 #define MALLOC_CAP_DMA 8
 #define MALLOC_CAP_8BIT 4
+static bool cym_debug_enabled(void){return false;}
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
 #define portMUX_TYPE pthread_mutex_t
@@ -73,9 +77,11 @@ int main(void){uint32_t g;
  reset();slow_start=1;g=start();audio_rta_stop(g);audio_rta_stop(g);settle();
  reset();g=start();wait_ready(g);audio_rta_snapshot_t a=snap(g);assert(a.sequence&&a.spectrum.valid);uint32_t other;assert(audio_rta_start((void*)1,&other)==ESP_ERR_INVALID_STATE);
  audio_rta_controls(g,true,false,0,false);usleep(20000);a=snap(g);assert(a.state==RTA_FROZEN);usleep(20000);audio_rta_snapshot_t b=snap(g);assert(!memcmp(&a.spectrum,&b.spectrum,sizeof(a.spectrum))&&a.sequence==b.sequence&&a.timestamp_us==b.timestamp_us);
+ read_mode=2;usleep(10000);b=snap(g);assert(b.state==RTA_FROZEN&&b.overruns==1);
+ assert(!memcmp(&a.spectrum,&b.spectrum,sizeof(a.spectrum)));
  audio_rta_controls(g,false,true,6,true);usleep(10000);b=snap(g);assert(b.gain_db==6&&b.spectrum.samples<a.spectrum.samples);
  read_mode=1;usleep(10000);assert(snap(g).state==RTA_RUNNING);
- read_mode=2;usleep(10000);assert(snap(g).overruns==1);
+ read_mode=2;usleep(10000);assert(snap(g).overruns==2);
  delay_close=3;audio_rta_stop(g);usleep(10000);assert(!audio_rta_closed());assert(audio_rta_start((void*)1,&other)==ESP_ERR_INVALID_STATE);settle();
  uint32_t old=g;reset();g=start();assert(g!=old);assert(!audio_rta_snapshot(old,&a));audio_rta_stop(old);usleep(10000);assert(!audio_rta_closed());audio_rta_stop(g);settle();
  reset();g=start();usleep(10000);gain_fail=1;audio_rta_controls(g,false,false,12,false);settle();assert(snap(g).state==RTA_ERROR);
