@@ -14,6 +14,14 @@ Last updated: 2026-09-23.
 
 ## Features (firmware)
 
+- **Audio RTA (WS-C5-35 first)** — PLANNED; owner-approved direction, design only.
+  On-demand 24 logarithmic bands, landscape-primary plus full portrait support,
+  Modern Tools & System and Classic main-menu tiles, dedicated UI include/backend,
+  microphone capability gating and complete Back/Home teardown. No SPL calibration
+  or ultrasonic claim. Hosyond/Waveshare S3 microphone qualification and ultrasonic
+  leak investigation are later phases. Specification:
+  [Audio RTA design](docs/superpowers/specs/2026-10-18-audio-rta-design.md).
+
 - **Clock mDNS deterministic internal headroom — OPEN, v3.0.20 candidate.**
   Existing semaphore-OOM safety and internal 4096-byte stack remain unchanged.
   A task-only retained table now uses PSRAM on capable boards, saving exactly
