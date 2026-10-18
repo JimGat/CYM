@@ -15,6 +15,7 @@ class DSP(unittest.TestCase):
         subprocess.run(["gcc","-std=c11","-O2","-Wall","-Wextra","-Werror","-shared","-fPIC",str(p),"-lm","-o",str(OUT/"dsp.so")],check=True)
         cls.lib=C.CDLL(str(OUT/"dsp.so")); cls.lib.audio_rta_dsp_bytes.restype=C.c_size_t
         cls.lib.audio_rta_dsp_init.argtypes=[C.c_void_p]
+        cls.lib.audio_rta_dsp_reset.argtypes=[C.c_void_p]
         cls.lib.audio_rta_dsp_push.argtypes=[C.c_void_p,C.POINTER(C.c_int16),C.c_size_t]
         cls.lib.audio_rta_dsp_snapshot.argtypes=[C.c_void_p,C.POINTER(Snapshot)]
         cls.lib.audio_rta_dsp_slow.argtypes=[C.c_void_p,C.c_bool]
@@ -30,6 +31,16 @@ class DSP(unittest.TestCase):
         s=Snapshot();self.lib.audio_rta_dsp_snapshot(self.mem,C.byref(s));return s
     def tone(self,f,amp=.5,seconds=3):
         t=np.arange(int(48000*seconds))/48000;return amp*np.sin(2*np.pi*f*t)
+    def test_history_reset_matches_fresh_initialization(self):
+        self.lib.audio_rta_dsp_slow(self.mem,True)
+        self.feed(np.tile([1.,-1.],48000))
+        self.lib.audio_rta_dsp_reset(self.mem)
+        cleared=Snapshot();self.lib.audio_rta_dsp_snapshot(self.mem,C.byref(cleared))
+        self.assertEqual(cleared.samples,0);self.assertEqual(cleared.valid,0)
+        self.assertEqual(cleared.clips,0);self.assertTrue(all(v==-120 for v in cleared.peak))
+        x=self.tone(70,seconds=2)+self.tone(3000,amp=.1,seconds=2)
+        reset=self.feed(x);self.setUp();fresh=self.feed(x)
+        self.assertEqual(bytes(reset),bytes(fresh))
     def test_budget_and_edges(self):
         self.assertLessEqual(self.lib.audio_rta_dsp_bytes(),256*1024)
         for i in range(25): self.assertAlmostEqual(self.lib.audio_rta_dsp_edge(i),20*1000**(i/24),places=7)

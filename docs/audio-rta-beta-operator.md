@@ -1,6 +1,6 @@
 # Audio RTA beta operator guide
 
-Development v3.0.22, initially enabled only for the **Waveshare
+Development v3.0.23, initially enabled only for the **Waveshare
 ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
 testing, not hardware-qualified acoustic instrumentation. Existing co-developer
 attribution to @birolt29 is preserved.
@@ -9,7 +9,7 @@ attribution to @birolt29 is preserved.
 
 Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
 Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.22** before installing. Leave **Erase OFF** for a normal update.
+**WS-C5-35 / v3.0.23** before installing. Leave **Erase OFF** for a normal update.
 Do not use a different board image or double-press BOOT. No device was flashed by
 the development/verification process; owner flashing and physical checks are separate.
 
@@ -137,3 +137,35 @@ Home, immediate re-entry and settled cycles in both menus before the soak above.
 
 Official recorder/BSP references and deliberate differences are in the
 [WS-C5-35 board document](hardware/waveshare-c5-touch-lcd-35.md#official-recorder-reference).
+
+## v3.0.23 watchdog correction and retest
+
+The owner's v3.0.22 capture confirms successful audio initialization followed by
+main/IDLE watchdog starvation while `audio_rta` ran. The matching ELF placed the
+captured return addresses in cosine/table construction called from overrun recovery.
+The old recovery rebuilt all windows/twiddles while RX remained active, making
+further overruns possible, with no blocking scheduling point in that retry path.
+This is distinct from the earlier allocation/formatter failure.
+
+Preparation now builds those tables before opening I2S, with cancellable tick
+blocks between bounded table chunks. Overrun, gain change and Resume reset only
+stream histories; prepared tables are retained. The worker checks a 50 ms scheduling
+budget on every loop path and blocks for one tick when due, including immediately
+ready, frozen and overrun reads. This is not a measured 50 ms response guarantee:
+one processing operation can extend a check interval. The 30-second watchdog is
+unchanged, as are capture stack size, DMA ring, display buffers, radio settings and
+all other boards' feature gates. No task-priority change or main-loop polling.
+
+With debug on, expect `before_task`, `before_dsp_prepare`, `before_i2s`, then
+`configured48k mono16` or a readable error. Table preparation deliberately takes
+cooperative scheduling pauses before input starts; the UI must remain usable.
+Try Back/Home during that initial preparation as well as after a live plot appears.
+There must not be another long frozen interval followed by a watchdog restart.
+Repeat with debug off, both menus, Resume and gain changes, immediate re-entry,
+then the settled-cycle and soak checks above. Persistent warmup/overruns or a
+nonresponsive plot still fail microphone qualification even without a reboot.
+
+Production-code host tests reproduce the overrun feedback and missing blocking
+points, check cancellation before I2S acquisition, and verify history reset against
+fresh numerical initialization. Those tests do not measure target CPU load, actual
+microphone input, display response, power use or physical teardown reliability.

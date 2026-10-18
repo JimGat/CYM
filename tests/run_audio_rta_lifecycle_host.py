@@ -63,6 +63,7 @@ esp_err_t audio_rta_board_close(audio_rta_board_t*b){close_calls++;if(delay_clos
 static uint32_t start(void){uint32_t g;assert(!audio_rta_start((void*)1,&g));assert(task_stack_bytes==6144);return g;}
 static void settle(void){for(int i=0;i<3000;i++){if(audio_rta_closed()&&!live_tasks){assert(!live_alloc);return;}usleep(1000);}assert(!"cleanup timeout");}
 static audio_rta_snapshot_t snap(uint32_t g){audio_rta_snapshot_t s;assert(audio_rta_snapshot(g,&s));return s;}
+static void wait_ready(uint32_t g){for(int i=0;i<3000;i++){if(snap(g).sequence>=16&&snap(g).spectrum.valid)return;usleep(1000);}assert(!"fresh frames timeout");}
 static void reset(void){settle();task_stack_bytes=alloc_call=task_call=fail_alloc=fail_task=open_fail=read_mode=gain_fail=delay_close=slow_start=0;}
 static void cleanup_callers(void*p){(void)p;audio_rta_stop(latest.generation);audio_rta_controls(latest.generation,true,true,6,true);}
 int main(void){uint32_t g;
@@ -70,7 +71,7 @@ int main(void){uint32_t g;
  for(int k=1;k<=1;k++){reset();fail_task=k;after_free_hook=cleanup_callers;assert(audio_rta_start((void*)1,&g)==ESP_ERR_NO_MEM);after_free_hook=NULL;settle();}
  reset();open_fail=1;g=start();settle();assert(snap(g).state==RTA_ERROR);
  reset();slow_start=1;g=start();audio_rta_stop(g);audio_rta_stop(g);settle();
- reset();g=start();usleep(40000);audio_rta_snapshot_t a=snap(g);assert(a.sequence&&a.spectrum.valid);uint32_t other;assert(audio_rta_start((void*)1,&other)==ESP_ERR_INVALID_STATE);
+ reset();g=start();wait_ready(g);audio_rta_snapshot_t a=snap(g);assert(a.sequence&&a.spectrum.valid);uint32_t other;assert(audio_rta_start((void*)1,&other)==ESP_ERR_INVALID_STATE);
  audio_rta_controls(g,true,false,0,false);usleep(20000);a=snap(g);assert(a.state==RTA_FROZEN);usleep(20000);audio_rta_snapshot_t b=snap(g);assert(!memcmp(&a.spectrum,&b.spectrum,sizeof(a.spectrum))&&a.sequence==b.sequence&&a.timestamp_us==b.timestamp_us);
  audio_rta_controls(g,false,true,6,true);usleep(10000);b=snap(g);assert(b.gain_db==6&&b.spectrum.samples<a.spectrum.samples);
  read_mode=1;usleep(10000);assert(snap(g).state==RTA_RUNNING);
@@ -83,7 +84,7 @@ int main(void){uint32_t g;
  reset();allow_kernel_reap=0;g=start();usleep(10000);audio_rta_stop(g);
  for(int i=0;i<2000 && (!audio_rta_closed() || !self_delete_waiting);i++)usleep(1000);
  assert(audio_rta_closed() && !live_alloc && live_tasks==1 && self_delete_waiting==1);
- old=g;task_stack_bytes=0;g=start();usleep(40000);assert(g!=old && snap(g).sequence);
+ old=g;task_stack_bytes=0;g=start();wait_ready(g);assert(g!=old && snap(g).sequence);
  allow_kernel_reap=1;for(int i=0;i<1000 && live_tasks!=1;i++)usleep(1000);
  assert(live_tasks==1 && !audio_rta_closed() && snap(g).state==RTA_RUNNING);
  audio_rta_stop(old);assert(!audio_rta_closed());audio_rta_stop(g);settle();

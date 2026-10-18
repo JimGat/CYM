@@ -59,14 +59,34 @@ double audio_rta_dsp_filter(double f){
  for(unsigned i=0;i<FIR_N;i++){double a=2*PI*f*i/48000;re+=taps[i]*cos(a);im-=taps[i]*sin(a);}
  return hypot(re,im);
 }
-void audio_rta_dsp_init(void *memory){
- dsp_t*d=memory;memset(d,0,sizeof(*d));
- for(unsigned i=0;i<2048;i++){d->wr[i]=(float)cos(2*PI*i/4096);d->wi[i]=(float)-sin(2*PI*i/4096);}
- for(unsigned i=0;i<4096;i++)d->win[i]=(float)(.5-.5*cos(2*PI*i/4096));
- for(unsigned i=0;i<2048;i++)d->low_win[i]=(float)(.5-.5*cos(2*PI*i/2048));
+void audio_rta_dsp_reset(void *memory){
+ dsp_t*d=memory;
+ memset(d->full,0,sizeof(d->full));memset(d->low,0,sizeof(d->low));memset(d->fir,0,sizeof(d->fir));
+ memset(d->smooth,0,sizeof(d->smooth));memset(d->last,0,sizeof(d->last));memset(&d->out,0,sizeof(d->out));
+ d->total=0;d->pos=d->low_pos=d->fir_pos=d->phase=0;
+ d->full_count=d->low_count=d->full_hop=d->low_hop=0;d->slow=false;
  for(unsigned i=0;i<24;i++)d->out.band[i]=d->out.peak[i]=AUDIO_RTA_FLOOR;
  d->out.rms=d->out.sample_peak=AUDIO_RTA_FLOOR;
+ /* FFT scratch is overwritten by analyze(); immutable windows/twiddles stay. */
 }
+bool audio_rta_dsp_prepare(void *memory,bool (*checkpoint)(void *),void *arg){
+ dsp_t*d=memory;memset(d,0,sizeof(*d));
+ for(unsigned i=0;i<2048;i++){
+  if(checkpoint&&!(i%128)&&!checkpoint(arg))return false;
+  d->wr[i]=(float)cos(2*PI*i/4096);d->wi[i]=(float)-sin(2*PI*i/4096);
+ }
+ for(unsigned i=0;i<4096;i++){
+  if(checkpoint&&!(i%128)&&!checkpoint(arg))return false;
+  d->win[i]=(float)(.5-.5*cos(2*PI*i/4096));
+ }
+ for(unsigned i=0;i<2048;i++){
+  if(checkpoint&&!(i%128)&&!checkpoint(arg))return false;
+  d->low_win[i]=(float)(.5-.5*cos(2*PI*i/2048));
+ }
+ audio_rta_dsp_reset(d);
+ return !checkpoint||checkpoint(arg);
+}
+void audio_rta_dsp_init(void *memory){(void)audio_rta_dsp_prepare(memory,NULL,NULL);}
 void audio_rta_dsp_slow(void *memory,bool slow){((dsp_t*)memory)->slow=slow;}
 void audio_rta_dsp_reset_peaks(void *memory){dsp_t*d=memory;for(unsigned i=0;i<24;i++)d->out.peak[i]=AUDIO_RTA_FLOOR;}
 static float db(double power){return (float)(10*log10(fmax(power,1e-12)));}

@@ -28,6 +28,7 @@ typedef struct {
  TaskHandle_t worker;
  uint32_t generation;
  size_t initial_internal;
+ int64_t last_yield_us;
 } session_t;
 static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;
 static session_t *owner;
@@ -58,10 +59,18 @@ static void memory_boundary(const char*stage){
  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA));
 }
+/* A ready I2S queue is not a scheduling point. A real tick block lets
+ * lower-priority main/UI and IDLE run; taskYIELD alone cannot do that. */
+static bool prepare_checkpoint(void *arg){
+ session_t*c=arg;vTaskDelay(1);c->last_yield_us=esp_timer_get_time();return !stopping(c);
+}
 static void session_worker(void *arg){
  session_t*c=arg;ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
  int error=ESP_OK,actual_gain=0;bool was_frozen=false;
  if(stopping(c))goto finish;
+ memory_boundary("before_dsp_prepare");
+ /* Prepare before enabling RX: software-float table work must not overflow it. */
+ if(!audio_rta_dsp_prepare(c->dsp,prepare_checkpoint,c)||stopping(c))goto finish;
  memory_boundary("before_i2s");
  error=audio_rta_board_open(c->board,c->bus,0);
  if(error)goto finish;
@@ -70,23 +79,25 @@ static void session_worker(void *arg){
  portENTER_CRITICAL(&mux);latest.internal_delta=delta;portEXIT_CRITICAL(&mux);
  ESP_LOGI("AUDIO_RTA","configured48k mono16 internal_delta=%u psram=%u largest_internal=%u hardware_input_unqualified",(unsigned)delta,(unsigned)(audio_rta_dsp_bytes()+1024),(unsigned)heap_caps_get_largest_free_block(INTERNAL));
  if(delta>24*1024){error=ESP_ERR_NO_MEM;goto finish;}
- audio_rta_dsp_init(c->dsp);
  while(!stopping(c)){
+  /* Applies to every path, even frozen/overrun/empty immediately-ready reads.
+   * Do not sleep per read: a 100-Hz tick nearly fills the 512-sample period. */
+  if(esp_timer_get_time()-c->last_yield_us>=50000&&!prepare_checkpoint(c))break;
   bool frozen,slow,reset;int gain;
   portENTER_CRITICAL(&mux);frozen=c->freeze;slow=c->slow;gain=c->gain;reset=c->reset;c->reset=false;portEXIT_CRITICAL(&mux);
   if(gain!=actual_gain){
    if((error=audio_rta_board_gain(c->board,gain)))break;
-   actual_gain=gain;audio_rta_dsp_init(c->dsp);frozen=false;
+   actual_gain=gain;audio_rta_dsp_reset(c->dsp);frozen=false;
    portENTER_CRITICAL(&mux);c->freeze=false;latest.spectrum.valid=0;latest.gain_db=gain;portEXIT_CRITICAL(&mux);
   }
-  if(was_frozen&&!frozen)audio_rta_dsp_init(c->dsp);
+  if(was_frozen&&!frozen)audio_rta_dsp_reset(c->dsp);
   was_frozen=frozen;
   if(reset)audio_rta_dsp_reset_peaks(c->dsp);
   audio_rta_dsp_slow(c->dsp,slow);
   size_t count=0;int rc=audio_rta_board_read(c->board,c->pcm,512,&count);
   if(stopping(c))break;
   if(rc==ESP_ERR_INVALID_STATE){
-   audio_rta_dsp_init(c->dsp);
+   audio_rta_dsp_reset(c->dsp);
    portENTER_CRITICAL(&mux);latest.overruns++;latest.spectrum.valid=0;portEXIT_CRITICAL(&mux);
    continue;
   }
