@@ -90,6 +90,7 @@
 #define BOARD_HAS_GPS        1
 #define BOARD_HAS_BATTERY_ADC 1  // AXP2101 telemetry, NOT ESP32 GPIO ADC
 #define BOARD_HAS_AUDIO      0
+#define BOARD_HAS_AUDIO_RTA 1
 #define BOARD_HAS_RGB_LED    0
 
 // ── No vibrator or WS2812 on this board ──────────────────────────────────────

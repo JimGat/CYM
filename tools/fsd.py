@@ -11,7 +11,7 @@ UNSUPPORTED = {"cyd-2432s028", "hackerbox-cyd"}
 TOOLS = "Tools \u0026 System"
 # Reviewed menu-only edges. Validate WHOLE route before serial is even opened.
 # Neither tile discovery nor a label denylist grants permission to transmit.
-SAFE_ROUTES = {(), ("Settings",), (TOOLS,), (TOOLS, "Settings")}
+SAFE_ROUTES = {(), ("Settings",), (TOOLS,), (TOOLS, "Settings"), ("Audio RTA",), (TOOLS, "Audio RTA")}
 CRASH = re.compile(rb"Guru Meditation|abort\(\) was called|rst:0x|ESP-ROM:|Backtrace:|panic", re.I)
 class FsdError(RuntimeError): pass
 class Unsupported(FsdError): pass
@@ -185,6 +185,7 @@ def main(argv=None):
         if a.board not in BOARDS: raise Unsupported("unknown/unqualified board")
         if not 0<=a.settle<=30: raise FsdError("settle must be 0..30 seconds")
         route=route_for(a.suite,a.scope)
+        if "Audio RTA" in route and a.board!="ws-c5-35": raise Unsupported("Audio RTA is WS35-only")
     except FsdError as exc: print(type(exc).__name__+": "+str(exc));return 2
     r=None
     try: r=Run(a.board,a.suite,a);r.open();execute(r,route)

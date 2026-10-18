@@ -3248,6 +3248,12 @@ static void show_cat_tools(void);
 #include "qr_record.h"
 static void show_qr_decoder(void);
 #endif
+#if BOARD_HAS_AUDIO_RTA
+#include "audio_rta.h"
+LV_FONT_DECLARE(audio_rta_mic_font);
+#define RTA_MIC_SYMBOL "\xEE\x84\x80" /* original microphone U+E100 */
+static void show_audio_rta(void);
+#endif
 static void category_tile_event_cb(lv_event_t *e);
 static void show_home_layout_popup(void);   // Settings > Home Layout chooser
 static void home_layout_show_menu_async(void *arg);
@@ -17462,6 +17468,9 @@ static const nav_show_entry_t NAV_SHOW_TABLE[] = {
     { "Defend",               show_cat_defend              },
     { "Recon & Scan",         show_cat_recon               },
     { "Tools & System",       show_cat_tools               },
+#if BOARD_HAS_AUDIO_RTA
+    { "Audio RTA",            show_audio_rta               },
+#endif
 #if CONFIG_BOARD_WS_C5_35
     { "QR Decoder",           show_qr_decoder              },
 #endif
@@ -18061,6 +18070,10 @@ static lv_obj_t *create_tile(lv_obj_t *parent, const char *icon, const char *tex
         lv_obj_t *icon_label = lv_label_create(tile);
         lv_label_set_text(icon_label, icon);
         lv_obj_set_style_text_font(icon_label, &lv_extra_symbols, 0);
+#if BOARD_HAS_AUDIO_RTA
+        if(user_data && strcmp(user_data,"Audio RTA")==0)
+            lv_obj_set_style_text_font(icon_label,&audio_rta_mic_font,0);
+#endif
         lv_obj_set_style_text_color(icon_label, accent, 0);
     }
 
@@ -18140,6 +18153,9 @@ static void main_tile_event_cb(lv_event_t *e)
 
 #if CONFIG_BOARD_WS_C5_35
     if (strcmp(tile_name, "QR Decoder") == 0) { show_qr_decoder(); return; }
+#endif
+#if BOARD_HAS_AUDIO_RTA
+    if(strcmp(tile_name,"Audio RTA")==0){show_audio_rta();return;}
 #endif
     if (strcmp(tile_name, "WiFi Menu") == 0) {
         show_wifi_menu_screen();
@@ -18464,6 +18480,9 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles_container, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Classic");
+#if BOARD_HAS_AUDIO_RTA
+    create_tile(tiles_container,RTA_MIC_SYMBOL,"Audio RTA",UI_ACCENT_CYAN,main_tile_event_cb,"Audio RTA");
+#endif
 #if CONFIG_BOARD_WS_C5_35
     create_tile(tiles_container, MY_SYMBOL_CAMERA, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
     /* Additional WS35 tool must remain reachable in both orientations. */
@@ -45980,6 +45999,10 @@ static void show_qr_decoder(void)
 }
 #endif
 
+#if BOARD_HAS_AUDIO_RTA
+#include "audio_rta_ui.inc"
+#endif
+
 static void show_cat_tools(void)
 {
     create_function_page_base("Tools & System");
@@ -45990,6 +46013,9 @@ static void show_cat_tools(void)
         create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Modern");
+#if BOARD_HAS_AUDIO_RTA
+    create_tile(tiles,RTA_MIC_SYMBOL,"Audio RTA",UI_ACCENT_CYAN,main_tile_event_cb,"Audio RTA");
+#endif
 #if CONFIG_BOARD_WS_C5_35
     create_tile(tiles, MY_SYMBOL_CAMERA, "QR\nDecoder", UI_ACCENT_CYAN, main_tile_event_cb, "QR Decoder");
 #endif

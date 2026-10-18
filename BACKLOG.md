@@ -194,3 +194,19 @@ rules). Start ONE track at a time; do not run all simultaneously.
 
 - **Monster Whisperer integration** — TABLED (2026-04-19). 6-phase ESP32-S3 BLE gateway plan
   superseded by the carrier-board + JANOS-UART direction.
+
+
+### Audio RTA beta - WS-C5-35 (Development v3.0.21)
+
+- Implemented on-demand 24-log-band uncalibrated dBFS analyzer, dedicated landscape/
+  portrait UI, Modern Tools & System and additional Classic tile. All other targets
+  remain gated off. Fast/Slow, Freeze/Resume, peaks, manual ES8311 0..42 dB gain.
+- Production C host numerical/fault/lifecycle/real-LVGL gates and eight-board build
+  evidence are maintained outside the tree; see docs/audio-rta-beta-operator.md.
+- Physical microphone input, acoustic response, CPU/overruns, <=500ms hardware stop,
+  settled memory/ten-cycle/15-minute soak remain REQUIRED qualification work. No SPL,
+  ultrasonic, other-board microphone or calibrated response claim.
+- At the mixed-resolution 266.70Hz crossover, tones within +/-23.44Hz are an explicitly
+  characterized boundary: adjacent-band sum can differ up to 1.85dB. Away from this
+  boundary the numerical acceptance target is <=1dB. Do not interpret boundary bars
+  as precision acoustic measurements. Co-developer credit remains @birolt29.

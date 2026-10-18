@@ -19,3 +19,10 @@ if(CONFIG_BOARD_WS_C5_35)
         target_include_directories(${COMPONENT_LIB} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../components/${qr_component}/include")
     endforeach()
 endif()
+
+# Narrow microphone analyzer: unsupported boards link no session/DSP/font object.
+if(CONFIG_BOARD_WS_C5_35)
+    target_sources(${COMPONENT_LIB} PRIVATE "audio_rta.c" "audio_rta_board.c" "audio_rta_dsp.c" "audio_rta_mic.c")
+    idf_component_get_property(rta_codec_lib espressif__esp_codec_dev COMPONENT_LIB)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE ${rta_codec_lib})
+endif()

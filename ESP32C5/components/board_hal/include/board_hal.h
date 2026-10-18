@@ -186,3 +186,8 @@ void board_hal_log_info(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* Standalone RTA is qualified separately from general speaker/audio support. */
+#ifndef BOARD_HAS_AUDIO_RTA
+#define BOARD_HAS_AUDIO_RTA 0
+#endif

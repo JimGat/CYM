@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v3.0.20 |
+| Version | v3.0.21 |
 | Build date | 2026-10-18 |
 | .iram0.text | 142,768 B (139.4 KB) |
-| .dram0.data | 50,457 B (49.3 KB) |
-| .dram0.bss  (internal) | 95,320 B (93.1 KB) |
+| .dram0.data | 50,465 B (49.3 KB) |
+| .dram0.bss  (internal) | 96,096 B (93.8 KB) |
 | .ext_ram.bss  (PSRAM) | 339,880 B (331.9 KB) |
-| App binary size | 4,167,824 B (4070.1 KB) |
+| App binary size | 4,192,336 B (4094.1 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -25,7 +25,7 @@
 | Library / object | Internal BSS |
 |-----------------|-------------|
 | `libcym_doom_engine.a` | 98,086 B (95.8 KB) |
-| `libmain.a` | 51,081 B (49.9 KB) |
+| `libmain.a` | 51,801 B (50.6 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
 | `librf_hat.a` | 11,352 B (11.1 KB) |
 | `libZXing_bound.a` | 10,112 B (9.9 KB) |
