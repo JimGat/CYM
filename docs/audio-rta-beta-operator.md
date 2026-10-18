@@ -1,6 +1,6 @@
 # Audio RTA beta operator guide
 
-Development v3.0.21, initially enabled only for the **Waveshare
+Development v3.0.22, initially enabled only for the **Waveshare
 ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
 testing, not hardware-qualified acoustic instrumentation. Existing co-developer
 attribution to @birolt29 is preserved.
@@ -9,7 +9,7 @@ attribution to @birolt29 is preserved.
 
 Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
 Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.21** before installing. Leave **Erase OFF** for a normal update.
+**WS-C5-35 / v3.0.22** before installing. Leave **Erase OFF** for a normal update.
 Do not use a different board image or double-press BOOT. No device was flashed by
 the development/verification process; owner flashing and physical checks are separate.
 
@@ -64,14 +64,16 @@ initialization failures leave Back/Home usable. Long errors can scroll verticall
 There is no hidden startup retry; Back then reopen explicitly after cleanup.
 PCM/history/FFT allocations use PSRAM with no internal fallback. Runtime admission
 rejects an observed session internal delta over24KiB, including internally allocated
-worker/reaper stacks; the configured workspace ceiling is256KiB. Concurrent unrelated
+capture worker stack; the configured workspace ceiling is256KiB. Concurrent unrelated
 allocations can conservatively reject admission. Compile/host sizes are not measured
 hardware free-heap evidence.
 
 A detached non-UI owner finishes bounded-read cancellation; re-entry stays busy until
-cleanup ends. Worker voluntarily parks after releasing hardware, and the reaper verifies
-RTOS suspended state before synchronous deletion and only then frees its buffers.
-Kernel owns dynamic INTERNAL task stacks/TCBs. No forced deletion of a running or
+cleanup ends. The worker closes codec/I2S, releases its owned buffers after their
+last use, then self-deletes. FreeRTOS owns its dynamic 6144-byte INTERNAL stack/TCB
+and reclaims them on the next idle pass; a closed session is not a kernel-task join.
+There is no second cleanup task. Compare heap only after a settled idle interval;
+immediate reopen can safely report memory pressure until kernel reclamation finishes. No forced deletion of a running or
 blocked capture task or UI callback, no global main-loop polling. Delayed cleanup is
 logged on PRIMARY USB-C, and persistent delay fails qualification. No second I2C bus,
 shared power toggles, radio-wide shutdown, display-buffer reduction or SD-speed change.
@@ -114,3 +116,24 @@ publication, then owner bench qualification. These physical checks remain mandat
 before hardware acceptance or any Stable-promotion decision; publication of a test
 beta does not establish working microphone input, acoustic calibration, no-leak
 teardown or CPU performance.
+
+## v3.0.22 crash correction and first retest
+
+v3.0.21 was physically reported to panic on RTA entry. Its exact ELF decoded the
+fault to LVGL's string formatter called by RTA refresh; float formatting is disabled
+in the target configuration. RTA now formats floating-point labels through bounded
+libc buffers and copies text into LVGL, without globally enabling float formatting.
+The same capture showed I2S DMA allocation failure. Removing the unnecessary
+3072-byte cleanup-task stack (and its TCB) reduces startup internal demand while
+retaining the 6144-byte capture stack, DMA ring, DSP, display and radio settings.
+This is a software correction, not proof that hardware now captures successfully.
+
+First retest with debug on via primary USB-C, then repeat with debug off. Expect
+AUDIO_RTA stage=before_task, stage=before_i2s and either a live plot or a safe error
+with Back/Home usable. Copy the complete AUDIO_RTA/I2S lines and any panic if one
+occurs. Startup boundary logs contain heap totals only, never PCM. A memory error
+without reboot is safe failure, not successful microphone qualification. Test Back,
+Home, immediate re-entry and settled cycles in both menus before the soak above.
+
+Official recorder/BSP references and deliberate differences are in the
+[WS-C5-35 board document](hardware/waveshare-c5-touch-lcd-35.md#official-recorder-reference).

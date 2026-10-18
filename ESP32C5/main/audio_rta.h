@@ -14,4 +14,6 @@ esp_err_t audio_rta_start(void *shared_bus,uint32_t *generation);
 bool audio_rta_snapshot(uint32_t generation,audio_rta_snapshot_t *copy);
 void audio_rta_controls(uint32_t generation,bool freeze,bool slow,int gain,bool reset);
 void audio_rta_stop(uint32_t generation);
+/* Owned session/device buffers are released. FreeRTOS may reclaim its dynamic
+ * worker stack/TCB on the next idle pass; this is not a kernel-task join. */
 bool audio_rta_closed(void);

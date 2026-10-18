@@ -19,9 +19,12 @@ static void audio_rta_ui_stop(void){
 static void rta_detail_update(void){
  if(!rta_detail)return;
  unsigned b=rta_selected;
+ char text[160];
+ /* LVGL float formatting is disabled. libc formats into a bounded copy. */
  if(rta_model.spectrum.valid&(1u<<b))
-  lv_label_set_text_fmt(rta_detail,"%.2f-%.2f Hz  %.1f dBFS\nAge %.0f ms / %s",audio_rta_dsp_edge(b),audio_rta_dsp_edge(b+1),(double)rta_model.spectrum.band[b],rta_model.spectrum.age[b]/48.0,b<9?"683 ms bass window":"85 ms window");
- else lv_label_set_text_fmt(rta_detail,"%.2f-%.2f Hz / warming up\n%s",audio_rta_dsp_edge(b),audio_rta_dsp_edge(b+1),b<9?"Bass needs 683 ms of fresh input":"Full-rate needs 85 ms of fresh input");
+  snprintf(text,sizeof(text),"%.2f-%.2f Hz  %.1f dBFS\nAge %.0f ms / %s",audio_rta_dsp_edge(b),audio_rta_dsp_edge(b+1),(double)rta_model.spectrum.band[b],rta_model.spectrum.age[b]/48.0,b<9?"683 ms bass window":"85 ms window");
+ else snprintf(text,sizeof(text),"%.2f-%.2f Hz / warming up\n%s",audio_rta_dsp_edge(b),audio_rta_dsp_edge(b+1),b<9?"Bass needs 683 ms of fresh input":"Full-rate needs 85 ms of fresh input");
+ lv_label_set_text(rta_detail,text);
 }
 static void rta_plot_text(lv_draw_ctx_t*ctx,int x,int y,int width,const char*text){
  lv_draw_label_dsc_t d;lv_draw_label_dsc_init(&d);d.font=&lv_font_montserrat_12;d.color=lv_color_hex(0xcbd5e1);
@@ -98,11 +101,14 @@ static void rta_refresh(lv_timer_t*t){
  if(!audio_rta_snapshot(rta_generation,&rta_model))return;
  if(rta_model.state==RTA_ERROR){
   rta_error_text(rta_model.error);
+  return;
  }else if(!rta_model.sequence){
   lv_label_set_text(rta_status,"Starting 48k input / gain 0 dB\nWaiting for fresh analysis windows");
  }else{
   const char*s=rta_model.state==RTA_FROZEN?"Frozen":rta_model.state==RTA_STARTING?"Starting":rta_model.state==RTA_RUNNING?"Live":"Stopping";
-  lv_label_set_text_fmt(rta_status,"%s RMS %.1f Pk %.1f dBFS\n%s%lu / Gain %d dB",s,(double)rta_model.spectrum.rms,(double)rta_model.spectrum.sample_peak,rta_model.spectrum.clips?"CLIP ":"Clips ",(unsigned long)rta_model.spectrum.clips,rta_model.gain_db);
+  char text[160];
+  snprintf(text,sizeof(text),"%s RMS %.1f Pk %.1f dBFS\n%s%lu / Gain %d dB",s,(double)rta_model.spectrum.rms,(double)rta_model.spectrum.sample_peak,rta_model.spectrum.clips?"CLIP ":"Clips ",(unsigned long)rta_model.spectrum.clips,rta_model.gain_db);
+  lv_label_set_text(rta_status,text);
  }
  lv_label_set_text_fmt(rta_gain_label,"Gain %d",rta_model.gain_db);rta_detail_update();lv_obj_invalidate(rta_chart);
 }

@@ -163,3 +163,27 @@ Compilation alone is never physical qualification.
 [2] https://docs.waveshare.com/ESP32-C5-Touch-LCD-3.5
 [3] https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-reference/peripherals/gpio.html
 [4] https://docs.espressif.com/projects/esptool/en/latest/esp32c5/advanced-topics/boot-mode-selection.html
+
+## Official recorder reference
+
+Pinned upstream revision: `04e6134cf3e37309b2bec9915189efeace1161bc`.
+
+- [Waveshare factory recorder](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5/blob/04e6134cf3e37309b2bec9915189efeace1161bc/example/ESP-IDF-V554/01_factory/components/SpecAnalyzer/record_demo/record_demo.c)
+- [Waveshare board audio implementation](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5/blob/04e6134cf3e37309b2bec9915189efeace1161bc/example/ESP-IDF-V554/01_factory/components/waveshare__esp32_c5_touch_lcd_3_5/esp32_c5_touch_lcd_3_5.c)
+- [Waveshare board pin/config header](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-3.5/blob/04e6134cf3e37309b2bec9915189efeace1161bc/example/ESP-IDF-V554/01_factory/components/waveshare__esp32_c5_touch_lcd_3_5/include/bsp/esp32_c5_touch_lcd_3_5.h)
+
+The recorder uses ES8311 analog input via `esp_codec_dev`, 16 kHz, mono, 16-bit,
+1024-byte recording buffers, 42 dB input gain and a 4096-byte recording task.
+The BSP initializes duplex I2S (TX and RX); the codec is slave, `use_mclk=false`,
+`digital_mic=false`, on the existing shared I2C bus. Its default I2S configuration
+starts at 22050 Hz before codec stream configuration. These are source observations,
+not CYM bench measurements.
+
+CYM Audio RTA intentionally uses 48 kHz analysis, conservative manual gain, a
+6144-byte capture/DSP task, PSRAM analysis storage and no SD recording/playback.
+It keeps display/touch alive; the upstream recorder temporarily suppresses LCD
+flushes while writing audio to the shared SD SPI bus, which must not be copied
+into a live analyzer. Preserve pins, codec clock/format validation and shared-bus
+ownership rather than importing the factory application's power/navigation code.
+The official example is reference material, not proof of 48 kHz capture, headroom
+or acoustic bandwidth in CYM. See the [RTA operator guide](../audio-rta-beta-operator.md).

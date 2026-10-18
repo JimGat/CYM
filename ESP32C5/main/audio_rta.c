@@ -25,7 +25,7 @@ typedef struct {
  int16_t *pcm;
  bool stop,freeze,slow,reset;
  int gain;
- TaskHandle_t worker,reaper;
+ TaskHandle_t worker;
  uint32_t generation;
  size_t initial_internal;
 } session_t;
@@ -41,27 +41,28 @@ static void report_error(session_t*c,int error){
  portENTER_CRITICAL(&mux);latest.state=RTA_ERROR;latest.error=error;latest.timestamp_us=esp_timer_get_time();portEXIT_CRITICAL(&mux);
  ESP_LOGE("AUDIO_RTA","generation=%lu error=%d",(unsigned long)c->generation,error);
 }
-/* Reaper is reserved before capture, so an OOM during exit cannot strand live
- * storage. Worker voluntarily parks AFTER its final use; eSuspended is checked
- * separately from completion. On this single-core target synchronous deletion
- * of that quiescent, non-running task lets the kernel free stack/TCB safely.
- * No force-deletion of a running/blocked capture task is ever used. */
-static void session_reaper(void *arg){
- session_t*c=arg;ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
- if(c->worker){
-  while(eTaskGetState(c->worker)!=eSuspended)vTaskDelay(pdMS_TO_TICKS(1));
-  vTaskDelete(c->worker);c->worker=NULL;
- }
- heap_caps_free(c->board);heap_caps_free(c->pcm);heap_caps_free(c->dsp);
+/* All device callbacks are quiescent before the worker releases owned buffers.
+ * The dynamic worker's stack/TCB belong to FreeRTOS, not to session_t. They
+ * must never be freed here: vTaskDelete(NULL) leaves their reclamation to idle.
+ * No second cleanup task/stack is needed. closed() means session resources are
+ * released; kernel-owned task storage may still await the next idle pass. */
+static void session_release(session_t*c){
  portENTER_CRITICAL(&mux);owner=NULL;portEXIT_CRITICAL(&mux);
+ heap_caps_free(c->board);heap_caps_free(c->pcm);heap_caps_free(c->dsp);
  heap_caps_free(c);
  portENTER_CRITICAL(&mux);busy=false;portEXIT_CRITICAL(&mux);
- vTaskDelete(NULL);
+}
+static void memory_boundary(const char*stage){
+ ESP_LOGI("AUDIO_RTA","stage=%s internal_free=%u internal_largest=%u dma_free=%u dma_largest=%u",
+ stage,(unsigned)heap_caps_get_free_size(INTERNAL),(unsigned)heap_caps_get_largest_free_block(INTERNAL),
+ (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA),
+ (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA));
 }
 static void session_worker(void *arg){
  session_t*c=arg;ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
  int error=ESP_OK,actual_gain=0;bool was_frozen=false;
  if(stopping(c))goto finish;
+ memory_boundary("before_i2s");
  error=audio_rta_board_open(c->board,c->bus,0);
  if(error)goto finish;
  size_t now=heap_caps_get_free_size(INTERNAL);
@@ -103,7 +104,7 @@ static void session_worker(void *arg){
   portEXIT_CRITICAL(&mux);
  }
 finish:
- if(error)report_error(c,error);
+ if(error){memory_boundary("failure");report_error(c,error);}
  /* Retry ONLY resource release, never retry input startup or force deletion.
   * This detached owner survives the screen until channel callbacks are gone. */
  unsigned retries=0;
@@ -112,8 +113,9 @@ finish:
   if(retries%20==1)ESP_LOGE("AUDIO_RTA","delayed_cleanup generation=%lu retry=%u",(unsigned long)c->generation,retries);
  }
  portENTER_CRITICAL(&mux);if(!error)latest.state=RTA_CLOSED;portEXIT_CRITICAL(&mux);
- xTaskNotifyGive(c->reaper);
- vTaskSuspend(NULL); /* voluntary terminal park, no buffer access after this */
+ memory_boundary("device_released");
+ session_release(c); /* final access to caller-owned context */
+ vTaskDelete(NULL); /* kernel-owned stack/TCB: idle reclaims, never application */
 }
 
 esp_err_t audio_rta_start(void*bus,uint32_t*generation){
@@ -134,14 +136,13 @@ esp_err_t audio_rta_start(void*bus,uint32_t*generation){
  portENTER_CRITICAL(&mux);owner=c;latest.psram_bytes=audio_rta_dsp_bytes()+1024;portEXIT_CRITICAL(&mux);
  /* Installed IDF heap_idf.c pvPortMallocStack/pvPortMallocTCB use INTERNAL.
   * 6144 bytes deliberately retained, never shrunk or moved to PSRAM. */
- if(xTaskCreate(session_reaper,"rta_reaper",3072,c,1,&c->reaper)!=pdPASS)goto fail;
- if(xTaskCreate(session_worker,"audio_rta",6144,c,2,&c->worker)!=pdPASS){
-  portENTER_CRITICAL(&mux);latest.state=RTA_ERROR;latest.error=ESP_ERR_NO_MEM;portEXIT_CRITICAL(&mux);
-  xTaskNotifyGive(c->reaper);return ESP_ERR_NO_MEM;
- }
+ memory_boundary("before_task");
+ if(xTaskCreate(session_worker,"audio_rta",6144,c,2,&c->worker)!=pdPASS)goto fail;
  xTaskNotifyGive(c->worker);
  return ESP_OK;
 fail:
+ /* Unpublish before any free; concurrent Stop/Controls must see no owner. */
+ portENTER_CRITICAL(&mux);owner=NULL;portEXIT_CRITICAL(&mux);
  if(c){heap_caps_free(c->board);heap_caps_free(c->dsp);heap_caps_free(c->pcm);heap_caps_free(c);}
  portENTER_CRITICAL(&mux);owner=NULL;busy=false;latest.state=RTA_ERROR;latest.error=ESP_ERR_NO_MEM;portEXIT_CRITICAL(&mux);
  return ESP_ERR_NO_MEM;
