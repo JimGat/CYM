@@ -36,20 +36,20 @@ Runtime display allocations (not all represented in linker BSS): two physical 10
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v3.0.18 |
+| Version | v3.0.19 |
 | Build date | 2026-10-18 |
 | .iram0.text | 129,719 B (126.7 KB) |
 | .dram0.data | 33,597 B (32.8 KB) |
-| .dram0.bss  (internal) | 84,416 B (82.4 KB) |
+| .dram0.bss  (internal) | 84,432 B (82.5 KB) |
 | .ext_ram.bss  (PSRAM) | 207,452 B (202.6 KB) |
-| App binary size | 2,863,360 B (2796.2 KB) |
+| App binary size | 2,872,592 B (2805.3 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ## Internal BSS consumers
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 59,423 B (58.0 KB) |
+| `libmain.a` | 59,435 B (58.0 KB) |
 | `librf_hat.a` | 11,433 B (11.2 KB) |
 | `libnet80211.a` | 7,832 B (7.6 KB) |
 | `liblwip.a` | 4,147 B (4.0 KB) |

@@ -33,6 +33,17 @@
 
 ---
 
+## Development USB UI control (v3.0.19)
+
+Normal console-capable Development firmware includes the FSD USB UI driver and
+one maintained [PC operator script](tools/fsd.py), contributed by co-developer
+**@birolt29** and reconciled for owned UI requests and strict capture validation.
+[Install, explicit USB-C/115200 ports, safe menu-only runs, manual commands,
+artifacts, board limits and pending hardware checks](docs/operators/fsd-usb-ui.md).
+Classic CYD and HackerBox remain console-none: no FSD. Manual commands can start
+radio tools; only reviewed PC menu routes are automated. GPS/NMEA passthrough is
+not implemented. This is Development documentation, not a Stable refresh claim.
+
 ## WS-C5-35 Go Dark recovery — included in Stable v3.0.7
 
 Stable v3.0.7 includes the v3.0.3 correction for raw FT6336 touch polling for the

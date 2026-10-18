@@ -1,6 +1,7 @@
 /* Use the installed IDF REPL/parser path, not a second UART line parser.
- * Debug-only registration is safe in isolated mode: no radio/storage commands. */
+ * USB-only diagnostics plus FSD: manual FSD controls can start active tools. */
 #include "debug_settings.h"
+#include "fsd.h"
 #include "esp_console.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -126,6 +127,7 @@ esp_err_t cym_debug_console_start(void)
     stage="Command registration failed";
     rc=esp_console_cmd_register(&cmd);
     if(rc!=ESP_OK)goto parser_failure;
+    cym_fsd_register(); /* Optional commands unwind independently; debug remains usable. */
     stage="Input flags failed";errno=0;
     input_flags=fcntl(fileno(debug_usb_in),F_GETFL);
     if(input_flags<0 || fcntl(fileno(debug_usb_in),F_SETFL,input_flags|O_NONBLOCK)<0){saved_errno=errno;rc=ESP_FAIL;goto parser_failure;}
@@ -141,6 +143,7 @@ esp_err_t cym_debug_console_start(void)
     }
     started=true;__atomic_clear(&console_start_busy,__ATOMIC_RELEASE);return ESP_OK;
 parser_failure:
+    cym_fsd_unregister();
     if(input_flags>=0)(void)fcntl(fileno(debug_usb_in),F_SETFL,input_flags);
     (void)esp_console_deinit();
 io_failure:
@@ -162,8 +165,9 @@ start_failure:
     if(rc!=ESP_OK){repl=NULL;return rc;}
     const esp_console_cmd_t cmd={.command="debug",.help="Persist diagnostics: debug [on|off|status|query]",.hint=NULL,.func=cym_debug_command};
     rc=esp_console_cmd_register(&cmd);
+    if(rc==ESP_OK)cym_fsd_register();
     if(rc==ESP_OK)rc=esp_console_start_repl(repl);
-    if(rc!=ESP_OK){ESP_LOGE("debug","DEBUG_CONSOLE register/start failed: %s",esp_err_to_name(rc));repl->del(repl);repl=NULL;}
+    if(rc!=ESP_OK){ESP_LOGE("debug","DEBUG_CONSOLE register/start failed: %s",esp_err_to_name(rc));cym_fsd_unregister();repl->del(repl);repl=NULL;}
     return rc;
 #else
     console_set_status("Unavailable (transport)");

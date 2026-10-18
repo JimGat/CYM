@@ -151,6 +151,7 @@ static uint8_t s_game_prior_orientation;
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "fsd.h"
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -8523,6 +8524,8 @@ log_heap_stats("display-drawbuffers-before");
                     lv_obj_add_flag(touch_dot, LV_OBJ_FLAG_HIDDEN);
                 }
             }
+
+            cym_fsd_poll(); // UI-owner request dispatch; never on a console task
 
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
             /* A hidden game owns its overlay until worker cleanup acknowledges
@@ -17518,6 +17521,10 @@ static void nav_back_cb(lv_event_t *e)
     if (g_screen_back_fn) {
         fn = g_screen_back_fn;
         g_screen_back_fn = NULL;
+        // Leaving this screen: drop it from the path so the explicit parent replaces it.
+        // Without this, a parent that is not already below us on the stack (screen reached
+        // by a shortcut) gets pushed ABOVE it and the parent's stack-back loops back here.
+        if (nav_stack_depth > 0) nav_stack_depth--;
     } else if (nav_stack_depth >= 2) {
         fn = nav_show_lookup(nav_stack[nav_stack_depth - 2]);
     }
@@ -17527,6 +17534,8 @@ static void nav_back_cb(lv_event_t *e)
         nav_to_menu_flag = true;     // no parent → Home (also deferred)
     }
 }
+
+#include "fsd_ui.inc"
 
 static void create_function_page_base(const char *name)
 {

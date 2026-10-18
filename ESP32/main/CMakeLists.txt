@@ -12,6 +12,7 @@ idf_component_register(
     SRCS
         "${C5_MAIN}/debug_settings.c"
         "${C5_MAIN}/debug_console.c"
+        "${C5_MAIN}/fsd_console.c"
         "${C5_MAIN}/attack_handshake.c"
         "${C5_MAIN}/xpt2046.c"
         "${C5_MAIN}/lvgl_memory.c"

@@ -170,7 +170,9 @@ def replace_section(content, start_marker, end_marker, new_body):
         re.DOTALL
     )
     replacement = f"{start_marker}\n{new_body}\n{end_marker}"
-    new_content, n = pattern.subn(replacement, content, count=1)
+    # Callable = literal text: Windows paths in the tables (e.g. "\local-builds")
+    # would otherwise be parsed as regex escapes ("bad escape \l").
+    new_content, n = pattern.subn(lambda _m: replacement, content, count=1)
     if n == 0:
         print(f"[memory_map] WARNING: marker not found: {start_marker}")
     return new_content

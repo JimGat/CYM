@@ -45,6 +45,9 @@ typedef struct {const char *command,*help,*hint;int (*func)(int,char**);} esp_co
 typedef struct {int dummy;} usb_serial_jtag_driver_config_t;
 #define ESP_CONSOLE_CONFIG_DEFAULT() {0}
 #define USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT() {0}
+/* FSD extension boundary is exercised separately against real LVGL. */
+static void cym_fsd_register(void){}
+static void cym_fsd_unregister(void){}
 static int fail,borrowed,installed,uninstalled,opened,closed,parser,registered,dynamic_tasks,static_tasks,route;
 static void logline(const char *tag,const char *fmt,...){(void)tag;va_list ap;va_start(ap,fmt);vprintf(fmt,ap);puts("");va_end(ap);}
 #define ESP_LOGI logline
