@@ -36,16 +36,16 @@ size_t audio_rta_board_bytes(void){return sizeof(audio_rta_board_t);}
 esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){assert(bus&&gain==0);opens++;opened=1;b->seen=trig_calls;open_delays=delays;if(mode==2)audio_rta_controls(latest.generation,true,false,0,false);return ESP_OK;}
 esp_err_t audio_rta_board_gain(audio_rta_board_t*b,int gain){(void)b;(void)gain;return ESP_OK;}
 esp_err_t audio_rta_board_close(audio_rta_board_t*b){(void)b;opened=0;return ESP_OK;}
-esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*p,size_t cap,size_t*n){assert(cap==512);reads++;simulated_us+=1000;*n=512;for(int i=0;i<512;i++)p[i]=(i%48<24)?10000:-10000;
+esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*p,size_t cap,size_t*n,bool*discontinuity){*discontinuity=false;assert(cap==512);reads++;simulated_us+=1000;*n=512;for(int i=0;i<512;i++)p[i]=(i%48<24)?10000:-10000;
  if(reads>=200)audio_rta_stop(latest.generation);
  if(mode==4){if(reads==30)audio_rta_controls(latest.generation,true,true,0,false);if(reads==40)audio_rta_controls(latest.generation,false,true,0,false);if(reads==60)audio_rta_controls(latest.generation,false,true,6,false);}
- if(mode==5)return ESP_ERR_INVALID_STATE;
+ if(mode==5){*discontinuity=true;return ESP_OK;}
  if(mode==6)*n=0;
  if(mode==10&&reads==8){clock_hook=work_clock;yield_hook=cancel_processing;}
  if(mode>=8&&mode<10){simulated_us+=10000;if(mode==9)debug_on=false;}
  /* Model observed feedback: rebuilding transcendental tables while RX is
   * active overruns the ring again. No unconditional sleep hides starvation. */
- if(mode==1 && (first||b->seen!=trig_calls)){first=0;b->seen=trig_calls;return ESP_ERR_INVALID_STATE;}
+ if(mode==1 && (first||b->seen!=trig_calls)){first=0;b->seen=trig_calls;*discontinuity=true;return ESP_OK;}
  return ESP_OK;}
 static void cancel_on_yield(void){if(delays==cancel_at)audio_rta_stop(latest.generation);}
 int main(int argc,char**argv){assert(argc==2||argc==3);mode=atoi(argv[1]);if(argc==3)cancel_at=atoi(argv[2]);if(mode==3)yield_hook=cancel_on_yield;uint32_t g;assert(!audio_rta_start((void*)1,&g));

@@ -1,6 +1,6 @@
 # Audio RTA beta operator guide
 
-Development v3.0.24 source cycle, initially enabled only for the **Waveshare
+Development v3.0.25 source cycle, initially enabled only for the **Waveshare
 ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
 testing, not hardware-qualified acoustic instrumentation. Existing co-developer
 attribution to @birolt29 is preserved.
@@ -14,7 +14,7 @@ Do not install until the parent supplies the verified published image/hash.
 
 Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
 Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.24** before installing. Leave **Erase OFF** for a normal update.
+**WS-C5-35 / v3.0.25** before installing. Leave **Erase OFF** for a normal update.
 Do not use a different board image or double-press BOOT. No device was flashed by
 the development/verification process; owner flashing and physical checks are separate.
 
@@ -61,6 +61,40 @@ The different FFT resolutions create an intentional characterized crossover boun
 at266.70Hz +/-23.44Hz. Host tone sweeps measured up to1.8432dB adjacent-band sum
 error there; the <=1dB fidelity criterion excludes this stated boundary. Do not hide
 this with animation or interpret it as a certified third-octave instrument.
+
+## v3.0.25 capture correction and retest
+
+The C5 HWv2 default MONO configuration selects BOTH slots. The installed SDK HAL
+reduces that selection to one TX DMA slot, but leaves both RX slots enabled.
+RX therefore admits two words per LRCLK into a mono-sized DMA ring while the
+silent-TX-paced reader drains one. This slot mismatch produces continuous gaps;
+the existing safety logic rejects those batches before usable analysis windows form.
+The adapter now explicitly selects the ES8311 LEFT ADC slot for RX. TX clocking,
+DMA ring size, task priority, internal stack, codec gain and the DSP remain unchanged.
+
+The regression compiles production adapter/session/DSP together with the installed
+SDK's actual default macro, HAL/LL slot selection, I2S callbacks and read/write bodies.
+Using C5 TRM section35.10.1.1 for enabled-slot FIFO admission, the old configuration
+fails with continuous overflows and no valid spectrum. The corrected configuration
+passes the same startup/phase/scheduler-gap matrix and produces the known synthetic
+1kHz band, measured nonzero PCM RMS/peak, and all24 valid bands after fresh warmup.
+This is a source-grounded timing reproduction, not a physical C5 timing measurement.
+
+DMA discontinuity is also separate from the I2S driver return code. Genuine driver
+invalid-state/read failures terminate safely rather than being retried as lost PCM.
+Real gaps still discard the affected batch, clear live validity and require fresh
+contiguous windows; Frozen holds its captured display until Resume.
+
+First retest with `debug on` through primary USB-C, then repeat with `debug off`.
+Use speech/music, then known external tones. Expect advancing `sequence`, `frames`
+and `history_samples`, non-default RMS, and `valid=ffffff` after uninterrupted bass
+warmup. An isolated startup gap may recover; overruns increasing with every read,
+permanent zero history or a stationary marker are failures, not valid silence.
+Check high bands before bass warmup, Freeze/Resume, Gain, Back/Home, immediate reopen,
+both menus/orientations, settled cycles and the soak below. Capture complete
+AUDIO_RTA diagnostics if any failure persists; do not log raw PCM or private payloads.
+Physical microphone response, frequency accuracy, throughput and leak-free teardown
+remain owner-bench acceptance gates, not claims established by the host harness.
 
 ## Failures and cleanup
 
@@ -175,7 +209,7 @@ points, check cancellation before I2S acquisition, and verify history reset agai
 fresh numerical initialization. Those tests do not measure target CPU load, actual
 microphone input, display response, power use or physical teardown reliability.
 
-## v3.0.24 scoped responsiveness repair
+## v3.0.25 scoped responsiveness repair
 
 The owner's v3.0.23 capture showed approximately 2.69 UI handler calls/second and
 99.2% handler wall occupancy, including worker preemption. Audio initialization

@@ -20,12 +20,14 @@ typedef struct channel{int on;}*i2s_chan_handle_t;
 typedef struct{int dummy;}i2s_event_data_t;
 typedef struct{bool(*on_recv_q_ovf)(i2s_chan_handle_t,i2s_event_data_t*,void*);}i2s_event_callbacks_t;
 typedef struct{int dma_desc_num,dma_frame_num;bool auto_clear;}i2s_chan_config_t;
-typedef struct{struct{int sample_rate_hz;}clk_cfg;struct{int bits,mode;}slot_cfg;struct{int mclk,bclk,ws,dout,din;}gpio_cfg;}i2s_std_config_t;
+typedef struct{struct{int sample_rate_hz;}clk_cfg;struct{int bits,mode,slot_mask;}slot_cfg;struct{int mclk,bclk,ws,dout,din;}gpio_cfg;}i2s_std_config_t;
 #define I2S_CHANNEL_DEFAULT_CONFIG(a,b) {0}
 #define I2S_NUM_0 0
 #define I2S_ROLE_MASTER 1
 #define I2S_STD_CLK_DEFAULT_CONFIG(n) {n}
-#define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(a,b) {a,b}
+#define I2S_STD_SLOT_LEFT 1
+#define I2S_STD_SLOT_BOTH 3
+#define I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(a,b) {a,b,I2S_STD_SLOT_BOTH}
 #define I2S_DATA_BIT_WIDTH_16BIT 16
 #define I2S_SLOT_MODE_MONO 1
 #define I2S_GPIO_UNUSED -1
@@ -58,13 +60,14 @@ esp_err_t i2c_master_transmit_receive(i2c_master_dev_handle_t,const uint8_t*,siz
 #include <string.h>
 #include "audio_rta_board.c"
 static int calls,fail_at,live_channels,live_dev,io_calls,partial,odd,read_error,fail_codec_alloc;
+static i2s_chan_handle_t tx_handle;
 static uint8_t regs[256];static i2s_event_callbacks_t events;static void*event_arg;
 static int gate(void){return ++calls==fail_at?ESP_FAIL:0;}
 void*__real_calloc(size_t,size_t);
 void*__wrap_calloc(size_t n,size_t z){if(fail_codec_alloc&&live_dev){fail_codec_alloc=0;return NULL;}return __real_calloc(n,z);}
 int audio_codec_delete_codec_if(const audio_codec_if_t*c){int e=c->close(c);free((void*)c);return e;}
-esp_err_t i2s_new_channel(const i2s_chan_config_t*c,i2s_chan_handle_t*tx,i2s_chan_handle_t*rx){assert(c->dma_desc_num==4&&c->dma_frame_num==256&&c->auto_clear);if(gate())return ESP_FAIL;*tx=calloc(1,sizeof(**tx));*rx=calloc(1,sizeof(**rx));assert(*tx&&*rx);live_channels+=2;return 0;}
-esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t h,const i2s_std_config_t*c){assert(h&&c->clk_cfg.sample_rate_hz==48000&&c->slot_cfg.bits==16&&c->slot_cfg.mode==1&&c->gpio_cfg.bclk==23&&c->gpio_cfg.ws==10&&c->gpio_cfg.dout==25&&c->gpio_cfg.din==24&&c->gpio_cfg.mclk==-1);return gate();}
+esp_err_t i2s_new_channel(const i2s_chan_config_t*c,i2s_chan_handle_t*tx,i2s_chan_handle_t*rx){assert(c->dma_desc_num==4&&c->dma_frame_num==256&&c->auto_clear);if(gate())return ESP_FAIL;*tx=calloc(1,sizeof(**tx));*rx=calloc(1,sizeof(**rx));assert(*tx&&*rx);tx_handle=*tx;live_channels+=2;return 0;}
+esp_err_t i2s_channel_init_std_mode(i2s_chan_handle_t h,const i2s_std_config_t*c){assert(h&&c->clk_cfg.sample_rate_hz==48000&&c->slot_cfg.bits==16&&c->slot_cfg.mode==1&&c->slot_cfg.slot_mask==(h==tx_handle?I2S_STD_SLOT_BOTH:I2S_STD_SLOT_LEFT)&&c->gpio_cfg.bclk==23&&c->gpio_cfg.ws==10&&c->gpio_cfg.dout==25&&c->gpio_cfg.din==24&&c->gpio_cfg.mclk==-1);return gate();}
 esp_err_t i2s_channel_register_event_callback(i2s_chan_handle_t h,const i2s_event_callbacks_t*c,void*p){assert(h);if(gate())return ESP_FAIL;events=*c;event_arg=p;return 0;}
 esp_err_t i2s_channel_enable(i2s_chan_handle_t h){if(gate())return ESP_FAIL;h->on=1;return 0;}
 esp_err_t i2s_channel_disable(i2s_chan_handle_t h){if(gate())return ESP_FAIL;h->on=0;return 0;}
@@ -80,7 +83,7 @@ int main(void){audio_rta_board_t b;memset(&b,0,sizeof(b));assert(!audio_rta_boar
  for(int k=1;k<=stages;k++){memset(regs,0,sizeof(regs));memset(&b,0,sizeof(b));calls=io_calls=0;fail_at=k;assert(audio_rta_board_open(&b,(void*)1,0)!=0);if(k==1)assert(!io_calls);cleanup(&b);}
  calls=0;fail_at=0;fail_codec_alloc=1;memset(&b,0,sizeof(b));assert(audio_rta_board_open(&b,(void*)1,0));cleanup(&b);
  calls=0;fail_at=0;memset(&b,0,sizeof(b));assert(!audio_rta_board_open(&b,(void*)1,0));for(int gain=0;gain<=42;gain+=6){assert(!audio_rta_board_gain(&b,gain));assert(regs[0x16]==gain/6);}assert(audio_rta_board_gain(&b,7));
- int16_t pcm[512];size_t n;partial=1;assert(!audio_rta_board_read(&b,pcm,512,&n)&&n==63);odd=1;assert(audio_rta_board_read(&b,pcm,512,&n));odd=partial=0;events.on_recv_q_ovf(b.rx,NULL,event_arg);assert(audio_rta_board_read(&b,pcm,512,&n)==ESP_ERR_INVALID_STATE);read_error=ESP_ERR_TIMEOUT;assert(audio_rta_board_read(&b,pcm,512,&n)==ESP_ERR_TIMEOUT);read_error=0;cleanup(&b);
+ int16_t pcm[512];size_t n;bool discontinuity;partial=1;assert(!audio_rta_board_read(&b,pcm,512,&n,&discontinuity)&&n==63);odd=1;assert(audio_rta_board_read(&b,pcm,512,&n,&discontinuity));odd=partial=0;events.on_recv_q_ovf(b.rx,NULL,event_arg);assert(audio_rta_board_read(&b,pcm,512,&n,&discontinuity)==ESP_OK&&discontinuity);read_error=ESP_ERR_INVALID_STATE;assert(audio_rta_board_read(&b,pcm,512,&n,&discontinuity)==ESP_ERR_INVALID_STATE&&!discontinuity);read_error=ESP_ERR_TIMEOUT;assert(audio_rta_board_read(&b,pcm,512,&n,&discontinuity)==ESP_ERR_TIMEOUT);read_error=0;cleanup(&b);
  /* Every close-stage failure retains its live handle and succeeds on retry. */
  calls=0;memset(&b,0,sizeof(b));assert(!audio_rta_board_open(&b,(void*)1,0));calls=0;assert(!audio_rta_board_close(&b));int close_stages=calls;
  for(int k=1;k<=close_stages;k++){calls=0;fail_at=0;memset(&b,0,sizeof(b));assert(!audio_rta_board_open(&b,(void*)1,0));calls=0;fail_at=k;audio_rta_board_close(&b);cleanup(&b);}

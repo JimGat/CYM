@@ -62,6 +62,10 @@ esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){
  .slot_cfg=I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,I2S_SLOT_MODE_MONO),
  .gpio_cfg={.mclk=I2S_GPIO_UNUSED,.bclk=23,.ws=10,.dout=25,.din=24}};
  if((e=i2s_channel_init_std_mode(b->tx,&cfg)))return e;
+ /* C5 HWv2 maps MONO+BOTH to one TX DMA slot, but RX enables both
+  * slots. Select the ES8311 left ADC slot explicitly: one sample/LRCLK,
+  * matching the mono DMA allocation and DSP's 48 kHz timebase. */
+ cfg.slot_cfg.slot_mask=I2S_STD_SLOT_LEFT;
  if((e=i2s_channel_init_std_mode(b->rx,&cfg)))return e;
  i2s_event_callbacks_t cb={.on_recv_q_ovf=rx_overflow};
  if((e=i2s_channel_register_event_callback(b->rx,&cb,b)))return e;
@@ -87,14 +91,16 @@ esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){
  !reg_is(b,0x14,0xff,0x1a)||!reg_is(b,0x17,0xff,0xbf)||!reg_is(b,0x31,0x60,0x60)||!reg_is(b,0x44,0xff,8))return ESP_FAIL;
  return ESP_OK;
 }
-esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*pcm,size_t cap,size_t*count){
- *count=0;size_t n=cap>512?512:cap,bytes=0,written=0;
+esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*pcm,size_t cap,size_t*count,bool*discontinuity){
+ *discontinuity=false;*count=0;size_t n=cap>512?512:cap,bytes=0,written=0;
  esp_err_t e=i2s_channel_write(b->tx,silence,n*2,&written,20);
- if(e||written!=n*2)return ESP_FAIL;
+ if(e)return e;
+ if(written!=n*2)return ESP_FAIL;
  e=i2s_channel_read(b->rx,pcm,n*2,&bytes,20);
  if(bytes%2)return ESP_FAIL;
  *count=bytes/2;
- if(__atomic_exchange_n(&b->overruns,0,__ATOMIC_RELAXED))return ESP_ERR_INVALID_STATE;
+ /* Preserve the real SDK error even when a queue overflow occurred too. */
+ *discontinuity=__atomic_exchange_n(&b->overruns,0,__ATOMIC_RELAXED)!=0;
  return e;
 }
 /* Only the detached session worker calls close. Keep any failed handle live and

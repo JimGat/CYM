@@ -62,7 +62,7 @@ static atomic_int open_fail,read_mode,gain_fail,delay_close,slow_start,close_cal
 size_t audio_rta_board_bytes(void){return sizeof(audio_rta_board_t);}
 esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){assert(bus&&gain==0);if(slow_start)usleep(30000);if(open_fail)return ESP_FAIL;b->opened=1;return ESP_OK;}
 esp_err_t audio_rta_board_gain(audio_rta_board_t*b,int gain){assert(b->opened&&gain>=0&&gain<=42);return gain_fail?ESP_FAIL:ESP_OK;}
-esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*pcm,size_t cap,size_t*n){assert(b->opened&&cap==512);usleep(2000);int mode=atomic_exchange(&read_mode,0);*n=mode==1?127:512;for(unsigned i=0;i<*n;i++)pcm[i]=(int16_t)(10000*sin(2*3.141592653589793*i/48));if(mode==2)return ESP_ERR_INVALID_STATE;if(mode==3){*n=0;return ESP_ERR_TIMEOUT;}if(mode==4)return ESP_FAIL;return mode==1?ESP_ERR_TIMEOUT:ESP_OK;}
+esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*pcm,size_t cap,size_t*n,bool*discontinuity){*discontinuity=false;assert(b->opened&&cap==512);usleep(2000);int mode=atomic_exchange(&read_mode,0);*n=mode==1?127:512;for(unsigned i=0;i<*n;i++)pcm[i]=(int16_t)(10000*sin(2*3.141592653589793*i/48));if(mode==2){*discontinuity=true;return ESP_OK;}if(mode==3){*n=0;return ESP_ERR_TIMEOUT;}if(mode==4)return ESP_FAIL;return mode==1?ESP_ERR_TIMEOUT:ESP_OK;}
 esp_err_t audio_rta_board_close(audio_rta_board_t*b){close_calls++;if(delay_close){delay_close--;return ESP_FAIL;}b->opened=0;return ESP_OK;}
 static uint32_t start(void){uint32_t g;assert(!audio_rta_start((void*)1,&g));assert(task_stack_bytes==6144);return g;}
 static void settle(void){for(int i=0;i<3000;i++){if(audio_rta_closed()&&!live_tasks){assert(!live_alloc);return;}usleep(1000);}assert(!"cleanup timeout");}

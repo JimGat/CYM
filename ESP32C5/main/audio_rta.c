@@ -125,18 +125,21 @@ static void session_worker(void *arg){
   if(reset)audio_rta_dsp_reset_peaks(c->dsp);
   audio_rta_dsp_slow(c->dsp,slow);
   int64_t read_start=esp_timer_get_time();
-  size_t count=0;int rc=audio_rta_board_read(c->board,c->pcm,512,&count);
+  bool discontinuity=false;
+  size_t count=0;int rc=audio_rta_board_read(c->board,c->pcm,512,&count,&discontinuity);
   uint32_t read_elapsed=(uint32_t)(esp_timer_get_time()-read_start);
   portENTER_CRITICAL(&mux);latest.read_calls++;latest.input_samples+=count;latest.read_us+=read_elapsed;
   if(read_elapsed>latest.max_read_us)latest.max_read_us=read_elapsed;
   portEXIT_CRITICAL(&mux);
   if(stopping(c)){record_work(c,work_start);break;}
-  if(rc==ESP_ERR_INVALID_STATE){
+  /* A driver failure is terminal, even if an ISR also reported lost data.
+   * Only an otherwise successful/partial-timeout read may recover as a gap. */
+  if(rc!=ESP_OK&&rc!=ESP_ERR_TIMEOUT){error=rc;record_work(c,work_start);break;}
+  if(discontinuity){
    reset_history(c,frozen);
    portENTER_CRITICAL(&mux);latest.overruns++;if(frozen)latest.state=RTA_FROZEN;portEXIT_CRITICAL(&mux);
    record_work(c,work_start);continue;
   }
-  if(rc!=ESP_OK&&rc!=ESP_ERR_TIMEOUT){error=rc;record_work(c,work_start);break;}
   if(rc==ESP_ERR_TIMEOUT&&!count){error=rc;record_work(c,work_start);break;}
   /* Keep clocking/draining while Frozen, but leave the entire displayed model
    * and peak history alone. Re-entering Live warms fresh windows. */
