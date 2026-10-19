@@ -1,7 +1,7 @@
 # Clock mDNS headroom candidate — v3.0.20 Development
 
 Status: software/build/package verified; physical repair acceptance remains OPEN.
-No Stable release or device flash is implied.
+Included unchanged in owner-approved Stable v3.0.27. No device was flashed during promotion. Physical discovery/UDP and repeated-lifecycle repair acceptance remain OPEN; v3.0.20 measurements below are historical evidence.
 
 ## Diagnosis and scope
 

@@ -1,27 +1,23 @@
 # Audio RTA beta operator guide
 
-Development v3.0.27 source cycle, initially enabled only for the **Waveshare
-ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
-testing, not hardware-qualified acoustic instrumentation. Existing co-developer
-attribution to @birolt29 is preserved.
+Stable v3.0.27, enabled only for **Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This remains experimental acoustic instrumentation, not calibrated SPL. The historical guide URL is retained. Co-developer @birolt29 credit is preserved.
 
-Independent verification passed 702 unit tests (one private-capture skip), 21 host
-runner entries, all eight board builds and 32 packaged firmware artifacts at v3.0.27.
-Source/configuration and unrelated-file preservation gates passed. Install only the
-exact published image identified by the delivery report and its downloaded hash.
-Physical acceptance remains pending; these are software/build results only.
+## Current release status and normal-use setup
 
-## Install the Development beta
+Jim confirmed Gain-modal pause works and reported much faster response with **debug OFF** on v3.0.27. The analyzed debug-enabled steady windows showed sustained acquisition with no reported overruns. These observations do not establish a measured frame rate, acoustic calibration, saved-gain reboot persistence or long-soak/leak-free cleanup.
 
-Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
-Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.27** before installing. Leave **Erase OFF** for a normal update.
-Do not use a different board image or double-press BOOT. No device was flashed by
-the development/verification process; owner flashing and physical checks are separate.
+The unchanged firmware passed eight board builds, 32 packaged-artifact checks and 702 unit tests (one expected skip), plus 20 additional host runners. [Release details](releases/v3.0.27.md).
 
-The delivery report supplies the exact immutable full-image URL and downloaded
-SHA-256. A full merged image uses offset `0x0000`; the application-only image is a
-different file and must not be substituted at that offset. Stable is not changed.
+Open https://jimgat.github.io/CYM/?board=ws-c5-35 in Chrome/Edge; select **Stable**, confirm **WS-C5-35 / v3.0.27**, and use the primary USB-C data port. For a normal update with matching partitions, choose **Quick Flash** and **Erase OFF**. A full merged image at `0x0000` can overwrite NVS even without erase-all; do not promise settings preservation from it. Do not double-press BOOT.
+
+At 115200 baud:
+
+    debug off
+    Debug OFF persisted; applied immediately
+    debug status
+    Debug OFF
+
+Missing `settings/debug_diag` defaults OFF; saved ON remains ON after upgrade. Persistence errors leave runtime state unchanged. Debug OFF disables optional diagnostics, not every boot message or generic long-render warning. Enable debug only for bounded troubleshooting, then turn it OFF again. No firmware behavior was changed for promotion.
 
 ## Open and exit
 
@@ -138,7 +134,7 @@ console output stay local and may contain privacy-sensitive existing application
 No hardware was connected for implementation validation, so these are bench procedures,
 not a claimed run. FSD does not qualify signal fidelity or leaked DMA by itself.
 
-## Mandatory physical beta bench (parent/operator)
+## Remaining physical qualification checklist
 
 Record version, debug ON/OFF, menu, orientation and source/microphone limitations.
 1. Both menus x all4 rotations: real microphone tile, all4 controls>=44px, readable
@@ -156,11 +152,7 @@ Record version, debug ON/OFF, menu, orientation and source/microphone limitation
 6. After exit verify Clock AP/mDNS, NTP-first/Client time, GPS GPIO28/RTC, unchanged
    SD20MHz, display/touch, QR camera, existing audio and radio/background services.
 
-The approved delivery sequence is independent software/build review, Dev beta
-publication, then owner bench qualification. These physical checks remain mandatory
-before hardware acceptance or any Stable-promotion decision; publication of a test
-beta does not establish working microphone input, acoustic calibration, no-leak
-teardown or CPU performance.
+The owner authorized Stable promotion after v3.0.27 Gain-pause and debug-off response tests. The remaining checklist still defines unqualified behavior; publication does not establish acoustic calibration, no-leak teardown or CPU/FPS guarantees. Correction/retest sections below are historical evidence, not instructions to install older firmware.
 
 ## v3.0.22 crash correction and first retest
 

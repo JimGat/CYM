@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v3.0.0</b>
+  <b>v3.0.27</b>
 </p>
 
 <p align="center">
@@ -33,40 +33,26 @@
 
 ---
 
-## Development Clock mDNS headroom candidate (v3.0.20)
+## Stable v3.0.27 — Audio RTA, QR Decoder and USB UI control
 
-A narrow task-data placement correction frees 5120 linked internal bytes on
-PSRAM boards without changing the mDNS stack, display buffers or feature
-availability. Physical AP discovery/UDP and repeated lifecycle acceptance remain
-open. [Evidence, scope and bench checks](docs/operators/clock-mdns-headroom-v3.0.20.md).
-Stable is unchanged; this is not a hardware-fix acceptance claim.
+[Release and all-board downloads](https://github.com/JimGat/CYM/releases/tag/v3.0.27) · [Full release notes](docs/releases/v3.0.27.md) · [Live Wiki](https://github.com/JimGat/CYM/wiki)
 
-## Development USB UI control (v3.0.19)
+The Stable Web Flasher installs **v3.0.27** on all six release boards. Pancake-C5 and WS-S3-5B remain Development-only experimental targets. This promotes the tested Development images unchanged; the v3.0.0 release/v3.0.7 refresh remains a historical download.
 
-Normal console-capable Development firmware includes the FSD USB UI driver and
-one maintained [PC operator script](tools/fsd.py), contributed by co-developer
-**@birolt29** and reconciled for owned UI requests and strict capture validation.
-[Install, explicit USB-C/115200 ports, safe menu-only runs, manual commands,
-artifacts, board limits and pending hardware checks](docs/operators/fsd-usb-ui.md).
-Classic CYD and HackerBox remain console-none: no FSD. Manual commands can start
-radio tools; only reviewed PC menu routes are automated. GPS/NMEA passthrough is
-not implemented. This is Development documentation, not a Stable refresh claim.
+- **WS-C5-35 Audio RTA:** 24-band dBFS spectrum, RMS/peak, Fast/Slow, Freeze/Resume, Reset Peaks and saved 0–42 dB gain (24 dB when no valid gain is saved). Gain pauses analysis and preserves explicit Freeze. Jim confirmed the pause works and the display is much faster with **debug OFF**. Not calibrated SPL or a hearing-safety meter. [Controls and bench limits](docs/audio-rta-beta-operator.md).
+- **WS-C5-35 QR Decoder:** camera preview, local decode, inert result and SD JSON records; Modern Tools & System / Classic Home. [Current operator guide](docs/operators/ws35-qr.md).
+- **FSD USB UI control:** co-developer **@birolt29**'s maintained tooling with bounded reviewed routes, screenshots and UI inspection. Console-capable firmware only; Classic/HackerBox remain console-none. Primary USB-C at 115200; manual commands can activate radio tools. [Operator manual](docs/operators/fsd-usb-ui.md).
+- **Wi-Fi scan exit/rebuild:** @birolt29's patch plus retired-scan completion ownership checks. New scans wait for old results to drain; host regression coverage is not full RF qualification.
+- **Clock/memory/console reliability:** preserves internal mDNS stack, NTP-first order, GPS/RTC and existing background services. [Memory scope and pending discovery/NTP checks](docs/operators/clock-mdns-headroom-v3.0.20.md).
+- **Official cases:** @birolt29's six-package collection includes NM-RF-HAT designs, photos and EN/DE/TR manuals. [Collection](docs/cases/birolt29/README.md).
 
-## WS-C5-35 Go Dark recovery — included in Stable v3.0.7
+**Normal use:** `debug off`, then `debug status` → `Debug OFF`. Missing NVS debug settings default OFF; previously saved ON survives upgrades. Debug OFF does not silence every boot/warning message. Use **Quick Flash**, matching existing partitions and **Erase OFF** for routine settings-preserving updates; a merged full image can overwrite NVS even without erase-all.
 
-Stable v3.0.7 includes the v3.0.3 correction for raw FT6336 touch polling for the
-**Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35)** five-second Go Dark wake.
-Wake instructions advertise BOOT only when the board profile provides an
-application BOOT input. WS-C5-35 remains touch-wake-only: GPIO28 stays GPS RX,
-not a wake button. Release the wake finger before operating the restored UI.
-Stable and the existing v3.0.0 release now provide v3.0.7.
-[Operator checks and evidence limits](docs/testing/go-dark-v3.0.3.md).
+Audio RTA/QR remain WS-C5-35-only. Saved-gain reboot, long-soak, repeated cleanup, scan-exit and other-board peripheral checks remain explicit limits. See [verification/limits](docs/releases/v3.0.27.md#verification-and-honest-limits).
 
-## v3.0.0 milestone release
+## Earlier v3.0.0 milestone
 
-**Firmware refresh:** the existing [v3.0.0 release](https://github.com/JimGat/CYM/releases/tag/v3.0.0) now provides **v3.0.7** firmware. Stable Web Flasher installs v3.0.7 with focused memory-pressure corrections, Classic/HackerBox orientation, checked SD provisioning with or without PSRAM, and WS-C5-35 touch-only Go Dark recovery. The announcement URL, original tag and asset filenames are retained. Co-developer **@birolt29** retains credit for Patches #10 and #11. [Refresh details and qualification limits](docs/releases/v3.0.0.md).
-
-GPS-disciplined off-grid radio Clock, expanded board support, official printable cases by co-developer **@birolt29**, and focused tool and reliability improvements. [Read the release highlights](docs/releases/v3.0.0.md).
+GPS-disciplined off-grid radio Clock, expanded board support, and official cases by co-developer **@birolt29**. The [v3.0.0 release history](docs/releases/v3.0.0.md) retains its original tag and v3.0.7 refresh provenance; the current release is v3.0.27.
 
 ## Off-grid amateur radio Clock — GPS-disciplined NTP and grid square
 
@@ -136,16 +122,16 @@ Retain existing firmware target IDs (`ws-c5-28`, `ws-c5-35`), filenames and boar
 
 ## Supported Hardware
 
-CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in the normal board selector after owner display/touch, battery-telemetry, RTC-holdover and GPIO28 GPS LOCK tests; v3.0.0 is available through the Stable channel. Pancake-C5 remains **Development channel only; not stable** and opt-in with `?beta=1`. Hardware capability and qualification remain board-specific.
+CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in the normal board selector after owner display/touch, battery-telemetry, RTC-holdover and GPIO28 GPS LOCK tests; v3.0.27 is available through the Stable channel. Pancake-C5 remains **Development channel only; not stable** and opt-in with `?beta=1`. Hardware capability and qualification remain board-specific.
 
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P3 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Programming/JTAG debugging stays on the primary USB-C; the second Micro-USB/P3 UART path is GPS-only and carries no CYM logs. No 802.15.4. [Screen Orientation](#screen-orientation) is included in Stable v3.0.7 (introduced in v3.0.4) via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P3 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Programming/JTAG debugging stays on the primary USB-C; the second Micro-USB/P3 UART path is GPS-only and carries no CYM logs. No 802.15.4. [Screen Orientation](#screen-orientation) is included in Stable v3.0.27 (introduced in v3.0.4) via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Its header now shows a 10-second, voltage-estimated battery percentage from the CH32V003 EXIO_ADC path; `FULL` means VBAT is at least 4.15 V, not that charger completion was detected. |
 | **[C5Lab Pancake DIY](https://github.com/C5Lab/pancake)** (`pancake-c5`) | 🧪 **Development channel only; not stable; remote hardware qualification pending** | ESP32-C5 with a 3.5-inch 480×320 display, FT6336U capacitive touch, microSD, WS2812, battery sensing, and optional UART GPS wiring. Available only through the development channel (`?beta=1`); dedicated to D3h420, Janek, and OyczE. |
-| **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for v3.0.7. Camera/IMU remain unqualified; peripheral qualification is capability-specific. |
-| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.7** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. Jim accepted the Development v3.0.4 landscape builds on both Classic CYD and HackerBox; no additional heap measurements were reported. |
+| **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for v3.0.27. Camera/IMU remain unqualified; peripheral qualification is capability-specific. |
+| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.27** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. Jim accepted the Development v3.0.4 landscape builds on both Classic CYD and HackerBox; no additional heap measurements were reported. |
 | **Waveshare ESP32-S3-Touch-LCD-5B** (`ws-s3-5b`) | 🧪 **Development channel only; not stable** | Experimental 1024×600 RGB display target with capacitive touch and PCF85063 RTC support. No verified GPS UART; hardware qualification pending. Opt in with `?beta=1`. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 | **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Released in v2.15.34; available in the web flasher** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi and BLE. The shared CYM application, display, orientation, colors, capacitive touch, Modern/Classic menus, and Deauth Harvest have been physically exercised. SD, RGB LED, battery voltage, external UART GPS, broader radio coverage, and bounded soak remain pending qualification. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
@@ -1866,7 +1852,7 @@ The live dashboard shows:
 **Go Dark** — available from the title bar power icon. The display and status LED turn off while background operations continue.
 
 **Waking from Go Dark:**
-- **Touch-to-wake** — hold a finger anywhere on the screen continuously for **5 seconds**, then release before operating controls. WS-C5-35 uses the v3.0.3 correction included in Stable v3.0.7; its older v3.0.2 build omitted this wake path.
+- **Touch-to-wake** — hold a finger anywhere on the screen continuously for **5 seconds**, then release before operating controls. WS-C5-35 uses the v3.0.3 correction included in Stable v3.0.27; its older v3.0.2 build omitted this wake path.
 - **BOOT, only on profiles with an application BOOT input** — double-click BOOT or hold it for 2 seconds. **Not available on WS-C5-35 or WS-S3-5B.** WS-C5-35 GPIO28 is GPS RX: do not press BOOT as a wake workaround, particularly with a GPS transmitter connected.
 
 #### Mark Button — GPS Waypoints
@@ -2032,7 +2018,7 @@ Settings
 ├── Screen              (screen timeout + brightness + orientation — combined popup)
 │   ├── Timeout         (inactivity timer before dimming)
 │   ├── Brightness      (software brightness overlay 10–100%)
-│   └── Orientation     (0/90/180/270° — NM-CYD-C5, WS-C5-28/35; Classic + HackerBox included in Stable v3.0.7, reboots to apply)
+│   └── Orientation     (0/90/180/270° — NM-CYD-C5, WS-C5-28/35; Classic + HackerBox included in Stable v3.0.27, reboots to apply)
 ├── SD Card             (provision / file tree / free space)
 ├── GPS Info            (live fix status)
 ├── Hardware Options    ← hardware addon configuration
@@ -2049,7 +2035,7 @@ All settings are persisted via **NVS** (Non-Volatile Storage) across reboots. Th
 | Setting | Description |
 |---------|-------------|
 | **Timing** | Combined timing popup — WiFi scan dwell time sliders, BT scan duration slider (10–30 s), and GATT connect timeout slider |
-| **Screen** | Combined screen popup — inactivity timeout dropdown, brightness overlay slider, and (NM-CYD-C5, WS-C5-28/35; Classic + HackerBox included in Stable v3.0.7) screen **Orientation** — 0°/90°/180°/270°, NVS-persisted, applied via LVGL software rotation on reboot. See [Screen Orientation](#screen-orientation) below. |
+| **Screen** | Combined screen popup — inactivity timeout dropdown, brightness overlay slider, and (NM-CYD-C5, WS-C5-28/35; Classic + HackerBox included in Stable v3.0.27) screen **Orientation** — 0°/90°/180°/270°, NVS-persisted, applied via LVGL software rotation on reboot. See [Screen Orientation](#screen-orientation) below. |
 | **SD Card** | Validate/provision (creates `/sdcard/lab/` structure, shows completion status); browse file tree; check free space |
 | **GPS Info** | Live GPS fix status — latitude, longitude, altitude, satellite count, UTC time, and UART reference. When no live fix, last-known coordinates are shown in amber with `*` suffix and `Accuracy: 150 m (stale)`. **Set Position** button opens manual coordinate editor (see below). Refreshes every second. |
 | **Hardware Options** | Sub-menu for hardware addon configuration — **Power Mode** (Normal / Max TX power) and **NM-RF-HAT** enable/disable toggle. NVS-persisted. |
@@ -2082,7 +2068,7 @@ The `*`-suffix values are what the device is actually using as its GPS fallback 
 
 #### Screen Orientation
 
-**Settings → Screen → Orientation** is shared by the Classic and Modern menu layouts (Modern: Tools → Settings). NM-CYD-C5 and Waveshare ESP32-C5-Touch-LCD-2.8/3.5 (WS-C5-28/35) retain their existing support. **Stable v3.0.7 includes the v3.0.4 Classic CYD and HackerBox-CYD support; Jim accepted both landscape builds.** Pick `0 Portrait`, `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. A changed orientation is saved to NVS and the device reboots so screens are rebuilt at the new logical dimensions. Valid saved settings are retained across updates; Classic/HackerBox default to portrait when none is saved.
+**Settings → Screen → Orientation** is shared by the Classic and Modern menu layouts (Modern: Tools → Settings). NM-CYD-C5 and Waveshare ESP32-C5-Touch-LCD-2.8/3.5 (WS-C5-28/35) retain their existing support. **Stable v3.0.27 includes the v3.0.4 Classic CYD and HackerBox-CYD support; Jim accepted both landscape builds.** Pick `0 Portrait`, `90 Landscape`, `180 Portrait flipped`, or `270 Landscape flipped`, then **Save**. A changed orientation is saved to NVS and the device reboots so screens are rebuilt at the new logical dimensions. Valid saved settings are retained across updates; Classic/HackerBox default to portrait when none is saved.
 
 Resistive XPT2046 calibration on NM-CYD-C5, Classic and HackerBox always forces native portrait for its corner targets and restores the chosen orientation on completion or timeout. Capacitive WS-C5-28/35 touch needs no such calibration. Existing board-specific panel transforms, touch calibration storage, GPS and console routing are unchanged.
 
@@ -3030,7 +3016,7 @@ Both files are optional — CYM runs without them, but OUI lookup will show `[Un
 
 The **SD Card → File Tree** utility (Settings menu) lets you browse the SD card's directory tree directly on the device — useful for confirming handshakes and wardrive logs were saved without needing to remove the card.
 
-**SD Card Provision** (Settings → SD Card → Validate & Provision; Modern: Tools → Settings) creates missing `/sdcard/lab/` directories and seed files after confirmation, preserving existing files. Success shows `Done - N created, M OK`; storage errors show `Failed`, not successful validation. Stable v3.0.7 includes the v3.0.5 implementation on no-PSRAM boards too, with checked resources and manual fallback when allocation fails. See the [v3.0.5 provisioning checklist](docs/testing/sd-no-psram-v3.0.5.md).
+**SD Card Provision** (Settings → SD Card → Validate & Provision; Modern: Tools → Settings) creates missing `/sdcard/lab/` directories and seed files after confirmation, preserving existing files. Success shows `Done - N created, M OK`; storage errors show `Failed`, not successful validation. Stable v3.0.27 includes the v3.0.5 implementation on no-PSRAM boards too, with checked resources and manual fallback when allocation fails. See the [v3.0.5 provisioning checklist](docs/testing/sd-no-psram-v3.0.5.md).
 
 ---
 
@@ -3397,7 +3383,7 @@ Full operating details and accuracy grid: [`docs/hardware/universal-clock.md`](d
 
 ## Pancake-C5 DIY development channel (not stable)
 
-CYM now has a dedicated fifth board profile for the [C5Lab Pancake DIY](https://github.com/C5Lab/pancake), using the pinned reference display/touch transform and pin map in one shared firmware source tree.[1] The target is hidden from the normal selector and appears with `?beta=1` until remote hardware validation is complete.
+CYM now has a dedicated experimental board profile for the [C5Lab Pancake DIY](https://github.com/C5Lab/pancake), using the pinned reference display/touch transform and pin map in one shared firmware source tree.[1] The target is hidden from the normal selector and appears with `?beta=1` until remote hardware validation is complete.
 
 This development-channel build is **not stable** and is dedicated to **D3h420, Janek, and OyczE** in recognition of their inspiration, hardware work, and community contributions. The original Pancake concept also helped inspire CYM on the NM-CYD-C5.
 
@@ -3408,17 +3394,6 @@ Sources:
 [2] https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf — NXP PCF85063A data sheet
 [3] https://wsjt.sourceforge.io/wsjtx-doc/wsjtx-main.html — WSJT-X User Guide
 [4] https://docs.waveshare.com/ESP32-C5-Touch-LCD-2.8 — Waveshare ESP32-C5-Touch-LCD-2.8 documentation
-
-### WS after-hours development beta
-
-Development v2.15.80 preserves a five-Hardware-tap PinZero LABS selector on WS-C5-28/35.
-Enabled engine uses consumed one-shot same-image restart, not live radio/tool takeover;
-busy SD owners refused. SFX only. Arduboy is disabled COMING SOON, not an emulator.
-CYM config preserved; no partition/OTA changes. Adds visible loading phases/hash progress,
-reliable completion-owned game display transfers and interval performance diagnostics.
-Audible speaker output and physical responsiveness remain qualification checks.
-See [operator/recovery manual](docs/ws-c5-game-beta.md).
-Host/build gates are not physical speaker/touch qualification or publication.
 
 Shared development metadata integration: original fingerprint/filenames preserved;
 GATT Device Name preferred, advertised fallback, readable manufacturer/model; full
@@ -3461,7 +3436,7 @@ leave partial work, so inspect the card rather than assuming it was untouched.
 Manual fallback: copy the contents of `sdcard/` from
 [CYM-SD-Assets](https://github.com/JimGat/CYM-SD-Assets) to the card root, preserving
 existing user files. Firmware provisioning seeds folders/configuration; it does
-not download the complete external asset collection. This v3.0.5 work is included in Stable v3.0.7.
+not download the complete external asset collection. This v3.0.5 work is included in Stable v3.0.27.
 The new provisioning lifecycle still needs exact-v3.0.5 physical heap/high-water,
 repeat-run and low-memory checks; prior v3.0.4 landscape acceptance is not that
 qualification. See [operator checks](docs/testing/sd-no-psram-v3.0.5.md).
@@ -3474,11 +3449,11 @@ for Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35) investigation, with the shared
 Waveshare ESP32-C5-Touch-LCD-2.8 (WS-C5-28) path available for comparison.
 This is instrumentation, not a verified correction or new hardware qualification.
 Allocation sizes, task stacks/priorities, audio settings and storage speed are unchanged.
-The instrumentation is included in Stable v3.0.7.
+The instrumentation is included in Stable v3.0.27.
 [Diagnostic operator checks](docs/testing/startup-memory-v3.0.6.md).
 
 
-## v3.0.7 Stable: startup memory allocation
+## Earlier v3.0.7: startup memory allocation (retained in v3.0.27)
 
 Moves copied task-only payload storage into explicit PSRAM on Waveshare
 ESP32-C5-Touch-LCD-2.8 (WS-C5-28) and Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35).
@@ -3486,5 +3461,5 @@ Internal control metadata and actual DMA buffers stay internal. Queue capacity,
 worker stack/priority, peripheral settings and storage speed are unchanged.
 Adds bounded failed-seek diagnostics. Jim confirmed the WS-C5-35 startup repair
 on hardware. This does not qualify every peripheral, repeated restart/exit,
-extended soak or the matching WS-C5-28 workflow. Stable is v3.0.7.
+extended soak or the matching WS-C5-28 workflow. Current Stable is v3.0.27.
 [Operator checks](docs/testing/startup-memory-v3.0.7.md).

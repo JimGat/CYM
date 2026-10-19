@@ -1,5 +1,7 @@
 # FSD remote USB UI — Development v3.0.19
 
+**Current release:** included in Stable v3.0.27 on console-capable release boards. The maintained PC script still reports 3.0.19 (script version, not firmware version). Development references below describe its introduction; physical/native-Windows acceptance limits remain unchanged.
+
 FSD is included in **normal console-capable Development firmware**, not a separate
 test image. Co-developer **[@birolt29](https://github.com/birolt29)** contributed
 Patches #13 (Windows builds), #14 (Back navigation) and #15 (FSD and PC driver).
