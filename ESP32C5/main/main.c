@@ -28508,6 +28508,20 @@ static void hw_options_tile_event_cb_measured(lv_event_t *e)
 
 
 #if defined(CONFIG_BOARD_CYD2USB)
+/* Only this popup and its Hardware entry: opaque CYM blue actions with
+ * contrasting text in both palettes, independent of inherited LVGL theme. */
+static void classic_usb_style_action(lv_obj_t *button, lv_obj_t *label)
+{
+    lv_obj_set_style_bg_color(button, ui_accent_color(), LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(button, lv_color_lighten(ui_accent_color(), 30), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(button, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(button, 4, 0);
+    lv_obj_set_style_text_color(label, dark_mode_enabled ? COLOR_DARK_BG : lv_color_white(), 0);
+    lv_obj_set_style_text_opa(label, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(label, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+}
 static lv_obj_t *s_classic_usb_popup, *s_classic_usb_popup_status;
 static lv_obj_t *s_hardware_classic_status;
 static void classic_usb_popup_close(void)
@@ -28570,12 +28584,18 @@ static void show_classic_usb_popup(void)
     lv_obj_t *warning = lv_label_create(s_classic_usb_popup);
     lv_obj_set_width(warning, lv_pct(100));
     lv_label_set_long_mode(warning, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(warning, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(warning, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(warning, ui_text_color(), 0);
+    lv_obj_set_style_text_opa(warning, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(warning, LV_OPA_COVER, 0);
     lv_label_set_text(warning, "Classic USB Debug" "\nWARNING: Physically disconnect GPS BEFORE enabling.\nA powered GPS TX can contend on GPIO1 even if firmware GPS is disabled.\nLogs use UART0 TX GPIO1 via USB-UART bridge, 115200 8N1.\nVolatile: OFF each boot. No early boot, ROM or panic capture promised.\nBack/Close preserves this explicit mode. Return normal reboots; keep GPS unplugged until power off.");
     s_classic_usb_popup_status = lv_label_create(s_classic_usb_popup);
     lv_obj_set_width(s_classic_usb_popup_status, lv_pct(100));
     lv_label_set_long_mode(s_classic_usb_popup_status, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(s_classic_usb_popup_status, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(s_classic_usb_popup_status, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(s_classic_usb_popup_status, ui_text_color(), 0);
+    lv_obj_set_style_text_opa(s_classic_usb_popup_status, LV_OPA_COVER, 0);
+    lv_obj_set_style_opa(s_classic_usb_popup_status, LV_OPA_COVER, 0);
     lv_label_set_text(s_classic_usb_popup_status, cym_classic_usb_status());
     const char *labels[] = {"I disconnected GPS - Enable", "Return normal / Reboot", "Cancel / Close"};
     lv_event_cb_t callbacks[] = {classic_usb_enable_event, classic_usb_reboot_event, classic_usb_cancel};
@@ -28586,7 +28606,7 @@ static void show_classic_usb_popup(void)
         lv_obj_t *label = lv_label_create(button);
         lv_obj_set_width(label, lv_pct(100));
         lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-        lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+        classic_usb_style_action(button, label);
         lv_label_set_text(label, labels[i]);
         lv_obj_center(label);
     }
@@ -28664,7 +28684,7 @@ static void show_hardware_options_screen_measured(void)
     lv_obj_t *usb_label = lv_label_create(usb_button);
     lv_obj_set_width(usb_label, lv_pct(100));
     lv_label_set_long_mode(usb_label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_font(usb_label, &lv_font_montserrat_12, 0);
+    classic_usb_style_action(usb_button, usb_label);
     s_hardware_classic_status = usb_label;
     lv_label_set_text(usb_label, cym_classic_usb_status());
     lv_obj_center(usb_label);

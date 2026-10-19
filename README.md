@@ -33,9 +33,9 @@
 
 ---
 
-## Development v3.0.28 — Classic USB Debug
+## Development v3.0.29 — Classic USB Debug readability
 
-Separate, volatile USB logging for Classic CYD and HackerBox; physically unplug GPS before acknowledging enable. Stable stays v3.0.27. [Development notes and verification limits](docs/releases/v3.0.28.md) · [Operator instructions](docs/operators/classic-usb-debug.md).
+The popup and Hardware entry now use explicit contrasting opaque text, compiled Montserrat 14 body text and CYM blue actions, with wrapping and scrolling in both orientations. Host LVGL rendering is not physical LCD acceptance. Separate, volatile USB logging for Classic CYD and HackerBox; physically unplug GPS before acknowledging enable. Stable stays v3.0.27. [Original USB Debug design notes](docs/releases/v3.0.28.md) · [Operator instructions](docs/operators/classic-usb-debug.md).
 
 ## Stable v3.0.27 — Audio RTA, QR Decoder and USB UI control
 

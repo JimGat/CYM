@@ -10,7 +10,7 @@ Applies only to Classic CYD-2432S028 and HackerBox Amberjack 0131 CYD. Hardware 
 4. Read the warning and tap **I disconnected GPS - Enable**. Cancel / Close before acknowledgement leaves normal GPS and silent application logging unchanged. Expected status: ON, 115200 8N1, GPS unavailable. The serial stream starts with an application log containing `Classic USB Debug ON` (best effort); subsequent existing application logs are forwarded. No command prompt is provided.
 5. For optional diagnostic measurements, enable **Debug diagnostics** separately in Hardware Options. That verbosity setting remains persisted across reboot; the USB Debug transport never is. Returning with Back/Home or closing the popup preserves an already acknowledged active transport. Reopening Hardware Options shows the current mode. GPS Info explicitly reports GPS unavailable; old coordinates may remain last-known/stale, never a live fix.
 
-Both the tile list and the bounded popup scroll in portrait and landscape. No new GPS task or serial REPL is started. C5/S3 native-console behavior is not changed.
+Development v3.0.29 applies explicit opaque theme text, Montserrat 14 body text and contrasting CYM blue action buttons to this popup and its Hardware entry. Both the tile list and the bounded popup scroll in portrait (240x320) and landscape (320x240); scroll down to reach acknowledgement, Return normal / Reboot and Cancel / Close. The complete safety warning remains unchanged. Host LVGL framebuffer renders cover both palettes and orientations, including enabled/error status, but do not qualify a physical LCD. No new GPS task or serial REPL is started. C5/S3 native-console behavior is not changed.
 
 ## Return to normal GPS
 
@@ -32,4 +32,10 @@ Both the tile list and the bounded popup scroll in portrait and landscape. No ne
 - Both Home layouts and both screen orientations: find entry, scroll full warning and every action, Cancel with no TX drive, acknowledge, close, Back/Home and re-enter with correct state. Watch for stale UI pointers or timers.
 - With GPS disconnected, scope GPIO1 and capture bridge logs at 115200; verify no runtime TX before acknowledgement, bounded output under load, debug verbosity separate, and GPS consumers/status/rate/baud/detection blocked while active.
 - Exercise explicit shutdown, reboot and OFF default; scope TX release before restart and power off before reconnecting GPS. Repeat normal/enable/disable/reboot cycles, plus resource/setup failure paths where safely injectable.
-- Development v3.0.28 software gates passed: all eight board builds, 32 packaged artifacts, 708 unit tests (one expected skip) and 20 standalone regression runners. Compilation and host tests do not establish electrical safety, bridge routing, boot reliability, RF/SD coexistence or hardware acceptance.
+- Previous Development v3.0.28 software gates passed: all eight board builds, 32 packaged artifacts, 708 unit tests (one expected skip) and 20 standalone regression runners. Compilation and host tests do not establish electrical safety, bridge routing, boot reliability, RF/SD coexistence or hardware acceptance.
+
+## Development v3.0.29 verification
+
+All eight board builds and 32 packaged artifacts passed verification. The final host suite passed 708 tests with one expected skip; 20 standalone regression runners passed. Production LVGL host renders reproduce the former dark-theme contrast failure and verify the corrected text/buttons in both themes and orientations. Physical LCD/touch and USB/GPS acceptance remain pending.
+
+On the owner-tested dual-socket board, both USB-C and Micro-USB programmed successfully; connecting both caused connectivity loss, not a second independent port. Use one cable at a time, preferably USB-C. This observation does not establish the exact net-level wiring or remove the physical GPS-disconnection requirement.
