@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contracts for Classic CYD external GPS on the P3 UART expansion JST."""
+"""Contracts for Classic CYD external GPS on the P1 UART expansion JST."""
 from pathlib import Path
 import re
 import unittest
@@ -46,9 +46,9 @@ class ClassicCydGpsBoardContract(unittest.TestCase):
         self.assertIn("CONFIG_BOOTLOADER_LOG_LEVEL_NONE=y", defaults)
 
     def test_documentation_separates_primary_and_expansion_ports(self):
-        self.assertIn("primary USB-C", DOC)
-        self.assertIn("second Micro-USB", DOC)
-        self.assertIn("must not carry CYM logs", DOC)
+        self.assertIn("USB-to-UART bridge", DOC)
+        self.assertIn("USB2", DOC)
+        self.assertIn("physically disconnected", DOC)
         self.assertIn("GPS TX", DOC)
         self.assertIn("GPIO1", DOC)
 
@@ -79,17 +79,17 @@ class ClassicCydGpsDocumentationContract(unittest.TestCase):
         row = next(line for line in README.splitlines() if "**Classic CYD**" in line)
         self.assertNotIn("no GPS", row)
         self.assertIn("external GPS", row)
-        self.assertIn("P3 UART expansion JST", row)
+        self.assertIn("P1 UART expansion JST", row)
 
     def test_wiring_guide_documents_console_and_gps_connections(self):
         self.assertTrue(GUIDE_PATH.exists(), "Classic CYD GPS wiring guide must exist")
         guide = GUIDE_PATH.read_text() if GUIDE_PATH.exists() else ""
-        for text in ("primary USB-C", "second Micro-USB", "P3 UART expansion JST",
+        for text in ("USB-to-UART bridge", "USB2", "P1 UART expansion JST",
                      "GPIO1", "GPIO3", "GPS TX", "GPS RX", "ATGM336H",
                      "onboard voltage regulator", "accepts either supply",
                      "power-interchangeable"):
             self.assertIn(text, guide)
-        self.assertIn("GPS TX to P3 TX/GPIO1", guide)
+        self.assertIn("GPS TX to P1 TX/GPIO1", guide)
         self.assertIn("UART2 RX on GPIO1 and TX on GPIO3", guide)
 
     def test_universal_clock_no_longer_claims_classic_has_no_gps(self):

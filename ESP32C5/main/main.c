@@ -7,6 +7,7 @@
 #include "lvgl.h"
 #include "sd_error_handler.h"
 #include "debug_settings.h"
+#include "classic_usb_debug.h"
 #include "legacy_log_lifetime.h"
 #include "gps_rx_ws35.h"
 #define CYM_DEBUG_LOGD(...) do { if(cym_debug_enabled()) ESP_LOGD(__VA_ARGS__); } while(0)
@@ -1329,6 +1330,9 @@ static bool nmea_checksum_valid(const char *sentence);
 static esp_err_t init_gps_uart(void);
 /* WS35 task owns RX. Wardrive observes GPS snapshots without stealing UART bytes. */
 static int gps_uart_consumer_read(void *data, uint32_t size, TickType_t wait){
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (cym_classic_usb_gps_blocked()) return 0;
+#endif
 #if defined(CONFIG_BOARD_WS_C5_35)
  (void)data;(void)size;if(wait)vTaskDelay(wait);return 0;
 #else
@@ -7325,7 +7329,7 @@ static const lv_point_t s_gps_slash_pts[] = { {4, 17}, {17, 4} };
 static void gps_stat_icon_apply(gps_stat_icon_t *g)
 {
     if (!g || !g->cont) return;
-    bool present = g_gps_uart_data_seen;   // any UART byte ever = module wired up
+    bool present = g_gps_uart_data_seen || cym_classic_usb_gps_blocked();   // show unavailable while USB owns pin
     bool fix     = current_gps.valid;
     if (!present) { lv_obj_add_flag(g->cont, LV_OBJ_FLAG_HIDDEN); return; }
     lv_obj_clear_flag(g->cont, LV_OBJ_FLAG_HIDDEN);
@@ -28502,6 +28506,94 @@ static void hw_options_tile_event_cb_measured(lv_event_t *e)
         show_nmrfhat_settings_screen();
 }
 
+
+#if defined(CONFIG_BOARD_CYD2USB)
+static lv_obj_t *s_classic_usb_popup, *s_classic_usb_popup_status;
+static lv_obj_t *s_hardware_classic_status;
+static void classic_usb_popup_close(void)
+{
+    if (s_classic_usb_popup) lv_obj_del(s_classic_usb_popup);
+    s_classic_usb_popup = NULL;
+    s_classic_usb_popup_status = NULL;
+}
+/* Classic has no background GPS reader: this callback executes on the same
+ * main/LVGL owner as polling. Inhibition is already published by the controller. */
+static esp_err_t classic_usb_quiesce_gps(void)
+{
+    g_gps_uart_ready = false;
+    g_gps_nmea_found = false;
+    g_gps_uart_data_seen = false;
+    current_gps.valid = false; /* last-known coordinates remain explicitly stale */
+    esp_err_t rc = ESP_OK;
+    if (uart_is_driver_installed(GPS_UART_NUM)) rc = uart_driver_delete(GPS_UART_NUM);
+    return rc;
+}
+static void classic_usb_cancel(lv_event_t *e)
+{
+    (void)e;
+    classic_usb_popup_close(); /* Cancellation never acquires the UART pin. */
+}
+static void classic_usb_enable_event(lv_event_t *e)
+{
+    (void)e;
+    esp_err_t rc = cym_classic_usb_enable(true, classic_usb_quiesce_gps);
+    if (s_classic_usb_popup_status) lv_label_set_text(s_classic_usb_popup_status,
+        rc == ESP_OK ? "ON - 115200 8N1. GPS unavailable. Logs only.\nFor more logs, enable Debug diagnostics separately."
+                     : "Enable failed - transport OFF. GPS inhibited.\nUse Return normal / Reboot; keep GPS unplugged.");
+}
+static void classic_usb_reboot_event(lv_event_t *e)
+{
+    (void)e;
+    /* Restore the prior sink and detach TX before restarting. If shutdown fails,
+     * stay inhibited, do not reboot or claim that reconnecting GPS is safe. */
+    esp_err_t rc = cym_classic_usb_disable();
+    if (rc != ESP_OK) {
+        if (s_classic_usb_popup_status) lv_label_set_text(s_classic_usb_popup_status,
+            "TX shutdown failed - NOT rebooting.\nKeep GPS disconnected. Power off before reconnecting.");
+        return;
+    }
+    esp_restart();
+}
+static void show_classic_usb_popup(void)
+{
+    if (s_classic_usb_popup) return;
+    s_classic_usb_popup = lv_obj_create(lv_scr_act());
+    /* 240x320 / 320x240: outer height is always ver-12, all content scrolls.
+     * No fixed-height text card can push acknowledgement or Cancel off-screen. */
+    lv_obj_set_size(s_classic_usb_popup, lv_disp_get_hor_res(NULL)-12, lv_disp_get_ver_res(NULL)-12);
+    lv_obj_center(s_classic_usb_popup);
+    lv_obj_set_flex_flow(s_classic_usb_popup, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scroll_dir(s_classic_usb_popup, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_classic_usb_popup, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_bg_opa(s_classic_usb_popup, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(s_classic_usb_popup, ui_panel_color(), 0);
+    lv_obj_t *warning = lv_label_create(s_classic_usb_popup);
+    lv_obj_set_width(warning, lv_pct(100));
+    lv_label_set_long_mode(warning, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(warning, &lv_font_montserrat_12, 0);
+    lv_label_set_text(warning, "Classic USB Debug" "\nWARNING: Physically disconnect GPS BEFORE enabling.\nA powered GPS TX can contend on GPIO1 even if firmware GPS is disabled.\nLogs use UART0 TX GPIO1 via USB-UART bridge, 115200 8N1.\nVolatile: OFF each boot. No early boot, ROM or panic capture promised.\nBack/Close preserves this explicit mode. Return normal reboots; keep GPS unplugged until power off.");
+    s_classic_usb_popup_status = lv_label_create(s_classic_usb_popup);
+    lv_obj_set_width(s_classic_usb_popup_status, lv_pct(100));
+    lv_label_set_long_mode(s_classic_usb_popup_status, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(s_classic_usb_popup_status, &lv_font_montserrat_12, 0);
+    lv_label_set_text(s_classic_usb_popup_status, cym_classic_usb_status());
+    const char *labels[] = {"I disconnected GPS - Enable", "Return normal / Reboot", "Cancel / Close"};
+    lv_event_cb_t callbacks[] = {classic_usb_enable_event, classic_usb_reboot_event, classic_usb_cancel};
+    for (int i=0; i<3; ++i) {
+        lv_obj_t *button = lv_btn_create(s_classic_usb_popup);
+        lv_obj_set_size(button, lv_pct(100), 46);
+        lv_obj_add_event_cb(button, callbacks[i], LV_EVENT_CLICKED, NULL);
+        lv_obj_t *label = lv_label_create(button);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+        lv_label_set_text(label, labels[i]);
+        lv_obj_center(label);
+    }
+}
+static void classic_usb_open_event(lv_event_t *e) { (void)e; show_classic_usb_popup(); }
+#endif
+
 /* Hardware objects and timer belong exclusively to the main LVGL owner.
  * Serial publishes atomic state only; polling never queues stale object pointers. */
 static lv_obj_t *s_hardware_debug_switch,*s_hardware_debug_status;
@@ -28509,12 +28601,19 @@ static lv_timer_t *s_hardware_debug_timer;
 static void hardware_debug_sync(lv_timer_t *timer)
 {
     (void)timer;
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (s_hardware_classic_status) lv_label_set_text(s_hardware_classic_status, cym_classic_usb_status());
+#endif
     if(!s_hardware_debug_switch)return;
     if(cym_debug_enabled())lv_obj_add_state(s_hardware_debug_switch,LV_STATE_CHECKED);
     else lv_obj_clear_state(s_hardware_debug_switch,LV_STATE_CHECKED);
 }
 static void hardware_debug_stop(void)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    classic_usb_popup_close();
+    s_hardware_classic_status = NULL;
+#endif
     if(s_hardware_debug_timer){lv_timer_del(s_hardware_debug_timer);s_hardware_debug_timer=NULL;}
     s_hardware_debug_switch=NULL;s_hardware_debug_status=NULL;
 }
@@ -28553,6 +28652,23 @@ static void show_hardware_options_screen_measured(void)
 
     create_tile(tiles, LV_SYMBOL_CHARGE,    "Power\nMode",  COLOR_MATERIAL_RED,     hw_options_tile_event_cb, "Power Mode");
     create_tile(tiles, MY_SYMBOL_TOWER,     "NM-RF-HAT",   lv_color_hex(0x607D8B), hw_options_tile_event_cb, "NM-RF-HAT");
+#if defined(CONFIG_BOARD_CYD2USB)
+    /* Third entry can wrap in either orientation. Keep the tile area scrollable. */
+    lv_obj_add_flag(tiles, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(tiles, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(tiles, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+    lv_obj_t *usb_button = lv_btn_create(tiles);
+    lv_obj_set_size(usb_button, lv_pct(100), 50);
+    lv_obj_add_event_cb(usb_button, classic_usb_open_event, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *usb_label = lv_label_create(usb_button);
+    lv_obj_set_width(usb_label, lv_pct(100));
+    lv_label_set_long_mode(usb_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_font(usb_label, &lv_font_montserrat_12, 0);
+    s_hardware_classic_status = usb_label;
+    lv_label_set_text(usb_label, cym_classic_usb_status());
+    lv_obj_center(usb_label);
+#endif
     lv_obj_t *row=lv_obj_create(function_page);
     lv_obj_set_size(row,lv_pct(100),78);lv_obj_align(row,LV_ALIGN_BOTTOM_MID,0,0);
     lv_obj_set_style_pad_all(row,6,0);lv_obj_clear_flag(row,LV_OBJ_FLAG_SCROLLABLE);
@@ -31479,8 +31595,8 @@ static void gps_info_refresh_cb(lv_timer_t *t)
     if (gps_info_uart_lbl && lv_obj_is_valid(gps_info_uart_lbl)) {
         char info[96];
         snprintf(info, sizeof(info), "UART%d %s IO%d=RX  RX-only\n%d baud - %s",
-                 GPS_UART_NUM, g_gps_rx_pin == 22 ? "CN1" : "P3/HAT", g_gps_rx_pin,
-                 g_gps_listen_baud, g_gps_uart_ready ? (g_gps_nmea_found ? "NMEA found" : "no valid NMEA") : "UART unavailable");
+                 GPS_UART_NUM, g_gps_rx_pin == 22 ? "CN1" : "P1/HAT", g_gps_rx_pin,
+                 g_gps_listen_baud, cym_classic_usb_gps_blocked() ? "USB Debug: GPS unavailable" : g_gps_uart_ready ? (g_gps_nmea_found ? "NMEA found" : "no valid NMEA") : "UART unavailable");
         lv_label_set_text(gps_info_uart_lbl, info);
     }
 #endif
@@ -31489,7 +31605,10 @@ static void gps_info_refresh_cb(lv_timer_t *t)
     bool stale = !live && g_gps_last_known.valid;
     bool seen  = g_gps_uart_data_seen;   // at least one UART byte ever received
 
-    if (live) {
+    if (cym_classic_usb_gps_blocked()) {
+        lv_label_set_text(gps_info_fix_lbl, "GPS unavailable - Classic USB Debug");
+        lv_obj_set_style_text_color(gps_info_fix_lbl, COLOR_MATERIAL_AMBER, 0);
+    } else if (live) {
         lv_label_set_text(gps_info_fix_lbl, LV_SYMBOL_GPS " Fix: YES");
         lv_obj_set_style_text_color(gps_info_fix_lbl, COLOR_MATERIAL_GREEN, 0);
     } else if (stale) {
@@ -31981,7 +32100,7 @@ static void show_gps_info_screen(void)
     gps_info_uart_lbl = uart_lbl;
     char uart_info[96];
     snprintf(uart_info, sizeof(uart_info), "UART%d %s IO%d=RX  RX-only\n%d baud - %s",
-             GPS_UART_NUM, g_gps_rx_pin == 22 ? "CN1" : "P3/HAT", g_gps_rx_pin,
+             GPS_UART_NUM, g_gps_rx_pin == 22 ? "CN1" : "P1/HAT", g_gps_rx_pin,
              g_gps_listen_baud, g_gps_nmea_found ? "NMEA found" : "no valid NMEA");
 #else
     char uart_info[64];
@@ -42562,6 +42681,7 @@ static void gps_send_baud_cmds(int target)
 // the module is running at X. Window must exceed one 1 Hz burst period.
 static bool gps_probe_nmea(int baud, int window_ms)
 {
+    if (cym_classic_usb_gps_blocked()) return false;
 #if defined(CONFIG_BOARD_CYD2USB)
 
     if (uart_set_baudrate(GPS_UART_NUM, baud) != ESP_OK ||
@@ -42611,6 +42731,9 @@ static bool gps_probe_nmea(int baud, int window_ms)
 // to the target and re-sync. Runs once at boot before gps_task starts.
 static void gps_autodetect_and_sync(void)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (cym_classic_usb_gps_blocked()) return;
+#endif
 	int target = g_wd_gps_baud;
 	const int cand[] = { target, 115200, 38400, 9600 };
 	int detected = 0;
@@ -42721,6 +42844,9 @@ static void gps_load_baud_setting(void)
 #if defined(CONFIG_BOARD_CYD2USB)
 static esp_err_t gps_classic_attach_rx(int rx)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (cym_classic_usb_gps_blocked()) return ESP_ERR_INVALID_STATE;
+#endif
 #if CONFIG_BOARD_HAS_RF_HAT
     if (rx == 22) return ESP_ERR_INVALID_STATE; // GPIO22/27 reserved for RF-HAT throughout
 #endif
@@ -42740,6 +42866,9 @@ static esp_err_t gps_classic_attach_rx(int rx)
 // nonblocking baud/route windows until valid NMEA; no PCAS writes or new parser.
 static void gps_classic_poll(void)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (cym_classic_usb_gps_blocked()) return;
+#endif
     if (!g_gps_uart_ready) return;
     static size_t used = 0;
     static int candidate = 0;
@@ -42786,6 +42915,9 @@ static void gps_classic_poll(void)
 
 static esp_err_t init_gps_uart(void)
 {
+#if defined(CONFIG_BOARD_CYD2USB)
+    if (cym_classic_usb_gps_blocked()) return ESP_ERR_INVALID_STATE;
+#endif
 #if defined(CONFIG_BOARD_WS_C5_35)
     gps_load_baud_setting();
     uart_config_t gps_rx_only_ws35={.baud_rate=g_wd_gps_baud,.data_bits=UART_DATA_8_BITS,
@@ -43098,7 +43230,7 @@ static void gps_task(void *arg)
     char raw_preview[49]={0};
 #endif
 	for (;;) {
-		int len = uart_read_bytes(GPS_UART_NUM, (uint8_t *)gps_rx_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
+		int len = cym_classic_usb_gps_blocked() ? 0 : uart_read_bytes(GPS_UART_NUM, (uint8_t *)gps_rx_buffer, GPS_BUF_SIZE - 1, pdMS_TO_TICKS(200));
 		if (len > 0) {
 			g_gps_uart_data_seen = true;   // at least one byte received — module is wired up
 			s_dbg_bytes += (uint32_t)len;  // [GPSDBG] throughput accounting

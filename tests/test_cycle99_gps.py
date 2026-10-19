@@ -97,7 +97,9 @@ int main(void){
   old=subprocess.check_output(['git','show',BASE+':ESP32C5/main/main.c'],cwd=ROOT,text=True)
   def other(s):
    f=function(s,'static esp_err_t init_gps_uart(void)');a=f.index('#if defined(CONFIG_BOARD_WS_C5_35)');b=f.index('#elif defined(CONFIG_BOARD_CYD2USB)',a)
-   return f[:a]+f[b:]
+   # The sole Classic addition is an early ownership guard; other init code stays byte-identical.
+   guard='#if defined(CONFIG_BOARD_CYD2USB)\n    if (cym_classic_usb_gps_blocked()) return ESP_ERR_INVALID_STATE;\n#endif\n'
+   return (f[:a]+f[b:]).replace(guard,'')
   self.assertEqual(other(old),other(MAIN.read_text()))
   for name in ['ws_c5_28','nm_cyd_c5','pancake_c5','cyd2usb','hosyond_s3_35','ws_s3_5b']:
    rel=f'ESP32C5/components/board_hal/include/boards/{name}.h'

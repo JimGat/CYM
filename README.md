@@ -33,6 +33,10 @@
 
 ---
 
+## Development v3.0.28 — Classic USB Debug
+
+Separate, volatile USB logging for Classic CYD and HackerBox; physically unplug GPS before acknowledging enable. Stable stays v3.0.27. [Development notes and verification limits](docs/releases/v3.0.28.md) · [Operator instructions](docs/operators/classic-usb-debug.md).
+
 ## Stable v3.0.27 — Audio RTA, QR Decoder and USB UI control
 
 [Release and all-board downloads](https://github.com/JimGat/CYM/releases/tag/v3.0.27) · [Full release notes](docs/releases/v3.0.27.md) · [Live Wiki](https://github.com/JimGat/CYM/wiki)
@@ -127,7 +131,7 @@ CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in th
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P3 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Programming/JTAG debugging stays on the primary USB-C; the second Micro-USB/P3 UART path is GPS-only and carries no CYM logs. No 802.15.4. [Screen Orientation](#screen-orientation) is included in Stable v3.0.27 (introduced in v3.0.4) via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P1 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Normal GPS mode keeps application/bootloader UART logging disabled. Development v3.0.28 adds an explicit [Classic USB Debug mode](docs/operators/classic-usb-debug.md): physically disconnect GPS before enabling UART0 logs through the USB-to-serial bridge. Original ESP32 has no native USB/JTAG; independent USB socket routing is not established. No 802.15.4. [Screen Orientation](#screen-orientation) is included in Stable v3.0.27 (introduced in v3.0.4) via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Its header now shows a 10-second, voltage-estimated battery percentage from the CH32V003 EXIO_ADC path; `FULL` means VBAT is at least 4.15 V, not that charger completion was detected. |
 | **[C5Lab Pancake DIY](https://github.com/C5Lab/pancake)** (`pancake-c5`) | 🧪 **Development channel only; not stable; remote hardware qualification pending** | ESP32-C5 with a 3.5-inch 480×320 display, FT6336U capacitive touch, microSD, WS2812, battery sensing, and optional UART GPS wiring. Available only through the development channel (`?beta=1`); dedicated to D3h420, Janek, and OyczE. |
 | **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for v3.0.27. Camera/IMU remain unqualified; peripheral qualification is capability-specific. |
@@ -3463,3 +3467,7 @@ Adds bounded failed-seek diagnostics. Jim confirmed the WS-C5-35 startup repair
 on hardware. This does not qualify every peripheral, repeated restart/exit,
 extended soak or the matching WS-C5-28 workflow. Current Stable is v3.0.27.
 [Operator checks](docs/testing/startup-memory-v3.0.7.md).
+
+### Classic USB Debug (runtime logs)
+
+Classic CYD and HackerBox CYD only: Hardware Options has a separate **Classic USB Debug** entry. Physically disconnect the GPS before acknowledging enable: GPS TX and UART0 TX share GPIO1, even if GPS is disabled in software. The transport is volatile, OFF each boot, uses the USB-UART bridge at 115200 8N1, and makes GPS unavailable until reboot. The existing saved Debug diagnostics switch remains separate. See the [operator instructions and hardware retest checklist](docs/operators/classic-usb-debug.md). No early-boot, ROM or panic capture is promised.

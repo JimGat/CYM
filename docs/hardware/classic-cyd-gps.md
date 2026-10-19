@@ -1,31 +1,31 @@
 # Classic CYD external GPS
 
-CYM supports an external NMEA GPS receiver on the Classic CYD (`CYD-2432S028R` / `CYD2USB`) through the board's P3 UART expansion JST. This uses the same shared GPS parser, status, wardriving, Universal Clock, and NTP integration as the S3 and C5 targets.
+CYM supports an external NMEA GPS receiver on the Classic CYD (`CYD-2432S028R` / `CYD2USB`) through the board's P1 UART expansion JST. This uses the same shared GPS parser, status, wardriving, Universal Clock, and NTP integration as the S3 and C5 targets.
 
 ## Connection contract
 
-- Use the **primary USB-C** port for programming and JTAG debugging.
-- The **second Micro-USB** and the **P3 UART expansion JST** belong to the external UART path and are not used for the CYM console.
-- The P3 UART must not carry CYM logs or debug output. The Classic production profile disables the ESP-IDF UART console and bootloader log stream.
-- Connect the external GPS to P3 using the same UART/NMEA architecture as the S3 and C5 targets.
-- GPS on P3 preserves NM-RF-HAT compatibility: the RF-HAT keeps its SD Card Shim SPI path and GPIO22/GPIO27 control lines, matching the working Bruce/HaleHound Classic wiring.
+- The Guition V1.4 photo identifies **P1** as VIN/TX/RX/GND. The supplied older V0.1 schematic routes the P1 signals through 100 ohm resistors to GPIO1/GPIO3; this is not a continuity measurement of the V1.4 assembly. **P3** is GND/35/22/21, not this UART header.
+- The original ESP32 does not provide native USB Serial/JTAG. Use the board's verified USB-to-UART bridge connection for programming or runtime logs; exact second-socket (USB2) routing is unverified. Do not assume independently selectable USB sockets.
+- Normal boot keeps the application UART console and bootloader logging disabled. Normal GPS remains receive-only on UART2 RX GPIO1.
+- The separate [Classic USB Debug runtime option](../operators/classic-usb-debug.md) may use UART0 TX GPIO1 only after explicit acknowledgement that the GPS is physically disconnected. It is volatile, OFF each boot, and inhibits GPS for the rest of that boot.
+- GPS on P1 preserves NM-RF-HAT compatibility: the RF-HAT keeps its SD Card Shim SPI path and GPIO22/GPIO27 control lines. No additional RF-HAT probes are introduced by USB Debug.
 
 ## Wiring
 
-| Classic P3 UART expansion JST | ESP32 signal | Connect to GPS |
+| Classic P1 UART expansion JST | ESP32 signal | Connect to GPS |
 | --- | --- | --- |
 | TX-labelled signal | GPIO1 / UART2 RX | GPS TX |
 | RX-labelled signal | GPIO3 / UART2 TX | GPS RX (profile contract; leave disconnected in RX-only v2.15.64) |
 | GND | Ground | GPS GND |
 | VIN/power | Board connector supply | Use only when compatible with the GPS module's rated input |
 
-Physical testing of v2.15.48/v2.15.49 and the reversed v2.15.50 mapping produced no GPS identification. CYM therefore follows the working Bruce and HaleHound Classic contract exactly: GPS TX feeds P3 TX/GPIO1 as UART2 RX, while P3 RX/GPIO3 is the profile UART2 TX contract; v2.15.64 does not attach or drive it. The same unmodified GPS harness works through NM-RF-HAT on NM-CYD-C5, so do not repin it for this Classic build.
+Physical testing of v2.15.48/v2.15.49 and the reversed v2.15.50 mapping produced no GPS identification. CYM therefore follows the working Bruce and HaleHound Classic contract exactly: GPS TX feeds P1 TX/GPIO1 as UART2 RX, while P1 RX/GPIO3 is the profile UART2 TX contract; v2.15.64 does not attach or drive it. The same unmodified GPS harness works through NM-RF-HAT on NM-CYD-C5, so do not repin it for this Classic build.
 
-For the first receive-only test, connect only power, ground, and **GPS TX to P3 TX/GPIO1**. Leave GPS RX disconnected. The reference Classic schematic labels P3 power as VIN and routes it to the board 5 V rail, whereas NM-CYD-C5 P5 supplies 3.3 V. CYM's standard ATGM336H breakout has an onboard voltage regulator and accepts either supply, so it is power-interchangeable between these boards. Verify the permitted VCC before substituting a different GPS module. UART logic remains 3.3 V; do not apply 5 V logic to an ESP32 GPIO.
+For the first receive-only test, connect only power, ground, and **GPS TX to P1 TX/GPIO1**. Leave GPS RX disconnected. The reference Classic schematic labels P1 power as VIN and routes it to the board 5 V rail, whereas NM-CYD-C5 P5 supplies 3.3 V. CYM's standard ATGM336H breakout has an onboard voltage regulator and accepts either supply, so it is power-interchangeable between these boards. Verify the permitted VCC before substituting a different GPS module. UART logic remains 3.3 V; do not apply 5 V logic to an ESP32 GPIO.
 
 ## Firmware behavior
 
-The Classic profile enables `BOARD_HAS_GPS` and `BOARD_TIME_HAS_GPS_UART` and maps the shared GPS stack to `UART_NUM_2`, with the profile contract UART2 RX on GPIO1 and TX on GPIO3. v2.15.64 attaches RX only and suppresses Classic module configuration writes. Before attaching UART2 RX, CYM explicitly establishes GPIO1 as an input, releasing its reset-time UART0 TX function, then connects it through ESP-IDF's UART input matrix. The UART0 console and bootloader log stream are disabled in the production profile so CYM does not transmit diagnostics onto P3. GPS status, parsing, baud/rate control, wardriving, Universal Clock, and NTP reuse the same shared implementation as the S3 and C5 builds. The GPS Setup footer is generated from the active board profile instead of displaying the former static UART1/IO4/IO5 text.
+The Classic profile enables `BOARD_HAS_GPS` and `BOARD_TIME_HAS_GPS_UART` and maps the shared GPS stack to `UART_NUM_2`, with the profile contract UART2 RX on GPIO1 and TX on GPIO3. v2.15.64 attaches RX only and suppresses Classic module configuration writes. Before attaching UART2 RX, CYM explicitly establishes GPIO1 as an input, releasing its reset-time UART0 TX function, then connects it through ESP-IDF's UART input matrix. The UART0 console and bootloader log stream are disabled in the production profile so normal CYM operation does not transmit diagnostics onto P1. The explicit Classic USB Debug exception requires physically disconnecting GPS first; disabling it requires a reboot. GPS status, parsing, baud/rate control, wardriving, Universal Clock, and NTP reuse the same shared implementation as the S3 and C5 builds. The GPS Setup footer is generated from the active board profile instead of displaying the former static UART1/IO4/IO5 text.
 
 With valid NMEA input, the Classic build can provide:
 

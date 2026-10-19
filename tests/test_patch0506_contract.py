@@ -145,6 +145,8 @@ int main(void) {
 static int64_t clock_us;
 static const char *input;
 static int failed;
+static bool usb_blocked;
+static bool cym_classic_usb_gps_blocked(void) { return usb_blocked; }
 static int uart_set_baudrate(int u,int b) { return failed; }
 static int uart_flush_input(int u) { return failed; }
 static int64_t esp_timer_get_time(void) { return clock_us; }
@@ -164,7 +166,8 @@ int main(void) {
  snprintf(valid,sizeof(valid),"$GPRMC,0*%02X\r\n",checksum);
  assert(run(valid));
  assert(!run("$GPRMC*4Bjunk\n"));
- failed=1; assert(!run("$GPRMC*4B\r\n"));
+ usb_blocked=true; assert(!run(valid)); assert(clock_us==0);
+ usb_blocked=false; failed=1; assert(!run("$GPRMC*4B\r\n"));
  return 0;
 }
 '''
