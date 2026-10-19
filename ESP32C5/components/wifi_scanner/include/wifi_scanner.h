@@ -22,6 +22,10 @@ esp_err_t wifi_scanner_init(void);
  */
 esp_err_t wifi_scanner_start_scan(void);
 
+/* Aligned monotonic ownership tickets; no RF configuration changes. */
+uint32_t wifi_scanner_scan_generation(void);
+uint32_t wifi_scanner_completed_generation(void);
+
 /**
  * @brief Start a background PASSIVE WiFi scan (listen for beacons only —
  * never transmits a probe request). Used by OT Air Survey, which is a

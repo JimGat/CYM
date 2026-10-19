@@ -1468,6 +1468,15 @@ static lv_obj_t  *wifi_sas_nav_next = NULL;
 #define WIFI_SAS_MAX_PASSES        8
 #define WIFI_SAS_TIME_CEILING_MS   45000u
 static bool     wifi_sas_auto_scanning  = false;  // true while an auto-repeat session owns the next scan_done
+// true only while the WiFi Scan & Attack screen is the one on display. A scan_done that
+// arrives AFTER the user has left (the screen's stop hook ran) must not rebuild the results
+// list over whatever screen is now showing (e.g. Home) - mirrors bt_sas_ui_active for the
+// Bluetooth twin. Without it, a late WIFI_EVENT_SCAN_DONE tears down the live screen and
+// force-draws the AP list. Set true in show_wifi_scan_attack_screen(), cleared in
+// wifi_sas_screen_stop(), gated at the scan_done finalize/rebuild site.
+static volatile bool wifi_sas_ui_active = false;
+static uint32_t wifi_sas_expected_scan = 0;
+static volatile uint32_t scan_done_ui_generation = 0;
 static int      wifi_sas_scan_pass      = 0;
 static int      wifi_sas_stable_passes  = 0;
 static uint32_t wifi_sas_scan_start_ms  = 0;
@@ -3985,6 +3994,7 @@ static void sniffer_ui_async_cb(void *arg) {
 static void wifi_scan_done_cb(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
+        scan_done_ui_generation = wifi_scanner_completed_generation();
         // Use separate flag for deauth rescan to avoid conflicts
         if (deauth_rescan_active) {
             deauth_rescan_done_flag = true;
@@ -9167,8 +9177,9 @@ log_heap_stats("display-drawbuffers-before");
                 // accumulator, then decide whether to keep going or finalize. See
                 // wifi_sas_merge_pass()'s doc comment for why this repeats whole scans
                 // instead of adjusting per-channel dwell (not available via this API).
-                bool wifi_sas_should_finalize = true;
-                if (wifi_sas_auto_scanning) {
+                bool wifi_sas_owns_completion = wifi_sas_ui_active && wifi_sas_expected_scan != 0 && scan_done_ui_generation == wifi_sas_expected_scan;
+                bool wifi_sas_should_finalize = wifi_sas_owns_completion;
+                if (wifi_sas_auto_scanning && wifi_sas_owns_completion) {
                     wifi_sas_scan_pass++;
                     bool wifi_sas_found_new = wifi_sas_merge_pass();
                     wifi_sas_stable_passes = wifi_sas_found_new ? 0 : (wifi_sas_stable_passes + 1);
@@ -9188,8 +9199,13 @@ log_heap_stats("display-drawbuffers-before");
                                      wifi_sas_scan_pass + 1, (unsigned)wifi_sas_accum_count);
                             lv_label_set_text(scan_status_label, wifi_sas_sbuf);
                         }
-                        wifi_scanner_start_scan();
-                    } else {
+                        if (wifi_scanner_start_scan() == ESP_OK) {
+                            wifi_sas_expected_scan = wifi_scanner_scan_generation();
+                        } else {
+                            wifi_sas_should_finalize = true; // show accumulated results, not an endless spinner
+                        }
+                    }
+                    if (wifi_sas_should_finalize) {
                         wifi_sas_auto_scanning = false;
                         // Publish the merged, multi-pass superset as THE scan result so every
                         // downstream consumer (attack target selection, handshake targets, deauth
@@ -9202,12 +9218,15 @@ log_heap_stats("display-drawbuffers-before");
                     }
                 }
 
-                if (wifi_sas_should_finalize) {
+                if (wifi_sas_should_finalize && wifi_sas_ui_active) {
+                wifi_sas_expected_scan = 0;
                 wifi_sas_page = 0;
 
                 if (function_page) { lv_obj_del(function_page); function_page = NULL; }
                 reset_function_page_children();
                 show_function_page("WiFi Scan & Attack");
+                g_screen_stop_fn = wifi_sas_screen_stop;
+                wifi_sas_ui_active = true;
                 show_touch_dot = true;
 
                 // scan_list: leave room for 28px nav bar + 45px Next button
@@ -18782,6 +18801,12 @@ static bool wifi_sas_merge_pass(void)
 static void wifi_sas_screen_stop(void)
 {
     wifi_sas_auto_scanning = false;
+    wifi_sas_expected_scan = 0;
+    wifi_sas_ui_active = false;   // left the screen: a late scan_done must not rebuild it
+    // These nav-bar widgets live on function_page, which is destroyed on exit; NULL them so
+    // nothing can dereference the retired objects (parity with the bt_sas_* stop hook).
+    wifi_sas_nav_bar = wifi_sas_nav_prev = wifi_sas_nav_lbl = wifi_sas_nav_next = NULL;
+    wifi_sas_page = 0;
 }
 
 // WiFi Scan & Attack screen - scan and show network list with checkboxes
@@ -18800,6 +18825,7 @@ static void show_wifi_scan_attack_screen(void)
 
     create_function_page_base("WiFi Scan & Attack");
     g_screen_stop_fn = wifi_sas_screen_stop;
+    wifi_sas_ui_active = true;   // screen is now on display; see flag's doc comment
 
     // Create centered scanning container with icon and text
     lv_obj_t *scan_container = lv_obj_create(function_page);
@@ -18852,8 +18878,17 @@ static void show_wifi_scan_attack_screen(void)
     wifi_sas_accum_count    = 0;
     wifi_sas_scan_start_ms  = (uint32_t)(esp_timer_get_time() / 1000);
 
-    // Start scan
-    wifi_scanner_start_scan();
+    // Consume no previous completion, and adopt only a successfully started scan.
+    scan_done_ui_flag = false;
+    wifi_sas_expected_scan = 0;
+    esp_err_t scan_start_error = wifi_scanner_start_scan();
+    if (scan_start_error == ESP_OK) wifi_sas_expected_scan = wifi_scanner_scan_generation();
+    else {
+        wifi_sas_auto_scanning = false;
+        wifi_sas_ui_active = false;
+        lv_label_set_text(scan_status_label, "Scan start failed; Back and retry");
+        ESP_LOGW(TAG, "WiFi Scan & Attack start failed: %d", (int)scan_start_error);
+    }
 }
 
 // ============================================================================

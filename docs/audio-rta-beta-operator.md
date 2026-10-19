@@ -1,20 +1,21 @@
 # Audio RTA beta operator guide
 
-Development v3.0.26 source cycle, initially enabled only for the **Waveshare
+Development v3.0.27 source cycle, initially enabled only for the **Waveshare
 ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
 testing, not hardware-qualified acoustic instrumentation. Existing co-developer
 attribution to @birolt29 is preserved.
 
-This repair is a source/test candidate until the parent completes independent review,
-all-eight-board build gates and Dev publication. Source/manifests express the intended
-cycle; they do not prove other board packages or the public installer were rebuilt.
-Do not install until the parent supplies the verified published image/hash.
+Independent verification passed 702 unit tests (one private-capture skip), 21 host
+runner entries, all eight board builds and 32 packaged firmware artifacts at v3.0.27.
+Source/configuration and unrelated-file preservation gates passed. Install only the
+exact published image identified by the delivery report and its downloaded hash.
+Physical acceptance remains pending; these are software/build results only.
 
 ## Install the Development beta
 
 Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
 Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.26** before installing. Leave **Erase OFF** for a normal update.
+**WS-C5-35 / v3.0.27** before installing. Leave **Erase OFF** for a normal update.
 Do not use a different board image or double-press BOOT. No device was flashed by
 the development/verification process; owner flashing and physical checks are separate.
 
@@ -53,9 +54,14 @@ No SPL, A/C weighting, microphone calibration or ultrasonic promise is made.
 - Fast/Slow: linear-power time constants125ms/1s, based on input sample time.
 - Reset Peaks: clears peak markers, not the input or averaging state.
 - Gain: vertically scrollable bounded overlay, supported0,6,12,...42dB codec steps.
-  Default0dB is conservative and not yet acoustically qualified. Select a gain to
-  reset histories, resume/warm up and show actual configured gain. Close cancels.
-  No gain NVS persistence. No AGC/noise suppression/AEC, recording/export/streaming.
+  Opening temporarily pauses analysis while capture is still drained. Close or
+  selection restores the earlier user Freeze choice, not an unconditional Resume.
+  On a running return the analyzer discards old history and warms fresh windows;
+  a user-frozen display stays byte-for-byte frozen until Resume.
+  Gain is loaded from private NVS `audio_rta/gain_db` before codec/capture startup.
+  Default24dB is used only if absent/corrupt/invalid; valid saved0dB is preserved.
+  Only supported0,6,...42dB steps are accepted. No erase or unrelated setting edits.
+  No AGC/noise suppression/AEC, recording/export/streaming.
 
 The different FFT resolutions create an intentional characterized crossover boundary
 at266.70Hz +/-23.44Hz. Host tone sweeps measured up to1.8432dB adjacent-band sum
@@ -262,7 +268,8 @@ Field contract (all counters scoped to generation unless stated otherwise):
   gap data and the final cancelled read. Not total ADC-produced or missing samples.
 - history_samples: processed contiguous samples since the last history reset;
   held while Frozen. It is not the lifetime capture count.
-- sequence: accepted nonempty processed snapshots, not FFT frames or UI draws.
+- sequence: complete nonempty scalar publications, not reads, FFT frames or UI draws.
+  v3.0.27 coalesces publication at >=2400 input samples; every read still ingests.
 - frames: cumulative completed full OR bass analyses from published snapshots;
   a partial/cancelled analysis is not published or counted here.
 - valid: hexadecimal 24-bit mask; first nine bits are bass. `fffe00` is full-rate
@@ -390,3 +397,112 @@ At deliberately doubled arithmetic cost, capture stays continuous but some bands
 age out; the test requires honest invalidation, not a false all-live claim. Thus
 physical sustained full-band throughput, UI responsiveness, resource settling and
 microphone/frequency response remain UNQUALIFIED until Jim's bench capture.
+
+
+## v3.0.27 gain, render isolation and scan-exit candidate
+
+The independent parent gate passed all eight final-source builds, package versions
+and hashes, including the unconditional aborted-scan late-event regression. No
+physical speed measurement was performed. The checks below remain owner-bench
+requirements, not performance claims inferred from compilation.
+
+### Gain selection, save failures and retirement
+
+The single existing capture worker loads/saves NVS outside the LVGL lock. It
+validates the supported gain steps, applies a changed codec setting first, and
+only then sets/commits NVS. The displayed applied gain is not advanced on codec
+failure. A failed NVS open/read/set/commit is reported by a distinct stage/error
+in AUDIO_RTA logs and copied snapshot, without claiming a successful save.
+The Gain button says `saved` only when the last committed value equals the
+applied value; `unsaved` marks an NVS error. Load fallback is24dB, never inferred
+from zero. Read errors do not erase or automatically overwrite the stored key.
+
+Requests queued faster than the worker consumes them coalesce to the latest
+supported value. An identical selection or refresh never re-writes flash, and a
+failed save is not automatically retried by refresh/identical selection. To retry
+explicitly, choose a different value and then the wanted value. On reopen/reboot,
+the last successfully committed setting is loaded, not an uncommitted selection.
+Exit before the worker processes a queued selection discards it. If processing
+has already begun, apply/commit may complete before bounded worker retirement;
+no UI callback waits for flash and no new task/stack is created. A flash stall
+can still produce a real capture gap; normal discontinuity handling remains on.
+A codec failure ends the session with the earlier applied/committed values still
+truthfully reported. Back/Home deletes the popup without sending Resume to the
+retiring session. Starting, zero-sequence Frozen and errors remain explicit.
+
+### Responsiveness evidence and limits
+
+Existing unchanged-label and band-damage suppression is retained, not newly
+claimed. The chart now declares/draws an opaque background using pinned LVGL's
+own style/cover path, so bar damage can stop at the plot rather than redraw the
+underlying page. Native real-LVGL tests require COVER, zero unchanged flushes,
+bounded single-band damage and byte-identical partial/full exposed framebuffers
+for both home layouts and all four rotations, including overlay dismissal.
+
+Inspection of the linked v3.0.26 WS35 ELF found software floating-point helper
+calls in retained DSP paths; this is static evidence, not runtime attribution.
+The actual worker called the full scalar snapshot (4096-sample peak rescan plus
+logarithms) once per capture read although its UI consumes every50ms. A native
+500-processed-read run counted500 such snapshots before,100 after publication
+coalescing at >=2400 input samples (five512-sample blocks, nominal53.3ms).
+Every-sample ingestion and every bounded incremental analysis slice are unchanged;
+DSP numeric math and windows are byte-identical to v3.0.26. Copy publication can
+lag a newly completed high/bass job by up to one publication interval. This is
+not physical20FPS, C5 handler speed, CPU utilization or an acoustic qualification.
+The accepted v3.0.26 continuous RX/single-owner design, priority/tick admission,
+6144-byte internal stack and v3.0.25 RX LEFT admission remain unchanged. No DMA
+buffer enlargement, task/priority/watchdog tuning or sample-rate reduction.
+
+RISC-V32 ABI-only sizeof probes give session64->64 bytes and snapshot448->464
+bytes (16 bytes per copy), with unchanged DSP source/workspace. This ABI probe is not a physical heap result. Independent package/ELF comparison
+measured linked internal growth of 48 bytes on WS-C5-35, 32 bytes on NM-CYD-C5
+and 16 bytes on each of the other six boards. DSP source/workspace and the
+6144-byte internal capture stack are unchanged. NVS transient library allocations,
+flash latency and physical internal/DMA heap costs still require bench measurement.
+
+### WiFi Scan & Attack exit ownership
+
+The owner-supplied exit-rebuild patch is retained: screen-active gating, cleared
+stop state and navigation pointers. Additional narrow lifecycle corrections
+bind finalization/repeats to the successfully started scanner ticket, reject
+already-dispatched older completions during immediate reentry, display failed starts rather
+than a permanent spinner, and re-register the stop hook after results-page
+construction (which itself runs outgoing teardown). A failed repeat finalizes
+the accumulated results. Background scans and shared results are not aborted
+by the SAS stop hook; existing handshaker/OT/blackout dispatch exclusions stay.
+No supplied author header existed, so no contributor identity is invented;
+existing @birolt29 co-developer credit is preserved.
+
+Independent review reproduced the aborted-scan late-event race and corrected
+admission: `wifi_scanner_abort()` requests the stop without marking the scanner
+idle. The documented SDK SCAN_DONE retires the old ticket and reads the results
+before reopening admission. Immediate active/passive restart returns busy until
+that event drains; no blocking wait occurs under the UI lock. This case now runs
+unconditionally in the production-extraction scanner test. Existing callers that
+abort before taking radio ownership (OT Surveyor, handshaker, blackout and Wi-Fi
+UI cleanup) require physical transition/retry checks because this deliberately
+changes their short admission window. No guessed SDK scan-ID mapping is used.
+A missing driver completion leaves admission closed rather than misattributing
+an old event; normal RF error recovery and owner diagnostics remain important.
+
+### Owner retest checklist after parent publishes the verified image
+
+1. Verify WS-C5-35/v3.0.27 on primary USB-C, Erase OFF. `debug on`: expect gain
+   load/apply, advancing input near48k samples/s, steady full validity, no new
+   sustained overruns, and improved/usable controls; record handler warnings
+   without mistaking wall time/preemption for CPU usage.
+2. Open Gain while running: plot holds but capture drains. Close: fresh warmup,
+   then live. Freeze first, open Gain, select/close: remains Frozen until Resume.
+   Repeat from preparation and use Back/Home with popup open; immediate reopen
+   must not resurrect the old screen. Both menus x all rotations.
+3. Select0dB, leave/reopen and reboot:0 is restored. Repeat24 and42; Gain says
+   saved only after commit. On injected/real save failure expect unsaved plus
+   stage/error log, no false persisted value, and earlier committed value after
+   reboot. Codec failure must show Error and keep Back/Home responsive.
+4. With a bounded authorized Wi-Fi scan, Back/Home/forward to targets before
+   completion: no forced results-page resurrection. Immediate reentry while a
+   scan is still owned elsewhere shows start failure; Back/retry after completion.
+   Normal adaptive completion and results-page Back/Home still work. Retest both
+   menu routes and other existing background scan consumers without RF changes.
+5. Repeat with `debug off`, settled open/close heap checks and extended soak.
+   Capture private diagnostics only; do not publish raw captures or payloads.

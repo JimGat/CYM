@@ -1,3 +1,4 @@
+#include <stdatomic.h>
 // wifi_scanner.c - WiFi Network Scanner
 #include "wifi_scanner.h"
 #include "esp_log.h"
@@ -14,6 +15,14 @@ static const char *TAG = "wifi_scanner";
 // Scanner state (local)
 static volatile bool g_scan_in_progress = false;
 static volatile bool g_scan_done = false;
+// Monotonic scan tickets distinguish a completed scan from a new UI session.
+// The event loop invokes scanner then UI callbacks serially; retain the completed
+// ticket even if the UI starts another scan between those callbacks.
+static _Atomic uint32_t g_scan_generation;
+static _Atomic uint32_t g_scan_completed_generation;
+uint32_t wifi_scanner_scan_generation(void){return atomic_load(&g_scan_generation);}
+uint32_t wifi_scanner_completed_generation(void){return atomic_load(&g_scan_completed_generation);}
+
 
 // Shared scan results (defined in wifi_common.c, used by other components)
 EXT_RAM_BSS_ATTR wifi_ap_record_t g_shared_scan_results[MAX_SCAN_RESULTS];
@@ -33,7 +42,7 @@ static uint16_t g_scan_time_max = 300;  // default
 static void wifi_scanner_event_handler(void *arg, esp_event_base_t event_base,
                                       int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
-        g_scan_in_progress = false;
+        atomic_store(&g_scan_completed_generation,atomic_load(&g_scan_generation));
         g_scan_done = true;
         cym_debug_memory_snapshot("wifi-scan-complete");
         ESP_LOGI(TAG, "Scan done");
@@ -45,6 +54,9 @@ static void wifi_scanner_event_handler(void *arg, esp_event_base_t event_base,
         if (g_shared_scan_count > 0) {
             esp_wifi_scan_get_ap_records(&g_shared_scan_count, g_shared_scan_results);
         }
+        /* Publish idle only after result reads, not while a new scan could
+         * replace the driver's result storage. */
+        g_scan_in_progress = false;
     }
 }
 
@@ -86,6 +98,7 @@ esp_err_t wifi_scanner_start_scan(void) {
         .scan_time.passive = WIFI_PASSIVE_SCAN_DEFAULT_TIME,
     };
     
+    atomic_fetch_add(&g_scan_generation,1);
     g_scan_in_progress = true;
     g_scan_done = false;
     g_shared_scan_count = 0;
@@ -130,6 +143,7 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
         .scan_time.passive = per_channel_ms,
     };
 
+    atomic_fetch_add(&g_scan_generation,1);
     g_scan_in_progress = true;
     g_scan_done = false;
     g_shared_scan_count = 0;
@@ -178,8 +192,12 @@ bool wifi_scanner_is_done(void) {
 
 void wifi_scanner_abort(void) {
     if (g_scan_in_progress) {
+        /* ESP-IDF posts SCAN_DONE for a stopped asynchronous scan. Keep
+         * admission closed until that event has consumed A's result and ticket;
+         * otherwise a start B can relabel the queued completion of A as B.
+         * Do not wait here: abort can be called with the UI lock held. A caller
+         * may retry after the event loop retires the in-flight scan. */
         esp_wifi_scan_stop();
-        g_scan_in_progress = false;
     }
     g_scan_done = false;
 }

@@ -2,12 +2,15 @@
 #include "audio_rta_dsp.h"
 #include "esp_err.h"
 typedef enum {RTA_CLOSED,RTA_STARTING,RTA_RUNNING,RTA_FROZEN,RTA_STOPPING,RTA_ERROR} audio_rta_state_t;
+typedef enum {RTA_STORE_OK,RTA_STORE_OPEN,RTA_STORE_READ,RTA_STORE_INVALID,RTA_STORE_SET,RTA_STORE_COMMIT} audio_rta_store_stage_t;
 typedef struct {
  audio_rta_spectrum_t spectrum;
  uint32_t generation,sequence,overruns;
  int64_t timestamp_us;
  audio_rta_state_t state;
  int gain_db,error;
+ int requested_gain_db,persisted_gain_db,gain_store_error;
+ audio_rta_store_stage_t gain_store_stage;
  size_t internal_delta,psram_bytes;
  /* Lifetime session counters never reset at a continuity break. Elapsed work
   * includes read blocking, preemption and cooperative scheduling, not CPU time. */

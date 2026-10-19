@@ -11,6 +11,8 @@ import ast, os, subprocess, hashlib, json
 from audio_rta_sdk_slots import prepare
 R=Path(__file__).resolve().parents[1]
 D=Path(os.environ['CYM_TEST_OUT'])/'rta-input'; D.mkdir(parents=True,exist_ok=True)
+from audio_rta_nvs_stubs import write_nvs_stub
+write_nvs_stub(D)
 M=R/'ESP32C5/managed_components/espressif__esp_codec_dev'
 SDK=Path(os.environ.get('IDF_PATH','/home/dev/esp/esp-idf'))/'components/esp_driver_i2s/i2s_common.c'
 sdk=SDK.read_text()
@@ -231,7 +233,7 @@ static void control_tick(void){
   if(control_stage==1&&latest.state==RTA_FROZEN){held=latest;control_stage=2;advance_to(simulated_us+40000);}
   if(control_stage==2&&elapsed>1300000){assert(latest.state==RTA_FROZEN&&latest.sequence==held.sequence&&!memcmp(&latest.spectrum,&held.spectrum,sizeof(held.spectrum)));held_checked=1;control_stage=3;audio_rta_controls(latest.generation,false,true,0,false);}
  }
- if(mode==7&&!control_stage&&elapsed>1000000){control_stage=1;audio_rta_controls(latest.generation,true,true,6,true);}
+ if(mode==7&&!control_stage&&elapsed>1000000){control_stage=1;audio_rta_controls(latest.generation,false,true,6,true);}
  if(mode>=15&&elapsed>1500000&&!steady_start){steady_start=simulated_us;steady_samples=latest.input_samples;steady_overruns=latest.overruns;}
  if(mode==16&&elapsed>1600000&&elapsed<9000000&&gap_stage<(elapsed-1600000)/400000){gap_stage++;advance_to(simulated_us+(gap_stage%3==0?6000:2000));}
  if(elapsed>(mode>=15?12000000:3000000)&&!stopped){stopped=1;audio_rta_stop(latest.generation);}

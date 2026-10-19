@@ -1,7 +1,7 @@
 {
   "name": "Cheap Yellow Monster \u2014 CYM-NM28C5",
-  "version": "v3.0.26",
-  "build": "v3.0.26",
+  "version": "v3.0.27",
+  "build": "v3.0.27",
   "chipFamily": "ESP32-C5",
   "parts": [
     {

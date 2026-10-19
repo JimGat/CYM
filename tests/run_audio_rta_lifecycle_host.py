@@ -3,6 +3,8 @@
 from pathlib import Path
 import subprocess,os
 R=Path(__file__).resolve().parents[1];D=Path(os.environ['CYM_TEST_OUT'])/'rta-lifecycle';D.mkdir(parents=True,exist_ok=True)
+from audio_rta_nvs_stubs import write_nvs_stub
+write_nvs_stub(D)
 (D/'esp_err.h').write_text('typedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_FAIL -1\n#define ESP_ERR_NO_MEM 1\n#define ESP_ERR_INVALID_ARG 2\n#define ESP_ERR_INVALID_STATE 3\n#define ESP_ERR_TIMEOUT 4\n')
 (D/'audio_rta_host_port.h').write_text(r"""
 #include <pthread.h>
@@ -60,7 +62,7 @@ static void vTaskDelete(TaskHandle_t t){if(!t){TaskHandle_t q=self;self_delete_w
 struct audio_rta_board {int opened;};
 static atomic_int open_fail,read_mode,gain_fail,delay_close,slow_start,close_calls;
 size_t audio_rta_board_bytes(void){return sizeof(audio_rta_board_t);}
-esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){assert(bus&&gain==0);if(slow_start)usleep(30000);if(open_fail)return ESP_FAIL;b->opened=1;return ESP_OK;}
+esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){assert(bus&&gain_valid(gain));if(slow_start)usleep(30000);if(open_fail||gain_fail)return ESP_FAIL;b->opened=1;return ESP_OK;}
 esp_err_t audio_rta_board_gain(audio_rta_board_t*b,int gain){assert(b->opened&&gain>=0&&gain<=42);return gain_fail?ESP_FAIL:ESP_OK;}
 esp_err_t audio_rta_board_read(audio_rta_board_t*b,int16_t*pcm,size_t cap,size_t*n,bool*discontinuity){*discontinuity=false;assert(b->opened&&cap==512);usleep(2000);int mode=atomic_exchange(&read_mode,0);*n=mode==1?127:512;for(unsigned i=0;i<*n;i++)pcm[i]=(int16_t)(10000*sin(2*3.141592653589793*i/48));if(mode==2){*discontinuity=true;return ESP_OK;}if(mode==3){*n=0;return ESP_ERR_TIMEOUT;}if(mode==4)return ESP_FAIL;return mode==1?ESP_ERR_TIMEOUT:ESP_OK;}
 esp_err_t audio_rta_board_close(audio_rta_board_t*b){close_calls++;if(delay_close){delay_close--;return ESP_FAIL;}b->opened=0;return ESP_OK;}
@@ -79,6 +81,7 @@ int main(void){uint32_t g;
  audio_rta_controls(g,true,false,0,false);usleep(20000);a=snap(g);assert(a.state==RTA_FROZEN);usleep(20000);audio_rta_snapshot_t b=snap(g);assert(!memcmp(&a.spectrum,&b.spectrum,sizeof(a.spectrum))&&a.sequence==b.sequence&&a.timestamp_us==b.timestamp_us);
  read_mode=2;usleep(10000);b=snap(g);assert(b.state==RTA_FROZEN&&b.overruns==1);
  assert(!memcmp(&a.spectrum,&b.spectrum,sizeof(a.spectrum)));
+ audio_rta_controls(g,true,false,6,false);usleep(20000);b=snap(g);assert(b.state==RTA_FROZEN && "gain must preserve Freeze intent");assert(!memcmp(&a.spectrum,&b.spectrum,sizeof(a.spectrum)));
  audio_rta_controls(g,false,true,6,true);usleep(10000);b=snap(g);assert(b.gain_db==6&&b.spectrum.samples<a.spectrum.samples);
  read_mode=1;usleep(10000);assert(snap(g).state==RTA_RUNNING);
  read_mode=2;usleep(10000);assert(snap(g).overruns==2);
@@ -86,6 +89,22 @@ int main(void){uint32_t g;
  uint32_t old=g;reset();g=start();assert(g!=old);assert(!audio_rta_snapshot(old,&a));audio_rta_stop(old);usleep(10000);assert(!audio_rta_closed());audio_rta_stop(g);settle();
  reset();g=start();usleep(10000);gain_fail=1;audio_rta_controls(g,false,false,12,false);settle();assert(snap(g).state==RTA_ERROR);
  for(int mode=3;mode<=4;mode++){reset();g=start();read_mode=mode;settle();assert(snap(g).state==RTA_ERROR);}
+ /* Saved zero is loaded before codec startup; unchanged controls never write. */
+ reset();nvs_present=1;nvs_value=0;int writes=nvs_sets;g=start();wait_ready(g);
+ assert(snap(g).gain_db==0&&snap(g).persisted_gain_db==0);
+ audio_rta_controls(g,false,false,0,false);usleep(10000);assert(nvs_sets==writes);
+ /* No worker can observe intermediate requests while mux is held: latest wins. */
+ portENTER_CRITICAL(&mux);owner->gain=6;owner->gain_selected=true;owner->gain=12;owner->gain=18;latest.requested_gain_db=18;portEXIT_CRITICAL(&mux);
+ for(int i=0;i<1000&&snap(g).persisted_gain_db!=18;i++)usleep(1000);
+ assert(snap(g).gain_db==18&&snap(g).persisted_gain_db==18&&nvs_sets==writes+1);
+ nvs_commit_error=63;audio_rta_controls(g,false,false,24,false);usleep(20000);
+ b=snap(g);assert(b.gain_db==24&&b.requested_gain_db==24&&b.persisted_gain_db==18&&b.gain_store_error==63&&b.gain_store_stage==RTA_STORE_COMMIT);
+ writes=nvs_sets;audio_rta_controls(g,false,false,24,false);usleep(10000);assert(nvs_sets==writes&&"unchanged failed saves do not retry every refresh");
+ nvs_commit_error=0;gain_fail=1;audio_rta_controls(g,false,false,30,false);settle();
+ b=snap(g);assert(b.state==RTA_ERROR&&b.gain_db==24&&b.requested_gain_db==30&&b.persisted_gain_db==18&&nvs_sets==writes);
+ reset();g=start();wait_ready(g);assert(snap(g).gain_db==18&&snap(g).persisted_gain_db==18);audio_rta_stop(g);settle();
+ writes=nvs_sets;audio_rta_controls(g,false,false,42,false);assert(nvs_sets==writes);
+ reset();slow_start=1;g=start();audio_rta_controls(g,true,false,42,false);audio_rta_stop(g);settle();assert(nvs_sets==writes&&"exit before processing must not persist a queued selection");
  for(int i=0;i<30;i++){reset();g=start();usleep(i%3*1000);audio_rta_stop(g);audio_rta_stop(g);settle();}
  reset();allow_kernel_reap=0;g=start();usleep(10000);audio_rta_stop(g);
  for(int i=0;i<2000 && (!audio_rta_closed() || !self_delete_waiting);i++)usleep(1000);

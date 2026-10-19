@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #endif
 #include <string.h>
+#include "audio_rta_gain_store.inc"
 #define INTERNAL (MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)
 #define EXTERNAL (MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)
 typedef struct {
@@ -26,11 +27,13 @@ typedef struct {
  int16_t *pcm;
  bool stop,freeze,slow,reset;
  int gain;
+ bool gain_selected;
  TaskHandle_t worker;
  uint32_t generation;
  size_t initial_internal;
  int64_t last_yield_us,last_diag_us;
  uint32_t last_frames;
+ size_t snapshot_samples;
 } session_t;
 static portMUX_TYPE mux=portMUX_INITIALIZER_UNLOCKED;
 static session_t *owner;
@@ -74,8 +77,8 @@ static bool work_checkpoint(void*arg){
  return true;
 }
 static void reset_history(session_t*c,bool keep_display){
- audio_rta_dsp_reset(c->dsp);c->last_frames=0;
- portENTER_CRITICAL(&mux);latest.history_resets++;if(!keep_display)latest.spectrum.valid=0;portEXIT_CRITICAL(&mux);
+ audio_rta_dsp_reset(c->dsp);c->last_frames=0;c->snapshot_samples=2400;
+ portENTER_CRITICAL(&mux);latest.history_resets++;if(keep_display)latest.state=RTA_FROZEN;else latest.spectrum.valid=0;portEXIT_CRITICAL(&mux);
 }
 static void record_work(session_t*c,int64_t start){
  uint32_t elapsed=(uint32_t)(esp_timer_get_time()-start);
@@ -96,14 +99,21 @@ static void record_work(session_t*c,int64_t start){
 }
 static void session_worker(void *arg){
  session_t*c=arg;ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
- int error=ESP_OK,actual_gain=0;bool was_frozen=false;c->last_diag_us=esp_timer_get_time();
+ int error=ESP_OK,actual_gain=-1;bool was_frozen=false;
+ int persisted,store_error;audio_rta_store_stage_t store_stage;
+ int saved_gain=gain_load(&persisted,&store_error,&store_stage);
+ portENTER_CRITICAL(&mux);if(c->gain<0)c->gain=saved_gain;latest.requested_gain_db=c->gain;latest.persisted_gain_db=persisted;latest.gain_store_error=store_error;latest.gain_store_stage=store_stage;portEXIT_CRITICAL(&mux);
+ if(store_error)ESP_LOGE("AUDIO_RTA","gain load stage=%d error=%d",store_stage,store_error);
+ c->last_diag_us=esp_timer_get_time();
  if(stopping(c))goto finish;
  memory_boundary("before_dsp_prepare");
  /* Prepare before enabling RX: software-float table work must not overflow it. */
  if(!audio_rta_dsp_prepare(c->dsp,prepare_checkpoint,c)||stopping(c))goto finish;
  memory_boundary("before_i2s");
- error=audio_rta_board_open(c->board,c->bus,0);
+ portENTER_CRITICAL(&mux);actual_gain=c->gain;portEXIT_CRITICAL(&mux);
+ error=audio_rta_board_open(c->board,c->bus,actual_gain);
  if(error)goto finish;
+ portENTER_CRITICAL(&mux);latest.gain_db=actual_gain;portEXIT_CRITICAL(&mux);
  size_t now=heap_caps_get_free_size(INTERNAL);
  size_t delta=c->initial_internal>now?c->initial_internal-now:0;
  portENTER_CRITICAL(&mux);latest.internal_delta=delta;portEXIT_CRITICAL(&mux);
@@ -116,14 +126,22 @@ static void session_worker(void *arg){
    * budget and a tick block without an intervening capture read. */
   bool yield_due=esp_timer_get_time()-c->last_yield_us>=50000;
   int64_t work_start=esp_timer_get_time();
-  bool frozen,slow,reset;int gain;
-  portENTER_CRITICAL(&mux);frozen=c->freeze;slow=c->slow;gain=c->gain;reset=c->reset;c->reset=false;portEXIT_CRITICAL(&mux);
-  if(gain!=actual_gain){
+  bool frozen,slow,reset,selected;int gain;
+  portENTER_CRITICAL(&mux);frozen=c->freeze;slow=c->slow;gain=c->gain;reset=c->reset;c->reset=false;selected=c->gain_selected;c->gain_selected=false;portEXIT_CRITICAL(&mux);
+  bool gain_changed=gain!=actual_gain;
+  if(gain_changed){
    if((error=audio_rta_board_gain(c->board,gain))){record_work(c,work_start);break;}
-   actual_gain=gain;reset_history(c,false);frozen=false;
-   portENTER_CRITICAL(&mux);c->freeze=false;latest.spectrum.valid=0;latest.gain_db=gain;portEXIT_CRITICAL(&mux);
+   actual_gain=gain;
+   portENTER_CRITICAL(&mux);latest.gain_db=gain;portEXIT_CRITICAL(&mux);
   }
-  if(was_frozen&&!frozen)reset_history(c,false);
+  /* One reset for combined gain+resume. Frozen keeps its visual spectrum even
+   * when the codec changes; a later Resume must build entirely fresh windows. */
+  if(gain_changed||(was_frozen&&!frozen))reset_history(c,frozen);
+  if(selected&&gain==actual_gain){
+   gain_save(gain,&persisted,&store_error,&store_stage);
+   portENTER_CRITICAL(&mux);latest.persisted_gain_db=persisted;latest.gain_store_error=store_error;latest.gain_store_stage=store_stage;portEXIT_CRITICAL(&mux);
+   if(store_error)ESP_LOGE("AUDIO_RTA","gain save stage=%d error=%d",store_stage,store_error);
+  }
   was_frozen=frozen;
   if(reset)audio_rta_dsp_reset_peaks(c->dsp);
   audio_rta_dsp_slow(c->dsp,slow);
@@ -162,12 +180,20 @@ static void session_worker(void *arg){
   unsigned phase;uint32_t slices,restarts;
   audio_rta_dsp_work_status(c->dsp,&phase,&slices,&restarts);
   portENTER_CRITICAL(&mux);latest.work_phase=phase;latest.work_slices=slices;latest.analysis_restarts=restarts;portEXIT_CRITICAL(&mux);
-  audio_rta_snapshot_t copy={0};if(processed)audio_rta_dsp_snapshot(c->dsp,&copy.spectrum);
+  /* UI consumes at 50 ms. Peak rescanning and logarithms on all ~94 reads/s
+   * added no visible updates. Keep ingest/analysis on every read; publish a
+   * complete scalar spectrum each >=2400 input samples (~50 ms, block-rounded).
+   * Control/gap resets force the next fresh publication, not stale live bars. */
+  c->snapshot_samples+=count;
+  bool publish=processed&&c->snapshot_samples>=2400;
+  audio_rta_snapshot_t copy={0};if(publish)audio_rta_dsp_snapshot(c->dsp,&copy.spectrum);
   uint32_t process_elapsed=(uint32_t)(esp_timer_get_time()-process_start);
   portENTER_CRITICAL(&mux);latest.process_us+=process_elapsed;
   if(process_elapsed>latest.max_process_us)latest.max_process_us=process_elapsed;
   portEXIT_CRITICAL(&mux);
   if(!processed||stopping(c)){record_work(c,work_start);break;}
+  if(!publish){record_work(c,work_start);if(yield_due&&!prepare_checkpoint(c))break;continue;}
+  c->snapshot_samples=0;
   copy.timestamp_us=read_start+read_elapsed; /* latest input boundary, not delayed publication */
   portENTER_CRITICAL(&mux);
   latest.analysis_frames+=copy.spectrum.frames-c->last_frames;c->last_frames=copy.spectrum.frames;
@@ -195,14 +221,14 @@ esp_err_t audio_rta_start(void*bus,uint32_t*generation){
  if(!bus||!generation)return ESP_ERR_INVALID_ARG;
  portENTER_CRITICAL(&mux);
  if(busy){portEXIT_CRITICAL(&mux);return ESP_ERR_INVALID_STATE;}
- busy=true;uint32_t gen=++next_generation;memset(&latest,0,sizeof(latest));latest.generation=gen;latest.state=RTA_STARTING;
+ busy=true;uint32_t gen=++next_generation;memset(&latest,0,sizeof(latest));latest.generation=gen;latest.state=RTA_STARTING;latest.gain_db=-1;latest.requested_gain_db=-1;latest.persisted_gain_db=-1;
  latest.spectrum.rms=latest.spectrum.sample_peak=AUDIO_RTA_FLOOR;
  portEXIT_CRITICAL(&mux);
  *generation=gen;
  size_t before=heap_caps_get_free_size(INTERNAL);
  session_t*c=heap_caps_calloc(1,sizeof(*c),INTERNAL);
  if(!c)goto fail;
- c->generation=gen;c->bus=bus;c->initial_internal=before;
+ c->generation=gen;c->bus=bus;c->gain=-1;c->initial_internal=before;
  c->board=heap_caps_calloc(1,audio_rta_board_bytes(),INTERNAL);
  c->dsp=heap_caps_malloc(audio_rta_dsp_bytes(),EXTERNAL);
  c->pcm=heap_caps_malloc(1024,EXTERNAL);
@@ -224,13 +250,28 @@ fail:
 bool audio_rta_snapshot(uint32_t gen,audio_rta_snapshot_t*copy){
  if(!copy)return false;
  portENTER_CRITICAL(&mux);bool ok=gen==latest.generation;if(ok)*copy=latest;portEXIT_CRITICAL(&mux);
- if(ok)copy->stale=copy->state==RTA_RUNNING&&copy->sequence&&esp_timer_get_time()-copy->timestamp_us>500000;
+ if(ok){
+  int64_t elapsed=esp_timer_get_time()-copy->timestamp_us;
+  copy->stale=copy->state==RTA_RUNNING&&copy->sequence&&elapsed>500000;
+  /* Age the copied display only. Frozen is immutable; live bands must not
+   * survive their 500ms freshness bound between decimated publications. */
+  if(copy->state==RTA_RUNNING&&copy->sequence&&elapsed>0){
+   uint32_t extra=elapsed>500000?24001:(uint32_t)(elapsed*48/1000);
+   for(unsigned b=0;b<24;b++){
+    uint64_t age=(uint64_t)copy->spectrum.age[b]+extra;
+    copy->spectrum.age[b]=age>UINT32_MAX?UINT32_MAX:(uint32_t)age;
+    if(age>24000)copy->spectrum.valid&=~(1u<<b);
+   }
+  }
+ }
  return ok;
 }
 void audio_rta_controls(uint32_t gen,bool freeze,bool slow,int gain,bool reset){
  portENTER_CRITICAL(&mux);
- if(owner&&owner->generation==gen&&!owner->stop&&gain>=0&&gain<=42&&gain%6==0){
-  owner->freeze=freeze;owner->slow=slow;owner->gain=gain;owner->reset|=reset;
+ if(owner&&owner->generation==gen&&!owner->stop&&(gain==-1||gain_valid(gain))){
+  owner->freeze=freeze;owner->slow=slow;
+  if(gain>=0&&gain!=owner->gain){owner->gain=gain;owner->gain_selected=true;latest.requested_gain_db=gain;}
+  owner->reset|=reset;
  }
  portEXIT_CRITICAL(&mux);
 }

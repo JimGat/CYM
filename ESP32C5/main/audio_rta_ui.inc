@@ -69,7 +69,7 @@ static void rta_chart_event(lv_event_t*e){
  if(lv_event_get_code(e)==LV_EVENT_DRAW_MAIN){
   lv_draw_ctx_t*ctx=lv_event_get_draw_ctx(e);
   lv_draw_rect_dsc_t rect;lv_draw_rect_dsc_init(&rect);rect.bg_color=lv_color_hex(0x080c14);rect.border_width=0;rect.radius=0;
-  lv_draw_rect(ctx,&rect,&a);
+  /* Opaque style supplies background and truthful COVER_CHECK to pinned LVGL. */
   rta_plot_text(ctx,a.x1+3,a.y1+1,lv_area_get_width(&a)-6,"24 log bands / uncalibrated dBFS");
   rta_plot_text(ctx,a.x1+2,top-4,30,"0");rta_plot_text(ctx,a.x1+1,top+h/2-7,31,"-45");rta_plot_text(ctx,a.x1+1,bottom-12,31,"-90");
   for(unsigned b=0;b<24;b++){
@@ -89,7 +89,7 @@ static void rta_chart_event(lv_event_t*e){
   int b=(p.x-left)*24/w;if(b<0)b=0;if(b>23)b=23;if(b!=rta_selected){rta_selection_damage(rta_selected);rta_selected=b;rta_selection_damage(b);rta_detail_update();}
  }
 }
-static void rta_send(bool reset){audio_rta_controls(rta_generation,rta_frozen,rta_slow,rta_gain,reset);}
+static void rta_send(bool reset){audio_rta_controls(rta_generation,rta_frozen||rta_overlay!=NULL,rta_slow,rta_gain,reset);}
 static lv_obj_t*rta_button(lv_obj_t*parent,const char*text,int x,int y,int w,lv_event_cb_t cb,int value){
  lv_obj_t*b=lv_btn_create(parent);lv_obj_set_pos(b,x,y);lv_obj_set_size(b,w,44);
  lv_obj_set_style_bg_color(b,UI_ACCENT_BLUE,0);lv_obj_set_style_bg_color(b,lv_color_lighten(UI_ACCENT_BLUE,50),LV_STATE_PRESSED);
@@ -99,8 +99,9 @@ static lv_obj_t*rta_button(lv_obj_t*parent,const char*text,int x,int y,int w,lv_
 }
 static void rta_gain_choose(lv_event_t*e){
  int gain=(int)(intptr_t)lv_event_get_user_data(e);
- if(gain>=0){rta_gain=gain;rta_frozen=false;lv_label_set_text(rta_freeze_label,"Freeze");rta_send(false);}
+ if(gain>=0)rta_gain=gain;
  if(rta_overlay){lv_obj_del(rta_overlay);rta_overlay=NULL;}
+ rta_send(false);
 }
 static void rta_control(lv_event_t*e){
  int key=(int)(intptr_t)lv_event_get_user_data(e);
@@ -112,9 +113,9 @@ static void rta_control(lv_event_t*e){
   rta_overlay=lv_obj_create(function_page);int w=lv_obj_get_width(function_page)-24,h=lv_obj_get_height(function_page)-54;
   lv_obj_set_size(rta_overlay,w,h);lv_obj_set_pos(rta_overlay,12,40);lv_obj_set_style_bg_color(rta_overlay,lv_color_hex(0x111827),0);lv_obj_set_style_bg_opa(rta_overlay,LV_OPA_COVER,0);
   lv_obj_set_style_pad_all(rta_overlay,8,0);lv_obj_set_scroll_dir(rta_overlay,LV_DIR_VER);lv_obj_set_scrollbar_mode(rta_overlay,LV_SCROLLBAR_MODE_AUTO);
-  lv_obj_t*l=lv_label_create(rta_overlay);lv_label_set_text(l,"Manual mic gain (no AGC)\nSession only; resets analysis");lv_obj_set_width(l,w-36);lv_obj_set_style_text_font(l,&lv_font_montserrat_14,0);
+  lv_obj_t*l=lv_label_create(rta_overlay);lv_label_set_text(l,"Manual mic gain (no AGC)\nSaved after codec applies; pauses analysis");lv_obj_set_width(l,w-36);lv_obj_set_style_text_font(l,&lv_font_montserrat_14,0);
   for(int i=0;i<8;i++){char text[20];snprintf(text,sizeof(text),"%d dB",i*6);rta_button(rta_overlay,text,(i%2)*(w-32)/2,48+(i/2)*48,(w-40)/2,rta_gain_choose,i*6);}
-  rta_button(rta_overlay,"Close",0,244,w-36,rta_gain_choose,-1);return;
+  rta_button(rta_overlay,"Close",0,244,w-36,rta_gain_choose,-1);rta_send(false);return;
  }
  lv_label_set_text(rta_speed_label,rta_slow?"Slow":"Fast");rta_send(false);
 }
@@ -133,14 +134,16 @@ static void rta_refresh(lv_timer_t*t){
   rta_model=next;return;
  }
  bool metadata=lv_tick_elaps(rta_metadata_tick)>=250||next.state!=rta_model.state||
-  next.stale!=rta_model.stale||next.gain_db!=rta_model.gain_db||next.spectrum.valid!=rta_model.spectrum.valid||!rta_model.sequence;
+  next.stale!=rta_model.stale||next.gain_db!=rta_model.gain_db||next.gain_store_error!=rta_model.gain_store_error||next.persisted_gain_db!=rta_model.persisted_gain_db||next.spectrum.valid!=rta_model.spectrum.valid||!rta_model.sequence;
  for(unsigned b=0;b<24;b++)rta_band_damage(b,&rta_model.spectrum,&next.spectrum);
  rta_model=next;
  if(metadata){
-  rta_metadata_tick=lv_tick_get();char text[160];
+  rta_metadata_tick=lv_tick_get();char text[160],applied[24];
+  if(rta_model.gain_db<0)snprintf(applied,sizeof(applied),"gain loading");
+  else snprintf(applied,sizeof(applied),"gain %d dB",rta_model.gain_db);
   if(!rta_model.sequence){
    const char*state=rta_model.state==RTA_FROZEN?"Frozen":rta_model.state==RTA_STOPPING||rta_model.state==RTA_CLOSED?"Stopping":"Starting";
-   snprintf(text,sizeof(text),"%s 48k input / gain %d dB\nWaiting for fresh analysis windows",state,rta_model.gain_db);
+   snprintf(text,sizeof(text),"%s 48k input / %s\nWaiting for fresh analysis windows",state,applied);
    rta_text(rta_status,text);
   }
   else{
@@ -150,7 +153,9 @@ static void rta_refresh(lv_timer_t*t){
    snprintf(text,sizeof(text),"%s RMS %.1f Pk %.1f dBFS\n%s%lu / Gain %d dB",state,(double)rta_model.spectrum.rms,(double)rta_model.spectrum.sample_peak,rta_model.spectrum.clips?"CLIP ":"Clips ",(unsigned long)rta_model.spectrum.clips,rta_model.gain_db);
    rta_text(rta_status,text);
   }
-  snprintf(text,sizeof(text),"Gain %d",rta_model.gain_db);rta_text(rta_gain_label,text);rta_detail_update();
+  if(rta_model.gain_db<0)snprintf(text,sizeof(text),"Gain loading");
+  else snprintf(text,sizeof(text),"Gain %d%s",rta_model.gain_db,rta_model.persisted_gain_db==rta_model.gain_db?" saved":rta_model.gain_store_error?" unsaved":"");
+  rta_text(rta_gain_label,text);rta_detail_update();
  }
 }
 static void show_audio_rta(void){
@@ -158,7 +163,7 @@ static void show_audio_rta(void){
  g_screen_stop_fn = audio_rta_ui_stop;
  g_screen_back_fn = g_home_layout_4cat ? show_cat_tools : show_main_tiles;
  apply_menu_bg();
- memset(&rta_model,0,sizeof(rta_model));rta_frozen=false;rta_slow=false;rta_gain=0;rta_metadata_tick=lv_tick_get();
+ memset(&rta_model,0,sizeof(rta_model));rta_frozen=false;rta_slow=false;rta_gain=-1;rta_metadata_tick=lv_tick_get();
  /* Existing page title is measured, never replaced or overdrawn. */
  lv_obj_update_layout(function_page);int title_h=lv_obj_get_height(lv_obj_get_child(function_page,0));
  int w=lv_obj_get_content_width(function_page),h=lv_obj_get_content_height(function_page)-title_h-4;bool land=w>h;
@@ -166,9 +171,9 @@ static void show_audio_rta(void){
  lv_obj_set_style_pad_all(rta_body,0,0);lv_obj_set_style_border_width(rta_body,0,0);lv_obj_set_style_bg_color(rta_body,lv_color_hex(0x080c14),0);lv_obj_set_style_bg_opa(rta_body,LV_OPA_COVER,0);lv_obj_set_style_text_color(rta_body,lv_color_white(),0);lv_obj_set_style_text_font(rta_body,&lv_font_montserrat_14,0);lv_obj_clear_flag(rta_body,LV_OBJ_FLAG_SCROLLABLE);
  int width=w-8,status_h=36,detail_h=36,control_h=land?44:92,plot_h=h-status_h-detail_h-control_h-12;
  rta_status=lv_label_create(rta_body);lv_obj_set_pos(rta_status,2,0);lv_obj_set_size(rta_status,width-4,status_h);lv_label_set_long_mode(rta_status,LV_LABEL_LONG_WRAP);
- rta_chart=lv_obj_create(rta_body);lv_obj_remove_style_all(rta_chart);lv_obj_set_pos(rta_chart,0,status_h+2);lv_obj_set_size(rta_chart,width,plot_h);lv_obj_add_flag(rta_chart,LV_OBJ_FLAG_CLICKABLE);lv_obj_clear_flag(rta_chart,LV_OBJ_FLAG_SCROLLABLE);lv_obj_add_event_cb(rta_chart,rta_chart_event,LV_EVENT_ALL,NULL);
+ rta_chart=lv_obj_create(rta_body);lv_obj_remove_style_all(rta_chart);lv_obj_set_style_bg_color(rta_chart,lv_color_hex(0x080c14),0);lv_obj_set_style_bg_opa(rta_chart,LV_OPA_COVER,0);lv_obj_set_pos(rta_chart,0,status_h+2);lv_obj_set_size(rta_chart,width,plot_h);lv_obj_add_flag(rta_chart,LV_OBJ_FLAG_CLICKABLE);lv_obj_clear_flag(rta_chart,LV_OBJ_FLAG_SCROLLABLE);lv_obj_add_event_cb(rta_chart,rta_chart_event,LV_EVENT_ALL,NULL);
  rta_detail=lv_label_create(rta_body);lv_obj_set_pos(rta_detail,2,status_h+plot_h+4);lv_obj_set_size(rta_detail,width-4,detail_h);lv_label_set_long_mode(rta_detail,LV_LABEL_LONG_WRAP);
- const char*labels[]={"Freeze","Fast","Reset Peaks","Gain 0"};lv_obj_t**dest[]={&rta_freeze_label,&rta_speed_label,NULL,&rta_gain_label};
+ const char*labels[]={"Freeze","Fast","Reset Peaks","Gain loading"};lv_obj_t**dest[]={&rta_freeze_label,&rta_speed_label,NULL,&rta_gain_label};
  for(int i=0;i<4;i++){int cols=land?4:2,bw=(width-(cols-1)*4)/cols,x=(i%cols)*(bw+4),y=h-control_h+(i/cols)*48;lv_obj_t*l=rta_button(rta_body,labels[i],x,y,bw,rta_control,i);if(dest[i])*dest[i]=l;}
  esp_err_t rc=audio_rta_start(ws_c5_35_i2c_bus(),&rta_generation);
  if(rc){rta_model.state=RTA_ERROR;rta_model.error=rc;rta_error_text(rc);rta_detail_update();return;}
