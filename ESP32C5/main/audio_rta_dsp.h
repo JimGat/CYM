@@ -29,3 +29,11 @@ void audio_rta_dsp_slow(void *memory,bool slow);
 void audio_rta_dsp_reset_peaks(void *memory);
 double audio_rta_dsp_edge(unsigned edge);
 double audio_rta_dsp_filter(double frequency);
+
+/* Runtime single-owner path. Ingest never starts an FFT. Between bounded work
+ * calls the owner drains input and handles controls/stop. Do not mix this path
+ * with synchronous push on the same history. No partial analysis is published.
+ * Status is telemetry only; phases 0..6: idle/copy/window/reverse/FFT/power/commit. */
+bool audio_rta_dsp_ingest(void *memory,const int16_t *pcm,size_t count,bool (*checkpoint)(void *),void *arg);
+bool audio_rta_dsp_work(void *memory);
+void audio_rta_dsp_work_status(void *memory,unsigned *phase,uint32_t *slices,uint32_t *restarts);

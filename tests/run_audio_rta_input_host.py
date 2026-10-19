@@ -45,6 +45,8 @@ port=next(s for s in life if '#define portMUX_TYPE' in s)
 start=port.index('static int64_t esp_timer_get_time('); end=port.index('\n',start)
 port=port[:start]+ 'static int64_t simulated_us; static void advance_to(int64_t); static void control_tick(void); static int64_t esp_timer_get_time(void){advance_to(simulated_us+30);control_tick();return simulated_us;}' +port[end:]
 port=port.replace('static void vTaskDelay(unsigned n){usleep(n*1000);}', 'static void vTaskDelay(unsigned n){advance_to(simulated_us+n*10000);}')
+port=port.replace('static bool cym_debug_enabled(void){return false;}', 'static bool debug_enabled=true; static bool cym_debug_enabled(void){return debug_enabled;}')
+port=port.replace('#define ESP_LOGI(...) ((void)0)', '#define ESP_LOGI(...) capture_log(__VA_ARGS__)\nstatic void capture_log(const char*,const char*,...);')
 (D/'audio_rta_host_port.h').write_text('#pragma once\n'+port)
 (D/'freertos/FreeRTOS.h').write_text('#include "audio_rta_host_port.h"\n')
 (D/'freertos/task.h').write_text('#include "audio_rta_host_port.h"\n')
@@ -78,6 +80,27 @@ static int64_t start_us; static uint64_t pcm_index;
 static int gap_stage,control_stage,observed_resets,held_checked;
 static audio_rta_snapshot_t held;
 static int fresh_high,fresh_bass;
+static int64_t steady_start; static uint64_t steady_samples; static unsigned steady_overruns;
+static unsigned cost_calls[4],diag_lines,high_updates,bass_updates;
+static uint64_t high_end,bass_end;static unsigned stop_sequence,stop_phase;
+static void capture_log(const char*tag,const char*fmt,...){
+ (void)tag;if(!strstr(fmt,"diag "))return;
+ assert(debug_enabled);char line[1536];va_list args;va_start(args,fmt);vsnprintf(line,sizeof(line),fmt,args);va_end(args);
+ assert(strstr(line,"slices=")&&strstr(line,"phase=")&&strstr(line,"max_slice_us="));diag_lines++;
+ if(mode>=15)advance_to(simulated_us+200);
+}
+/* Aggregate-calibrated stress envelope, NOT measured per-phase C5 CPU cost.
+ * Captured max_process=66324us includes a 10ms tick. 1us/q30 gives
+ * 53248us full window+FFT plus ingest/scalars/snapshot. Bass charged by
+ * actual operation counts; preemption is separately injected. */
+void audio_rta_test_cost(unsigned kind){
+ if(mode<15||!rx||!rx->on)return;
+ cost_calls[kind]++;
+ unsigned cost=kind==0?1:kind==1?700:kind==2?50:200;
+ if(mode==17&&kind==0)cost=2; /* overload: freshness may fail, capture may not */
+ advance_to(simulated_us+cost);
+}
+
 
 static int xQueueReceive(queue_t*q,void*out,unsigned ticks);
 static int xQueueReceiveFromISR(queue_t*q,void*out,BaseType_t*y){(void)y;assert(q->count);memcpy(out,&q->items[0],sizeof(void*));memmove(q->items,q->items+1,(--q->count)*sizeof(void*));return 1;}
@@ -112,7 +135,7 @@ static void eof_event(i2s_chan_handle_t h){
  int slot=h->eof++%4;
  if(h->dir==I2S_DIR_RX){
   int16_t*p=(int16_t*)h->buffers[slot];
-  for(int i=0;i<256;i++,pcm_index++)p[i]=(int16_t)(10000*sin(2*3.141592653589793*1000*pcm_index/48000));
+  for(int i=0;i<256;i++,pcm_index++)p[i]=(int16_t)((10000*sin(2*3.141592653589793*1000*pcm_index/48000)+5000*sin(2*3.141592653589793*70*pcm_index/48000)));
  }
  gdma_event_data_t event={.rx_eof_desc_addr=(uintptr_t)&h->desc[slot],.tx_eof_desc_addr=(uintptr_t)&h->desc[slot]};
  if(h->dir==I2S_DIR_RX){if(h->queue.count==3)overflow_events++;i2s_dma_rx_callback(NULL,&event,h);}
@@ -169,6 +192,26 @@ static void control_tick(void){
  if(!rx||!rx->on||!owner)return;
  if(!start_us)start_us=simulated_us;
  int64_t elapsed=simulated_us-start_us;
+ if(mode>=25&&!control_stage){unsigned p;uint32_t a,b;audio_rta_dsp_work_status(owner->dsp,&p,&a,&b);
+  if(p==(unsigned)(mode==25?2:mode==26?4:6)){
+   control_stage=1;
+   audio_rta_controls(latest.generation,mode!=26,false,mode==26?6:0,false);
+  }
+ }
+ if((mode==25||mode==27)&&control_stage==1&&latest.state==RTA_FROZEN){held=latest;control_stage=2;}
+ if((mode==25||mode==27)&&control_stage==2){
+  assert(latest.state==RTA_FROZEN&&latest.sequence==held.sequence&&!memcmp(&latest.spectrum,&held.spectrum,sizeof(held.spectrum)));
+  held_checked=1;
+  if(simulated_us-held.timestamp_us>150000){control_stage=3;audio_rta_controls(latest.generation,false,true,mode==27?6:0,false);}
+ }
+ if((mode>=19&&mode<=24)&&!stopped){unsigned p;uint32_t slices,restarts;audio_rta_dsp_work_status(owner->dsp,&p,&slices,&restarts);
+  if(p==(unsigned)(mode-18)){stop_phase=p;stop_sequence=latest.sequence;stopped=1;audio_rta_stop(latest.generation);}
+ }
+ if((mode==15||mode==16||mode==18||mode>=25)&&elapsed>2000000){
+  assert(latest.spectrum.valid==0xffffff&&"all bands must STAY fresh during sustained measured-cost work");
+ }
+ if(latest.spectrum.valid&(1u<<9)){uint64_t end=latest.spectrum.samples-latest.spectrum.age[9];if(end!=high_end){high_end=end;high_updates++;}}
+ if(latest.spectrum.valid&1){uint64_t end=latest.spectrum.samples-latest.spectrum.age[0];if(end!=bass_end){bass_end=end;bass_updates++;}}
  /* Check histories, not read-call counts: no valid stale windows after gaps. */
  if(latest.history_resets>(unsigned)observed_resets){
   observed_resets=latest.history_resets;
@@ -189,15 +232,39 @@ static void control_tick(void){
   if(control_stage==2&&elapsed>1300000){assert(latest.state==RTA_FROZEN&&latest.sequence==held.sequence&&!memcmp(&latest.spectrum,&held.spectrum,sizeof(held.spectrum)));held_checked=1;control_stage=3;audio_rta_controls(latest.generation,false,true,0,false);}
  }
  if(mode==7&&!control_stage&&elapsed>1000000){control_stage=1;audio_rta_controls(latest.generation,true,true,6,true);}
- if(elapsed>3000000&&!stopped){stopped=1;audio_rta_stop(latest.generation);}
+ if(mode>=15&&elapsed>1500000&&!steady_start){steady_start=simulated_us;steady_samples=latest.input_samples;steady_overruns=latest.overruns;}
+ if(mode==16&&elapsed>1600000&&elapsed<9000000&&gap_stage<(elapsed-1600000)/400000){gap_stage++;advance_to(simulated_us+(gap_stage%3==0?6000:2000));}
+ if(elapsed>(mode>=15?12000000:3000000)&&!stopped){stopped=1;audio_rta_stop(latest.generation);}
 }
-int main(int argc,char**argv){assert(argc==3);mode=atoi(argv[1]);phase=atoi(argv[2]);uint32_t gen;
+int main(int argc,char**argv){assert(argc==3);mode=atoi(argv[1]);phase=atoi(argv[2]);if(mode==18)debug_enabled=false;uint32_t gen;
  assert(!audio_rta_start((void*)1,&gen));
  for(int i=0;i<10000;i++){if(audio_rta_closed()&&!live_tasks)break;usleep(1000);}
  assert(audio_rta_closed()&&!live_tasks&&!live_alloc&&!live_channels&&!live_dev);
  audio_rta_snapshot_t s;assert(audio_rta_snapshot(gen,&s));
  printf("mode=%d phase=%d simulated_us=%lld reads=%llu overrun_batches=%u ISR_overflows=%d resets=%u sequence=%u history=%llu frames=%u valid=%06x rms=%f peak=%f\n",mode,phase,(long long)simulated_us,(unsigned long long)s.read_calls,s.overruns,overflow_events,s.history_resets,s.sequence,(unsigned long long)s.spectrum.samples,s.spectrum.frames,s.spectrum.valid,s.spectrum.rms,s.spectrum.sample_peak);
  fflush(stdout);
+ if((mode>=19&&mode<=24)){assert(stop_phase==(unsigned)(mode-18)&&s.sequence==stop_sequence&&s.state==RTA_CLOSED&&"stop at every coroutine phase must publish no partial work");return 0;}
+ if(mode>=15){
+  assert(mode==18?diag_lines==0:diag_lines>=10);
+  assert(fresh_high&&"higher bands must become live BEFORE bass warmup completes");
+  if(mode==25||mode==27)assert(held_checked&&control_stage==3&&s.history_resets>s.overruns);
+  if(mode==26||mode==27)assert(control_stage&&s.gain_db==6&&s.history_resets>s.overruns);
+  assert(high_updates>10&&bass_updates>10&&"both FFT groups must continue producing new windows");
+  assert(s.spectrum.band[4]>-25&&s.spectrum.band[13]>-25&&"actual bass and 1kHz tones, not fabricated validity");
+  double duration=(simulated_us-steady_start)/1e6,rate=(s.input_samples-steady_samples)/duration;
+  printf("COST kind_counts=%u,%u,%u,%u returned_per_s=%.2f steady_overruns=%u fresh_bass=%d max_process=%u high_updates=%u bass_updates=%u age_high=%u age_bass=%u max_slice=%u\n",cost_calls[0],cost_calls[1],cost_calls[2],cost_calls[3],rate,s.overruns-steady_overruns,fresh_bass,s.max_process_us,high_updates,bass_updates,s.spectrum.age[9],s.spectrum.age[0],s.max_slice_us);fflush(stdout);
+  assert(cost_calls[0]>100000&&cost_calls[1]>100&&"actual numeric hot paths must be charged");
+  assert(s.overruns==steady_overruns&&"bounded DSP must drain RX between measured-cost work slices, without sustained gaps");
+  assert(rate>47500&&rate<48500&&"input consumption must match production over steady bass/full work");
+  if(mode==17){
+   assert(fresh_bass&&s.analysis_frames>30&&"overload must not starve bass or stop analysis");
+   for(int i=0;i<24;i++)if(s.spectrum.age[i]>24000)assert(!(s.spectrum.valid&(1u<<i))&&"overload must honestly invalidate stale live bands");
+  }else{
+   assert(s.spectrum.valid==0xffffff&&fresh_bass&&"bass must warm and keep updating, not just high transient");
+   for(int i=0;i<24;i++)assert(s.spectrum.age[i]<=24000&&"live band must reflect a window less than 500ms old");
+  }
+  return 0;
+ }
  if(mode==3||mode==13||mode==14){assert(fault_injected&&s.state==RTA_ERROR&&s.error==ESP_ERR_INVALID_STATE&&"real SDK invalid-state must terminate, not masquerade as recoverable overflow");return 0;}
  if(mode>=10&&mode<=12){assert(fault_injected&&s.state==RTA_ERROR&&s.error==(mode==11?ESP_ERR_TIMEOUT:ESP_FAIL));return 0;}
  assert(s.sequence>50&&s.spectrum.samples>=4096&&s.spectrum.valid&&s.spectrum.frames>0&&s.spectrum.rms>-20&&s.spectrum.sample_peak>-15&&fresh_high&&"recover and process actual nonzero PCM, not fabricated bands");
@@ -214,9 +281,22 @@ int main(int argc,char**argv){assert(argc==3);mode=atoi(argv[1]);phase=atoi(argv
 }
 
 ''')
+measured=os.environ.get('CYM_RTA_MEASURED_COST')=='1'
+dsp=R/'ESP32C5/main/audio_rta_dsp.c'
+if measured:
+    source=dsp.read_text()
+    edits=[('static int32_t q30(int64_t v){','static int32_t q30(int64_t v){audio_rta_test_cost(0);'),
+           ('for(size_t i=0;i<count;i++){', 'for(size_t i=0;i<count;i++){if(!(i%256))audio_rta_test_cost(1);'),
+           ('static float db(double power){','static float db(double power){audio_rta_test_cost(2);'),
+           ('dsp_t*d=memory;*out=d->out;', 'audio_rta_test_cost(3);dsp_t*d=memory;*out=d->out;')]
+    for a,b in edits:
+        assert source.count(a)==1,(a,source.count(a))
+        source=source.replace(a,b)
+    dsp=D/'cost-dsp.c';dsp.write_text('extern void audio_rta_test_cost(unsigned);\n'+source)
 incs=[D,R/'ESP32C5/main',M/'include',M/'interface',M/'device/include',M/'device/es8311',M/'device',M/'device/priv_include']
-cmd=['cc','-std=gnu11','-O1','-g','-fsanitize=address,undefined','-pthread','-DCONFIG_CODEC_ES8311_SUPPORT=1','-include','stdlib.h',*['-I'+str(p) for p in incs],str(D/'host.c'),str(R/'ESP32C5/main/audio_rta_dsp.c'),str(M/'device/es8311/es8311.c'),str(M/'esp_codec_dev_vol.c'),'-lm','-o',str(D/'host')]
+cmd=['cc','-std=gnu11','-O1','-g','-fsanitize=address,undefined','-pthread','-DCONFIG_CODEC_ES8311_SUPPORT=1','-include','stdlib.h',*['-I'+str(p) for p in incs],str(D/'host.c'),str(dsp),str(M/'device/es8311/es8311.c'),str(M/'esp_codec_dev_vol.c'),'-lm','-o',str(D/'host')]
 (D/'compile-command.json').write_text(json.dumps(cmd))
 subprocess.run(cmd,check=True)
-results=[subprocess.run([str(D/'host'),str(mode),str(phase)]).returncode for mode in range(1,15) for phase in (0,100,2600,5200)]
+modes=range(15,28) if measured else range(1,15)
+results=[subprocess.run([str(D/'host'),str(mode),str(phase)]).returncode for mode in modes for phase in (0,100,2600,5200)]
 assert not any(results),results

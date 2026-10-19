@@ -13,6 +13,8 @@ typedef struct {
   * includes read blocking, preemption and cooperative scheduling, not CPU time. */
  uint64_t input_samples,read_calls,read_us,process_us,analysis_frames;
  uint32_t history_resets,max_read_us,max_process_us,max_work_us;
+ uint32_t work_slices,analysis_restarts,max_slice_us;
+ unsigned work_phase;
  bool stale; /* copied RUNNING data older than 500 ms; Frozen is intentional */
 } audio_rta_snapshot_t;
 esp_err_t audio_rta_start(void *shared_bus,uint32_t *generation);

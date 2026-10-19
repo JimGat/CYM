@@ -28,9 +28,10 @@ static double counted_sin(double x){trig_calls++;if(opened)runtime_trig++;return
 #undef sin
 struct audio_rta_board {int seen;};
 static int mode,open_delays,first=1,cancel_at=1,runtime_cancelled;
-static void work_clock(void){simulated_us+=2000;}
+static void cancel_processing(void);
+static void work_clock(void){simulated_us+=2000;cancel_processing();}
 static void cancel_processing(void){
- if(opened && owner && ((dsp_t*)owner->dsp)->full_count==4096 && !((dsp_t*)owner->dsp)->out.frames){runtime_cancelled=1;audio_rta_stop(latest.generation);}
+ if(opened && owner && ((dsp_t*)owner->dsp)->job_phase==4 && !((dsp_t*)owner->dsp)->out.frames){runtime_cancelled=1;audio_rta_stop(latest.generation);}
 }
 size_t audio_rta_board_bytes(void){return sizeof(audio_rta_board_t);}
 esp_err_t audio_rta_board_open(audio_rta_board_t*b,void*bus,int gain){assert(bus&&gain==0);opens++;opened=1;b->seen=trig_calls;open_delays=delays;if(mode==2)audio_rta_controls(latest.generation,true,false,0,false);return ESP_OK;}
@@ -63,7 +64,7 @@ int main(int argc,char**argv){assert(argc==2||argc==3);mode=atoi(argv[1]);if(arg
  if(mode==5)assert(s.history_resets==199 && s.spectrum.frames==0);
  if(mode==8){assert(log_lines>=2&&log_lines<=3);assert(s.spectrum.frames>0&&s.max_work_us>0&&s.read_us>0);}
  if(mode==9)assert(log_lines==0);
- if(mode==10){assert(runtime_cancelled&&reads==8&&s.sequence==7&&s.spectrum.frames==0);}
+ if(mode==10){assert(runtime_cancelled&&reads>=8&&s.sequence==(unsigned)reads-1&&s.spectrum.frames==0);}
  if(mode==7){assert(s.spectrum.valid&&s.sequence>0);
   portENTER_CRITICAL(&mux);latest.state=RTA_RUNNING;latest.timestamp_us=simulated_us;portEXIT_CRITICAL(&mux);
   assert(audio_rta_snapshot(g,&s)&&!s.stale);simulated_us+=500001;assert(audio_rta_snapshot(g,&s)&&s.stale);

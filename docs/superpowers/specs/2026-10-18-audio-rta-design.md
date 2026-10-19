@@ -329,3 +329,42 @@ The Waveshare Wiki was a placeholder when researched. Vendor specifications are 
 CYM hardware acceptance. The reference Android app advertises octave filtering and
 calibration; this initial CYM design deliberately claims neither certification nor
 acoustic calibration.
+
+
+## v3.0.26 implementation scheduling amendment
+
+Owner-approved bounded capture/analysis correction after v3.0.25 physical continuity
+failure. The session retains its one internally stacked 6144-byte worker. Immutable
+preparation remains cancellable before I2S. Runtime DSP now separates all-sample
+FIR/history/RMS ingestion from a single-owner 128-operation analysis coroutine:
+copy/mean -> window -> bit reverse -> butterflies -> band power -> atomic commit.
+After each read, analysis gets a 6 ms elapsed budget (plus at most one slice overrun).
+A due 50 ms lower-priority tick block follows drained input WITHOUT another analysis
+budget; input drains again before analysis resumes. No taskYIELD-only starvation
+workaround, extra task/TCB, DMA growth, ISR DSP or raw DMA pointer borrowing.
+
+Full/bass histories each contain two windows in PSRAM; the second window protects
+incremental immutable-copy ownership while capture advances. An exhausted copy
+margin increments copy_restarts and abandons only that analysis. Actual capture
+gaps reset the entire stream/partial job and clear live validity. Control/lifecycle
+ownership, Frozen snapshot retention, Resume/gain fresh windows and kernel-owned
+stack reclamation remain unchanged. Existing history_resets identifies continuity
+epochs; input_samples includes returned/discarded data but cannot count missing ADC
+samples. Source time uses uint64 sample arithmetic, with saturating uint32 band ages.
+
+Pending full/bass hops coalesce to the latest complete window; alternation prevents
+bass starvation. Windows/frequency coverage/filter/numeric scaling remain unchanged,
+but exact old42.667/85.333ms analysis cadence is intentionally NOT promised under
+load. Smoothing uses actual selected-window elapsed samples. A spectrum is committed
+only after all bands for its group are complete; its age refers to selected-window
+end, not completion. Bands older than 500 ms are invalidated. Higher bands need not
+wait for bass warmup. No fake/retained live bars bridge a source gap.
+
+See the v3.0.26 operator-guide section for telemetry, exact bench commands and
+acceptance. Host cost regression uses actual production arithmetic and installed
+SDK functions, calibrated to the captured AGGREGATE elapsed bound, not measured
+per-phase target CPU cost. Deliberate 2x arithmetic overload preserves input but
+can expire live validity; this is an explicit throughput qualification limit.
+No source/test/build result proves the physical report repaired. Parent owns
+independent review, all-eight final-source build/package gates and Dev publication;
+Stable/main/tags/releases and hardware acceptance are outside this worker scope.

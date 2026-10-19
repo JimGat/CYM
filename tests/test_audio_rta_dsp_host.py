@@ -31,6 +31,60 @@ class DSP(unittest.TestCase):
         s=Snapshot();self.lib.audio_rta_dsp_snapshot(self.mem,C.byref(s));return s
     def tone(self,f,amp=.5,seconds=3):
         t=np.arange(int(48000*seconds))/48000;return amp*np.sin(2*np.pi*f*t)
+    def test_incremental_overwrite_wrap_and_phase_reset(self):
+        subprocess.run(['python3',str(R/'tests/run_audio_rta_incremental_host.py')],check=True)
+    def incremental_api(self):
+        self.lib.audio_rta_dsp_ingest.argtypes=[C.c_void_p,C.POINTER(C.c_int16),C.c_size_t,C.c_void_p,C.c_void_p]
+        self.lib.audio_rta_dsp_ingest.restype=C.c_bool
+        self.lib.audio_rta_dsp_work.argtypes=[C.c_void_p];self.lib.audio_rta_dsp_work.restype=C.c_bool
+    def incremental_feed(self,x,slices=30):
+        self.incremental_api()
+        pcm=np.clip(np.rint(np.asarray(x)*32768),-32768,32767).astype(np.int16)
+        for k in range(0,len(pcm),256):
+            a=np.ascontiguousarray(pcm[k:k+256])
+            self.assertTrue(self.lib.audio_rta_dsp_ingest(self.mem,a.ctypes.data_as(C.POINTER(C.c_int16)),len(a),None,None))
+            for _ in range(slices):
+                if not self.lib.audio_rta_dsp_work(self.mem):break
+        out=Snapshot();self.lib.audio_rta_dsp_snapshot(self.mem,C.byref(out));return out
+    def test_incremental_numeric_reference_all_centres_and_alias(self):
+        # Exercise the runtime arithmetic, not just the synchronous reference API.
+        for b in range(24):
+            self.setUp();f=20*1000**((b+.5)/24)
+            out=self.incremental_feed(self.tone(f,seconds=3))
+            self.assertEqual(out.valid,0xffffff)
+            self.assertAlmostEqual(out.band[b],10*np.log10(.125),delta=1.)
+        for f in [2970,3030,12000+230,21000-40]:
+            self.setUp();out=self.incremental_feed(self.tone(f,seconds=3))
+            self.assertLess(max(out.band[:9]),-69)
+    def test_incremental_window_matches_synchronous_and_commit_is_atomic(self):
+        self.incremental_api()
+        x=self.tone(1000,seconds=4096/48000)
+        expected=self.feed(x);self.setUp()
+        got=self.incremental_feed(x,slices=0)
+        self.assertEqual(got.frames,0);self.assertEqual(got.valid,0)
+        for _ in range(1000):
+            more=self.lib.audio_rta_dsp_work(self.mem)
+            self.lib.audio_rta_dsp_snapshot(self.mem,C.byref(got))
+            self.assertIn(got.valid,[0,0xfffe00])
+            if not more:break
+        self.assertEqual(got.frames,1)
+        np.testing.assert_array_equal(got.band,expected.band)
+        self.assertEqual(list(got.age)[9:],list(expected.age)[9:])
+        self.assertEqual(got.rms,expected.rms)
+    def test_incremental_coalescing_smoothing_reset_and_floor(self):
+        self.incremental_api()
+        # 10 slices per256 samples intentionally coalesces many hops.
+        for slow in [False,True]:
+            self.setUp();self.lib.audio_rta_dsp_slow(self.mem,slow)
+            a=self.incremental_feed(self.tone(70,seconds=3)+self.tone(1000,amp=.1,seconds=3),slices=10)
+            self.assertEqual(a.valid,0xffffff)
+            b=self.incremental_feed(np.zeros(48000),slices=10)
+            if slow:slow_level=b.band[13]
+            else:fast_level=b.band[13]
+            self.lib.audio_rta_dsp_reset(self.mem)
+            z=self.incremental_feed(np.zeros(48000),slices=10)
+            self.assertEqual(z.valid,0xffffff);self.assertTrue(all(v<=-119 for v in z.band))
+        self.assertGreater(slow_level,fast_level+10)
     def test_history_reset_matches_fresh_initialization(self):
         self.lib.audio_rta_dsp_slow(self.mem,True)
         self.feed(np.tile([1.,-1.],48000))

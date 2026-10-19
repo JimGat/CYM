@@ -1,6 +1,6 @@
 # Audio RTA beta operator guide
 
-Development v3.0.25 source cycle, initially enabled only for the **Waveshare
+Development v3.0.26 source cycle, initially enabled only for the **Waveshare
 ESP32-C5-Touch-LCD-3.5 (WS-C5-35)**. This is a software-verified beta for owner bench
 testing, not hardware-qualified acoustic instrumentation. Existing co-developer
 attribution to @birolt29 is preserved.
@@ -14,7 +14,7 @@ Do not install until the parent supplies the verified published image/hash.
 
 Open https://jimgat.github.io/CYM/beta/?board=ws-c5-35 in desktop Chrome or Edge.
 Use the board's primary USB-C data port, select **Development**, and confirm
-**WS-C5-35 / v3.0.25** before installing. Leave **Erase OFF** for a normal update.
+**WS-C5-35 / v3.0.26** before installing. Leave **Erase OFF** for a normal update.
 Do not use a different board image or double-press BOOT. No device was flashed by
 the development/verification process; owner flashing and physical checks are separate.
 
@@ -313,3 +313,80 @@ alongside UI_DIAG; verify settled resources and unchanged Clock AP/mDNS/NTP,
 Client time/GPS/RTC, SD20MHz, display/touch, QR camera, audio/radio transitions.
 No microphone capture, 20Hz-20kHz acoustic fidelity, 20fps, stop bound or no-leak
 endurance is hardware-qualified by the software repair alone.
+
+
+## v3.0.26 bounded capture/analysis scheduling candidate
+
+The owner's v3.0.25 capture still showed periodic high-band flashes followed by
+continuity resets: maximum processing elapsed 66.324 ms versus nominal 21.333 ms of
+4x256-sample DMA storage. Those spans include tick sleeps/preemption, not pure CPU.
+The previous host clock charged I/O/timer calls but not arithmetic/FFT itself;
+its green result did not establish sustainable target throughput or bass readiness.
+
+This candidate keeps ONE owner and its 6144-byte INTERNAL capture stack. No second
+worker, task-control placement change, DMA enlargement or lower sample rate is used.
+After each input read, the owner ingests all contiguous PCM into FIR/history/RMS.
+It services analysis in 128-operation slices with a 6 ms elapsed analysis budget per
+read; the last slice may overrun that budget. It drains again before more analysis.
+One tick of lower-priority UI/IDLE admission is due every 50 ms; it occurs after a read,
+not concatenated with a full analysis budget. This is not a hard target latency or
+CPU-load guarantee: driver waits, preemption and debug logging still take wall time.
+TX/RX/codec configuration and the synchronous board read/write path are unchanged.
+
+Full 4096/48k and bass 2048/3k windows, all 24 exact log bands, Q27/Q30 arithmetic,
+normalization and the FIR alias filter are retained. Pending ANALYSIS hops coalesce
+when busy: the next alternating full/bass job takes the newest complete window,
+not a queue of old FFT requests. PCM is not skipped to accomplish that. Fast/Slow
+energy averaging uses the actual window-to-window input-sample interval, preserving
+125ms/1s time constants despite variable analysis cadence.85/683ms are minimum
+contiguous INPUT warmup lengths, not a guarantee that computation has finished then.
+High bands can complete before bass and must continue updating afterward.
+
+Histories reserve a second window in PSRAM so a bounded copy remains valid while
+input advances. A copy delayed until its overwrite margin is exhausted is abandoned
+and retried from a newer window, never read through invalid borrowed storage.
+No raw DMA pointers escape the installed driver. Analysis commits only on complete
+work; stop/gap/gain/Resume discard partial work. Real input gaps still clear live
+validity and require fresh contiguous histories. Frozen alone preserves its explicit
+snapshot through gaps. Window ages are based on the actual selected input end,
+not FFT completion or UI publication. Bands over 500 ms old are invalidated, not
+shown as fresh live data. PSRAM growth and target memory deltas are in the parent
+handoff; no new internal stack or large internal allocation is introduced.
+
+Additional debug-only fields: `slices`, `phase` (0 idle,1 copy,2 window,3 bit reverse,
+4 FFT,5 band power,6 commit), `copy_restarts`, `max_slice_us`. Slices/restarts are
+since the latest history reset; max_slice_us is the session maximum elapsed slice,
+including preemption. Existing resets form the source-continuity epoch; analysis
+ages are relative to that epoch. `timestamp_us` now marks the latest input read
+boundary, not delayed DSP publication. `process_us` includes ingest, bounded work,
+snapshot and scheduling checks but excludes the separate lower-priority tick pause.
+Counters do not measure ADC samples lost during a gap. No PCM/private payload is logged.
+
+### Exact owner retest request
+
+Only after the parent supplies the independently verified Dev image/hash:
+
+1. Confirm WS-C5-35/v3.0.26 and primary USB-C. At Home enter `debug on`, then
+   `debug status`; expect enabled. Open Audio RTA in landscape Modern/Tools and System.
+2. Capture at least 15 seconds with speech/music and suitable known 70 Hz/1 kHz tones.
+   Expect high bands before bass; then continuing `valid=ffffff`, history growth,
+   advancing frames and varying window ages. Samples should grow near48000/s.
+   Repeated overrun/reset growth or flashing partial/blank masks remains FAILURE.
+   Large max_slice_us indicates an unexpectedly long slice/preemption; it is not
+   exclusive CPU time. A bounded initial gap may recover with fresh warmup.
+3. While active, test Freeze/Resume and gain, then Back/Home DURING work; reopen
+   immediately and after settled idle. Frozen must hold exactly; Resume/gain must
+   warm new input. Stop must not publish partial analysis or require an LVGL lock.
+4. Enter `debug off`, `debug status`; expect disabled and no periodic diag lines.
+   Repeat the 15 second continuity check visually, then both menus/all rotations,
+   ten settled exit cycles and the mandatory 15 minute soak above. Record UI/heap/
+   DMA/task/channel observations and preserved background features.
+
+The aggregate-calibrated host cost model charges actual production q30 operations,
+FIR-input chunks and scalar/snapshot work; it fails v3.0.25 and passes this candidate
+at the captured aggregate cost envelope, including variable 2/6 ms preemptions and
+all producer phases. It does NOT contain measured per-phase target CPU timings.
+At deliberately doubled arithmetic cost, capture stays continuous but some bands
+age out; the test requires honest invalidation, not a false all-live claim. Thus
+physical sustained full-band throughput, UI responsiveness, resource settling and
+microphone/frequency response remain UNQUALIFIED until Jim's bench capture.
