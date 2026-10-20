@@ -19,6 +19,7 @@ def function(name):
     return text[start:i]
 names=['clock_mdns_release','ntp_start_mdns_and_server']
 if 'static void clock_network_release(' in s: names+=['clock_network_release','clock_network_cleanup_poll','clock_stop','clock_radio_admit','clock_radio_reset_admit','clock_defer_radio_navigation','clock_cancel_radio_navigation','clock_radio_handoff_poll','ensure_wifi_mode','ensure_ble_mode','clock_attack_route_uses_radio']
+if 'static bool ensure_ble_mode_unreserved(' in s: names.insert(names.index('ensure_ble_mode'),'ensure_ble_mode_unreserved')
 prod='\n'.join(function(n) for n in names)
 code=r"""
 #include <assert.h>
@@ -106,6 +107,9 @@ static int esp_wifi_set_band_mode(int mode) { (void)mode;radio_writes++;return 0
 #define RADIO_MODE_WIFI 1
 #define RADIO_MODE_BLE 2
 static bool nimble_port_initialized,nimble_initialized,nimble_stop_requested,wifi_initialized;
+static void *s_bt_scan_owner;
+static uint32_t s_bt_cham_token;
+static bool bt_scan_worker_busy,bt_scan_create_pending,nimble_cleanup_busy;
 static int current_radio_mode;
 typedef struct { char cc[3];int schan,nchan,policy; } wifi_country_t;
 typedef struct { int dummy; } wifi_config_t;

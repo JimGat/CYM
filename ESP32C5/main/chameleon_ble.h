@@ -69,6 +69,11 @@ typedef struct {
 
 /* One-time module init — call from app_main before first use */
 void cham_init(void);
+/* Main radio arbiter: generation scoped, never cancels foreign work. */
+bool cym_ble_cham_acquire(uint32_t token);
+void cym_ble_cham_release(uint32_t token);
+/* UI-owner lifecycle pump, also run after screen exit until teardown drains. */
+void cham_radio_poll(void);
 
 /* Pairing (numeric comparison): call from LVGL task when state == CHAM_STATE_PAIRING */
 uint32_t cham_get_passkey(void);   /* 6-digit number to display */

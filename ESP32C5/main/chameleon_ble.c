@@ -29,6 +29,7 @@
 
 #include "chameleon_ble.h"
 #include "esp_attr.h"
+#include "freertos/FreeRTOS.h"
 #include "sdkconfig.h"
 
 // PSRAM_ATTR: place in external RAM when available; no-op on no-PSRAM boards
@@ -159,8 +160,79 @@ static bool    s_batt_retry_pending = false;
 static int64_t s_batt_retry_at      = 0;
 static void s_cb_battery_retry(bool ok, const uint8_t *data, uint16_t dlen); /* forward declaration */
 
-/* 250 ms defer timer before ble_gap_connect */
-static esp_timer_handle_t s_defer_tmr = NULL;
+/* 250 ms UI-owner deferral before ble_gap_connect */
+/* Lifecycle is pumped by the UI owner, including after screen exit. No timer
+ * callback survives cancellation and no host callback restarts discovery. */
+static portMUX_TYPE s_radio_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_radio_token, s_next_token, s_defer_token;
+static unsigned s_radio_callbacks;
+static volatile bool s_scan_owned, s_scan_accept, s_scan_restart_pending;
+static volatile bool s_closing, s_connect_pending, s_connect_inflight;
+static int64_t s_defer_at;
+
+static bool s_callback_enter(void *arg, bool terminal)
+{
+    uint32_t token = (uint32_t)(uintptr_t)arg;
+    portENTER_CRITICAL(&s_radio_mux);
+    bool ok = token && token == s_radio_token && (terminal || !s_closing);
+    if (ok) ++s_radio_callbacks;
+    portEXIT_CRITICAL(&s_radio_mux);
+    return ok;
+}
+
+static void s_callback_leave(void)
+{
+    portENTER_CRITICAL(&s_radio_mux);
+    --s_radio_callbacks;
+    portEXIT_CRITICAL(&s_radio_mux);
+}
+
+static bool s_callbacks_quiet(void)
+{
+    portENTER_CRITICAL(&s_radio_mux);
+    bool quiet = s_radio_callbacks == 0;
+    portEXIT_CRITICAL(&s_radio_mux);
+    return quiet;
+}
+
+static void s_radio_busy(void)
+{
+    strlcpy(s_status_msg, "BLE busy: stop other scan/Lookout; retry", sizeof(s_status_msg));
+    s_changed = true;
+}
+
+static bool s_radio_claim(void)
+{
+    if (s_closing) { s_radio_busy(); return false; }
+    if (s_radio_token) return true;
+    if (s_next_token == UINT32_MAX) { s_radio_busy(); return false; }
+    uint32_t token = ++s_next_token;
+    if (!cym_ble_cham_acquire(token)) { s_radio_busy(); return false; }
+    // Old terminal UI flags cannot become events in a successor generation.
+    s_ev_connected = s_ev_disconnected = s_ev_cccd_ok = s_ev_error = s_ev_passkey = false;
+    portENTER_CRITICAL(&s_radio_mux);
+    s_radio_token = token;
+    portEXIT_CRITICAL(&s_radio_mux);
+    return true;
+}
+
+/* Only cancel discovery that this generation successfully started. EALREADY
+ * means our own completed/cancelled scan is quiet, never start success. */
+static bool s_scan_cancel_owned(void)
+{
+    s_scan_accept = false;
+    s_scan_restart_pending = false;
+    if (!s_scan_owned) return true;
+    int rc = ble_gap_disc_cancel();
+    if (rc != 0 && rc != BLE_HS_EALREADY) {
+        snprintf(s_status_msg, sizeof(s_status_msg), "Scan stop pending (%d); retry", rc);
+        s_changed = true;
+        return false;
+    }
+    s_scan_owned = false;
+    return true;
+}
+
 
 /* ── LRC checksum ────────────────────────────────────────────────────────── */
 static uint8_t s_lrc(const uint8_t *buf, int len)
@@ -336,6 +408,8 @@ static void s_start_info_sequence(void)
 
 /* ── Write result callback (NimBLE host task) ────────────────────────────── */
 static int s_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                      struct ble_gatt_attr *attr, void *arg);
+static int s_write_cb_process(uint16_t conn_handle, const struct ble_gatt_error *error,
                       struct ble_gatt_attr *attr, void *arg)
 {
     (void)conn_handle; (void)attr; (void)arg;
@@ -350,8 +424,19 @@ static int s_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
     return 0;
 }
 
+static int s_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                      struct ble_gatt_attr *attr, void *arg)
+{
+    if (!s_callback_enter(arg, false)) return 0;
+    int rc = s_write_cb_process(conn_handle, error, attr, arg);
+    s_callback_leave();
+    return rc;
+}
+
 /* ── CCCD write callback ─────────────────────────────────────────────────── */
 static int s_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                            struct ble_gatt_attr *attr, void *arg);
+static int s_cccd_write_cb_process(uint16_t conn_handle, const struct ble_gatt_error *error,
                             struct ble_gatt_attr *attr, void *arg)
 {
     (void)conn_handle; (void)attr; (void)arg;
@@ -365,8 +450,19 @@ static int s_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_error *er
     return 0;
 }
 
+static int s_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                            struct ble_gatt_attr *attr, void *arg)
+{
+    if (!s_callback_enter(arg, false)) return 0;
+    int rc = s_cccd_write_cb_process(conn_handle, error, attr, arg);
+    s_callback_leave();
+    return rc;
+}
+
 /* ── GATT characteristic discovery callback ──────────────────────────────── */
 static int s_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                          const struct ble_gatt_chr *chr, void *arg);
+static int s_chr_disc_cb_process(uint16_t conn_handle, const struct ble_gatt_error *error,
                           const struct ble_gatt_chr *chr, void *arg)
 {
     (void)arg;
@@ -382,7 +478,7 @@ static int s_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *erro
         s_cccd_hdl = s_tx_val_hdl + 1;
         uint16_t cccd = 0x0001;
         int rc = ble_gattc_write_flat(conn_handle, s_cccd_hdl,
-                                      &cccd, sizeof(cccd), s_cccd_write_cb, NULL);
+                                      &cccd, sizeof(cccd), s_cccd_write_cb, (void *)(uintptr_t)s_radio_token);
         if (rc != 0) {
             ESP_LOGE(TAG, "CCCD write start failed: %d", rc);
             s_ev_error = true;
@@ -402,8 +498,19 @@ static int s_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *erro
     return 0;
 }
 
+static int s_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                          const struct ble_gatt_chr *chr, void *arg)
+{
+    if (!s_callback_enter(arg, false)) return 0;
+    int rc = s_chr_disc_cb_process(conn_handle, error, chr, arg);
+    s_callback_leave();
+    return rc;
+}
+
 /* ── GATT service discovery callback ─────────────────────────────────────── */
 static int s_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                          const struct ble_gatt_svc *svc, void *arg);
+static int s_svc_disc_cb_process(uint16_t conn_handle, const struct ble_gatt_error *error,
                           const struct ble_gatt_svc *svc, void *arg)
 {
     (void)arg;
@@ -416,7 +523,7 @@ static int s_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *erro
         }
         /* Start characteristic discovery within NUS service range */
         int rc = ble_gattc_disc_all_chrs(conn_handle, s_svc_start, s_svc_end,
-                                          s_chr_disc_cb, NULL);
+                                          s_chr_disc_cb, (void *)(uintptr_t)s_radio_token);
         if (rc != 0) {
             ESP_LOGE(TAG, "Chr disc start failed: %d", rc);
             s_ev_error = true;
@@ -434,8 +541,36 @@ static int s_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *erro
     return 0;
 }
 
+static int s_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                          const struct ble_gatt_svc *svc, void *arg)
+{
+    if (!s_callback_enter(arg, false)) return 0;
+    int rc = s_svc_disc_cb_process(conn_handle, error, svc, arg);
+    s_callback_leave();
+    return rc;
+}
+
 /* ── Main GAP event callback ─────────────────────────────────────────────── */
-static int s_gap_cb(struct ble_gap_event *event, void *arg)
+static bool s_link_event_begin(struct ble_gap_event *event)
+{
+    if (event->type == BLE_GAP_EVENT_CONNECT) {
+        s_connect_inflight = false;
+        if (event->connect.status != 0) s_closing = true;
+        else if (s_closing) {
+            s_conn_handle = event->connect.conn_handle;
+            ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            return false;
+        }
+    } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
+        s_connect_inflight = false;
+        s_closing = true;
+    }
+    return !s_closing || event->type == BLE_GAP_EVENT_CONNECT ||
+           event->type == BLE_GAP_EVENT_DISCONNECT;
+}
+
+static int s_gap_cb(struct ble_gap_event *event, void *arg);
+static int s_gap_cb_process(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
     switch (event->type) {
@@ -634,6 +769,15 @@ static int s_gap_cb(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
+static int s_gap_cb(struct ble_gap_event *event, void *arg)
+{
+    if (!s_callback_enter(arg, true)) return 0;
+    if (!s_link_event_begin(event)) { s_callback_leave(); return 0; }
+    int rc = s_gap_cb_process(event, arg);
+    s_callback_leave();
+    return rc;
+}
+
 /* ── Scan GAP event callback ─────────────────────────────────────────────── */
 static bool s_scan_legacy = false;
 static int s_scan_gap_cb(struct ble_gap_event *event, void *arg);
@@ -651,7 +795,7 @@ static int s_cham_scan_begin(void)
         };
         int rc = ble_gap_ext_disc(BLE_OWN_ADDR_PUBLIC, 500, 0,
                                   0, BLE_HCI_SCAN_FILT_NO_WL, 0,
-                                  &ep, NULL, s_scan_gap_cb, NULL);
+                                  &ep, NULL, s_scan_gap_cb, (void *)(uintptr_t)s_radio_token);
         if (rc != BLE_HS_ENOTSUP) return rc;
 
         s_scan_legacy = true;
@@ -667,10 +811,11 @@ static int s_cham_scan_begin(void)
         .filter_duplicates = 0,
     };
     return ble_gap_disc(BLE_OWN_ADDR_PUBLIC, 5000, &scan_params,
-                        s_scan_gap_cb, NULL);
+                        s_scan_gap_cb, (void *)(uintptr_t)s_radio_token);
 }
 
-static int s_scan_gap_cb(struct ble_gap_event *event, void *arg)
+static int s_scan_gap_cb(struct ble_gap_event *event, void *arg);
+static int s_scan_gap_cb_process(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
 
@@ -698,16 +843,8 @@ static int s_scan_gap_cb(struct ble_gap_event *event, void *arg)
         addr     = d->addr;
         rssi     = d->rssi;
     } else if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
-        /* Restart with the controller-compatible mode after each 5 s window. */
-        if (s_state == CHAM_STATE_SCANNING) {
-            int rc = s_cham_scan_begin();
-            if (rc != 0 && rc != BLE_HS_EALREADY) {
-                ESP_LOGE(TAG, "scan restart rc=%d", rc);
-                s_state = CHAM_STATE_ERROR;
-                snprintf(s_status_msg, sizeof(s_status_msg), "Scan restart failed (%d)", rc);
-                s_changed = true;
-            }
-        }
+        s_scan_owned = false;
+        if (!s_closing && s_state == CHAM_STATE_SCANNING) s_scan_restart_pending = true;
         return 0;
     } else {
         return 0;
@@ -781,21 +918,23 @@ static int s_scan_gap_cb(struct ble_gap_event *event, void *arg)
     return 0;
 }
 
-/* ── Defer-connect timer (fires 250 ms after scan cancel) ────────────────── */
+static int s_scan_gap_cb(struct ble_gap_event *event, void *arg)
+{
+    if (!s_callback_enter(arg, event->type == BLE_GAP_EVENT_DISC_COMPLETE)) return 0;
+    if (event->type != BLE_GAP_EVENT_DISC_COMPLETE && !s_scan_accept) { s_callback_leave(); return 0; }
+    int rc = s_scan_gap_cb_process(event, arg);
+    s_callback_leave();
+    return rc;
+}
+
+/* ── UI-owner deferred connect (250 ms after checked scan cancel) ───────── */
 static void s_defer_connect_cb(void *arg)
 {
-    (void)arg;
-    if (s_connect_idx < 0 || s_connect_idx >= s_scan_count) {
-        s_ev_error = true;
-        strlcpy(s_status_msg, "No device selected", sizeof(s_status_msg));
-        return;
-    }
-
-    cham_scan_result_t *r = &s_scan_results[s_connect_idx];
-    ble_addr_t addr;
-    memcpy(addr.val, r->addr, 6);
-    addr.type = r->addr_type;
-
+    uint32_t token = (uint32_t)(uintptr_t)arg;
+    if (!token || token != s_radio_token || token != s_defer_token ||
+        !s_connect_pending || s_closing || s_scan_owned) return;
+    s_connect_pending = false;
+    s_connect_inflight = true;
     /* Use conservative connection parameters */
     struct ble_gap_conn_params cp = {
         .scan_itvl           = 0x0010,
@@ -808,12 +947,16 @@ static void s_defer_connect_cb(void *arg)
         .max_ce_len          = 0,
     };
 
-    int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC, &addr, 10000, &cp, s_gap_cb, NULL);
+    ble_addr_t peer = { .type = s_scan_results[s_connect_idx].addr_type };
+    memcpy(peer.val, s_scan_results[s_connect_idx].addr, sizeof(peer.val));
+    int rc = ble_gap_connect(BLE_OWN_ADDR_PUBLIC,
+                              &peer,
+                              10000, &cp, s_gap_cb, (void *)(uintptr_t)token);
     if (rc != 0) {
-        ESP_LOGE(TAG, "ble_gap_connect rc=%d", rc);
+        s_connect_inflight = false;
+        s_closing = true;
+        snprintf(s_status_msg, sizeof(s_status_msg), "Connect failed (%d); retry", rc);
         s_ev_error = true;
-        snprintf(s_status_msg, sizeof(s_status_msg),
-                 "Connect error (%d)", rc);
     }
 }
 
@@ -821,52 +964,47 @@ static void s_defer_connect_cb(void *arg)
 
 void cham_init(void)
 {
-    if (s_defer_tmr) return;
-
-    esp_timer_create_args_t args = {
-        .callback = s_defer_connect_cb,
-        .arg      = NULL,
-        .name     = "cham_defer",
-    };
-    esp_timer_create(&args, &s_defer_tmr);
-    memset(&s_rxs, 0, sizeof(s_rxs));
-    memset(&s_dev_info, 0, sizeof(s_dev_info));
+    /* No timer allocation: deferred connect and cleanup run on the UI owner. */
 }
 
 void cham_scan_start(void)
 {
     if (s_state != CHAM_STATE_DISCONNECTED && s_state != CHAM_STATE_ERROR) return;
-
-    /* Reset scan results */
+    if (!s_radio_claim()) return;
+    portENTER_CRITICAL(&s_radio_mux);
+    bool quiet = s_radio_callbacks == 0;
+    portEXIT_CRITICAL(&s_radio_mux);
+    if (!quiet || s_scan_owned || s_connect_inflight || s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+        s_radio_busy(); return;
+    }
     s_scan_count = 0;
     s_connect_idx = -1;
     memset(s_scan_results, 0, sizeof(s_scan_results));
-
-    /* Cancel any ongoing scan before starting ours. s_cham_scan_begin() uses
-     * extended discovery where available and legacy BLE 4.2 discovery on the
-     * Classic CYD controller. */
-    ble_gap_disc_cancel();
-
+    s_scan_legacy = false;
+    s_scan_accept = true;
+    s_scan_owned = true;
+    s_state = CHAM_STATE_SCANNING;
     int rc = s_cham_scan_begin();
-    if (rc == 0 || rc == BLE_HS_EALREADY) {
+    if (rc != 0) { // EALREADY belongs to somebody else, never adopt/cancel it.
+        s_scan_owned = false;
+        s_scan_accept = false;
+        s_closing = true;
+        s_state = CHAM_STATE_ERROR;
+        snprintf(s_status_msg, sizeof(s_status_msg), "Scan busy/failed (%d); retry", rc);
+    } else {
         s_state = CHAM_STATE_SCANNING;
         strlcpy(s_status_msg, "Scanning...", sizeof(s_status_msg));
-        s_changed = true;
-    } else {
-        ESP_LOGE(TAG, "ble_gap_disc rc=%d", rc);
-        s_state = CHAM_STATE_ERROR;
-        strlcpy(s_status_msg, "Scan failed — is BLE on?", sizeof(s_status_msg));
     }
+    s_changed = true;
 }
 
 void cham_scan_stop(void)
 {
-    ble_gap_disc_cancel();
-    if (s_state == CHAM_STATE_SCANNING) {
-        s_state = CHAM_STATE_DISCONNECTED;
-        strlcpy(s_status_msg, "Scan stopped", sizeof(s_status_msg));
-        s_changed = true;
-    }
+    if (!s_radio_token || s_conn_handle != BLE_HS_CONN_HANDLE_NONE || s_connect_inflight) return;
+    s_closing = true;
+    s_connect_pending = false;
+    s_scan_cancel_owned();
+    cham_radio_poll();
 }
 
 bool cham_connect(int idx)
@@ -877,6 +1015,12 @@ bool cham_connect(int idx)
     }
     if (idx < 0 || idx >= s_scan_count) return false;
 
+    if (!s_radio_claim()) return false;
+    if (!s_scan_cancel_owned()) { s_closing = true; return false; }
+    portENTER_CRITICAL(&s_radio_mux);
+    bool quiet = s_radio_callbacks == 0;
+    portEXIT_CRITICAL(&s_radio_mux);
+    if (!quiet) { s_closing = true; s_radio_busy(); return false; }
     s_connect_idx  = idx;
     s_svc_start    = 0;
     s_svc_end      = 0;
@@ -924,32 +1068,83 @@ bool cham_connect(int idx)
      * failure deletes our peer bond so the next attempt starts clean. */
 
     /* Cancel scan, then wait 250 ms for NimBLE to settle before connecting */
-    ble_gap_disc_cancel();
+    /* Discovery cancellation was checked before mutating connection state. */
     s_state = CHAM_STATE_CONNECTING;
     snprintf(s_status_msg, sizeof(s_status_msg),
              "Connecting to %s...", s_scan_results[idx].name);
     s_changed = true;
 
-    esp_timer_stop(s_defer_tmr);
-    esp_timer_start_once(s_defer_tmr, 250000); /* 250 ms */
+    s_defer_token = s_radio_token;
+    s_defer_at = esp_timer_get_time() + 250000;
+    s_connect_pending = true;
     return true;
+}
+
+void cham_radio_poll(void)
+{
+    if (!s_radio_token) return;
+    if (s_closing) {
+        if (!s_scan_cancel_owned()) return;
+        if (s_connect_inflight) {
+            int rc = ble_gap_conn_cancel();
+            if (rc != 0 && rc != BLE_HS_EALREADY) {
+                snprintf(s_status_msg, sizeof(s_status_msg), "Connect stop pending (%d); retry", rc);
+                s_changed = true;
+            }
+            return; // wait for this generation's CONNECT event, even after EALREADY
+        }
+        if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+            int rc = ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            if (rc != 0) {
+                snprintf(s_status_msg, sizeof(s_status_msg), "Disconnect pending (%d); retry", rc);
+                s_changed = true;
+            }
+            return; // DISCONNECT owns the handle release
+        }
+        portENTER_CRITICAL(&s_radio_mux);
+        uint32_t token = s_radio_callbacks == 0 ? s_radio_token : 0;
+        if (token) s_radio_token = 0; // closes all callback generations before arbiter release
+        portEXIT_CRITICAL(&s_radio_mux);
+        if (token) {
+            cym_ble_cham_release(token);
+            s_closing = false;
+            s_defer_token = 0;
+            s_scan_restart_pending = false;
+            if (s_ev_error) s_state = CHAM_STATE_ERROR;
+            if (s_state != CHAM_STATE_ERROR) {
+                s_state = CHAM_STATE_DISCONNECTED;
+                strlcpy(s_status_msg, "Disconnected; Scan to retry", sizeof(s_status_msg));
+            }
+            s_changed = true;
+        }
+        return;
+    }
+    if (s_scan_restart_pending && s_callbacks_quiet()) {
+        s_scan_restart_pending = false;
+        s_scan_owned = true;
+        int rc = s_cham_scan_begin();
+        if (rc != 0) {
+            s_scan_accept = false;
+            s_closing = true;
+            s_state = CHAM_STATE_ERROR;
+            s_scan_owned = false;
+            snprintf(s_status_msg, sizeof(s_status_msg), "Scan restart failed (%d); retry", rc);
+            s_changed = true;
+        }
+    }
+    if (s_connect_pending && esp_timer_get_time() >= s_defer_at)
+        s_defer_connect_cb((void *)(uintptr_t)s_defer_token);
 }
 
 void cham_disconnect(void)
 {
-    esp_timer_stop(s_defer_tmr);
-    ble_gap_disc_cancel();
-    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        ble_gap_terminate(s_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-        /* s_ev_disconnected fires in s_gap_cb; poll() will update state */
-    } else {
-        s_state = CHAM_STATE_DISCONNECTED;
-        strlcpy(s_status_msg, "Tap Scan to find Chameleon", sizeof(s_status_msg));
-        s_changed = true;
-    }
-    if (s_pend_cmd != 0xFFFF) {
-        cham_cancel_pending();
-    }
+    if (!s_radio_token) return; // never cancel foreign GAP work
+    s_closing = true;
+    s_connect_pending = false;
+    s_defer_token = 0;
+    s_await_enc = false;
+    if (s_pend_cmd != 0xFFFF) cham_cancel_pending();
+    cham_radio_poll();
 }
 
 /* Cancel any in-flight command without disconnecting BLE.
@@ -1030,7 +1225,7 @@ bool cham_send_cmd_ex(uint16_t cmd, const uint8_t *data, uint16_t dlen,
     s_last_result.status = 0;
 
     int rc = ble_gattc_write_flat(s_conn_handle, s_rx_val_hdl,
-                                   frame, flen, s_write_cb, NULL);
+                                   frame, flen, s_write_cb, (void *)(uintptr_t)s_radio_token);
     if (rc != 0) {
         ESP_LOGE(TAG, "Write cmd 0x%04X failed: %d", cmd, rc);
         s_last_result.outcome = CHAM_CMD_OUTCOME_BLE_WRITE_ERROR;
@@ -1050,12 +1245,15 @@ bool cham_send_cmd(uint16_t cmd, const uint8_t *data, uint16_t dlen,
 
 bool cham_poll(void)
 {
+    cham_radio_poll();
     bool changed = s_changed;
     s_changed = false;
 
     /* ── Handle event flags from NimBLE callbacks ── */
 
     if (s_ev_error) {
+        s_closing = s_radio_token != 0;
+        s_connect_pending = false;
         s_ev_error = false;
         s_state = CHAM_STATE_ERROR;
         /* Complete any pending command with the write-layer failure. */
@@ -1139,7 +1337,7 @@ bool cham_poll(void)
             s_tx_val_hdl = 0; s_rx_val_hdl = 0; s_cccd_hdl = 0;
             s_state = CHAM_STATE_DISCOVERING;
             strlcpy(s_status_msg, "Discovering services...", sizeof(s_status_msg));
-            int drc = ble_gattc_disc_all_svcs(s_conn_handle, s_svc_disc_cb, NULL);
+            int drc = ble_gattc_disc_all_svcs(s_conn_handle, s_svc_disc_cb, (void *)(uintptr_t)s_radio_token);
             ESP_LOGI(TAG, "disc_all_svcs rc=%d", drc);
             if (drc != 0) {
                 ESP_LOGE(TAG, "disc_all_svcs failed: %d", drc);

@@ -44,6 +44,9 @@ __TYPEDEF__
 static bt_diag_counts_t s_bt_diag_start;
 static uint32_t s_bt_diag_id;
 static bool s_bt_diag_active;
+static bool s_bt_alloc_capture;
+static uint32_t s_bt_alloc_start,s_bt_alloc_dma_start,s_bt_rejected_start;
+static uint32_t s_bt_alloc_failures,s_bt_alloc_dma_failures,s_bt_alloc_last_size,s_bt_alloc_last_caps,s_bt_rejected_reports;
 __HELPERS__
 int main(void) {
     log_heap_stats("off");assert(!queries && !logs);
@@ -62,8 +65,8 @@ int main(void) {
     s_bt_parse_fail+=3;s_bt_blacklisted+=1;s_bt_already_seen+=3;
     bt_diag_end("wrong-generation",id+1);assert(s_bt_diag_active);
     bt_diag_end("cancel-return",id);assert(!s_bt_diag_active);
-    assert(strstr(lines[logs-1],"callbacks=6 legacy=4 extended=2 parse_fail=3 blacklisted=1 duplicate=3"));
-    assert(strstr(lines[logs-1],"overlapping counters; boundary deltas, not RF proof"));
+    assert(strstr(lines[logs-2],"callbacks=6 legacy=4 extended=2 parse_fail=3 blacklisted=1 duplicate=3"));
+    assert(strstr(lines[logs-2],"overlapping counters; boundary deltas, not RF proof"));
     int oldlogs=logs;bt_diag_end("gap-complete",0);assert(logs==oldlogs);
     assert(bt_diag_begin());debug=false;bt_diag_end("debug-switched-off",0);
     assert(!s_bt_diag_active && logs==oldlogs+1);

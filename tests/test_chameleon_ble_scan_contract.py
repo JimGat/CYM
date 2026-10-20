@@ -17,7 +17,9 @@ class ChameleonBleScanContract(unittest.TestCase):
         end = SRC.index("struct ble_hs_adv_fields", start)
         callback_prefix = SRC[start:end]
         self.assertIn("BLE_GAP_EVENT_DISC_COMPLETE", callback_prefix)
-        self.assertIn("s_cham_scan_begin()", callback_prefix)
+        self.assertIn("s_scan_restart_pending = true", callback_prefix)
+        pump = SRC[SRC.index("void cham_radio_poll(void)"):SRC.index("void cham_disconnect(void)")]
+        self.assertIn("s_cham_scan_begin()", pump)
 
     def test_public_scan_start_uses_the_compatible_scan_helper(self):
         start = SRC.index("void cham_scan_start(void)")

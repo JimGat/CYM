@@ -68,6 +68,11 @@ static int xSemaphoreTake(void*p,int wait) {
 static void xSemaphoreGive(void*p){assert(p==lvgl_mutex && locked);locked=false;++gives;}
 static void heap_caps_free(void*p){assert(!wdp_ble_inflight);if(p==wdp_ble_devices)assert(locked);++frees;free(p);}
 static void *heap_caps_calloc(size_t n,size_t s,int flags){if (alloc_fail || (!CONFIG_BOARD_HAS_PSRAM && (flags & MALLOC_CAP_SPIRAM))) return NULL;return calloc(n,s);}
+static bool bt_scan_worker_busy;
+static void *s_bt_scan_owner;
+static unsigned s_bt_cham_token;
+static bool s_bt_scan_api_busy;
+static void bt_scan_stop(void) { bt_scan_active=false; }
 static void bt_stop_scan(void){}
 static int nimble_port_deinit(void){assert(nimble_host_exited);++deinits;return deinit_result;}
 struct ble_gap_event {int value;};

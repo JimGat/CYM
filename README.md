@@ -33,6 +33,10 @@
 
 ---
 
+## Development candidate v3.0.30 — Bluetooth scan lifecycle
+
+Cooperative cancellation and shared discovery ownership prevent overlapping rescans. Unchanged scan countdown updates no longer rebuild rows. Debug ON adds bounded allocation/rejection counters. Recovered reception and general menu performance are **not** established; both Waveshare C5 displays and affected Classic boards still require hardware acceptance. Stable remains v3.0.27. [Candidate scope and exact operator checks](docs/operators/bluetooth-reliability.md).
+
 ## Development v3.0.29 — Classic USB Debug readability
 
 The popup and Hardware entry now use explicit contrasting opaque text, compiled Montserrat 14 body text and CYM blue actions, with wrapping and scrolling in both orientations. Host LVGL rendering is not physical LCD acceptance. Separate, volatile USB logging for Classic CYD and HackerBox; physically unplug GPS before acknowledging enable. Stable stays v3.0.27. [Original USB Debug design notes](docs/releases/v3.0.28.md) · [Operator instructions](docs/operators/classic-usb-debug.md).
@@ -3471,3 +3475,7 @@ extended soak or the matching WS-C5-28 workflow. Current Stable is v3.0.27.
 ### Classic USB Debug (runtime logs)
 
 Classic CYD and HackerBox CYD only: Hardware Options has a separate **Classic USB Debug** entry. Physically disconnect the GPS before acknowledging enable: GPS TX and UART0 TX share GPIO1, even if GPS is disabled in software. The transport is volatile, OFF each boot, uses the USB-UART bridge at 115200 8N1, and makes GPS unavailable until reboot. The existing saved Debug diagnostics switch remains separate. See the [operator instructions and hardware retest checklist](docs/operators/classic-usb-debug.md). No early-boot, ROM or panic capture is promised.
+
+### v3.0.30 Development: Bluetooth lifecycle repair candidate
+
+Chameleon reserves shared BLE ownership from discovery through deferred connect and disconnect drain. Busy scans/Lookout show explicit stop-and-retry feedback instead of silently returning or cancelling foreign work. Retained ports are not published idle. Successful BLE teardown now permits fresh Chameleon initialization without requiring another feature to initialize BLE first; pending/live cleanup and retained-port failures still block admission. Allocation-failure capture starts at NimBLE initialization; scan deltas exclude earlier init failures. Reception and the Ultra connection report still await hardware acceptance (board/failure stage unknown). Development testing only; not hardware-qualified or promoted to Stable. See [operator procedure](docs/operators/bluetooth-reliability.md).

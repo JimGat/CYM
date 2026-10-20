@@ -59,7 +59,8 @@ class Patch0506Contract(unittest.TestCase):
         self.assertIn('nimble_host_exited, true',host)
     def test_radio_restart_guards_unfinished_host(self):
         self.assertIn('bt_nimble_cleanup_bounded()',function('ensure_wifi_mode'))
-        self.assertIn('return nimble_initialized',function('ensure_ble_mode'))
+        self.assertIn('return nimble_initialized',function('ensure_ble_mode_unreserved'))
+        self.assertIn('s_bt_cham_token',function('ensure_ble_mode'))
     def test_classic_deferred_single_reader(self):
         self.assertIn('#if BOARD_HAS_GPS && !defined(CONFIG_BOARD_CYD2USB)',S)
         ready=S.index('ESP_LOGI(TAG, "System ready!")')
@@ -95,6 +96,11 @@ static bool nimble_port_initialized, nimble_deinit_failed, nimble_cleanup_busy;
 static bool bt_scan_active, nimble_initialized, nimble_stop_requested, nimble_host_exited;
 static void *bt_scan_task_handle, *nimble_host_handle;
 static int delays, deinits, deinit_result, exit_at;
+static bool bt_scan_worker_busy;
+static void *s_bt_scan_owner;
+static unsigned s_bt_cham_token;
+static bool s_bt_scan_api_busy;
+static void bt_scan_stop(void) { bt_scan_active=false; }
 static void bt_stop_scan(void) {}
 static void vTaskDelay(int ticks) { ++delays; if(exit_at && delays>=exit_at) nimble_host_exited=true; }
 static int nimble_port_deinit(void) { ++deinits; assert(nimble_host_exited); return deinit_result; }

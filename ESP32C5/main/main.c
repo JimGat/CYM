@@ -292,6 +292,17 @@ static bool wifi_initialized = false;
 // BLE scan state
 static volatile bool bt_scan_active = false;
 static TaskHandle_t bt_scan_task_handle = NULL;
+// Reservation survives delayed exits; only the worker releases it.
+static bool bt_scan_worker_busy = false;
+static bool bt_scan_create_pending = false;
+static bool s_bt_scan_api_busy = false;
+// Generation-scoped external GAP/connection reservation (Chameleon).
+static uint32_t s_bt_cham_token = 0;
+static TaskHandle_t s_bt_scan_owner = NULL;
+static portMUX_TYPE s_bt_report_mux = portMUX_INITIALIZER_UNLOCKED;
+static bool s_bt_reports_accept = false;
+static unsigned s_bt_reports_inflight = 0;
+static uint32_t s_bt_results_revision = 0;
 static volatile bool nimble_initialized  = false; // sync, NOT allocation ownership
 // Port lifetime is independent of sync. Never free an active event loop.
 static bool nimble_port_initialized = false;
@@ -1255,6 +1266,7 @@ static uint32_t    s_obs_last_count  = UINT32_MAX;  /* dirty-check: rebuild list
 // Device Detail + Locate sub-screen state
 static obs_record_t   s_obs_detail_rec;                   /* copy of the record being inspected */
 static uint8_t        s_obs_saved_vib_pct  = 100;         /* vibrator pct saved on locate entry */
+static TaskHandle_t s_obs_loc_task_handle = NULL;
 static volatile bool  s_obs_loc_running    = false;       /* locate task alive flag */
 static lv_obj_t      *s_obs_loc_rssi_lbl   = NULL;
 static lv_obj_t      *s_obs_loc_bar        = NULL;
@@ -2950,8 +2962,6 @@ static volatile int s_zgwd_da_result = 0;
 
 // AirTag Scanner state
 static TaskHandle_t airtag_scan_task_handle = NULL;
-static StaticTask_t airtag_scan_task_buffer;
-static StackType_t *airtag_scan_task_stack = NULL;
 static volatile bool airtag_scan_active = false;
 
 // AirTag Scanner UI state
@@ -3020,6 +3030,10 @@ static lv_obj_t *bt_sas_save_overlay = NULL;
 static lv_obj_t *bt_sas_save_ta = NULL;
 static volatile bool bt_sas_ui_active = false;
 static volatile bool bt_sas_needs_update = false;
+static uint32_t bt_sas_rendered_revision = 0;
+static int bt_sas_rendered_page = -1, bt_sas_rendered_selection = -2;
+static int bt_sas_rendered_count = -1;
+static int bt_sas_rendered_width = 0, bt_sas_rendered_height = 0;
 static int bt_sas_selected_idx = -1;
 static uint8_t bt_sas_target_addr[6];
 static uint8_t bt_sas_target_addr_type = 0;
@@ -3797,6 +3811,7 @@ static void wdup_timer_cb(lv_timer_t *timer);
 
 // Radio mode switching (WiFi <-> BLE)
 static bool ensure_wifi_mode(void);
+static int bt_cancel_unreserved_discovery(void);
 static bool ensure_ble_mode(void);
 static void radio_reset_to_idle(void);
 
@@ -3807,13 +3822,14 @@ static bool bt_nimble_cleanup_bounded(void);
 static void apply_ble_power_settings(void);
 static void bt_scan_stop(void);
 static void bt_scan_task(void *pvParameters);
+static BaseType_t bt_scan_worker_start(void);
 static int bt_gap_event_callback(struct ble_gap_event *event, void *arg);
 static void bt_on_sync(void);
 static void bt_on_reset(int reason);
 static void nimble_host_task(void *param);
 static int bt_start_scan(void);
 static int bt_start_scan_passive(void);
-static void bt_stop_scan(void);
+static bool bt_stop_scan(void);
 static void _ot_ble_dwell_end(void);
 static bool bt_is_device_found(const uint8_t *addr);
 static int bt_find_device_index(const uint8_t *addr);
@@ -3846,6 +3862,7 @@ static void show_bt_scan_select_screen(void);
 static void bt_sas_open_save_dialog(void);
 static void show_bt_attack_tiles_screen(void);
 static void bt_sas_refresh_list(void);
+static bool bt_sas_list_changed(void);
 static void ble_adv_fp_hint(const bt_device_info_t *d, char *out, size_t outsz);
 static void show_bt_observer_screen(void);
 static void bt_observer_task(void *pvParameters);
@@ -7590,7 +7607,7 @@ static bool _ot_switch_to_ble(void)
          * via bt_is_device_found(). Without that, every device seen in a
          * PRIOR dwell (OT Survey's or another BLE screen's) is treated as
          * "already seen" forever and silently dropped from bt_devices[]. */
-        bt_reset_counters();
+
         if (bt_start_scan_passive() == 0)
             s_ot_ble_scan_owned = true;
     }
@@ -8545,6 +8562,7 @@ log_heap_stats("display-drawbuffers-before");
                 }
             }
 
+            cham_radio_poll(); // lifecycle drain continues after leaving Chameleon UI
             cym_fsd_poll(); // UI-owner request dispatch; never on a console task
 
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
@@ -9609,7 +9627,7 @@ log_heap_stats("display-drawbuffers-before");
                         lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
                     }
                 }
-                bt_sas_refresh_list();
+                if (bt_sas_list_changed()) bt_sas_refresh_list();
             }
 
             // BLE→obs_store adapter: runs once after every BLE scan completes
@@ -15192,7 +15210,7 @@ static void wardrive_promisc_task(void *pvParameters) {
                                      &bpe, &bpe,
                                      wdp_ble_gap_cb, NULL) == 0) {
                     vTaskDelay(pdMS_TO_TICKS(WDP_BLE_DWELL_MS));
-                    ble_gap_disc_cancel();
+                    bt_cancel_unreserved_discovery();
                 }
 #else
                 struct ble_gap_disc_params bp = {
@@ -15203,7 +15221,7 @@ static void wardrive_promisc_task(void *pvParameters) {
                 if (ble_gap_disc(BLE_OWN_ADDR_PUBLIC, BLE_HS_FOREVER, &bp,
                                  wdp_ble_gap_cb, NULL) == 0) {
                     vTaskDelay(pdMS_TO_TICKS(WDP_BLE_DWELL_MS));
-                    ble_gap_disc_cancel();
+                    bt_cancel_unreserved_discovery();
                 }
 #endif
             }
@@ -15367,7 +15385,7 @@ static void wardrive_promisc_task(void *pvParameters) {
             // Pause BLE briefly to allow DMA defragmentation during SD flush
             // (DMA allocation for SD write can fail if pool is fragmented by WiFi+BLE)
             if (ble_continuous) {
-                ble_gap_disc_cancel();
+                bt_cancel_unreserved_discovery();
                 vTaskDelay(pdMS_TO_TICKS(5));  // let DMA settle
             }
 
@@ -15439,7 +15457,7 @@ static void wardrive_promisc_task(void *pvParameters) {
 
     // Stop continuous BLE scan before turning off WiFi promiscuous
     if (ble_continuous) {
-        ble_gap_disc_cancel();
+        bt_cancel_unreserved_discovery();
         ESP_LOGI(TAG, "[WDP] BLE coex scan stopped");
     }
 
@@ -17813,6 +17831,7 @@ static void create_function_page_base(const char *name)
 static void radio_reset_to_idle(void)
 {
     if (!clock_radio_reset_admit()) return;
+    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) return;
     if ((g_ot_survey_active || s_ots_owner_busy()) && !ot_radio_scheduler_owns_current_task()) return;
     ESP_LOGI(TAG, "radio_reset_to_idle: stopping all attacks, resetting radio...");
     /* [FIX] Radio stop/restart glitches GPIO2 (touch MISO) → spurious corner touch.
@@ -17908,6 +17927,7 @@ static void radio_reset_to_idle(void)
         }
         _ot_ble_dwell_end();  /* flush any OT Survey BLE scan before it's wiped below */
         bt_nimble_deinit();
+        if (nimble_port_initialized) return; // retained BLE owner: no WiFi reset
         current_radio_mode = RADIO_MODE_NONE;
     }
 
@@ -32394,7 +32414,7 @@ static void bt_lookout_scan_loop_task(void *pv)
 {
     (void)pv;
     while (bt_lookout_is_active()) {
-        bt_reset_counters();
+
         int rc = bt_start_scan();
         if (rc != 0) {
             ESP_LOGE(TAG, "BT Lookout: scan failed %d, retry 5s", rc);
@@ -32403,7 +32423,7 @@ static void bt_lookout_scan_loop_task(void *pv)
         }
         for (int i = 0; i < 200 && bt_lookout_is_active(); i++)
             vTaskDelay(pdMS_TO_TICKS(100));
-        bt_stop_scan();
+        while (!bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
         if (bt_lookout_is_active())
             vTaskDelay(pdMS_TO_TICKS(300));
     }
@@ -32444,13 +32464,12 @@ static void lookout_back_btn_cb(lv_event_t *e)
     bt_lookout_oui_btn    = NULL;
     if (!bt_lookout_is_active() && current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
         // Reinit WiFi to reclaim DMA for other features. Mark the mode as WIFI so a
         // later ensure_ble_mode() knows WiFi owns the DMA and fully deinits it before
         // re-initialising BLE. Without this the mode stayed NONE while WiFi held the
         // DMA pool, so BLE re-init ran out of DMA and failed on re-entry.
-        wifi_cli_init();
-        current_radio_mode = RADIO_MODE_WIFI;
+        if (!ensure_wifi_mode()) { show_bluetooth_screen(); return; }
     }
     show_bluetooth_screen();
 }
@@ -32483,7 +32502,7 @@ static void show_bt_lookout_screen(void)
         xSemaphoreGive(sd_spi_mutex);
     }
 
-    if (!ensure_ble_mode()) {
+    if (!bt_lookout_is_active() && !ensure_ble_mode()) {
         lv_obj_t *err = lv_label_create(function_page);
         lv_label_set_text(err, "BLE init failed!");
         lv_obj_set_style_text_color(err, COLOR_MATERIAL_RED, 0);
@@ -33473,7 +33492,7 @@ static void ble_targ_item_tap_cb(lv_event_t *e)
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx < 0 || idx >= s_targ_count) return;
     s_targ_scanning = false;
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
     memcpy(ble_pcap_filter_mac, s_targ_devs[idx].addr, 6);
     ble_pcap_filter_active = true;
     ESP_LOGI(TAG, "BLE Targeted: filter %02X:%02X:%02X:%02X:%02X:%02X",
@@ -33514,7 +33533,7 @@ static void ble_targ_timer_cb(lv_timer_t *tmr)
     s_targ_tick++;
     if (s_targ_tick >= BLE_TARG_SCAN_SECS) {
         s_targ_scanning = false;
-        ble_gap_disc_cancel();
+        bt_cancel_unreserved_discovery();
     }
 
     if (s_targ_hdr_lbl) {
@@ -33561,7 +33580,7 @@ static void ble_targ_screen_stop(void)
     s_targ_hdr_lbl   = NULL;
     if (s_targ_scanning) {
         s_targ_scanning = false;
-        ble_gap_disc_cancel();
+        bt_cancel_unreserved_discovery();
     }
 }
 
@@ -33668,7 +33687,7 @@ static void ble_pcap_stop(void)
 {
     if (!ble_pcap_active) return;
     ble_pcap_active = false;
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
     // Clear targeted filter so next BLE PCAP open captures all devices
     ble_pcap_filter_active = false;
     memset(ble_pcap_filter_mac, 0, 6);
@@ -35275,18 +35294,9 @@ static void show_bt_locator_screen(void)
     }
     
     // Start BLE scan task
-    bt_scan_active = true;
-    BaseType_t task_ret = xTaskCreate(
-        bt_scan_task,
-        "bt_scan_task",
-        4096,
-        NULL,
-        5,
-        &bt_scan_task_handle
-    );
+    BaseType_t task_ret = bt_scan_worker_start();
     
     if (task_ret != pdPASS) {
-        bt_scan_active = false;
         lv_label_set_text(bt_locator_status_label, "Failed to start scan!");
     } else {
         snprintf(bt_locator_status_text, sizeof(bt_locator_status_text), "BT scanning... 0 devices (%us)", (unsigned)g_bt_scan_duration_s);
@@ -35303,44 +35313,40 @@ static void show_bt_locator_screen(void)
 // Teardown-only stop hook (top-bar ‹ Back / Home both invoke it via g_screen_stop_fn).
 static void bt_sas_stop(void)
 {
-    if (bt_scan_active) {
-        bt_scan_active = false;
-        bt_stop_scan();
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
+    bt_sas_ui_active = false;
+    bt_scan_stop();
     if (bt_sas_save_overlay && lv_obj_is_valid(bt_sas_save_overlay))
         lv_obj_del(bt_sas_save_overlay);
     bt_sas_save_overlay = NULL;
     bt_sas_save_ta = NULL;
-    bt_sas_ui_active = false;
+    bt_sas_list = bt_sas_status_label = bt_sas_next_btn = NULL;
+    bt_sas_nav_bar = bt_sas_nav_prev = bt_sas_nav_lbl = bt_sas_nav_next = NULL;
+    bt_sas_needs_update = false;
     bt_sas_selected_idx = -1;
+    bt_sas_rendered_count = -1;
 }
 
 static void bt_sas_rescan_cb(lv_event_t *e)
 {
     (void)e;
-    if (bt_scan_active) {
-        bt_scan_active = false;
-        bt_stop_scan();
-        vTaskDelay(pdMS_TO_TICKS(80));
+    if (!bt_sas_ui_active) return;
+    bt_scan_stop();
+    if (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE)) {
+        if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
+            lv_label_set_text(bt_sas_status_label, "Scan stopping; retry Rescan");
+            lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
+        }
+        return;
     }
-    // Clear results and selection
-    memset(bt_devices, 0, sizeof(bt_devices));
-    bt_device_count = 0;
+    // Reset belongs to admitted scanner, after old callbacks quiesce.
     bt_sas_selected_idx = -1;
     bt_sas_page = 0;
     if (bt_sas_next_btn && lv_obj_is_valid(bt_sas_next_btn))
         lv_obj_add_flag(bt_sas_next_btn, LV_OBJ_FLAG_HIDDEN);
-    bt_sas_refresh_list();
-    if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label))
-        lv_label_set_text(bt_sas_status_label, "Rescanning...");
-    bt_scan_active = true;
-    ble_scan_finished = false;
-    BaseType_t ret = xTaskCreate(bt_scan_task, "bt_scan_task", 4096, NULL, 5, &bt_scan_task_handle);
-    if (ret != pdPASS) {
-        bt_scan_active = false;
-        if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label))
-            lv_label_set_text(bt_sas_status_label, "Rescan failed!");
+    BaseType_t ret = bt_scan_worker_start();
+    if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
+        lv_label_set_text(bt_sas_status_label, ret == pdPASS ? "Rescanning..." : "Rescan start failed; retry");
+        lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -35384,12 +35390,7 @@ static void bt_sas_next_cb(lv_event_t *e)
 {
     (void)e;
     if (bt_sas_selected_idx < 0) return;
-    // Stop scan before leaving
-    if (bt_scan_active) {
-        bt_scan_active = false;
-        bt_stop_scan();
-        vTaskDelay(pdMS_TO_TICKS(50));
-    }
+    bt_scan_stop();
     bt_sas_ui_active = false;
     show_bt_attack_tiles_screen();
 }
@@ -35452,9 +35453,26 @@ static void bt_sas_row_geom(int lw, int *bx, int *bw, int *nx, int *nw,
     if (*nw < 40) *nw = 40;
 }
 
+static bool bt_sas_list_changed(void)
+{
+    uint32_t revision = __atomic_load_n(&s_bt_results_revision, __ATOMIC_ACQUIRE);
+    int width = lv_disp_get_hor_res(NULL), height = lv_disp_get_ver_res(NULL);
+    bool changed = revision != bt_sas_rendered_revision || bt_device_count != bt_sas_rendered_count ||
+                   bt_sas_page != bt_sas_rendered_page || bt_sas_selected_idx != bt_sas_rendered_selection ||
+                   width != bt_sas_rendered_width || height != bt_sas_rendered_height;
+    bt_sas_rendered_revision = revision;
+    bt_sas_rendered_count = bt_device_count;
+    bt_sas_rendered_page = bt_sas_page;
+    bt_sas_rendered_selection = bt_sas_selected_idx;
+    bt_sas_rendered_width = width;
+    bt_sas_rendered_height = height;
+    return changed;
+}
+
 static void bt_sas_refresh_list(void)
 {
     if (!bt_sas_list || !lv_obj_is_valid(bt_sas_list)) return;
+    lv_coord_t scroll_y = lv_obj_get_scroll_y(bt_sas_list);
     lv_obj_clean(bt_sas_list);   // rows only; the page nav bar lives in function_page
 
     int total = bt_device_count;
@@ -35568,6 +35586,9 @@ static void bt_sas_refresh_list(void)
         lv_obj_set_size(rssi_lbl, rw, 16);
         lv_obj_set_pos(rssi_lbl, rx, cy);
     }
+
+    lv_obj_update_layout(bt_sas_list);
+    lv_obj_scroll_to_y(bt_sas_list, scroll_y, LV_ANIM_OFF);
 
     // Page nav bar (label + Prev/Next visibility) — the bar itself is built in show()
     if (bt_sas_nav_lbl && lv_obj_is_valid(bt_sas_nav_lbl)) {
@@ -35903,6 +35924,7 @@ static void show_bt_scan_select_screen(void)
     create_function_page_base("BT Scan & Select");
     g_screen_stop_fn = bt_sas_stop;
     bt_sas_ui_active = true;
+    bt_sas_rendered_count = -1;
     bt_sas_selected_idx = -1;
     bt_sas_page = 0;
     bt_sas_nav_bar = bt_sas_nav_prev = bt_sas_nav_lbl = bt_sas_nav_next = NULL;
@@ -36078,12 +36100,8 @@ static void show_bt_scan_select_screen(void)
         ui_locked = false;
         return;
     }
-
-    bt_scan_active = true;
-    ble_scan_finished = false;
-    BaseType_t ret = xTaskCreate(bt_scan_task, "bt_scan_task", 4096, NULL, 5, &bt_scan_task_handle);
+    BaseType_t ret = bt_scan_worker_start();
     if (ret != pdPASS) {
-        bt_scan_active = false;
         lv_label_set_text(bt_sas_status_label, "Scan start failed!");
     } else {
         { char _ss[32]; snprintf(_ss, sizeof(_ss), "Scanning... 0 (%us)", (unsigned)g_bt_scan_duration_s); lv_label_set_text(bt_sas_status_label, _ss); }
@@ -36685,6 +36703,7 @@ static void bto_refresh_cb(lv_timer_t *t)
 static void show_bt_observer_screen(void)
 {
     if (clock_defer_radio_navigation(show_bt_observer_screen)) return;
+    if (bto_task_handle) return; // delayed observer retains shared state
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
@@ -36768,7 +36787,7 @@ static void bt_observer_task(void *pvParameters)
 
     // ── Phase 1: BLE scan (duration set by g_bt_scan_duration_s) ──
     bto_state = BTO_STATE_SCANNING;
-    bt_reset_counters();
+
     bto_ui_needs_update = true;
 
     int rc = bt_start_scan();
@@ -36786,7 +36805,7 @@ static void bt_observer_task(void *pvParameters)
         vTaskDelay(pdMS_TO_TICKS(100));
         if (i % 5 == 0) bto_ui_needs_update = true;
     }
-    bt_stop_scan();
+    while (!bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
 
     // ── Phase 2: snapshot scanned devices (one-time, no re-scan) ──
     int n = bt_device_count < BTO_MAX_DEVICES ? bt_device_count : BTO_MAX_DEVICES;
@@ -36900,6 +36919,8 @@ static void bt_observer_task(void *pvParameters)
 // Direct-track BT Locator: skip scan, jump straight to tracking the SAS-selected device
 static void show_bt_locator_direct_track(void)
 {
+    if (bt_locator_task_handle) return; // delayed tracker retains shared state
+
     if (clock_defer_radio_navigation(show_bt_locator_direct_track)) return;
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
@@ -38638,7 +38659,7 @@ static void show_gatt_walker_screen(void)
     ensure_ble_mode();
 
     /* Stop any active scan — we'll need the radio for connecting */
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
 
     char title[48];
     snprintf(title, sizeof(title), "GATT: %.26s", bt_sas_target_name);
@@ -39421,7 +39442,7 @@ static void ble_spam_stop(void)
         if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "[SPAM] exit stop failed: %d", rc);
 #endif
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
     // Always reset spam state (configured/started/indices) so a later START
     // reconfigures the adv instance cleanly — even on the Home path, where
@@ -39673,7 +39694,7 @@ static void ble_spoof_teardown(void)
 #endif
         memset(&g_ble_spoof_state, 0, sizeof(g_ble_spoof_state));
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
 }
 
@@ -39969,7 +39990,7 @@ static void ble_disc_teardown(void)
     memset(ble_disc_target_mac, 0, 6);
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
 }
 
@@ -40989,7 +41010,7 @@ static void ble_blaster_screen_stop(void)
             ble_gap_ext_adv_stop(i);
 #endif
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
     s_blaster_status_lbl = NULL;
     s_blaster_layers_lbl = NULL;
@@ -41389,7 +41410,7 @@ static void bt_conflict_proceed_cb(lv_event_t *ev)
     }
     if (bt_lookout_is_active()) {
         bt_lookout_stop();
-        /* scan loop task calls ble_gap_disc_cancel() via bt_stop_scan() within ~100 ms;
+        /* scan loop task calls bt_cancel_unreserved_discovery() via bt_stop_scan() within ~100 ms;
            calling it here from a different task races NimBLE internals and crashes */
     }
     bt_lookout_ui_active  = false;
@@ -42338,18 +42359,9 @@ static void attack_dispatch(const char *attack_name)
         }
         
         // Start BLE scan task
-        bt_scan_active = true;
-        BaseType_t task_ret = xTaskCreate(
-            bt_scan_task,
-            "bt_scan_task",
-            4096,
-            NULL,
-            5,
-            &bt_scan_task_handle
-        );
+        BaseType_t task_ret = bt_scan_worker_start();
         
         if (task_ret != pdPASS) {
-            bt_scan_active = false;
             lv_label_set_text(ble_scan_status_label, "Failed to start scan task!");
         } else {
             { char _ss[40]; snprintf(_ss, sizeof(_ss), "Scanning... 0 devices (%us)", (unsigned)g_bt_scan_duration_s); lv_label_set_text(ble_scan_status_label, _ss); }
@@ -43946,6 +43958,7 @@ static void evil_twin_start_btn_cb(lv_event_t *e)
 static bool ensure_wifi_mode(void)
 {
     if (!clock_radio_admit()) return false;
+    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) return false;
     // A sync failure does not relinquish controller/host ownership.
     if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return false;
     switch (current_radio_mode) {
@@ -44010,6 +44023,7 @@ static bool ensure_wifi_mode(void)
             ESP_LOGI(TAG, "Switching from BLE to WiFi mode...");
             _ot_ble_dwell_end();  /* flush any OT Survey BLE scan before it's wiped below */
             bt_nimble_deinit();
+            if (nimble_port_initialized) return false;
             current_radio_mode = RADIO_MODE_NONE;
             // Now initialize WiFi (recursive call with RADIO_MODE_NONE)
             return ensure_wifi_mode();
@@ -44034,9 +44048,11 @@ static bool ensure_wifi_mode(void)
  * Ensure BLE mode is active. If WiFi is active, deinits WiFi first.
  * Returns true if BLE is ready to use.
  */
-static bool ensure_ble_mode(void)
+static bool ensure_ble_mode_unreserved(void)
 {
     if (!clock_radio_admit()) return false;
+    // Other features with their own GAP callbacks cannot replace a retained scan.
+    if (s_bt_scan_owner && s_bt_scan_owner != xTaskGetCurrentTaskHandle()) return false;
     switch (current_radio_mode) {
         case RADIO_MODE_BLE:
             // Radio mode alone does not establish synchronization.
@@ -44080,7 +44096,7 @@ static bool ensure_ble_mode(void)
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
             current_radio_mode = RADIO_MODE_NONE;
             // Now initialize BLE (recursive call with RADIO_MODE_NONE)
-            return ensure_ble_mode();
+            return ensure_ble_mode_unreserved();
         }
 
 #if CONFIG_IEEE802154_ENABLED
@@ -44093,11 +44109,65 @@ static bool ensure_ble_mode(void)
             esp_ieee802154_sleep();
             esp_ieee802154_disable();
             current_radio_mode = RADIO_MODE_NONE;
-            return ensure_ble_mode();
+            return ensure_ble_mode_unreserved();
 #endif
     }
     return false;
 }
+
+/* Legacy feature exits may run after a failed entry. They must not cancel
+ * a connection feature or a foreign reserved worker simply because BLE is up. */
+static int bt_cancel_unreserved_discovery(void)
+{
+    if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return BLE_HS_EBUSY;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    bool busy = __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) ||
+                (s_bt_scan_owner && s_bt_scan_owner != self) ||
+                (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) && self != bt_scan_task_handle);
+    int rc = busy ? BLE_HS_EBUSY : ble_gap_disc_cancel();
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+    return rc;
+}
+
+/* External reservation shares the scanner API admission gate. It exists before
+ * radio init and survives deferred connect, GATT/security and disconnect drain.
+ * Release is token-only: stale callbacks cannot clear a successor reservation. */
+void cym_ble_cham_release(uint32_t token)
+{
+    uint32_t expected = token;
+    if (token) __atomic_compare_exchange_n(&s_bt_cham_token, &expected, 0, false,
+                                           __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+
+bool cym_ble_cham_acquire(uint32_t token)
+{
+    if (!token || __atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return false;
+    // Successful deinit leaves stop requested; it blocks only a retained port.
+    // cleanup_busy still excludes in-flight cleanup through port teardown.
+    bool busy = __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) || s_bt_scan_owner ||
+                __atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) ||
+                __atomic_load_n(&bt_scan_create_pending, __ATOMIC_ACQUIRE) ||
+                __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) ||
+                (nimble_port_initialized && nimble_stop_requested);
+    if (!busy) __atomic_store_n(&s_bt_cham_token, token, __ATOMIC_RELEASE);
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+    if (busy) return false;
+    if (ensure_ble_mode_unreserved()) return true;
+    cym_ble_cham_release(token);
+    return false;
+}
+
+static bool ensure_ble_mode(void)
+{
+    if (!clock_radio_admit()) return false;
+    // The Chameleon path reserves explicitly; other users must not cross it.
+    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&bt_scan_create_pending, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE)) return false;
+    return ensure_ble_mode_unreserved();
+}
+
 
 // ============================================================================
 // NimBLE BLE Scanner Functions
@@ -44154,6 +44224,7 @@ static void bt_reset_counters(void)
     bt_device_count = 0;
     memset(bt_found_devices, 0, sizeof(bt_found_devices));
     memset(bt_devices, 0, sizeof(bt_devices));
+    __atomic_fetch_add(&s_bt_results_revision, 1, __ATOMIC_RELEASE);
 }
 
 /**
@@ -44424,6 +44495,25 @@ static bool wifi_is_matter_oui(const uint8_t *bssid)
 typedef struct {
     uint32_t callbacks, legacy, extended, parse_fail, blacklisted, duplicate;
 } bt_diag_counts_t;
+static bool s_bt_alloc_hook_registered;
+static bool s_bt_alloc_capture;
+static uint32_t s_bt_alloc_failures, s_bt_alloc_dma_failures;
+static uint32_t s_bt_alloc_last_size, s_bt_alloc_last_caps;
+static uint32_t s_bt_rejected_reports;
+static uint32_t s_bt_alloc_start, s_bt_alloc_dma_start, s_bt_rejected_start;
+
+// Failure context: atomic counters only, no allocation, locks or logging.
+static void bt_alloc_failed(size_t size, uint32_t caps, const char *function_name)
+{
+    (void)function_name;
+    if (!__atomic_load_n(&s_bt_alloc_capture, __ATOMIC_RELAXED)) return;
+    __atomic_fetch_add(&s_bt_alloc_failures, 1, __ATOMIC_RELAXED);
+    if (caps & MALLOC_CAP_DMA)
+        __atomic_fetch_add(&s_bt_alloc_dma_failures, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_bt_alloc_last_size, (uint32_t)size, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_bt_alloc_last_caps, caps, __ATOMIC_RELAXED);
+}
+
 static bt_diag_counts_t s_bt_diag_start;
 static uint32_t s_bt_diag_id;
 static bool s_bt_diag_active;
@@ -44454,6 +44544,10 @@ static uint32_t bt_diag_begin(void)
 {
     if (!cym_debug_enabled()) return 0;
     uint32_t id = 0;
+    __atomic_store_n(&s_bt_alloc_capture, true, __ATOMIC_RELAXED);
+    s_bt_alloc_start = __atomic_load_n(&s_bt_alloc_failures, __ATOMIC_RELAXED);
+    s_bt_alloc_dma_start = __atomic_load_n(&s_bt_alloc_dma_failures, __ATOMIC_RELAXED);
+    s_bt_rejected_start = __atomic_load_n(&s_bt_rejected_reports, __ATOMIC_RELAXED);
     portENTER_CRITICAL(&s_bt_diag_mux);
     if (!s_bt_diag_active) {
         if (++s_bt_diag_id == 0) ++s_bt_diag_id;
@@ -44477,16 +44571,24 @@ static void bt_diag_end(const char *boundary, uint32_t id)
         captured = true;
     }
     portEXIT_CRITICAL(&s_bt_diag_mux);
-    if (!captured || !cym_debug_enabled()) return;
+    if (!captured) return;
+    __atomic_store_n(&s_bt_alloc_capture, false, __ATOMIC_RELAXED);
+    if (!cym_debug_enabled()) return;
     bt_diag_counts_t delta = bt_diag_delta(bt_diag_read(), start);
     log_heap_stats("ble-scan-complete");
     ESP_LOGI(TAG, "[BLE_SCAN] boundary=%s callbacks=%u legacy=%u extended=%u parse_fail=%u blacklisted=%u duplicate=%u (overlapping counters; boundary deltas, not RF proof)",
              boundary, (unsigned)delta.callbacks, (unsigned)delta.legacy,
              (unsigned)delta.extended, (unsigned)delta.parse_fail,
              (unsigned)delta.blacklisted, (unsigned)delta.duplicate);
+    ESP_LOGI(TAG, "[BLE_SCAN] alloc_fail=%u dma_alloc_fail=%u last_size=%u last_caps=0x%x app_rejected=%u upstream_drops=unavailable",
+             (unsigned)(__atomic_load_n(&s_bt_alloc_failures, __ATOMIC_RELAXED) - s_bt_alloc_start),
+             (unsigned)(__atomic_load_n(&s_bt_alloc_dma_failures, __ATOMIC_RELAXED) - s_bt_alloc_dma_start),
+             (unsigned)__atomic_load_n(&s_bt_alloc_last_size, __ATOMIC_RELAXED),
+             (unsigned)__atomic_load_n(&s_bt_alloc_last_caps, __ATOMIC_RELAXED),
+             (unsigned)(__atomic_load_n(&s_bt_rejected_reports, __ATOMIC_RELAXED) - s_bt_rejected_start));
 }
 
-static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
+static int bt_gap_report_process(struct ble_gap_event *event, void *arg)
 {
     if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
         bt_diag_end("gap-complete", 0);
@@ -44578,6 +44680,8 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
                 int name_len = fields.name_len < 31 ? fields.name_len : 31;
                 memcpy(bt_devices[dev_idx].name, fields.name, name_len);
                 bt_devices[dev_idx].name[name_len] = '\0';
+                __atomic_fetch_add(&s_bt_results_revision, 1, __ATOMIC_RELEASE);
+                bt_sas_needs_update = true;
             }
         }
         return 0;
@@ -44663,16 +44767,80 @@ static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
         }
 
         bt_device_count++;
+        __atomic_fetch_add(&s_bt_results_revision, 1, __ATOMIC_RELEASE);
+        bt_sas_needs_update = true;
     }
 
     return 0;
 }
+
+static int bt_gap_event_callback(struct ble_gap_event *event, void *arg)
+{
+    if (event->type == BLE_GAP_EVENT_DISC_COMPLETE) {
+        bt_diag_end("gap-complete", 0);
+        return 0;
+    }
+    portENTER_CRITICAL(&s_bt_report_mux);
+    bool accept = s_bt_reports_accept;
+    if (accept) ++s_bt_reports_inflight;
+    portEXIT_CRITICAL(&s_bt_report_mux);
+    if (!accept) {
+        __atomic_fetch_add(&s_bt_rejected_reports, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
+    int rc = bt_gap_report_process(event, arg);
+    portENTER_CRITICAL(&s_bt_report_mux);
+    --s_bt_reports_inflight;
+    portEXIT_CRITICAL(&s_bt_report_mux);
+    return rc;
+}
+
+// Leaves API reservation held on success until start-result publication.
+static bool bt_scan_session_begin(void)
+{
+    if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return false;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    if (!nimble_initialized || nimble_stop_requested || s_bt_scan_owner ||
+        __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) ||
+        (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) && self != bt_scan_task_handle)) {
+        __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+        return false;
+    }
+    portENTER_CRITICAL(&s_bt_report_mux);
+    bool quiet = s_bt_reports_inflight == 0;
+    s_bt_reports_accept = false;
+    portEXIT_CRITICAL(&s_bt_report_mux);
+    if (!quiet) {
+        __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+        return false;
+    }
+    s_bt_scan_owner = self;
+    if (!bt_tracking_mode) bt_reset_counters();
+    portENTER_CRITICAL(&s_bt_report_mux);
+    s_bt_reports_accept = true;
+    portEXIT_CRITICAL(&s_bt_report_mux);
+    return true;
+}
+
+static void bt_scan_session_start_result(int rc)
+{
+    if (rc != 0) {
+        portENTER_CRITICAL(&s_bt_report_mux);
+        s_bt_reports_accept = false;
+        portEXIT_CRITICAL(&s_bt_report_mux);
+        s_bt_scan_owner = NULL;
+    }
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+}
+
 
 /**
  * Start BLE scanning — enables both 1M PHY and Coded PHY (BLE 5 Long Range)
  */
 static int bt_start_scan(void)
 {
+    if (!bt_scan_session_begin()) return BLE_HS_EBUSY;
     uint32_t diag_id = bt_diag_begin();
 #if MYNEWT_VAL(BLE_EXT_ADV)
     struct ble_gap_ext_disc_params p1m = {
@@ -44705,16 +44873,38 @@ static int bt_start_scan(void)
 #endif
     log_heap_stats("ble-scan-start-return");
     if (rc != 0 && diag_id) bt_diag_end("start-failed", diag_id);
+    bt_scan_session_start_result(rc);
     return rc;
 }
 
 /**
  * Stop BLE scanning
  */
-static void bt_stop_scan(void)
+static bool bt_stop_scan(void)
 {
+    if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return false;
+    // A delayed worker from another feature cannot cancel its successor.
+    if (s_bt_scan_owner && s_bt_scan_owner != xTaskGetCurrentTaskHandle()) {
+        __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+        return false;
+    }
+    if (!s_bt_scan_owner) {
+        __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+        return true;
+    }
+    portENTER_CRITICAL(&s_bt_report_mux);
+    s_bt_reports_accept = false;
+    portEXIT_CRITICAL(&s_bt_report_mux);
     int rc = ble_gap_disc_cancel();
-    if (rc == 0) bt_diag_end("cancel-return", 0);
+    if (rc == 0 || rc == BLE_HS_EALREADY) bt_diag_end("cancel-return", 0);
+    portENTER_CRITICAL(&s_bt_report_mux);
+    bool quiet = s_bt_reports_inflight == 0;
+    portEXIT_CRITICAL(&s_bt_report_mux);
+    bool stopped = (rc == 0 || rc == BLE_HS_EALREADY) && quiet;
+    if (stopped) s_bt_scan_owner = NULL;
+    // Cancel failure or in-flight callback retains ownership and blocks starts.
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+    return stopped;
 }
 
 /**
@@ -44727,6 +44917,7 @@ static void bt_stop_scan(void)
  */
 static int bt_start_scan_passive(void)
 {
+    if (!bt_scan_session_begin()) return BLE_HS_EBUSY;
     uint32_t diag_id = bt_diag_begin();
 #if MYNEWT_VAL(BLE_EXT_ADV)
     struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
@@ -44751,6 +44942,7 @@ static int bt_start_scan_passive(void)
 #endif
     log_heap_stats("ble-scan-start-return");
     if (rc != 0 && diag_id) bt_diag_end("start-failed", diag_id);
+    bt_scan_session_start_result(rc);
     return rc;
 }
 
@@ -44765,7 +44957,7 @@ static int bt_start_scan_passive(void)
 static void _ot_ble_dwell_end(void)
 {
     if (!s_ot_ble_scan_owned) return;
-    bt_stop_scan();
+    if (!bt_stop_scan()) return;
     ble_obs_store_pending = true;
     s_ot_ble_scan_owned    = false;
 }
@@ -44827,10 +45019,21 @@ static bool bt_nimble_cleanup_bounded(void)
     if (!nimble_port_initialized) return true;
     if (nimble_deinit_failed) return false;
     if (__atomic_test_and_set(&nimble_cleanup_busy, __ATOMIC_SEQ_CST)) return false;
-    bt_scan_active = false;
+    // Serialize cleanup admission with external reservation and worker publication.
+    if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) {
+        __atomic_clear(&nimble_cleanup_busy, __ATOMIC_SEQ_CST);
+        return false;
+    }
+    bool external = __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) != 0;
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+    if (external) {
+        __atomic_clear(&nimble_cleanup_busy, __ATOMIC_SEQ_CST);
+        return false;
+    }
+    bt_scan_stop();
     if (nimble_initialized) bt_stop_scan();
     for (int i = 0; i < 20 && bt_scan_task_handle; ++i) vTaskDelay(pdMS_TO_TICKS(100));
-    if (bt_scan_task_handle) {
+    if (bt_scan_task_handle || __atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) || s_bt_scan_owner) {
         __atomic_clear(&nimble_cleanup_busy, __ATOMIC_SEQ_CST);
         return false; // worker can still enter host APIs; retain the whole port
     }
@@ -44872,6 +45075,9 @@ static void apply_ble_power_settings(void)
  */
 static esp_err_t bt_nimble_init(void)
 {
+    if (!s_bt_alloc_hook_registered)
+        s_bt_alloc_hook_registered = heap_caps_register_failed_alloc_callback(bt_alloc_failed) == ESP_OK;
+    __atomic_store_n(&s_bt_alloc_capture, cym_debug_enabled(), __ATOMIC_RELAXED);
     if (!clock_radio_admit()) return ESP_ERR_INVALID_STATE;
     if (nimble_initialized && !nimble_stop_requested) {
         return ESP_OK;
@@ -44972,24 +45178,12 @@ static void bt_nimble_deinit(void)
  */
 static void bt_scan_stop(void)
 {
-    if (!bt_scan_active && bt_scan_task_handle == NULL) {
-        return;
-    }
-    
-    bt_scan_active = false;
-    bt_stop_scan();
-    
-    // Wait for task to finish
-    for (int i = 0; i < 40 && bt_scan_task_handle != NULL; i++) {
+    __atomic_store_n(&bt_scan_active, false, __ATOMIC_RELEASE);
+    // Only the owning worker cancels GAP. Timeout retains its reservation.
+    for (int i = 0; i < 40 && __atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE); i++)
         vTaskDelay(pdMS_TO_TICKS(50));
-    }
-    
-    if (bt_scan_task_handle != NULL) {
-        vTaskDelete(bt_scan_task_handle);
-        bt_scan_task_handle = NULL;
-    }
-    
-    ESP_LOGI(TAG, "BLE scanner stopped.");
+    if (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE))
+        ESP_LOGW(TAG, "BLE scan stop pending; restart blocked");
 }
 
 /**
@@ -45086,7 +45280,7 @@ static void bt_locator_tracking_task(void *pvParameters)
             }
         }
         
-        bt_stop_scan();
+        while (!bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
         
         if (!bt_locator_tracking_active || !bt_locator_ui_active) {
             break;
@@ -45127,13 +45321,9 @@ static void bt_locator_stop(void)
     vibrator_off();
     g_vibtest_strength_pct = bt_locator_saved_strength_pct;
 
-    // Stop scan if running
-    if (bt_scan_active && bt_scan_task_handle != NULL) {
-        bt_scan_active = false;
-    }
-
-    // Wait for tasks to stop
-    vTaskDelay(pdMS_TO_TICKS(300));
+    bt_scan_stop();
+    for (int i = 0; i < 40 && bt_locator_task_handle; ++i)
+        vTaskDelay(pdMS_TO_TICKS(50));
     
     // Clean up UI
     bt_locator_ui_active = false;
@@ -45147,7 +45337,7 @@ static void bt_locator_stop(void)
     // Switch back to WiFi mode
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
 }
 
@@ -45156,6 +45346,8 @@ static void bt_locator_stop(void)
  */
 static void bt_locator_device_selected_cb(lv_event_t *e)
 {
+    if (bt_locator_task_handle) return; // delayed tracker retains shared state
+
     int dev_idx = (int)(intptr_t)lv_event_get_user_data(e);
     
     if (dev_idx < 0 || dev_idx >= bt_device_count) return;
@@ -45173,9 +45365,10 @@ static void bt_locator_device_selected_cb(lv_event_t *e)
     }
     
     // Stop current scan if running
-    if (bt_scan_active && bt_scan_task_handle != NULL) {
-        bt_scan_active = false;
-        vTaskDelay(pdMS_TO_TICKS(200));  // Wait for scan to stop
+    bt_scan_stop();
+    if (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE)) {
+        if (bt_locator_status_label) lv_label_set_text(bt_locator_status_label, "Scan stopping; retry selection");
+        return;
     }
     
     // Hide list, show tracking UI
@@ -45306,59 +45499,64 @@ static void bt_locator_update_list(void)
 /**
  * BLE scan task - runs for 10 seconds then stops
  */
+static BaseType_t bt_scan_worker_start(void)
+{
+    if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return pdFAIL;
+    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) || s_bt_scan_owner ||
+        __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) ||
+        __atomic_test_and_set(&bt_scan_worker_busy, __ATOMIC_ACQ_REL)) {
+        __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+        return pdFAIL;
+    }
+    __atomic_store_n(&bt_scan_create_pending, true, __ATOMIC_RELEASE);
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+    __atomic_store_n(&bt_scan_active, true, __ATOMIC_RELEASE);
+    ble_scan_finished = false;
+    // Keep dynamic RTOS storage internal and the existing 4096-byte stack.
+    BaseType_t ret = xTaskCreate(bt_scan_task, "bt_scan_task", 4096, NULL, 5, &bt_scan_task_handle);
+    if (ret != pdPASS) {
+        bt_scan_task_handle = NULL;
+        __atomic_store_n(&bt_scan_active, false, __ATOMIC_RELEASE);
+        ble_scan_finished = true;
+    }
+    __atomic_store_n(&bt_scan_create_pending, false, __ATOMIC_RELEASE);
+    if (ret != pdPASS) __atomic_store_n(&bt_scan_worker_busy, false, __ATOMIC_RELEASE);
+    return ret;
+}
+
 static void bt_scan_task(void *pvParameters)
 {
-    bt_reset_counters();
-    ble_scan_finished = false;
-
+    (void)pvParameters;
+    // Do not clear the handle before its creator publishes it.
+    while (__atomic_load_n(&bt_scan_create_pending, __ATOMIC_ACQUIRE))
+        vTaskDelay(pdMS_TO_TICKS(1));
+    bool started = __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE);
+    int rc = started ? bt_start_scan() : 0;
     int bt_scan_iters = (int)g_bt_scan_duration_s * 10;
-    ESP_LOGI(TAG, "BLE scan starting (%us)...", (unsigned)g_bt_scan_duration_s);
-
-    int rc = bt_start_scan();
-    if (rc != 0) {
-        ESP_LOGE(TAG, "BLE scan start failed: %d", rc);
-        bt_scan_active = false;
-        bt_scan_task_handle = NULL;
-
-        // Set status for UI update (thread-safe)
-        snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan failed!");
-        ble_scan_needs_ui_update = true;
-        bt_locator_needs_ui_update = true;  // Also update BT Locator if active
-
-        vTaskDelete(NULL);
-        return;
-    }
-
-    // Scan for g_bt_scan_duration_s seconds, updating UI every 500ms via flag
-    for (int i = 0; i < bt_scan_iters && bt_scan_active; i++) {
-        vTaskDelay(pdMS_TO_TICKS(100));
-
-        // Update UI every 500ms via flag (thread-safe)
-        if (i % 5 == 0) {
-            snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
-                     "Scanning... %d (%ds)", bt_device_count, (bt_scan_iters - i) / 10);
-            ble_scan_needs_ui_update = true;
-            bt_locator_needs_ui_update = true;
-            bt_sas_needs_update = true;
+    if (rc == 0) {
+        for (int i = 0; i < bt_scan_iters && __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE); i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            if (i % 5 == 0) {
+                snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
+                         "Scanning... %d (%ds)", bt_device_count, (bt_scan_iters - i) / 10);
+                ble_scan_needs_ui_update = bt_locator_needs_ui_update = bt_sas_needs_update = true;
+            }
         }
-
+        // Cancel failure cannot authorize reuse; retain owner and retry yielding.
+        while (started && !bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
+        snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
+                 "%d devices (%d AT, %d ST)", bt_device_count, bt_airtag_count, bt_smarttag_count);
+        ble_obs_store_pending = true;
+    } else {
+        ESP_LOGE(TAG, "BLE scan start failed: %d", rc);
+        snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan start failed (%d); retry", rc);
     }
-
-    bt_stop_scan();
-    bt_scan_active = false;
-
-    // Final UI update via flag (thread-safe)
-    snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
-             "%d devices (%d AT, %d ST)", bt_device_count, bt_airtag_count, bt_smarttag_count);
+    __atomic_store_n(&bt_scan_active, false, __ATOMIC_RELEASE);
     ble_scan_finished = true;
-    ble_obs_store_pending = true;   /* main loop will feed bt_devices → g_obs_store */
-    ble_scan_needs_ui_update = true;
-    bt_locator_needs_ui_update = true;
-    bt_sas_needs_update = true;
-
-    ESP_LOGI(TAG, "BLE scan complete: %d devices found", bt_device_count);
-    
+    ble_scan_needs_ui_update = bt_locator_needs_ui_update = bt_sas_needs_update = true;
     bt_scan_task_handle = NULL;
+    // No shared state or host API access beyond reservation release.
+    __atomic_store_n(&bt_scan_worker_busy, false, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -45371,7 +45569,7 @@ static void ble_scan_screen_stop(void)
     ble_scan_content = NULL;
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
 }
 
@@ -48370,10 +48568,10 @@ static void blespam_detector_stop(void)
     s_bspam_active = false;
     s_bspam_locate = false;
     if (s_bspam_ui_timer) { lv_timer_del(s_bspam_ui_timer); s_bspam_ui_timer = NULL; }
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
     for (int i = 0; __atomic_load_n(&s_bspam_callbacks, __ATOMIC_ACQUIRE) && i < 100; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -48778,10 +48976,10 @@ static void flipper_detector_stop(void)
     s_flip_active = false;
     s_flip_locate = false;
     if (s_flip_ui_timer) { lv_timer_del(s_flip_ui_timer); s_flip_ui_timer = NULL; }
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
     for (int i = 0; __atomic_load_n(&s_flip_callbacks, __ATOMIC_ACQUIRE) && i < 100; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -49235,10 +49433,10 @@ static void bsig_stop(void)
     bsig_ctx_t *c = s_bsig_active; if (!c) return;
     c->active = false; c->locate = false;
     if (c->ui_timer) { lv_timer_del(c->ui_timer); c->ui_timer = NULL; }
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
     for (int i = 0; __atomic_load_n(&c->cbs, __ATOMIC_ACQUIRE) && i < 100; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -49796,7 +49994,7 @@ static void drone_task(void *pvParameters)
         while (drone_scan_active && esp_timer_get_time() / 1000 < ble_end)
             vTaskDelay(pdMS_TO_TICKS(100));
 
-        if (rc == 0) ble_gap_disc_cancel();
+        if (rc == 0) bt_cancel_unreserved_discovery();
         drone_drain_pcap();
         drone_flush_csv();
     }
@@ -49805,9 +50003,9 @@ static void drone_task(void *pvParameters)
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(NULL);
     if (current_radio_mode == RADIO_MODE_BLE) {
-        ble_gap_disc_cancel();
+        bt_cancel_unreserved_discovery();
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
     drone_drain_pcap();
     if (drone_pcap_queue) { vQueueDelete(drone_pcap_queue); drone_pcap_queue = NULL; }
@@ -49838,7 +50036,7 @@ static void drone_detector_stop(void)
     drone_count_lbl   = NULL;
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(NULL);
-    if (current_radio_mode == RADIO_MODE_BLE) ble_gap_disc_cancel();
+    if (current_radio_mode == RADIO_MODE_BLE) bt_cancel_unreserved_discovery();
     for (int i = 0; i < 35 && drone_task_handle != NULL; i++)
         vTaskDelay(pdMS_TO_TICKS(100));
     if (drone_task_stack) { heap_caps_free(drone_task_stack); drone_task_stack = NULL; }
@@ -51867,7 +52065,7 @@ static void airtag_scan_task(void *pvParameters)
     ESP_LOGI(TAG, "AirTag scanner task started");
 
     while (airtag_scan_active) {
-        bt_reset_counters();
+
 
         int rc = bt_start_scan();
         if (rc != 0) {
@@ -51880,10 +52078,8 @@ static void airtag_scan_task(void *pvParameters)
         for (int i = 0; i < 100 && airtag_scan_active; i++)
             vTaskDelay(pdMS_TO_TICKS(100));
 
-        /* Only stop the scan if we weren't cancelled — the exit callback
-         * already called bt_stop_scan() and we must not race with it */
-        if (airtag_scan_active)
-            bt_stop_scan();
+        // Only the owning worker cancels, including after navigation.
+        while (!bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
 
         if (!airtag_scan_active)
             break;
@@ -51926,23 +52122,16 @@ static void airtag_scan_stop(void)
     airtag_scan_active   = false;
     airtag_scan_ui_active = false;
 
-    /* Stop the scan — task will not call bt_stop_scan() again after seeing
-     * airtag_scan_active=false, so there is no race here */
-    bt_stop_scan();
+    // Owning worker cancels; timeout retains its RTOS storage and GAP owner.
 
     /* Wait for the task to self-delete (sets handle to NULL), up to 2 s */
     for (int i = 0; i < 20 && airtag_scan_task_handle != NULL; i++)
         vTaskDelay(pdMS_TO_TICKS(100));
 
-    /* Safe to free the stack now that the task has exited */
-    if (airtag_scan_task_stack != NULL) {
-        heap_caps_free(airtag_scan_task_stack);
-        airtag_scan_task_stack = NULL;
-    }
 
     if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
 }
 
@@ -52269,6 +52458,8 @@ static void show_found_tags_screen(void)
  */
 static void show_tag_tracker_screen(int dev_idx)
 {
+    if (bt_locator_task_handle) return; // delayed tracker retains shared state
+
     if (!clock_radio_admit()) return;
     if (dev_idx < 0 || dev_idx >= bt_device_count) return;
     bt_device_info_t *dev = &bt_devices[dev_idx];
@@ -52391,8 +52582,9 @@ static void show_tag_tracker_screen(int dev_idx)
 static void show_airtag_scan_screen(void)
 {
     if (clock_defer_radio_navigation(show_airtag_scan_screen)) return;
+    if (airtag_scan_task_handle && !airtag_scan_active) return;
     // Ensure BLE mode is active
-    if (!ensure_ble_mode()) {
+    if (!airtag_scan_active && !ensure_ble_mode()) {
         ESP_LOGE(TAG, "Failed to switch to BLE mode for AirTag scanner");
         return;
     }
@@ -52468,19 +52660,12 @@ static void show_airtag_scan_screen(void)
         airtag_scan_active = true;
         airtag_scan_update_flag = false;
 
-        airtag_scan_task_stack = (StackType_t *)heap_caps_malloc(4096 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
-        if (airtag_scan_task_stack) {
-            airtag_scan_task_handle = xTaskCreateStatic(
-                airtag_scan_task,
-                "airtag_scan",
-                4096,
-                NULL,
-                5,
-                airtag_scan_task_stack,
-                &airtag_scan_task_buffer
-            );
-        } else {
-            ESP_LOGE(TAG, "Failed to allocate AirTag scan task stack");
+        BaseType_t rc = xTaskCreate(airtag_scan_task, "airtag_scan", 4096, NULL, 5,
+                                    &airtag_scan_task_handle);
+        if (rc != pdPASS) {
+            airtag_scan_active = false;
+            airtag_scan_task_handle = NULL;
+            lv_label_set_text(airtag_scan_status_label, "Scan task start failed; retry");
         }
         ESP_LOGI(TAG, "AirTag scanner started");
     } else {
@@ -52536,7 +52721,7 @@ static void hp_start_cb(lv_event_t *e)
     if (honeypair_is_active()) {
         honeypair_stop();
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     } else {
         if (!ensure_ble_mode()) {
             if (hp_status_lbl)
@@ -52565,7 +52750,7 @@ static void hp_stop(void)
     if (honeypair_is_active()) {
         honeypair_stop();
         bt_nimble_deinit();
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) current_radio_mode = RADIO_MODE_NONE;
     }
 }
 
@@ -52702,8 +52887,10 @@ static void bd_start_cb(lv_event_t *e)
     if (blueduck_is_active()) {
         blueduck_stop();
         bt_nimble_deinit();
-        s_ble_for_blueduck  = false;
-        current_radio_mode  = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) {
+            s_ble_for_blueduck = false;
+            current_radio_mode = RADIO_MODE_NONE;
+        }
     } else {
         int pidx  = bd_persona_dd  ? (int)lv_dropdown_get_selected(bd_persona_dd) : 0;
         int sidx  = bd_script_dd   ? (int)lv_dropdown_get_selected(bd_script_dd)  : 0;
@@ -52720,6 +52907,10 @@ static void bd_start_cb(lv_event_t *e)
          * bt_nimble_init() call registers BlueDuck's services correctly. */
         if (current_radio_mode == RADIO_MODE_BLE) {
             bt_nimble_deinit();
+            if (nimble_port_initialized) {
+                if (bd_status_lbl) lv_label_set_text(bd_status_lbl, "BLE busy; stop other operation and retry");
+                return;
+            }
             current_radio_mode = RADIO_MODE_NONE;
         }
         if (!ensure_ble_mode()) {
@@ -52740,6 +52931,8 @@ static void bd_persona_dd_cb(lv_event_t *e)
         /* persona changes take effect on next connection; re-advertise immediately */
         blueduck_stop();
         bt_nimble_deinit();
+        if (nimble_port_initialized) return;
+        current_radio_mode = RADIO_MODE_NONE;
         s_ble_for_blueduck = true;
         if (ensure_ble_mode()) {
             int sidx = bd_script_dd ? (int)lv_dropdown_get_selected(bd_script_dd) : 0;
@@ -52766,8 +52959,10 @@ static void bd_stop(void)
     if (blueduck_is_active()) {
         blueduck_stop();
         bt_nimble_deinit();
-        s_ble_for_blueduck = false;
-        current_radio_mode = RADIO_MODE_NONE;
+        if (!nimble_port_initialized) {
+            s_ble_for_blueduck = false;
+            current_radio_mode = RADIO_MODE_NONE;
+        }
     }
 }
 
@@ -53151,14 +53346,9 @@ static void show_whisperpair_screen(void)
 
     if (!bt_scan_active) {
         if (ensure_ble_mode()) {
-            bt_reset_counters();
-            bt_scan_active = true;
-            ble_scan_finished = false;
             wp_scan_end_ms = xTaskGetTickCount() * portTICK_PERIOD_MS + 10000;
-            BaseType_t ret = xTaskCreate(bt_scan_task, "bt_scan_task",
-                                         4096, NULL, 5, &bt_scan_task_handle);
+            BaseType_t ret = bt_scan_worker_start();
             if (ret != pdPASS) {
-                bt_scan_active = false;
                 lv_label_set_text_static(wp_scan_lbl, "BLE scan start failed");
             }
         } else {
@@ -63176,9 +63366,7 @@ static void s_cham_pair_no_cb(lv_event_t *e)  { (void)e; cham_passkey_reject(); 
 static void s_cham_scan_btn_cb(lv_event_t *e)
 {
     (void)e;
-    /* ensure_ble_mode() must run first; ble_gap_disc() silently fails without it */
-    if (!ensure_ble_mode()) return;
-    cham_scan_start();
+    cham_scan_start(); // Reserves before init; busy admission is visible and retryable.
 }
 
 /* ── Stop scan button ── */
@@ -65444,6 +65632,16 @@ static void s_cham_rebuild_content(cham_state_t st)
         lv_obj_set_width(sub, lv_pct(100));
         lv_obj_align(sub, LV_ALIGN_TOP_MID, 0, 34);
 
+        /* Idle/error must have a live status target too: admission can fail
+         * before the state changes (e.g. persistent background Lookout). */
+        s_cham_prog_lbl = lv_label_create(s_cham_content);
+        lv_label_set_text(s_cham_prog_lbl, cham_get_status_msg());
+        lv_obj_set_style_text_font(s_cham_prog_lbl, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_align(s_cham_prog_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(s_cham_prog_lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(s_cham_prog_lbl, lv_pct(100));
+        lv_obj_align(s_cham_prog_lbl, LV_ALIGN_TOP_MID, 0, 76);
+
         lv_obj_t *btn = lv_btn_create(s_cham_content);
         lv_obj_set_size(btn, 120, 38);
         lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, 110);
@@ -65966,7 +66164,7 @@ static void chameleon_screen_stop(void)
      * actually up. BLE is brought up lazily by the Scan button (ensure_ble_mode),
      * so entering the screen and leaving WITHOUT scanning — or leaving after a BLE
      * wardrive tore NimBLE down — means the host is gone; cham_disconnect() ->
-     * ble_gap_disc_cancel() -> ble_hs_is_enabled() then faults (Load access fault). */
+     * bt_cancel_unreserved_discovery() -> ble_hs_is_enabled() then faults (Load access fault). */
     if (!s_cham_nav_child && nimble_initialized) {
         cham_disconnect();
     }
@@ -70134,6 +70332,7 @@ static void s_zgwd_task_fn(void *arg)
     FILE *csv  = NULL;
     FILE *pcap = NULL;
 
+    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) goto zgwd_radio_busy;
     if (current_radio_mode == RADIO_MODE_WIFI) {
         esp_wifi_set_promiscuous(false);
         esp_wifi_stop();
@@ -70142,6 +70341,7 @@ static void s_zgwd_task_fn(void *arg)
         current_radio_mode = RADIO_MODE_NONE;
     } else if (current_radio_mode == RADIO_MODE_BLE) {
         bt_nimble_deinit();
+        if (nimble_port_initialized) goto zgwd_radio_busy;
         current_radio_mode = RADIO_MODE_NONE;
     }
 
@@ -70274,11 +70474,11 @@ zgwd_done:
     if (pcap) { fflush(pcap); fclose(pcap); }
     if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
 
-    ensure_wifi_mode();
-    apply_wifi_power_settings();
+    if (ensure_wifi_mode()) apply_wifi_power_settings();
 
     ESP_LOGI(TAG, "[ZGWD] Stopped. Frames:%d PANs:%d", ctx->frame_count, ctx->pan_count);
 
+zgwd_radio_busy:
     ctx->scanning = false;
     ctx->task     = NULL;
     vTaskDelete(NULL);
@@ -72050,7 +72250,7 @@ static void obs_locate_task(void *arg)
             }
         }
 
-        bt_stop_scan();
+        while (!bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
         if (!s_obs_loc_running) break;
     }
 
@@ -72058,6 +72258,7 @@ static void obs_locate_task(void *arg)
     g_vibtest_strength_pct = s_obs_saved_vib_pct;
     bt_tracking_mode        = false;
     s_obs_loc_running       = false;
+    s_obs_loc_task_handle = NULL;
     ESP_LOGI(TAG, "obs_locate: stopped");
     vTaskDelete(NULL);
 }
@@ -72076,6 +72277,8 @@ static void obs_device_locate_stop(void)
 
 static void show_obs_device_locate_screen(void)
 {
+    if (s_obs_loc_task_handle) return;
+
     if (clock_defer_radio_navigation(show_obs_device_locate_screen)) return;
     create_function_page_base("Device Locate");
     g_screen_stop_fn = obs_device_locate_stop;
@@ -72155,8 +72358,12 @@ static void show_obs_device_locate_screen(void)
     bt_tracking_rssi  = 0;
     s_obs_loc_running = true;
 
-    ensure_ble_mode();
-    xTaskCreate(obs_locate_task, "obs_loc", 4096, NULL, 2, NULL);
+    if (!ensure_ble_mode() || xTaskCreate(obs_locate_task, "obs_loc", 4096, NULL, 2,
+                                        &s_obs_loc_task_handle) != pdPASS) {
+        s_obs_loc_running = false;
+        bt_tracking_mode = false;
+        lv_label_set_text(s_obs_loc_status_lbl, "Locate start failed; retry");
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -72259,7 +72466,7 @@ static void obs_ring_task(void *arg)
 
     obs_ring_set_status("Switching to BLE...");
     ensure_ble_mode();
-    ble_gap_disc_cancel();
+    bt_cancel_unreserved_discovery();
 
     s_obs_ring_sem = xSemaphoreCreateBinary();
     if (!s_obs_ring_sem) { obs_ring_set_status("Alloc failed"); goto done; }
