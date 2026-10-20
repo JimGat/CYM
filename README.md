@@ -33,6 +33,12 @@
 
 ---
 
+## Development candidate v3.0.33 — bounded Classic diagnostics and C5 scans
+
+Classic CYD **without PSRAM only** now saves the explicit, GPS-disconnected USB Debug opt-in across reboot. Application logs resume after NVS initialization, before GPS can own UART0's shared GPIO1 path. Keep GPS physically disconnected until **Return normal / Reboot** successfully saves OFF and reboots. This is logs only, not ROM/bootloader/panic capture or an interactive console. Complete bounded records use CRLF with queued FIFO-tail retries and visible drop/retry counters; overload is not lossless. HackerBox retains its previous volatile transport. [Safety, exact limits and capture checklist](docs/operators/classic-usb-debug.md).
+
+On ESP32-C5 only, WiFi Scan and Attack normally completes **two passes**. If pass two still finds new BSSIDs, it may perform one adaptive third pass, never more than three. The existing 45-second ceiling, cancellation and scan-start failure can end earlier. Classic ESP32 and S3 retain their original two-consecutive-stable/eight-pass adaptive policy. BLE algorithms are unchanged; Classic's memory-pressure warning remains diagnostically unresolved. Software verification is not hardware acceptance; Stable remains unchanged.
+
 ## Development candidate v3.0.32 — radio memory and scan ownership
 
 This unaccepted hardware candidate preserves the v3.0.31 BLE lifecycle repairs. On PSRAM boards, two task-only decoded IR signal copies move out of internal RAM; ISR/RMT/DMA buffers, RTOS objects and the 4096-byte BLE worker stack do not. Allocation pressure during discovery is an explicit incomplete-scan error even with Debug OFF. Bounded diagnostics identify the public allocator boundary, not an opaque controller call site.
@@ -3482,7 +3488,7 @@ extended soak or the matching WS-C5-28 workflow. Current Stable is v3.0.27.
 
 ### Classic USB Debug (runtime logs)
 
-Classic CYD and HackerBox CYD only: Hardware Options has a separate **Classic USB Debug** entry. Physically disconnect the GPS before acknowledging enable: GPS TX and UART0 TX share GPIO1, even if GPS is disabled in software. The transport is volatile, OFF each boot, uses the USB-UART bridge at 115200 8N1, and makes GPS unavailable until reboot. The existing saved Debug diagnostics switch remains separate. See the [operator instructions and hardware retest checklist](docs/operators/classic-usb-debug.md). No early-boot, ROM or panic capture is promised.
+Classic CYD and HackerBox CYD only: Hardware Options has a separate **Classic USB Debug** entry. Physically disconnect the GPS before acknowledging enable: GPS TX and UART0 TX share GPIO1, even if GPS is disabled in software. On Classic CYD without PSRAM the acknowledged opt-in persists across reboot; HackerBox retains volatile OFF-each-boot behavior. Both use the USB-UART bridge at 115200 8N1 and inhibit GPS until an explicit safe return to normal and reboot. The existing saved Debug diagnostics switch remains separate. See the [operator instructions and hardware retest checklist](docs/operators/classic-usb-debug.md). No early-boot, ROM or panic capture is promised.
 
 ### v3.0.30 Development: Bluetooth lifecycle repair candidate
 

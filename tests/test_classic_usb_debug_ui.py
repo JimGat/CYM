@@ -1,4 +1,5 @@
 """Run the production Classic modal and Hardware Options with real installed LVGL."""
+from test_classic_usb_debug_next import NVS_STUB
 from pathlib import Path
 import os, re, subprocess, tempfile, unittest
 ROOT=Path(__file__).resolve().parents[1]
@@ -27,6 +28,13 @@ PRELUDE=r"""
 #define MY_SYMBOL_TOWER "tower"
 #define ESP_LOGE(...) ((void)0)
 LV_FONT_DECLARE(lv_extra_symbols);
+#include "nvs.h"
+static int saved_usb;
+esp_err_t nvs_open(const char *n,int mode,nvs_handle_t *h){assert(!strcmp(n,"cym_usb")&&mode==1);*h=1;return 0;}
+esp_err_t nvs_get_u8(nvs_handle_t h,const char *k,uint8_t *v){(void)h;(void)k;*v=saved_usb;return 0;}
+esp_err_t nvs_set_u8(nvs_handle_t h,const char *k,uint8_t v){(void)h;(void)k;saved_usb=v;return 0;}
+esp_err_t nvs_commit(nvs_handle_t h){(void)h;return 0;}
+void nvs_close(nvs_handle_t h){(void)h;}
 static int screen_orientation;
 static bool dark_mode_enabled;
 static lv_obj_t *function_page,*s_hardware_debug_switch,*s_hardware_debug_status;
@@ -41,6 +49,7 @@ static bool cym_debug_enabled(void){return debug_enabled;}
 static esp_err_t cym_debug_set(bool v){debug_enabled=v;return 0;}
 static bool uart_is_driver_installed(int n){assert(n==2);return !gps_deletes;}
 static int uart_driver_delete(int n){assert(n==2&&cym_classic_usb_gps_blocked()&&!g_gps_uart_ready);gps_deletes++;return 0;}
+void cym_classic_usb_uart_stats(cym_classic_usb_uart_stats_t *s){*s=(cym_classic_usb_uart_stats_t){0};}
 esp_err_t cym_classic_usb_uart_start(void){assert(gps_deletes==1&&!current_gps.valid&&cym_classic_usb_gps_blocked());uart_starts++;return start_fail?ESP_FAIL:ESP_OK;}
 esp_err_t cym_classic_usb_uart_stop(void){uart_stops++;return stop_fail?ESP_FAIL:ESP_OK;}
 static void esp_restart(void){assert(!stop_fail&&uart_stops>0);reboots++;}
@@ -170,6 +179,8 @@ static int readability(int theme,int orient,int navigation,int state){
   if(state==2){start_fail=1;classic_usb_enable_event(NULL);}
   if(state==3){classic_usb_enable_event(NULL);stop_fail=1;classic_usb_reboot_event(NULL);CHECK(reboots==0);}
   lv_obj_update_layout(lv_scr_act());
+  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,0)),"Saved across reboot"));
+  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,0)),"Debug OFF plus reboot"));
   CHECK(lv_obj_get_style_bg_opa(s_classic_usb_popup,0)==LV_OPA_COVER);
   CHECK((lv_obj_get_style_bg_color(s_classic_usb_popup,0).full==ui_panel_color().full));
   text_style(lv_obj_get_child(s_classic_usb_popup,0),ui_text_color(),ui_panel_color(),"warning");
@@ -243,7 +254,7 @@ class ClassicUsbUI(unittest.TestCase):
             code+=function(source,name)+'\n'
         code+=POST
         with tempfile.TemporaryDirectory(prefix='classic-lvgl-',dir=os.environ['TMPDIR']) as tmp:
-            d=Path(tmp);(d/'test.c').write_text(code)
+            d=Path(tmp);(d/'test.c').write_text(code);(d/'nvs.h').write_text(NVS_STUB)
             (d/'esp_err.h').write_text('#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_FAIL -1\n#define ESP_ERR_INVALID_ARG 0x102\n#define ESP_ERR_INVALID_STATE 0x103\n#define ESP_ERR_NOT_SUPPORTED 0x106\n')
             (d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n')
             lvgl=ROOT/'ESP32C5/managed_components/lvgl__lvgl'

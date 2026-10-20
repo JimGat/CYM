@@ -8,6 +8,7 @@
 #include "sd_error_handler.h"
 #include "debug_settings.h"
 #include "classic_usb_debug.h"
+#include "wifi_sas_policy.h"
 #include "legacy_log_lifetime.h"
 #include "gps_rx_ws35.h"
 #define CYM_DEBUG_LOGD(...) do { if(cym_debug_enabled()) ESP_LOGD(__VA_ARGS__); } while(0)
@@ -1485,17 +1486,9 @@ static lv_obj_t  *wifi_sas_nav_bar  = NULL;
 static lv_obj_t  *wifi_sas_nav_prev = NULL;
 static lv_obj_t  *wifi_sas_nav_lbl  = NULL;
 static lv_obj_t  *wifi_sas_nav_next = NULL;
-// Adaptive "keep scanning while still finding new APs" state (WiFi Scan & Attack) - the
-// police-scanner strategy applied to esp_wifi_scan_start(), which CYM can't get per-channel
-// dwell control over the way ESP-NOW Scout/OT Survey do (that timing lives inside the
-// closed-source driver blob) - so this repeats whole scan passes instead, merging each
-// pass's results into an accumulator by BSSID, until WIFI_SAS_STABLE_THRESHOLD consecutive
-// passes find nothing new (or a pass/time ceiling hits). Field request 2026-09-23: "WiFi
-// Scan and Attack barely picked up my 5G AP's" / "make the wifi scan and attack scan length
-// adaptive like the old police scanner strategy."
-#define WIFI_SAS_STABLE_THRESHOLD  2
-#define WIFI_SAS_MAX_PASSES        8
-#define WIFI_SAS_TIME_CEILING_MS   45000u
+// Whole-pass BSSID accumulation. wifi_sas_policy.h preserves Classic/S3's
+// two-stable/eight-pass adaptive policy; C5 normally completes two passes,
+// taking an optional third only when pass two still adds APs (45s ceiling).
 static bool     wifi_sas_auto_scanning  = false;  // true while an auto-repeat session owns the next scan_done
 // true only while the WiFi Scan & Attack screen is the one on display. A scan_done that
 // arrives AFTER the user has left (the screen's stop hook ran) must not rebuild the results
@@ -7855,6 +7848,13 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_ret);
 #endif
 
+#if CYM_CLASSIC_USB_PERSISTENT
+    /* Restore acknowledged pin ownership before any GPS init/probe/read. */
+    esp_err_t classic_restore = cym_classic_usb_restore();
+    if (classic_restore == ESP_OK && cym_classic_usb_active())
+        ESP_LOGI(TAG, "Classic persistent USB Debug restored; reset_reason=%d", (int)esp_reset_reason());
+#endif
+
     esp_reset_reason_t ble_reset = esp_reset_reason();
     bt_stage_boot(ble_reset, ble_reset != ESP_RST_POWERON && ble_reset != ESP_RST_BROWNOUT && ble_reset != ESP_RST_UNKNOWN);
     (void)cym_debug_console_start();
@@ -9247,9 +9247,8 @@ log_heap_stats("display-drawbuffers-before");
                     bool wifi_sas_found_new = wifi_sas_merge_pass();
                     wifi_sas_stable_passes = wifi_sas_found_new ? 0 : (wifi_sas_stable_passes + 1);
                     uint32_t wifi_sas_elapsed_ms = (uint32_t)(esp_timer_get_time() / 1000) - wifi_sas_scan_start_ms;
-                    bool wifi_sas_keep_going = (wifi_sas_stable_passes < WIFI_SAS_STABLE_THRESHOLD) &&
-                                               (wifi_sas_scan_pass < WIFI_SAS_MAX_PASSES) &&
-                                               (wifi_sas_elapsed_ms < WIFI_SAS_TIME_CEILING_MS);
+                    bool wifi_sas_keep_going = cym_wifi_sas_continue(wifi_sas_scan_pass,
+                                               wifi_sas_stable_passes, wifi_sas_elapsed_ms);
                     if (wifi_sas_keep_going) {
                         wifi_sas_should_finalize = false;
                         if (scan_status_label && lv_obj_is_valid(scan_status_label)) {
@@ -28621,7 +28620,11 @@ static void classic_usb_enable_event(lv_event_t *e)
     (void)e;
     esp_err_t rc = cym_classic_usb_enable(true, classic_usb_quiesce_gps);
     if (s_classic_usb_popup_status) lv_label_set_text(s_classic_usb_popup_status,
-        rc == ESP_OK ? "ON - 115200 8N1. GPS unavailable. Logs only.\nFor more logs, enable Debug diagnostics separately."
+        rc == ESP_OK ? "ON - 115200 8N1. GPS unavailable. Logs only.\n"
+#if CYM_CLASSIC_USB_PERSISTENT
+                       "Saved across reboot. Keep GPS physically disconnected.\n"
+#endif
+                       "For more logs, enable Debug diagnostics separately."
                      : "Enable failed - transport OFF. GPS inhibited.\nUse Return normal / Reboot; keep GPS unplugged.");
 }
 static void classic_usb_reboot_event(lv_event_t *e)
@@ -28632,7 +28635,11 @@ static void classic_usb_reboot_event(lv_event_t *e)
     esp_err_t rc = cym_classic_usb_disable();
     if (rc != ESP_OK) {
         if (s_classic_usb_popup_status) lv_label_set_text(s_classic_usb_popup_status,
-            "TX shutdown failed - NOT rebooting.\nKeep GPS disconnected. Power off before reconnecting.");
+#if CYM_CLASSIC_USB_PERSISTENT
+            "TX shutdown failed or OFF save failed - NOT rebooting.\nKeep GPS disconnected. Retry Return normal; persistent debug may remain ON.");
+#else
+            "TX shutdown failed - NOT rebooting.\nKeep GPS disconnected. Retry Return normal / Reboot.");
+#endif
         return;
     }
     esp_restart();
@@ -28657,7 +28664,13 @@ static void show_classic_usb_popup(void)
     lv_obj_set_style_text_color(warning, ui_text_color(), 0);
     lv_obj_set_style_text_opa(warning, LV_OPA_COVER, 0);
     lv_obj_set_style_opa(warning, LV_OPA_COVER, 0);
-    lv_label_set_text(warning, "Classic USB Debug" "\nWARNING: Physically disconnect GPS BEFORE enabling.\nA powered GPS TX can contend on GPIO1 even if firmware GPS is disabled.\nLogs use UART0 TX GPIO1 via USB-UART bridge, 115200 8N1.\nVolatile: OFF each boot. No early boot, ROM or panic capture promised.\nBack/Close preserves this explicit mode. Return normal reboots; keep GPS unplugged until power off.");
+    lv_label_set_text(warning, "Classic USB Debug" "\nWARNING: Physically disconnect GPS BEFORE enabling.\nA powered GPS TX can contend on GPIO1 even if firmware GPS is disabled.\nLogs use UART0 TX GPIO1 via USB-UART bridge, 115200 8N1.\n"
+#if CYM_CLASSIC_USB_PERSISTENT
+        "Saved across reboot after acknowledgement. Keep GPS physically disconnected until Debug OFF plus reboot. Application logs resume after NVS init, not ROM/bootloader/panic capture.\n"
+#else
+        "Volatile: OFF each boot. No early boot, ROM or panic capture promised.\n"
+#endif
+        "Back/Close preserves this explicit mode. Return normal reboots; keep GPS unplugged until power off.");
     s_classic_usb_popup_status = lv_label_create(s_classic_usb_popup);
     lv_obj_set_width(s_classic_usb_popup_status, lv_pct(100));
     lv_label_set_long_mode(s_classic_usb_popup_status, LV_LABEL_LONG_WRAP);
@@ -28692,6 +28705,17 @@ static void hardware_debug_sync(lv_timer_t *timer)
     (void)timer;
 #if defined(CONFIG_BOARD_CYD2USB)
     if (s_hardware_classic_status) lv_label_set_text(s_hardware_classic_status, cym_classic_usb_status());
+#if CYM_CLASSIC_USB_PERSISTENT
+    if (s_classic_usb_popup_status && cym_classic_usb_active()) {
+        cym_classic_usb_uart_stats_t stats;
+        cym_classic_usb_uart_stats(&stats);
+        char status[224];
+        snprintf(status, sizeof(status), "ON - 115200 8N1. GPS unavailable. Logs only.\nSaved across reboot; keep GPS disconnected.\nRecords %lu; drops %lu; busy %lu; retries %lu",
+                 (unsigned long)stats.accepted_records, (unsigned long)stats.dropped_records,
+                 (unsigned long)stats.busy_calls, (unsigned long)stats.retry_writes);
+        lv_label_set_text(s_classic_usb_popup_status, status);
+    }
+#endif
 #endif
     if(!s_hardware_debug_switch)return;
     if(cym_debug_enabled())lv_obj_add_state(s_hardware_debug_switch,LV_STATE_CHECKED);

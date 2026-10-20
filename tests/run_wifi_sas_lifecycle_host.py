@@ -19,9 +19,7 @@ pre=r"""
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#define WIFI_SAS_STABLE_THRESHOLD 2
-#define WIFI_SAS_MAX_PASSES 8
-#define WIFI_SAS_TIME_CEILING_MS 45000u
+#include "wifi_sas_policy.h"
 #define MAX_SCAN_RESULTS 16
 typedef int wifi_ap_record_t;
 static bool wifi_sas_auto_scanning,wifi_sas_ui_active;
@@ -79,5 +77,6 @@ int main(void){locked=true;
 entry_text=function('show_wifi_scan_attack_screen');entry_text=entry_text[entry_text.index('    // Consume no previous completion,'):];entry='\nstatic void entry_start(void){'+entry_text+'\n'
 (D/'host.c').write_text(pre+function('wifi_sas_screen_stop')+function('run_screen_stop_fn')+'\nstatic void dispatch(void){assert(locked);\n'+dispatch+'}\n'+entry+post)
 (D/'provenance.json').write_text(json.dumps({'source_sha256':hashlib.sha256(M.read_bytes()).hexdigest(),'extracted':['wifi_sas_screen_stop','run_screen_stop_fn','adaptive/finalize dispatch prefix']},indent=2))
-subprocess.run(['cc','-std=gnu11','-g','-O1','-fsanitize=address,undefined',str(D/'host.c'),'-o',str(D/'host')],check=True)
+(D/'sdkconfig.h').write_text('')
+subprocess.run(['cc','-I'+str(D),'-I'+str(R/'ESP32C5/main'),'-std=gnu11','-g','-O1','-fsanitize=address,undefined',str(D/'host.c'),'-o',str(D/'host')],check=True)
 subprocess.run([str(D/'host')],check=True)

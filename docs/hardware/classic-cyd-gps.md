@@ -7,7 +7,7 @@ CYM supports an external NMEA GPS receiver on the Classic CYD (`CYD-2432S028R` /
 - The Guition V1.4 photo identifies **P1** as VIN/TX/RX/GND. The supplied older V0.1 schematic routes the P1 signals through 100 ohm resistors to GPIO1/GPIO3; this is not a continuity measurement of the V1.4 assembly. **P3** is GND/35/22/21, not this UART header.
 - The original ESP32 does not provide native USB Serial/JTAG. Use the board's verified USB-to-UART bridge connection for programming or runtime logs; exact second-socket (USB2) routing is unverified. Do not assume independently selectable USB sockets.
 - Normal boot keeps the application UART console and bootloader logging disabled. Normal GPS remains receive-only on UART2 RX GPIO1.
-- The separate [Classic USB Debug runtime option](../operators/classic-usb-debug.md) may use UART0 TX GPIO1 only after explicit acknowledgement that the GPS is physically disconnected. It is volatile, OFF each boot, and inhibits GPS for the rest of that boot.
+- The separate [Classic USB Debug runtime option](../operators/classic-usb-debug.md) may use UART0 TX GPIO1 only after explicit acknowledgement that the GPS is physically disconnected. On Classic without PSRAM, the acknowledged opt-in persists in NVS and restores before GPS initialization; HackerBox retains volatile OFF-each-boot behavior. GPS remains inhibited throughout any acknowledged ownership-attempt boot. Keep the harness physically disconnected until debug OFF is committed and a normal reboot completes.
 - GPS on P1 preserves NM-RF-HAT compatibility: the RF-HAT keeps its SD Card Shim SPI path and GPIO22/GPIO27 control lines. No additional RF-HAT probes are introduced by USB Debug.
 
 ## Wiring
