@@ -33,9 +33,9 @@
 
 ---
 
-## Development candidate v3.0.30 — Bluetooth scan lifecycle
+## Development candidate v3.0.31 — BLE startup, retry and stage diagnostics
 
-Cooperative cancellation and shared discovery ownership prevent overlapping rescans. Unchanged scan countdown updates no longer rebuild rows. Debug ON adds bounded allocation/rejection counters. Recovered reception and general menu performance are **not** established; both Waveshare C5 displays and affected Classic boards still require hardware acceptance. Stable remains v3.0.27. [Candidate scope and exact operator checks](docs/operators/bluetooth-reliability.md).
+The scan worker now blocks for a real RTOS tick while its creator publishes the handle. Failed BLE initialization can be retried under serialized transition admission without bypassing a live owner. Scan and Select preserves explicit failure/cancellation status even with old rows. Debug ON adds bounded numeric lifecycle markers and best-effort, validated RTC breadcrumbs; no per-stage NVS/SD writes or new worker/stack. These are reproduced software corrections and a diagnostic candidate, **not** proof of restored reception, Ultra connectivity, or the cause of an earlier reset. General Home/menu drawing is distinct; intentional Settings delay is unchanged. Stable remains v3.0.27. [Exact capture commands, stage map and hardware acceptance](docs/operators/bluetooth-reliability.md).
 
 ## Development v3.0.29 — Classic USB Debug readability
 

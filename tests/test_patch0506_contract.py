@@ -44,8 +44,10 @@ class Patch0506Contract(unittest.TestCase):
         self.assertIn('wardrive_reap_task()',stop)
         self.assertIn('eSuspended',function('wardrive_reap_task'))
     def test_nimble_sync_is_not_port_lifetime(self):
-        init=function('bt_nimble_init')
-        cleanup=function('bt_nimble_cleanup_bounded')
+        init=function('bt_nimble_init_transition')
+        self.assertIn('bt_transition_enter()',function('bt_nimble_init'))
+        cleanup=function('bt_nimble_cleanup_bounded_transition')
+        self.assertIn('bt_transition_enter()',function('bt_nimble_cleanup_bounded'))
         self.assertIn('nimble_port_initialized',init)
         self.assertIn('xTaskCreatePinnedToCore',init)
         self.assertIn('!= pdPASS',init)
@@ -58,9 +60,9 @@ class Patch0506Contract(unittest.TestCase):
         self.assertIn('ble_npl_eventq_get',host)
         self.assertIn('nimble_host_exited, true',host)
     def test_radio_restart_guards_unfinished_host(self):
-        self.assertIn('bt_nimble_cleanup_bounded()',function('ensure_wifi_mode'))
+        self.assertIn('bt_nimble_cleanup_bounded()',function('ensure_wifi_mode_transition'))
         self.assertIn('return nimble_initialized',function('ensure_ble_mode_unreserved'))
-        self.assertIn('s_bt_cham_token',function('ensure_ble_mode'))
+        self.assertIn('s_bt_cham_token',function('ensure_ble_mode_transition'))
     def test_classic_deferred_single_reader(self):
         self.assertIn('#if BOARD_HAS_GPS && !defined(CONFIG_BOARD_CYD2USB)',S)
         ready=S.index('ESP_LOGI(TAG, "System ready!")')
@@ -88,6 +90,7 @@ class Patch0506Contract(unittest.TestCase):
 #include <stdbool.h>
 #include <assert.h>
 #include <stddef.h>
+#define bt_stage(s,r) ((void)0)
 #define ESP_OK 0
 #define ESP_LOGE(...) ((void)0)
 #define pdMS_TO_TICKS(x) (x)
@@ -98,13 +101,19 @@ static void *bt_scan_task_handle, *nimble_host_handle;
 static int delays, deinits, deinit_result, exit_at;
 static bool bt_scan_worker_busy;
 static void *s_bt_scan_owner;
+static void *wardrive_task_handle;static bool wardrive_task_done;
 static unsigned s_bt_cham_token;
 static bool s_bt_scan_api_busy;
+typedef void *TaskHandle_t;
+static TaskHandle_t s_bt_transition_owner;
+static unsigned s_bt_transition_depth;
+static TaskHandle_t xTaskGetCurrentTaskHandle(void){return (void*)1;}
+static bool bt_nimble_cleanup_bounded_transition(void);
 static void bt_scan_stop(void) { bt_scan_active=false; }
 static void bt_stop_scan(void) {}
 static void vTaskDelay(int ticks) { ++delays; if(exit_at && delays>=exit_at) nimble_host_exited=true; }
 static int nimble_port_deinit(void) { ++deinits; assert(nimble_host_exited); return deinit_result; }
-"""+function('bt_nimble_cleanup_bounded')+r"""
+"""+function('bt_transition_enter')+function('bt_transition_leave')+function('bt_nimble_cleanup_bounded')+function('bt_nimble_cleanup_bounded_transition')+r"""
 static void reset(void) {
  nimble_port_initialized=true; nimble_deinit_failed=false; nimble_cleanup_busy=false;
  bt_scan_active=true; nimble_initialized=false; nimble_stop_requested=false;

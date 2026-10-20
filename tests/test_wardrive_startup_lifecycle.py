@@ -18,6 +18,7 @@ PREFIX=r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define bt_stage(s,r) ((void)0)
 #define ESP_OK 0
 typedef int esp_err_t;
 #define ESP_LOGE(tag,...) do {printf(__VA_ARGS__);puts("");} while(0)
@@ -72,6 +73,11 @@ static bool bt_scan_worker_busy;
 static void *s_bt_scan_owner;
 static unsigned s_bt_cham_token;
 static bool s_bt_scan_api_busy;
+typedef void *TaskHandle_t;
+static TaskHandle_t s_bt_transition_owner;
+static unsigned s_bt_transition_depth;
+static TaskHandle_t xTaskGetCurrentTaskHandle(void){return (void*)1;}
+static bool bt_nimble_cleanup_bounded_transition(void);
 static void bt_scan_stop(void) { bt_scan_active=false; }
 static void bt_stop_scan(void){}
 static int nimble_port_deinit(void){assert(nimble_host_exited);++deinits;return deinit_result;}
@@ -142,7 +148,7 @@ class WardriveStartupProduction(unittest.TestCase):
   cls.work=tempfile.TemporaryDirectory(prefix='cym-wd-',dir=os.environ.get('CYM_WD_TEST_TMPDIR'))
   cls.path=Path(cls.work.name)
   # Only dependency boundaries are mocked; production lifecycle bodies execute verbatim.
-  names=['bt_nimble_cleanup_bounded','wdp_ble_gap_cb','wdp_ble_session_end','wdp_ble_session_begin','wardrive_task_finish','wardrive_reap_task','wardrive_channel_status']
+  names=['bt_transition_enter','bt_transition_leave','bt_nimble_cleanup_bounded','bt_nimble_cleanup_bounded_transition','wdp_ble_gap_cb','wdp_ble_session_end','wdp_ble_session_begin','wardrive_task_finish','wardrive_reap_task','wardrive_channel_status']
   declarations=''
   for name in ['wdp_ble_cleanup_reason']:
    m=re.search(r'static const char \*'+name+r'[^;]*;',source)

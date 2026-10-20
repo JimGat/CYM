@@ -11,7 +11,12 @@ def fn(n):
  while d:d+=(s[i]=='{')-(s[i]=='}');i+=1
  return s[m.start():i]
 pre=r"""
+#define bt_stage(stage,rc) ((void)0)
+
 #include <stdint.h>
+#include <stdbool.h>
+static const char *bt_sas_entry_error;static bool ensure_ble_mode(void){return true;}
+static void *wardrive_task_handle;static bool wardrive_active,wardrive_task_done,wdp_ble_cleanup_pending;
 static uint32_t s_bt_cham_token;
 
 #include <assert.h>
@@ -32,6 +37,7 @@ typedef int BaseType_t;typedef void *TaskHandle_t;typedef int lv_event_t;
 #define LV_OBJ_FLAG_HIDDEN 1
 static volatile bool bt_scan_active,bt_scan_worker_busy,bt_scan_create_pending;
 static TaskHandle_t bt_scan_task_handle,s_bt_scan_owner;
+static TaskHandle_t s_bt_transition_owner;
 static bool s_bt_scan_api_busy;
 static bool ble_scan_finished,ble_scan_needs_ui_update,bt_locator_needs_ui_update,bt_sas_needs_update,ble_obs_store_pending;
 static char ble_scan_status_text[80];static int g_bt_scan_duration_s=1;
@@ -62,6 +68,7 @@ static void bt_sas_refresh_list(void){}
 """
 helpers=fn('bt_scan_worker_start')
 if not helpers:helpers='static BaseType_t bt_scan_worker_start(void){bt_scan_active=true;return xTaskCreate(bt_scan_task,"bt_scan_task",4096,NULL,5,&bt_scan_task_handle);}'
+pre += re.search(r'typedef enum \{ BT_SCAN_RUNNING.*?bt_scan_outcome = BT_SCAN_SUCCESS;', s, re.S).group(0) + '\n'
 post=r"""
 static void reset(void){bt_scan_active=false;bt_scan_task_handle=NULL;bt_scan_worker_busy=false;bt_scan_create_pending=false;creates=cancels=deletes=foreign_deletes=resets=waits=0;start_rc=0;create_rc=pdPASS;join_after=-1;stop_failures=0;bt_sas_ui_active=true;}
 int main(int argc,char**argv){assert(argc==2);reset();

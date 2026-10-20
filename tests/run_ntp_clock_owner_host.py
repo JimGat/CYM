@@ -20,6 +20,7 @@ def function(name):
 names=['clock_mdns_release','ntp_start_mdns_and_server']
 if 'static void clock_network_release(' in s: names+=['clock_network_release','clock_network_cleanup_poll','clock_stop','clock_radio_admit','clock_radio_reset_admit','clock_defer_radio_navigation','clock_cancel_radio_navigation','clock_radio_handoff_poll','ensure_wifi_mode','ensure_ble_mode','clock_attack_route_uses_radio']
 if 'static bool ensure_ble_mode_unreserved(' in s: names.insert(names.index('ensure_ble_mode'),'ensure_ble_mode_unreserved')
+names=['bt_transition_enter','bt_transition_leave']+names+['ensure_wifi_mode_transition','ensure_ble_mode_transition']
 prod='\n'.join(function(n) for n in names)
 code=r"""
 #include <assert.h>
@@ -29,6 +30,7 @@ code=r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#define bt_stage(s,r) ((void)0)
 #define BOARD_TIME_HAS_MDNS 1
 #define CONFIG_BOARD_HAS_5GHZ 1
 #define ESP_OK 0
@@ -107,7 +109,10 @@ static int esp_wifi_set_band_mode(int mode) { (void)mode;radio_writes++;return 0
 #define RADIO_MODE_WIFI 1
 #define RADIO_MODE_BLE 2
 static bool nimble_port_initialized,nimble_initialized,nimble_stop_requested,wifi_initialized;
+static TaskHandle_t s_bt_transition_owner;static unsigned s_bt_transition_depth;static bool s_bt_scan_api_busy;
+static bool ensure_wifi_mode_transition(void),ensure_ble_mode_transition(void);
 static void *s_bt_scan_owner;
+static void *wardrive_task_handle;static bool wardrive_active,wardrive_task_done,wdp_ble_cleanup_pending;
 static uint32_t s_bt_cham_token;
 static bool bt_scan_worker_busy,bt_scan_create_pending,nimble_cleanup_busy;
 static int current_radio_mode;

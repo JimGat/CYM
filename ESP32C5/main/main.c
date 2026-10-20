@@ -289,6 +289,17 @@ static bool wifi_initialized = false;
 // Apple Find My Network device type (AirTag, AirPods, etc.)
 #define APPLE_FIND_MY_TYPE      0x12
 
+// Numeric best-effort RTC breadcrumbs; all output stays on the existing console.
+static portMUX_TYPE s_bt_stage_mux = portMUX_INITIALIZER_UNLOCKED;
+#define BT_STAGE_LOCK() portENTER_CRITICAL(&s_bt_stage_mux)
+#define BT_STAGE_UNLOCK() portEXIT_CRITICAL(&s_bt_stage_mux)
+#define BT_STAGE_ENABLED() cym_debug_enabled()
+#define BT_STAGE_GENERATION() cym_debug_generation()
+#define BT_STAGE_CURRENT(g,q,s,r) ESP_LOGI("BLE_STAGE", "gen=%lu seq=%lu stage=%lu rc=%ld", (unsigned long)(g),(unsigned long)(q),(unsigned long)(s),(long)(r))
+#define BT_STAGE_PREVIOUS(g,q,s,r) ESP_LOGI("BLE_STAGE", "previous gen=%lu seq=%lu stage=%lu rc=%ld", (unsigned long)(g),(unsigned long)(q),(unsigned long)(s),(long)(r))
+#define BT_STAGE_BOOT_STATUS(s,r) ESP_LOGI("BLE_STAGE", "previous=%s reset=%d retention=best-effort", (s),(int)(r))
+#include "ble_stage_diag.h"
+
 // BLE scan state
 static volatile bool bt_scan_active = false;
 static TaskHandle_t bt_scan_task_handle = NULL;
@@ -296,6 +307,8 @@ static TaskHandle_t bt_scan_task_handle = NULL;
 static bool bt_scan_worker_busy = false;
 static bool bt_scan_create_pending = false;
 static bool s_bt_scan_api_busy = false;
+static TaskHandle_t s_bt_transition_owner;
+static unsigned s_bt_transition_depth;
 // Generation-scoped external GAP/connection reservation (Chameleon).
 static uint32_t s_bt_cham_token = 0;
 static TaskHandle_t s_bt_scan_owner = NULL;
@@ -2462,6 +2475,11 @@ static lv_obj_t *ble_scan_status_label = NULL;
 static volatile bool ble_scan_ui_active = false;
 static volatile bool ble_scan_needs_ui_update = false;
 static volatile bool ble_scan_finished = false;
+// Terminal outcome is independent of row count and stale selection.
+typedef enum { BT_SCAN_RUNNING, BT_SCAN_SUCCESS, BT_SCAN_CANCELLED, BT_SCAN_ERROR } bt_scan_outcome_t;
+static bt_scan_outcome_t bt_scan_outcome = BT_SCAN_SUCCESS;
+// Main-task-only screen admission error; a live background outcome cannot hide it.
+static const char *bt_sas_entry_error;
 static volatile bool ble_obs_store_pending = false;  /* main loop feeds bt_devices → g_obs_store once per scan */
 static char ble_scan_status_text[48] = "";
 
@@ -5318,26 +5336,37 @@ void go_dark_disable(void)
 
 void print_memory_stats(void) {
     if(!cym_debug_enabled())return;
-    // Heap info
+    bt_stage(BT_ST_HEAP_ENTER,0);
     ESP_LOGI("MEM", "=== HEAP STATUS ===");
-    ESP_LOGI("MEM", "Free heap: %lu bytes", esp_get_free_heap_size());
-    ESP_LOGI("MEM", "Min free heap: %lu bytes", esp_get_minimum_free_heap_size());
-    
-    // Internal RAM
-    ESP_LOGI("MEM", "Internal free: %lu bytes", 
-             heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    ESP_LOGI("MEM", "Internal min: %lu bytes", 
-             heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
-    
-    // PSRAM
-    ESP_LOGI("MEM", "PSRAM free: %lu bytes", 
-             heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    ESP_LOGI("MEM", "PSRAM min: %lu bytes", 
-             heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
-    
-    // DMA-capable
-    ESP_LOGI("MEM", "DMA-capable free: %lu bytes", 
-             heap_caps_get_free_size(MALLOC_CAP_DMA));
+    bt_stage(BT_ST_HEAP_QUERY,1);
+    unsigned long heap_value_1 = (unsigned long)esp_get_free_heap_size();
+    bt_stage(BT_ST_HEAP_QUERY,-1);
+    ESP_LOGI("MEM", "Free heap: %lu bytes", heap_value_1);
+    bt_stage(BT_ST_HEAP_QUERY,2);
+    unsigned long heap_value_2 = (unsigned long)esp_get_minimum_free_heap_size();
+    bt_stage(BT_ST_HEAP_QUERY,-2);
+    ESP_LOGI("MEM", "Min free heap: %lu bytes", heap_value_2);
+    bt_stage(BT_ST_HEAP_QUERY,3);
+    unsigned long heap_value_3 = (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    bt_stage(BT_ST_HEAP_QUERY,-3);
+    ESP_LOGI("MEM", "Internal free: %lu bytes", heap_value_3);
+    bt_stage(BT_ST_HEAP_QUERY,4);
+    unsigned long heap_value_4 = (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    bt_stage(BT_ST_HEAP_QUERY,-4);
+    ESP_LOGI("MEM", "Internal min: %lu bytes", heap_value_4);
+    bt_stage(BT_ST_HEAP_QUERY,5);
+    unsigned long heap_value_5 = (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    bt_stage(BT_ST_HEAP_QUERY,-5);
+    ESP_LOGI("MEM", "PSRAM free: %lu bytes", heap_value_5);
+    bt_stage(BT_ST_HEAP_QUERY,6);
+    unsigned long heap_value_6 = (unsigned long)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    bt_stage(BT_ST_HEAP_QUERY,-6);
+    ESP_LOGI("MEM", "PSRAM min: %lu bytes", heap_value_6);
+    bt_stage(BT_ST_HEAP_QUERY,7);
+    unsigned long heap_value_7 = (unsigned long)heap_caps_get_free_size(MALLOC_CAP_DMA);
+    bt_stage(BT_ST_HEAP_QUERY,-7);
+    ESP_LOGI("MEM", "DMA-capable free: %lu bytes", heap_value_7);
+    bt_stage(BT_ST_HEAP_EXIT,0);
 }
 
 // Helper functions for Wardrive
@@ -7816,6 +7845,8 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_ret);
 #endif
 
+    esp_reset_reason_t ble_reset = esp_reset_reason();
+    bt_stage_boot(ble_reset, ble_reset != ESP_RST_POWERON && ble_reset != ESP_RST_BROWNOUT && ble_reset != ESP_RST_UNKNOWN);
     (void)cym_debug_console_start();
 
     // Passive observation store: 8192-record PSRAM ring buffer (OBS_STORE_DEFAULT_CAPACITY —
@@ -9613,7 +9644,14 @@ log_heap_stats("display-drawbuffers-before");
             if (bt_sas_needs_update && bt_sas_ui_active) {
                 bt_sas_needs_update = false;
                 if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
-                    if (bt_sas_selected_idx >= 0) {
+                    bt_scan_outcome_t outcome = __atomic_load_n(&bt_scan_outcome, __ATOMIC_ACQUIRE);
+                    if (bt_sas_entry_error) {
+                        lv_label_set_text(bt_sas_status_label, bt_sas_entry_error);
+                        lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
+                    } else if (outcome == BT_SCAN_ERROR || outcome == BT_SCAN_CANCELLED) {
+                        lv_label_set_text(bt_sas_status_label, ble_scan_status_text);
+                        lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
+                    } else if (bt_sas_selected_idx >= 0) {
                         // a device is selected — device_cb owns the "Selected: X" text; leave it
                     } else if (!ble_scan_finished) {
                         // scanning: show live status, covering the header
@@ -10306,7 +10344,7 @@ log_heap_stats("display-drawbuffers-before");
             xSemaphoreGive(lvgl_mutex);
         }
 
-        cym_display_diag_report();cym_ui_diag_report();cym_debug_memory_report();
+        cym_display_diag_report();cym_ui_diag_report();cym_debug_memory_report();bt_stage_report(esp_timer_get_time());
 
         // Reset watchdog again after releasing mutex
         uint64_t wdt_after_us = esp_timer_get_time();
@@ -35332,6 +35370,7 @@ static void bt_sas_rescan_cb(lv_event_t *e)
     if (!bt_sas_ui_active) return;
     bt_scan_stop();
     if (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE)) {
+        bt_sas_entry_error="Scan stopping; retry Rescan";
         if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
             lv_label_set_text(bt_sas_status_label, "Scan stopping; retry Rescan");
             lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
@@ -35343,7 +35382,8 @@ static void bt_sas_rescan_cb(lv_event_t *e)
     bt_sas_page = 0;
     if (bt_sas_next_btn && lv_obj_is_valid(bt_sas_next_btn))
         lv_obj_add_flag(bt_sas_next_btn, LV_OBJ_FLAG_HIDDEN);
-    BaseType_t ret = bt_scan_worker_start();
+    BaseType_t ret = ensure_ble_mode() ? bt_scan_worker_start() : pdFAIL;
+    bt_sas_entry_error=ret==pdPASS ? NULL : "Rescan start failed; retry";
     if (bt_sas_status_label && lv_obj_is_valid(bt_sas_status_label)) {
         lv_label_set_text(bt_sas_status_label, ret == pdPASS ? "Rescanning..." : "Rescan start failed; retry");
         lv_obj_clear_flag(bt_sas_status_label, LV_OBJ_FLAG_HIDDEN);
@@ -35912,6 +35952,8 @@ static void bt_sas_save_list_cb(lv_event_t *e)
 static void show_bt_scan_select_screen(void)
 {
     if (clock_defer_radio_navigation(show_bt_scan_select_screen)) return;
+    bt_stage(BT_ST_UI_ENTER,0);
+    bt_sas_entry_error=NULL;
     ui_locked = true;
     if (function_page) { lv_obj_del(function_page); function_page = NULL; }
     reset_function_page_children();
@@ -36096,17 +36138,21 @@ static void show_bt_scan_select_screen(void)
 
     // Switch to BLE and start scan
     if (!ensure_ble_mode()) {
-        lv_label_set_text(bt_sas_status_label, "BLE init failed!");
+        bt_sas_entry_error="BLE busy/init failed; retry";
+        lv_label_set_text(bt_sas_status_label, bt_sas_entry_error);
         ui_locked = false;
+        bt_stage(BT_ST_UI_RETURN,-1);
         return;
     }
     BaseType_t ret = bt_scan_worker_start();
     if (ret != pdPASS) {
-        lv_label_set_text(bt_sas_status_label, "Scan start failed!");
+        bt_sas_entry_error="Scan busy/start failed; retry";
+        lv_label_set_text(bt_sas_status_label, bt_sas_entry_error);
     } else {
         { char _ss[32]; snprintf(_ss, sizeof(_ss), "Scanning... 0 (%us)", (unsigned)g_bt_scan_duration_s); lv_label_set_text(bt_sas_status_label, _ss); }
     }
     ui_locked = false;
+    bt_stage(BT_ST_UI_RETURN,0);
 }
 
 // ============================================================================
@@ -43955,7 +44001,41 @@ static void evil_twin_start_btn_cb(lv_event_t *e)
  * Ensure WiFi mode is active. If BLE is active, deinits BLE first.
  * Returns true if WiFi is ready to use.
  */
+/* Serialize synchronous radio transitions against scan publication. Reentrant
+ * only for the owner (init may call cooperative cleanup). Never wait for another
+ * transition while holding LVGL. This is not ownership of a live GAP session. */
+static bool bt_transition_enter(void)
+{
+    if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return false;
+    TaskHandle_t self = xTaskGetCurrentTaskHandle();
+    TaskHandle_t owner = __atomic_load_n(&s_bt_transition_owner, __ATOMIC_ACQUIRE);
+    bool ok = !owner || owner == self;
+    if (ok) {
+        __atomic_store_n(&s_bt_transition_owner, self, __ATOMIC_RELEASE);
+        ++s_bt_transition_depth;
+    }
+    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
+    return ok;
+}
+
+static void bt_transition_leave(void)
+{
+    // Nested cleanup must not reopen transition admission.
+    if (--s_bt_transition_depth == 0)
+        __atomic_store_n(&s_bt_transition_owner, NULL, __ATOMIC_RELEASE);
+}
+
+static bool ensure_wifi_mode_transition(void);
 static bool ensure_wifi_mode(void)
+{
+    if (!clock_radio_admit()) return false;
+    if (!bt_transition_enter()) return false;
+    bool result = ensure_wifi_mode_transition();
+    bt_transition_leave();
+    return result;
+}
+
+static bool ensure_wifi_mode_transition(void)
 {
     if (!clock_radio_admit()) return false;
     if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) return false;
@@ -44088,8 +44168,12 @@ static bool ensure_ble_mode_unreserved(void)
             ESP_LOGI(TAG, "DMA free before WiFi deinit: %lu bytes",
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
             log_heap_stats("wifi-teardown-before");
-            esp_wifi_stop();
-            esp_wifi_deinit();
+            bt_stage(BT_ST_WIFI_STOP,0);
+            esp_err_t stop_rc=esp_wifi_stop();
+            bt_stage(BT_ST_WIFI_STOP_RETURN,stop_rc);
+            bt_stage(BT_ST_WIFI_DEINIT,0);
+            esp_err_t deinit_rc=esp_wifi_deinit();
+            bt_stage(BT_ST_WIFI_DEINIT_RETURN,deinit_rc);
             log_heap_stats("wifi-teardown-after");
             wifi_initialized = false;
             ESP_LOGI(TAG, "DMA free after WiFi deinit: %lu bytes (freed WiFi DMA pool)",
@@ -44141,23 +44225,45 @@ void cym_ble_cham_release(uint32_t token)
 
 bool cym_ble_cham_acquire(uint32_t token)
 {
-    if (!token || __atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return false;
-    // Successful deinit leaves stop requested; it blocks only a retained port.
-    // cleanup_busy still excludes in-flight cleanup through port teardown.
-    bool busy = __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) || s_bt_scan_owner ||
-                __atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) ||
-                __atomic_load_n(&bt_scan_create_pending, __ATOMIC_ACQUIRE) ||
-                __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) ||
-                (nimble_port_initialized && nimble_stop_requested);
-    if (!busy) __atomic_store_n(&s_bt_cham_token, token, __ATOMIC_RELEASE);
-    __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
-    if (busy) return false;
-    if (ensure_ble_mode_unreserved()) return true;
-    cym_ble_cham_release(token);
-    return false;
+    if (!token || !bt_transition_enter()) return false;
+    bool ok = false;
+    if (wardrive_active || wardrive_task_handle || wdp_ble_cleanup_pending ||
+        __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) || s_bt_scan_owner ||
+        __atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&bt_scan_create_pending, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) || nimble_deinit_failed)
+        goto done;
+    // No Chameleon callback can exist before acquisition returns. Clean a failed
+    // init BEFORE publishing a new token, keeping transition admission closed.
+    if (nimble_port_initialized && (!nimble_initialized || nimble_stop_requested)) {
+        if (!bt_nimble_cleanup_bounded()) goto done;
+        current_radio_mode = RADIO_MODE_NONE;
+    }
+    __atomic_store_n(&s_bt_cham_token, token, __ATOMIC_RELEASE);
+    ok = ensure_ble_mode_unreserved();
+    if (!ok) {
+        // No Chameleon GAP operation was admitted. Release only this token; hold
+        // transition ownership until the host joins or is safely retained.
+        cym_ble_cham_release(token);
+        if (nimble_port_initialized && bt_nimble_cleanup_bounded())
+            current_radio_mode = RADIO_MODE_NONE;
+    }
+done:
+    bt_transition_leave();
+    return ok;
 }
 
+static bool ensure_ble_mode_transition(void);
 static bool ensure_ble_mode(void)
+{
+    if (!clock_radio_admit()) return false;
+    if (!bt_transition_enter()) return false;
+    bool result = ensure_ble_mode_transition();
+    bt_transition_leave();
+    return result;
+}
+
+static bool ensure_ble_mode_transition(void)
 {
     if (!clock_radio_admit()) return false;
     // The Chameleon path reserves explicitly; other users must not cross it.
@@ -44801,6 +44907,8 @@ static bool bt_scan_session_begin(void)
     if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return false;
     TaskHandle_t self = xTaskGetCurrentTaskHandle();
     if (!nimble_initialized || nimble_stop_requested || s_bt_scan_owner ||
+        __atomic_load_n(&s_bt_transition_owner, __ATOMIC_ACQUIRE) ||
+        wardrive_active || wardrive_task_handle || wdp_ble_cleanup_pending ||
         __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) ||
         (__atomic_load_n(&bt_scan_worker_busy, __ATOMIC_ACQUIRE) && self != bt_scan_task_handle)) {
@@ -44842,6 +44950,7 @@ static int bt_start_scan(void)
 {
     if (!bt_scan_session_begin()) return BLE_HS_EBUSY;
     uint32_t diag_id = bt_diag_begin();
+    bt_stage(BT_ST_GAP_START,0);
 #if MYNEWT_VAL(BLE_EXT_ADV)
     struct ble_gap_ext_disc_params p1m = {
         .itvl    = 0x60,
@@ -44873,6 +44982,7 @@ static int bt_start_scan(void)
 #endif
     log_heap_stats("ble-scan-start-return");
     if (rc != 0 && diag_id) bt_diag_end("start-failed", diag_id);
+    bt_stage(BT_ST_GAP_RETURN,rc);
     bt_scan_session_start_result(rc);
     return rc;
 }
@@ -44895,7 +45005,9 @@ static bool bt_stop_scan(void)
     portENTER_CRITICAL(&s_bt_report_mux);
     s_bt_reports_accept = false;
     portEXIT_CRITICAL(&s_bt_report_mux);
+    bt_stage(BT_ST_CANCEL,0);
     int rc = ble_gap_disc_cancel();
+    bt_stage(BT_ST_CANCEL_RETURN,rc);
     if (rc == 0 || rc == BLE_HS_EALREADY) bt_diag_end("cancel-return", 0);
     portENTER_CRITICAL(&s_bt_report_mux);
     bool quiet = s_bt_reports_inflight == 0;
@@ -44919,6 +45031,7 @@ static int bt_start_scan_passive(void)
 {
     if (!bt_scan_session_begin()) return BLE_HS_EBUSY;
     uint32_t diag_id = bt_diag_begin();
+    bt_stage(BT_ST_GAP_START,0);
 #if MYNEWT_VAL(BLE_EXT_ADV)
     struct ble_gap_ext_disc_params p1m    = { .itvl = 0x60, .window = 0x60, .passive = 1 };
     struct ble_gap_ext_disc_params pcoded = { .itvl = 0x60, .window = 0x60, .passive = 1 };
@@ -44942,6 +45055,7 @@ static int bt_start_scan_passive(void)
 #endif
     log_heap_stats("ble-scan-start-return");
     if (rc != 0 && diag_id) bt_diag_end("start-failed", diag_id);
+    bt_stage(BT_ST_GAP_RETURN,rc);
     bt_scan_session_start_result(rc);
     return rc;
 }
@@ -44967,6 +45081,7 @@ static void _ot_ble_dwell_end(void)
  */
 static void bt_on_sync(void)
 {
+    bt_stage(BT_ST_SYNC,nimble_stop_requested ? 1 : 0);
     ESP_LOGI(TAG, "BLE Host synchronized");
     if (!__atomic_load_n(&nimble_stop_requested, __ATOMIC_SEQ_CST)) nimble_initialized = true;
 }
@@ -44998,6 +45113,7 @@ static void nimble_host_task(void *param)
     for (;;) {
         if (__atomic_load_n(&nimble_stop_requested, __ATOMIC_SEQ_CST) && !stop_started) {
             stop_started = true;
+            bt_stage(BT_ST_HOST_STOP,0);
             int rc = ble_hs_stop(&nimble_stop_listener, nimble_stop_cb, NULL);
             if (rc == BLE_HS_EALREADY)
                 __atomic_store_n(&nimble_stop_complete, true, __ATOMIC_SEQ_CST);
@@ -45009,12 +45125,26 @@ static void nimble_host_task(void *param)
                                                      ble_npl_time_ms_to_ticks32(100));
         if (ev) ble_npl_event_run(ev);
     }
+    bt_stage(BT_ST_HOST_EXIT,0);
     // No port access beyond this point. Task-owned stack is reclaimed by FreeRTOS.
     __atomic_store_n(&nimble_host_exited, true, __ATOMIC_SEQ_CST);
     vTaskDelete(NULL);
 }
 
+static bool bt_nimble_cleanup_bounded_transition(void);
 static bool bt_nimble_cleanup_bounded(void)
+{
+    // Direct-GAP worker must finish its own callback/file drain before another
+    // task may tear down its port. Its own cleanup and post-done retry are legal.
+    if (wardrive_task_handle && wardrive_task_handle != xTaskGetCurrentTaskHandle() &&
+        !__atomic_load_n(&wardrive_task_done, __ATOMIC_ACQUIRE)) return false;
+    if (!bt_transition_enter()) return false;
+    bool result = bt_nimble_cleanup_bounded_transition();
+    bt_transition_leave();
+    return result;
+}
+
+static bool bt_nimble_cleanup_bounded_transition(void)
 {
     if (!nimble_port_initialized) return true;
     if (nimble_deinit_failed) return false;
@@ -45043,7 +45173,9 @@ static bool bt_nimble_cleanup_bounded(void)
         vTaskDelay(pdMS_TO_TICKS(100));
     bool ok = __atomic_load_n(&nimble_host_exited, __ATOMIC_SEQ_CST);
     if (ok) {
+        bt_stage(BT_ST_PORT_DEINIT,0);
         esp_err_t rc = nimble_port_deinit();
+        bt_stage(BT_ST_PORT_DEINIT_RETURN,rc);
         ok = rc == ESP_OK;
         if (ok) { nimble_port_initialized = false; nimble_host_handle = NULL; }
         else { nimble_deinit_failed = true; ESP_LOGE(TAG, "NimBLE deinit failed: %d; ownership retained, restart blocked", rc); }
@@ -45073,7 +45205,21 @@ static void apply_ble_power_settings(void)
 /**
  * Initialize NimBLE stack
  */
+static esp_err_t bt_nimble_init_transition(void);
 static esp_err_t bt_nimble_init(void)
+{
+    // Direct-GAP consumers cannot initialize/start through a live Chameleon
+    // token. The acquiring task holds transition ownership throughout init.
+    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) &&
+        __atomic_load_n(&s_bt_transition_owner, __ATOMIC_ACQUIRE) != xTaskGetCurrentTaskHandle())
+        return ESP_ERR_INVALID_STATE;
+    if (!bt_transition_enter()) return ESP_ERR_INVALID_STATE;
+    esp_err_t result = bt_nimble_init_transition();
+    bt_transition_leave();
+    return result;
+}
+
+static esp_err_t bt_nimble_init_transition(void)
 {
     if (!s_bt_alloc_hook_registered)
         s_bt_alloc_hook_registered = heap_caps_register_failed_alloc_callback(bt_alloc_failed) == ESP_OK;
@@ -45086,7 +45232,9 @@ static esp_err_t bt_nimble_init(void)
     if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return ESP_ERR_INVALID_STATE;
     __atomic_store_n(&nimble_stop_requested, false, __ATOMIC_SEQ_CST);
     __atomic_store_n(&nimble_stop_complete, false, __ATOMIC_SEQ_CST);
+    bt_stage(BT_ST_PORT_INIT,0);
     esp_err_t ret = nimble_port_init();
+    bt_stage(BT_ST_PORT_INIT_RETURN,ret);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "NimBLE port init failed: %d", ret);
         return ret;
@@ -45120,9 +45268,12 @@ static esp_err_t bt_nimble_init(void)
 
     // Start NimBLE host task
     __atomic_store_n(&nimble_host_exited, false, __ATOMIC_SEQ_CST);
-    if (xTaskCreatePinnedToCore(nimble_host_task, "nimble_host",
+    bt_stage(BT_ST_HOST_CREATE,0);
+    BaseType_t host_created = xTaskCreatePinnedToCore(nimble_host_task, "nimble_host",
             CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE, NULL, configMAX_PRIORITIES - 4,
-            &nimble_host_handle, CONFIG_BT_NIMBLE_PINNED_TO_CORE) != pdPASS) {
+            &nimble_host_handle, CONFIG_BT_NIMBLE_PINNED_TO_CORE);
+    bt_stage(BT_ST_HOST_CREATE_RETURN,host_created);
+    if (host_created != pdPASS) {
         __atomic_store_n(&nimble_host_exited, true, __ATOMIC_SEQ_CST);
         bt_nimble_cleanup_bounded(); // safe: no task ever started
         return ESP_ERR_NO_MEM;
@@ -45134,6 +45285,7 @@ static esp_err_t bt_nimble_init(void)
     }
     
     if (!nimble_initialized) {
+        bt_stage(BT_ST_SYNC_TIMEOUT,ESP_FAIL);
         ESP_LOGE(TAG, "NimBLE failed to sync");
         bt_nimble_cleanup_bounded();
         return ESP_FAIL;
@@ -45502,7 +45654,9 @@ static void bt_locator_update_list(void)
 static BaseType_t bt_scan_worker_start(void)
 {
     if (__atomic_test_and_set(&s_bt_scan_api_busy, __ATOMIC_ACQ_REL)) return pdFAIL;
-    if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) || s_bt_scan_owner ||
+    if (__atomic_load_n(&s_bt_transition_owner, __ATOMIC_ACQUIRE) ||
+        wardrive_active || wardrive_task_handle || wdp_ble_cleanup_pending ||
+        __atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE) || s_bt_scan_owner ||
         __atomic_load_n(&nimble_cleanup_busy, __ATOMIC_ACQUIRE) ||
         __atomic_test_and_set(&bt_scan_worker_busy, __ATOMIC_ACQ_REL)) {
         __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
@@ -45512,12 +45666,19 @@ static BaseType_t bt_scan_worker_start(void)
     __atomic_clear(&s_bt_scan_api_busy, __ATOMIC_RELEASE);
     __atomic_store_n(&bt_scan_active, true, __ATOMIC_RELEASE);
     ble_scan_finished = false;
+    __atomic_store_n(&bt_scan_outcome, BT_SCAN_RUNNING, __ATOMIC_RELEASE);
+    snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scanning...");
     // Keep dynamic RTOS storage internal and the existing 4096-byte stack.
+    bt_stage(BT_ST_SCAN_CREATE,0);
     BaseType_t ret = xTaskCreate(bt_scan_task, "bt_scan_task", 4096, NULL, 5, &bt_scan_task_handle);
+    bt_stage(BT_ST_SCAN_CREATE_RETURN,ret);
     if (ret != pdPASS) {
         bt_scan_task_handle = NULL;
         __atomic_store_n(&bt_scan_active, false, __ATOMIC_RELEASE);
+        snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan task unavailable; retry");
+        __atomic_store_n(&bt_scan_outcome, BT_SCAN_ERROR, __ATOMIC_RELEASE);
         ble_scan_finished = true;
+        ble_scan_needs_ui_update = bt_locator_needs_ui_update = bt_sas_needs_update = true;
     }
     __atomic_store_n(&bt_scan_create_pending, false, __ATOMIC_RELEASE);
     if (ret != pdPASS) __atomic_store_n(&bt_scan_worker_busy, false, __ATOMIC_RELEASE);
@@ -45527,9 +45688,12 @@ static BaseType_t bt_scan_worker_start(void)
 static void bt_scan_task(void *pvParameters)
 {
     (void)pvParameters;
+    bt_stage(BT_ST_WORKER_ENTER,__atomic_load_n(&bt_scan_create_pending,__ATOMIC_ACQUIRE));
     // Do not clear the handle before its creator publishes it.
+    // One RTOS tick, not 1ms: at 100Hz a zero-tick yield starves the creator.
     while (__atomic_load_n(&bt_scan_create_pending, __ATOMIC_ACQUIRE))
-        vTaskDelay(pdMS_TO_TICKS(1));
+        vTaskDelay(1);
+    bt_stage(BT_ST_WORKER_PUBLISHED,0);
     bool started = __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE);
     int rc = started ? bt_start_scan() : 0;
     int bt_scan_iters = (int)g_bt_scan_duration_s * 10;
@@ -45542,14 +45706,19 @@ static void bt_scan_task(void *pvParameters)
                 ble_scan_needs_ui_update = bt_locator_needs_ui_update = bt_sas_needs_update = true;
             }
         }
+        bool completed = started && __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE);
         // Cancel failure cannot authorize reuse; retain owner and retry yielding.
         while (started && !bt_stop_scan()) vTaskDelay(pdMS_TO_TICKS(100));
         snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
                  "%d devices (%d AT, %d ST)", bt_device_count, bt_airtag_count, bt_smarttag_count);
+        if (!completed)
+            snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan cancelled; retry");
+        __atomic_store_n(&bt_scan_outcome, completed ? BT_SCAN_SUCCESS : BT_SCAN_CANCELLED, __ATOMIC_RELEASE);
         ble_obs_store_pending = true;
     } else {
         ESP_LOGE(TAG, "BLE scan start failed: %d", rc);
         snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan start failed (%d); retry", rc);
+        __atomic_store_n(&bt_scan_outcome, BT_SCAN_ERROR, __ATOMIC_RELEASE);
     }
     __atomic_store_n(&bt_scan_active, false, __ATOMIC_RELEASE);
     ble_scan_finished = true;

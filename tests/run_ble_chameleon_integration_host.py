@@ -14,6 +14,8 @@ def fn(s,n):
  while d:d+=(s[i]=='{')-(s[i]=='}');i+=1
  return s[m.start():i]
 pre=r"""
+#define bt_stage(stage,rc) ((void)0)
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -68,7 +70,10 @@ struct uuid{int u;};static struct uuid s_nus_svc_uuid;
 struct ble_hs_adv_fields{struct uuid*uuids128;int num_uuids128;const uint8_t*name;int name_len;};
 static int ble_uuid_cmp(const void*a,const void*b){return 0;}
 static int ble_hs_adv_parse_fields(struct ble_hs_adv_fields*f,const uint8_t*d,int n){memset(f,0,sizeof(*f));f->name=d;f->name_len=n;return 0;}
+static char ble_scan_status_text[48];static bool ble_scan_needs_ui_update,bt_locator_needs_ui_update,bt_sas_needs_update;
 static bool s_bt_scan_api_busy,bt_scan_worker_busy,bt_scan_create_pending,bt_scan_active,ble_scan_finished;
+static TaskHandle_t s_bt_transition_owner;static unsigned s_bt_transition_depth;
+static void *wardrive_task_handle;static bool wardrive_active,wardrive_task_done,wdp_ble_cleanup_pending;
 static uint32_t s_bt_cham_token;static void *s_bt_scan_owner,*bt_scan_task_handle,*self=(void*)1;
 static int s_bt_report_mux;static unsigned s_bt_reports_inflight;static bool s_bt_reports_accept,bt_tracking_mode;
 static bool nimble_initialized=true,nimble_port_initialized=true,nimble_stop_requested,nimble_cleanup_busy,nimble_deinit_failed,nimble_host_exited=true,wifi_initialized;
@@ -92,6 +97,7 @@ struct ble_gatt_error{int status;};struct ble_gatt_attr{int unused;};
 static bool s_pend_write_ok;
 static int starts,cancels,connects,conn_cancels,terminates,deinits,creates;
 static int start_rc,cancel_rc,connect_rc,terminate_rc,conn_cancel_rc,init_rc,create_rc=pdPASS;
+static int host_fault,sync_after,delay_calls,wifi_attempts;static bool transition_probe;
 static bool debug,publish_interleave,init_interleave;static void*connect_arg;static ble_addr_t peer_seen;
 static TaskHandle_t xTaskGetCurrentTaskHandle(void){return self;}
 static void vTaskDelay(int ms);
@@ -112,8 +118,8 @@ static bool clock_radio_admit(void){return true;}
 static bool cym_debug_enabled(void){return debug;}
 static void heap_caps_print_heap_info(int x){}
 static void log_heap_stats(const char*x){}
-static void esp_wifi_stop(void){}
-static void esp_wifi_deinit(void){}
+static int esp_wifi_stop(void){return 0;}
+static int esp_wifi_deinit(void){return 0;}
 static bool nav_to_menu_flag,s_cham_nav_child;
 static void (*nav_deferred_show_fn)(void),(*g_screen_stop_fn)(void),(*g_screen_back_fn)(void);
 static int nav_stack_depth,nav_stack[4],parent_calls,home_calls,stop_calls;
@@ -125,6 +131,15 @@ static void run_screen_stop_fn(void);
 static void parent(void){parent_calls++;}
 static void (*nav_show_lookup(int n))(void){return parent;}
 static void show_menu(void){home_calls++;run_screen_stop_fn();}
+static bool ensure_ble_mode_transition(void);
+static bool bt_nimble_cleanup_bounded_transition(void);
+static int bt_nimble_init_transition(void);
+static bool bt_scan_session_begin(void);
+static BaseType_t bt_scan_worker_start(void);
+static bool ensure_ble_mode(void);
+static bool ensure_wifi_mode(void);
+static bool bt_nimble_cleanup_bounded(void);
+static bool ensure_wifi_mode_transition(void){wifi_attempts++;return true;}
 static int bt_nimble_init(void);
 static void bt_reset_counters(void){}
 static void bt_scan_stop(void){bt_scan_active=false;
@@ -139,11 +154,12 @@ static int s_gap_cb_process(struct ble_gap_event*e,void*a){
  if(e->type==BLE_GAP_EVENT_DISCONNECT)s_conn_handle=BLE_HS_CONN_HANDLE_NONE;
  return 0;
 }
+static bool bt_nimble_cleanup_bounded(void);
 static bool ensure_ble_mode_unreserved(void);
 static void cham_cancel_pending_stub(void){}
 #define cham_cancel_pending cham_cancel_pending_stub
 #ifndef REAL_INIT
-static int bt_nimble_init(void){if(init_interleave){assert(s_bt_cham_token);assert(!cym_ble_cham_acquire(999));}return init_rc;}
+static int bt_nimble_init(void){if(init_interleave){assert(s_bt_cham_token);assert(!cym_ble_cham_acquire(999));}if(!init_rc){nimble_initialized=nimble_port_initialized=true;nimble_stop_requested=false;}return init_rc;}
 #else
 #define ESP_ERR_INVALID_STATE 0x103
 #define ESP_ERR_NO_MEM 0x101
@@ -161,15 +177,24 @@ static void blueduck_register_services(void){}static void honeypair_register_ser
 static void nimble_host_task(void*arg){} // RTOS boundary; real sync callback runs below.
 static void apply_ble_power_settings(void){}
 static int xTaskCreatePinnedToCore(void(*fn)(void*),const char*n,int sz,void*a,int pr,void**out,int core){
- assert(nimble_port_initialized&&!nimble_stop_requested&&!nimble_host_exited);host_creates++;*out=(void*)3;ble_hs_cfg.sync_cb();return pdPASS;
+ assert(nimble_port_initialized&&!nimble_stop_requested&&!nimble_host_exited);host_creates++;
+ if(transition_probe){void*saved=self;self=(void*)90;int before=wifi_attempts;
+  assert(!ensure_wifi_mode()&&wifi_attempts==before);assert(!ensure_ble_mode());assert(!bt_nimble_cleanup_bounded());
+  assert(!cym_ble_cham_acquire(900));assert(!bt_scan_session_begin());assert(bt_scan_worker_start()==pdFAIL);
+  assert(bt_nimble_init()==ESP_ERR_INVALID_STATE);self=saved;}
+ if(host_fault==1)return pdFAIL;*out=(void*)3;if(!host_fault&&!sync_after)ble_hs_cfg.sync_cb();return pdPASS;
 }
 #endif
 static void vTaskDelay(int ms){
+#ifdef REAL_INIT
+ if(sync_after && ++delay_calls==sync_after)ble_hs_cfg.sync_cb();
+#endif
  if(cleanup_probe&&nimble_cleanup_busy){int n=port_init_calls;assert(!cym_ble_cham_acquire(997));assert(!s_bt_cham_token&&port_init_calls==n);cleanup_probes++;}
  if(nimble_stop_requested&&host_exit_on_delay)nimble_host_exited=true;
 }
 
 """
+pre += re.search(r'typedef enum \{ BT_SCAN_RUNNING.*?bt_scan_outcome = BT_SCAN_SUCCESS;', M, re.S).group(0) + '\n'
 ui_stubs=r"""
 static char rendered_status[64];
 static void lv_label_set_text(void*p,const char*t){if(p==s_cham_prog_lbl)snprintf(rendered_status,sizeof(rendered_status),"%s",t);}
@@ -182,9 +207,9 @@ int cham_scan_result_count(void){return s_scan_count;}
 const cham_scan_result_t *cham_scan_result_get(int idx){return &s_scan_results[idx];}
 const cham_device_info_t *cham_get_device_info(void){return NULL;}
 """
-mainnames=['bt_cancel_unreserved_discovery','cym_ble_cham_release','cym_ble_cham_acquire','ensure_ble_mode_unreserved','ensure_ble_mode','bt_scan_session_begin','bt_scan_session_start_result','bt_scan_worker_start','bt_nimble_cleanup_bounded']
+mainnames=['bt_transition_enter','bt_transition_leave','ensure_wifi_mode','bt_cancel_unreserved_discovery','cym_ble_cham_release','cym_ble_cham_acquire','ensure_ble_mode_unreserved','ensure_ble_mode','ensure_ble_mode_transition','bt_scan_session_begin','bt_scan_session_start_result','bt_scan_worker_start','bt_nimble_cleanup_bounded','bt_nimble_cleanup_bounded_transition']
 chamnames=['s_callback_enter','s_callback_leave','s_callbacks_quiet','s_write_cb_process','s_write_cb','s_cccd_write_cb_process','s_cccd_write_cb','s_radio_busy','s_radio_claim','s_scan_cancel_owned','s_cham_scan_begin','s_scan_gap_cb_process','s_scan_gap_cb','s_link_event_begin','s_gap_cb','s_defer_connect_cb','cham_init','cham_scan_start','cham_scan_stop','cham_connect','cham_radio_poll','cham_disconnect']
-code=pre+'\n'.join(fn(M,n) for n in mainnames)+'\n#ifdef REAL_INIT\n'+'\n'.join(fn(M,n) for n in ['bt_on_sync','bt_on_reset','bt_nimble_init'])+'\n#endif\n'+ '\n'.join(fn(C,n) for n in chamnames)
+code=pre+'\n'.join(fn(M,n) for n in mainnames)+'\n#ifdef REAL_INIT\n'+'\n'.join(fn(M,n) for n in ['bt_on_sync','bt_on_reset','bt_nimble_init','bt_nimble_init_transition'])+'\n#endif\n'+ '\n'.join(fn(C,n) for n in chamnames)
 # Link payload security/ATT handler is NOT simulated. The real lifecycle prefix
 # and admission helper are driven directly below; full security stays hardware.
 code+=r"""
@@ -197,7 +222,37 @@ static void clear(void){s_state=CHAM_STATE_DISCONNECTED;s_status_msg[0]=0;s_scan
 static void link_event(int type,int status){struct ble_gap_event e={.type=type,.connect={.status=status,.conn_handle=7}};s_gap_cb(&e,connect_arg);}
 int main(int argc,char**argv){assert(argc==2||argc==3);
  for(int dbg=0;dbg<2;dbg++){debug=dbg;if(argc==3&&dbg!=(argv[2][0]=='1'))continue;clear();starts=cancels=connects=conn_cancels=terminates=deinits=creates=0;start_rc=cancel_rc=connect_rc=terminate_rc=conn_cancel_rc=init_rc=0;create_rc=pdPASS;
- if(!strcmp(argv[1],"reentry")){
+ if(!strncmp(argv[1],"init-",5)){
+#ifdef REAL_INIT
+  airtag_scan_stop();assert(!nimble_port_initialized);transition_probe=true;
+  wardrive_task_handle=(void*)44;wardrive_active=true;assert(!cym_ble_cham_acquire(590));assert(!bt_scan_session_begin());assert(bt_scan_worker_start()==pdFAIL);
+  assert(!bt_nimble_cleanup_bounded());wardrive_active=false;assert(!cym_ble_cham_acquire(590));
+  wardrive_task_done=true;assert(!cym_ble_cham_acquire(590));wardrive_task_handle=NULL;
+  wdp_ble_cleanup_pending=true;assert(!cym_ble_cham_acquire(590));wdp_ble_cleanup_pending=false;
+  s_bt_cham_token=590;assert(bt_nimble_init()==ESP_ERR_INVALID_STATE);s_bt_cham_token=0;
+
+  if(!strcmp(argv[1],"init-delay")){
+   sync_after=3;assert(cym_ble_cham_acquire(600));assert(delay_calls==3);cym_ble_cham_release(600);
+  }else{
+   host_fault=!strcmp(argv[1],"init-host")?1:2;
+   bool retained=!strcmp(argv[1],"init-retained"),terminal=!strcmp(argv[1],"init-terminal");
+   host_exit_on_delay=!retained;if(terminal)deinit_rc=7;
+   assert(!cym_ble_cham_acquire(601));assert(!s_bt_cham_token);
+   host_fault=0; // fault removed; never reset production lifecycle flags
+   if(terminal){assert(nimble_port_initialized&&nimble_deinit_failed);assert(!cym_ble_cham_acquire(602));}
+   else{
+    if(retained){assert(nimble_port_initialized&&nimble_stop_requested);assert(!cym_ble_cham_acquire(602));
+     // Late sync after stop must not resurrect the retained host.
+     bt_on_sync();assert(!nimble_initialized);host_exit_on_delay=true;}
+    assert(cym_ble_cham_acquire(603)&&"retry after failed init must recover without flag resets");
+    assert(nimble_initialized&&!nimble_stop_requested);cym_ble_cham_release(603);
+    assert(cym_ble_cham_acquire(604));cym_ble_cham_release(604);
+   }
+  }
+#else
+  assert(0);
+#endif
+ }else if(!strcmp(argv[1],"reentry")){
 #ifdef REAL_INIT
   // No lifecycle flag resets: actual successful cleanup -> claim -> actual init/sync.
   assert(nimble_initialized&&nimble_port_initialized&&!nimble_stop_requested);
@@ -253,7 +308,7 @@ int main(int argc,char**argv){assert(argc==2||argc==3);
   struct ble_gatt_error ge={0};s_pend_write_ok=s_ev_cccd_ok=false;s_write_cb(7,&ge,NULL,(void*)(uintptr_t)old);s_cccd_write_cb(7,&ge,NULL,(void*)(uintptr_t)old);assert(!s_pend_write_ok&&!s_ev_cccd_ok);
   s_write_cb(7,&ge,NULL,(void*)(uintptr_t)s_radio_token);s_cccd_write_cb(7,&ge,NULL,(void*)(uintptr_t)s_radio_token);assert(s_pend_write_ok&&s_ev_cccd_ok);cham_disconnect();
  }else if(!strcmp(argv[1],"errors")){
-  init_rc=7;current_radio_mode=RADIO_MODE_NONE;cham_scan_start();assert(!s_radio_token&&!s_bt_cham_token&&strstr(s_status_msg,"busy"));init_rc=0;current_radio_mode=RADIO_MODE_BLE;
+  init_rc=7;current_radio_mode=RADIO_MODE_NONE;cham_scan_start();assert(!s_radio_token&&!s_bt_cham_token&&strstr(s_status_msg,"busy"));init_rc=0;
   clear();cham_scan_start();s_scan_count=1;cancel_rc=7;assert(!cham_connect(0)&&!connects&&s_scan_owned&&s_closing);cancel_rc=0;cham_radio_poll();assert(!s_radio_token);
   clear();cham_scan_start();s_scan_count=1;assert(cham_connect(0));connect_rc=7;now=s_defer_at;cham_radio_poll();assert(s_closing&&s_ev_error);cham_radio_poll();assert(!s_radio_token);connect_rc=0;
   clear();cham_scan_start();s_scan_count=1;assert(cham_connect(0));now=s_defer_at;cham_radio_poll();assert(s_connect_inflight);conn_cancel_rc=7;cham_disconnect();assert(s_radio_token&&s_connect_inflight);conn_cancel_rc=0;cham_radio_poll();assert(s_radio_token);link_event(BLE_GAP_EVENT_CONNECT,7);cham_radio_poll();assert(!s_radio_token);consume_error();assert(!s_closing);clear();cham_scan_start();assert(s_radio_token);cham_disconnect();
@@ -300,4 +355,11 @@ for debug in ['0','1']:
  p=subprocess.run([str(D/'reentry-host'),'reentry',debug],capture_output=True,text=True);print(p.stdout+p.stderr,end='');variants.append({'debug':debug,'exit_code':p.returncode})
 results.append({'case':'reentry','exit_code':0 if all(x['exit_code']==0 for x in variants) else 1,'variants':variants})
 (D/'reentry-provenance.json').write_text(json.dumps({'main_sha256':hashlib.sha256(M.encode()).hexdigest(),'real_functions':['bt_nimble_cleanup_bounded','bt_nimble_init','bt_on_sync','bt_on_reset','airtag_scan_stop','cym_ble_cham_acquire','cym_ble_cham_release','ensure_ble_mode_unreserved'],'limits':'SDK port/RTOS/host-exit event boundaries fault-controlled; no live RF/security/ATT'},indent=2))
+for case in ['init-host','init-timeout','init-delay','init-retained','init-terminal']:
+ for debug in ['0','1']:
+  p=subprocess.run([str(D/'reentry-host'),case,debug],capture_output=True,text=True);print(p.stdout+p.stderr,end='');results.append({'case':case,'debug':debug,'exit_code':p.returncode})
+subprocess.run(['cc','-std=gnu11','-O1','-g','-fsanitize=undefined','-DEXT=0','-DREAL_INIT=1','-I'+str(R/'ESP32C5/main'),str(D/'host.c'),'-o',str(D/'legacy-reentry-host')],check=True)
+for case in ['reentry','init-host','init-timeout','init-delay','init-retained','init-terminal']:
+ for debug in ['0','1']:
+  p=subprocess.run([str(D/'legacy-reentry-host'),case,debug],capture_output=True,text=True);print(p.stdout+p.stderr,end='');results.append({'case':case,'debug':debug,'legacy':True,'exit_code':p.returncode})
 (D/'results.json').write_text(json.dumps(results,indent=2));assert all(x['exit_code']==0 for x in results),results

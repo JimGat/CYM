@@ -11,7 +11,11 @@ def fn(n):
  while d:d+=(s[i]=='{')-(s[i]=='}');i+=1
  return s[m.start():i]
 pre=r"""
+#define bt_stage(stage,rc) ((void)0)
+
 #include <stdint.h>
+#include <stdbool.h>
+static void *wardrive_task_handle;static bool wardrive_active,wardrive_task_done,wdp_ble_cleanup_pending;
 static uint32_t s_bt_cham_token;
 
 #include <assert.h>
@@ -38,6 +42,7 @@ typedef void *TaskHandle_t;
 struct ble_gap_event{int type;};
 struct ble_gap_ext_disc_params{int itvl,window,passive;};
 struct ble_gap_disc_params{int itvl,window,filter_policy,limited,passive,filter_duplicates;};
+static void *s_bt_transition_owner;
 static bool s_bt_scan_api_busy,bt_scan_worker_busy,s_bt_reports_accept;
 static TaskHandle_t s_bt_scan_owner,bt_scan_task_handle,self=(void*)1;
 static unsigned s_bt_reports_inflight;static int s_bt_report_mux;
