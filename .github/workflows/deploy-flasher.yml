@@ -142,10 +142,11 @@ jobs:
           assert re.fullmatch(r'[0-9a-f]{40}', sha)
           old = 'const BRANCH = { stable: "main", dev: "Jimgat_Dev" };'
           assert text.count(old) == 1
+          # Normal flasher follows Dev on channel switches; Beta stays pinned.
+          Path('_site/index.html').write_text(text)
           text = text.replace(old, 'const BRANCH = { stable: "main", dev: "' + sha + '" };')
           text = text.replace('binaries fetched live from the <code>Jimgat_Dev</code> branch.',
                               'binaries pinned to verified development commit <code>' + sha + '</code>.')
-          Path('_site/index.html').write_text(text)
           text = text.replace('const betaUnlock = urlParams.get("beta") === "1";',
                               'const betaUnlock = true; // isolated Beta deployment')
           page.write_text(text)
