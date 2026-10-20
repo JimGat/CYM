@@ -15,6 +15,8 @@ pre=r"""
 
 #include <stdint.h>
 #include <stdbool.h>
+static bool s_bt_resource_capture;static uint32_t s_bt_resource_failures;
+#include <stdbool.h>
 static const char *bt_sas_entry_error;static bool ensure_ble_mode(void){return true;}
 static void *wardrive_task_handle;static bool wardrive_active,wardrive_task_done,wdp_ble_cleanup_pending;
 static uint32_t s_bt_cham_token;
@@ -45,6 +47,7 @@ static int bt_device_count,bt_airtag_count,bt_smarttag_count,bt_devices[16];
 static bool bt_sas_ui_active=true;static int bt_sas_selected_idx,bt_sas_page,bt_sas_rendered_count;
 static void *bt_sas_next_btn,*bt_sas_status_label,*bt_sas_save_overlay,*bt_sas_save_ta,*bt_sas_list;
 static void *bt_sas_nav_bar,*bt_sas_nav_prev,*bt_sas_nav_lbl,*bt_sas_nav_next;
+static bool inject_resource_failure;
 static int creates,cancels,deletes,foreign_deletes,resets,start_rc,create_rc=pdPASS,stop_failures,join_after=-1,waits;
 static TaskHandle_t self=(void*)2;
 static void bt_scan_task(void*);
@@ -53,7 +56,7 @@ static TaskHandle_t xTaskGetCurrentTaskHandle(void){return self;}
 static int xTaskCreate(void(*fn)(void*),const char*n,int stack,void*a,int prio,TaskHandle_t*out){
  assert(fn==bt_scan_task&&stack==4096&&prio==5);creates++;
  if(create_rc!=pdPASS)return create_rc;*out=(void*)2;return pdPASS;}
-static void vTaskDelay(int ms){(void)ms;waits++;
+static void vTaskDelay(int ms){(void)ms;waits++;if(inject_resource_failure&&s_bt_resource_capture)s_bt_resource_failures++;
  if(join_after>=0&&waits>=join_after){bt_scan_task_handle=NULL;bt_scan_worker_busy=false;join_after=-1;}}
 static void vTaskDelete(void*p){deletes++;if(p)foreign_deletes++;}
 static void bt_reset_counters(void){resets++;bt_device_count=0;memset(bt_devices,0,sizeof(bt_devices));}
@@ -89,6 +92,11 @@ int main(int argc,char**argv){assert(argc==2);reset();
   bt_scan_active=true;bt_scan_worker_busy=true;bt_scan_task_handle=self;stop_failures=3;bt_scan_task(NULL);
   assert(cancels==4&&"cancel failures must retain owner and retry before releasing task");
   assert(!bt_scan_task_handle&&!bt_scan_worker_busy&&!bt_scan_active&&ble_scan_finished);assert(!foreign_deletes);
+ }else if(!strcmp(argv[1],"resource-failure")){
+  for(int rows=0;rows<2;rows++){
+   bt_scan_active=true;bt_scan_worker_busy=true;bt_scan_task_handle=self;bt_device_count=rows?4:0;inject_resource_failure=true;bt_scan_task(NULL);
+   assert(bt_scan_outcome==BT_SCAN_ERROR&&strstr(ble_scan_status_text,"memory pressure")&&!s_bt_resource_capture&&!bt_scan_worker_busy);
+  }
  }else if(!strcmp(argv[1],"start-failure")){
   bt_scan_active=true;bt_scan_worker_busy=true;bt_scan_task_handle=self;start_rc=7;bt_scan_task(NULL);
   assert(!bt_scan_task_handle&&!bt_scan_worker_busy&&!bt_scan_active&&ble_scan_finished&&bt_sas_needs_update);
@@ -105,6 +113,6 @@ code=pre+helpers+fn('bt_scan_stop')+fn('bt_sas_stop')+fn('bt_sas_rescan_cb')+fn(
 (D/'host.c').write_text(code);(D/'provenance.json').write_text(json.dumps({'source_sha256':hashlib.sha256(M.read_bytes()).hexdigest(),'production_helpers':['bt_scan_worker_start','bt_scan_stop','bt_sas_stop','bt_sas_rescan_cb','bt_scan_task']},indent=2))
 subprocess.run(['cc','-std=gnu11','-g','-O1','-fsanitize=undefined',str(D/'host.c'),'-o',str(D/'host')],check=True)
 results=[]
-for case in ['delayed','join','create-failure','worker','start-failure','navigation']:
+for case in ['delayed','join','create-failure','worker','resource-failure','start-failure','navigation']:
  p=subprocess.run([str(D/'host'),case],capture_output=True,text=True);print(p.stdout+p.stderr,end='');results.append(dict(case=case,exit_code=p.returncode))
 (D/'results.json').write_text(json.dumps(results,indent=2));assert all(x['exit_code']==0 for x in results),results

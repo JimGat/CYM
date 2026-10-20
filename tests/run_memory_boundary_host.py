@@ -15,6 +15,8 @@ typedef=re.search(r'typedef struct \{\s*uint32_t callbacks, legacy, extended, pa
 text=r"""
 #include <assert.h>
 #include <stdbool.h>
+#include <string.h>
+static bool s_bt_alloc_name_busy;static char s_bt_alloc_function[32];
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>

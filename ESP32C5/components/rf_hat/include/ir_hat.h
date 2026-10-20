@@ -1,4 +1,5 @@
 #pragma once
+#include "esp_err.h"
 // =============================================================================
 // ir_hat — Infrared capture, replay, and storage for NM-RF-HAT (DIP switch 4)
 // =============================================================================
@@ -108,7 +109,8 @@ ir_hat_err_t ir_hat_delete_signal(const char *remote_name, int index);
 // ── TV-B-Gone ─────────────────────────────────────────────────────────────────
 // Transmits a built-in set of common TV power-off IR codes in sequence.
 // Call ir_hat_tvbgone_stop() from any context to abort mid-sequence.
-void ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx);
+// ESP_ERR_NO_MEM means no transmission was started; decoded buffer is task-owned.
+esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx);
 void ir_hat_tvbgone_stop(void);
 
 // ── Jammer ───────────────────────────────────────────────────────────────────

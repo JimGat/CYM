@@ -25,6 +25,8 @@ prod='\n'.join(function(n) for n in names)
 code=r"""
 #include <assert.h>
 #include <stdbool.h>
+static void *wscope_task_handle;
+static bool wscope_worker_stop(void){return !wscope_task_handle;}
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdio.h>

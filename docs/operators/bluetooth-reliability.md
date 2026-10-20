@@ -1,6 +1,10 @@
-# Bluetooth reliability candidate v3.0.31
+# Bluetooth reliability candidates v3.0.31–v3.0.32
 
 Development candidate only. Stable remains v3.0.27. Host/build success is not hardware acceptance or recovered RF reception.
+
+## v3.0.32 follow-up
+
+[Current radio repair and acceptance procedure](radio-repair-v3.0.32.md). The v3.0.31 physical capture now establishes actual allocation failures during empty discovery, not just low heap. The failures are globally observed during the scan window, not proven to originate from a particular opaque controller call. v3.0.32 relocates only two task-readable decoded IR copies on PSRAM boards and reports memory-pressure scans as incomplete with Debug OFF or ON. The heap hook also stores a bounded best-effort first public allocator function name using a nonblocking atomic guard; it never allocates or logs there. Existing counters/last-failure size and capability fields remain distinct from that first name. The older descriptions below document v3.0.31 and are not a claim that the new capture contained no failures.
 
 ## v3.0.31 repair and diagnostic candidate
 

@@ -2657,6 +2657,7 @@ static lv_timer_t        *wana_ui_timer      = NULL;
 static lv_timer_t        *wana_scroll_timer  = NULL;   // auto-scroll driver
 static bool               wana_active        = false;
 static bool               wana_scanning      = false;
+static uint32_t           wana_scan_ticket;
 static bool               wana_needs_redraw  = false;
 static bool               wana_scroll_paused = false;  // true while user is dragging
 static int8_t             wana_scroll_dir    = 1;      // +1=right, -1=left (ping-pong)
@@ -2694,6 +2695,15 @@ static volatile int  wscope_cur_ch_idx  = 0;
 static portMUX_TYPE  wscope_mux         = portMUX_INITIALIZER_UNLOCKED;
 static int8_t        wscope_ch_peak[WSCOPE_CH_MAX];
 static uint16_t      wscope_ch_cnt[WSCOPE_CH_MAX];
+#define WSCOPE_EPOCH_STATE 1
+static uint32_t wscope_epoch, wscope_worker_epoch;
+static bool wscope_accepting, wscope_create_pending;
+static uint8_t wscope_expected_channel;
+static int8_t wscope_ready_peak[WSCOPE_CH_MAX];
+static uint16_t wscope_ready_cnt[WSCOPE_CH_MAX];
+static unsigned wscope_rejected, wscope_ready_rejected;
+static esp_err_t wscope_error;
+static bool wscope_worker_stop(void);
 // Runtime canvas dims: portrait = the #defines; landscape = full screen width with a
 // shorter waterfall so the whole scope fits the 320x240 screen at native scale (no zoom).
 static int           wsc_w   = WSCOPE_W;                    // canvas width  (px)
@@ -5528,12 +5538,12 @@ static bool wait_for_gps_fix(int timeout_seconds) {
 // computed `second` for both — do not "fix" a 5 GHz set by adding a manual second here.
 static bool wifi_set_channel_verified(uint8_t ch)
 {
-    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    esp_err_t rc = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
     uint8_t ac; wifi_second_chan_t sc;
-    if (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch) return true;
-    vTaskDelay(pdMS_TO_TICKS(5));
-    esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
-    return (esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch);
+    if (rc == ESP_OK && esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch) return true;
+    vTaskDelay(pdMS_TO_TICKS(5) ? pdMS_TO_TICKS(5) : 1);
+    rc = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    return rc == ESP_OK && esp_wifi_get_channel(&ac, &sc) == ESP_OK && ac == ch;
 }
 
 static void sniffer_dog_channel_hop(void) {
@@ -17869,6 +17879,7 @@ static void create_function_page_base(const char *name)
 static void radio_reset_to_idle(void)
 {
     if (!clock_radio_reset_admit()) return;
+    if (wscope_task_handle && !wscope_worker_stop()) return;
     if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) return;
     if ((g_ot_survey_active || s_ots_owner_busy()) && !ot_radio_scheduler_owns_current_task()) return;
     ESP_LOGI(TAG, "radio_reset_to_idle: stopping all attacks, resetting radio...");
@@ -44038,6 +44049,7 @@ static bool ensure_wifi_mode(void)
 static bool ensure_wifi_mode_transition(void)
 {
     if (!clock_radio_admit()) return false;
+    if (wscope_task_handle && !wscope_worker_stop()) return false;
     if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) return false;
     // A sync failure does not relinquish controller/host ownership.
     if (nimble_port_initialized && !bt_nimble_cleanup_bounded()) return false;
@@ -44131,6 +44143,7 @@ static bool ensure_wifi_mode_transition(void)
 static bool ensure_ble_mode_unreserved(void)
 {
     if (!clock_radio_admit()) return false;
+    if (wscope_task_handle && !wscope_worker_stop()) return false;
     // Other features with their own GAP callbacks cannot replace a retained scan.
     if (s_bt_scan_owner && s_bt_scan_owner != xTaskGetCurrentTaskHandle()) return false;
     switch (current_radio_mode) {
@@ -44603,6 +44616,12 @@ typedef struct {
 } bt_diag_counts_t;
 static bool s_bt_alloc_hook_registered;
 static bool s_bt_alloc_capture;
+// Operational failure signal is independent of Debug. Global allocation failures
+// during this worker window are evidence of resource pressure, NOT per-call BLE attribution.
+static bool s_bt_resource_capture;
+static uint32_t s_bt_resource_failures;
+static char s_bt_alloc_function[32];
+static bool s_bt_alloc_name_busy;
 static uint32_t s_bt_alloc_failures, s_bt_alloc_dma_failures;
 static uint32_t s_bt_alloc_last_size, s_bt_alloc_last_caps;
 static uint32_t s_bt_rejected_reports;
@@ -44611,8 +44630,20 @@ static uint32_t s_bt_alloc_start, s_bt_alloc_dma_start, s_bt_rejected_start;
 // Failure context: atomic counters only, no allocation, locks or logging.
 static void bt_alloc_failed(size_t size, uint32_t caps, const char *function_name)
 {
-    (void)function_name;
+    if (__atomic_load_n(&s_bt_resource_capture, __ATOMIC_RELAXED))
+        __atomic_fetch_add(&s_bt_resource_failures, 1, __ATOMIC_RELAXED);
     if (!__atomic_load_n(&s_bt_alloc_capture, __ATOMIC_RELAXED)) return;
+    // Best-effort bounded first function name in this diagnostic window. Never
+    // allocate/log or wait in the heap hook. Name is the public allocator boundary.
+    if (!__atomic_test_and_set(&s_bt_alloc_name_busy, __ATOMIC_ACQUIRE)) {
+        if (!s_bt_alloc_function[0] && function_name) {
+            unsigned i = 0;
+            for (; i + 1 < sizeof(s_bt_alloc_function) && function_name[i]; ++i)
+                s_bt_alloc_function[i] = function_name[i];
+            s_bt_alloc_function[i] = 0;
+        }
+        __atomic_clear(&s_bt_alloc_name_busy, __ATOMIC_RELEASE);
+    }
     __atomic_fetch_add(&s_bt_alloc_failures, 1, __ATOMIC_RELAXED);
     if (caps & MALLOC_CAP_DMA)
         __atomic_fetch_add(&s_bt_alloc_dma_failures, 1, __ATOMIC_RELAXED);
@@ -44650,6 +44681,10 @@ static uint32_t bt_diag_begin(void)
 {
     if (!cym_debug_enabled()) return 0;
     uint32_t id = 0;
+    if (!__atomic_test_and_set(&s_bt_alloc_name_busy, __ATOMIC_ACQUIRE)) {
+        s_bt_alloc_function[0] = 0;
+        __atomic_clear(&s_bt_alloc_name_busy, __ATOMIC_RELEASE);
+    }
     __atomic_store_n(&s_bt_alloc_capture, true, __ATOMIC_RELAXED);
     s_bt_alloc_start = __atomic_load_n(&s_bt_alloc_failures, __ATOMIC_RELAXED);
     s_bt_alloc_dma_start = __atomic_load_n(&s_bt_alloc_dma_failures, __ATOMIC_RELAXED);
@@ -44680,18 +44715,23 @@ static void bt_diag_end(const char *boundary, uint32_t id)
     if (!captured) return;
     __atomic_store_n(&s_bt_alloc_capture, false, __ATOMIC_RELAXED);
     if (!cym_debug_enabled()) return;
+    char allocator[32] = "busy";
+    if (!__atomic_test_and_set(&s_bt_alloc_name_busy, __ATOMIC_ACQUIRE)) {
+        memcpy(allocator, s_bt_alloc_function, sizeof(allocator));
+        __atomic_clear(&s_bt_alloc_name_busy, __ATOMIC_RELEASE);
+    }
     bt_diag_counts_t delta = bt_diag_delta(bt_diag_read(), start);
     log_heap_stats("ble-scan-complete");
     ESP_LOGI(TAG, "[BLE_SCAN] boundary=%s callbacks=%u legacy=%u extended=%u parse_fail=%u blacklisted=%u duplicate=%u (overlapping counters; boundary deltas, not RF proof)",
              boundary, (unsigned)delta.callbacks, (unsigned)delta.legacy,
              (unsigned)delta.extended, (unsigned)delta.parse_fail,
              (unsigned)delta.blacklisted, (unsigned)delta.duplicate);
-    ESP_LOGI(TAG, "[BLE_SCAN] alloc_fail=%u dma_alloc_fail=%u last_size=%u last_caps=0x%x app_rejected=%u upstream_drops=unavailable",
+    ESP_LOGI(TAG, "[BLE_SCAN] alloc_fail=%u dma_alloc_fail=%u last_size=%u last_caps=0x%x app_rejected=%u allocator_first=%s attribution=global-scan-window upstream_drops=unavailable",
              (unsigned)(__atomic_load_n(&s_bt_alloc_failures, __ATOMIC_RELAXED) - s_bt_alloc_start),
              (unsigned)(__atomic_load_n(&s_bt_alloc_dma_failures, __ATOMIC_RELAXED) - s_bt_alloc_dma_start),
              (unsigned)__atomic_load_n(&s_bt_alloc_last_size, __ATOMIC_RELAXED),
              (unsigned)__atomic_load_n(&s_bt_alloc_last_caps, __ATOMIC_RELAXED),
-             (unsigned)(__atomic_load_n(&s_bt_rejected_reports, __ATOMIC_RELAXED) - s_bt_rejected_start));
+             (unsigned)(__atomic_load_n(&s_bt_rejected_reports, __ATOMIC_RELAXED) - s_bt_rejected_start), allocator);
 }
 
 static int bt_gap_report_process(struct ble_gap_event *event, void *arg)
@@ -45695,11 +45735,14 @@ static void bt_scan_task(void *pvParameters)
         vTaskDelay(1);
     bt_stage(BT_ST_WORKER_PUBLISHED,0);
     bool started = __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE);
+    __atomic_store_n(&s_bt_resource_failures, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_bt_resource_capture, started, __ATOMIC_RELEASE);
     int rc = started ? bt_start_scan() : 0;
     int bt_scan_iters = (int)g_bt_scan_duration_s * 10;
     if (rc == 0) {
         for (int i = 0; i < bt_scan_iters && __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE); i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
+            if (__atomic_load_n(&s_bt_resource_failures, __ATOMIC_RELAXED)) break;
             if (i % 5 == 0) {
                 snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
                          "Scanning... %d (%ds)", bt_device_count, (bt_scan_iters - i) / 10);
@@ -45713,13 +45756,18 @@ static void bt_scan_task(void *pvParameters)
                  "%d devices (%d AT, %d ST)", bt_device_count, bt_airtag_count, bt_smarttag_count);
         if (!completed)
             snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan cancelled; retry");
-        __atomic_store_n(&bt_scan_outcome, completed ? BT_SCAN_SUCCESS : BT_SCAN_CANCELLED, __ATOMIC_RELEASE);
+        bool exhausted = __atomic_load_n(&s_bt_resource_failures, __ATOMIC_RELAXED) != 0;
+        if (exhausted)
+            snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan incomplete: memory pressure; retry");
+        __atomic_store_n(&bt_scan_outcome, exhausted ? BT_SCAN_ERROR :
+                         completed ? BT_SCAN_SUCCESS : BT_SCAN_CANCELLED, __ATOMIC_RELEASE);
         ble_obs_store_pending = true;
     } else {
         ESP_LOGE(TAG, "BLE scan start failed: %d", rc);
         snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan start failed (%d); retry", rc);
         __atomic_store_n(&bt_scan_outcome, BT_SCAN_ERROR, __ATOMIC_RELEASE);
     }
+    __atomic_store_n(&s_bt_resource_capture, false, __ATOMIC_RELEASE);
     __atomic_store_n(&bt_scan_active, false, __ATOMIC_RELEASE);
     ble_scan_finished = true;
     ble_scan_needs_ui_update = bt_locator_needs_ui_update = bt_sas_needs_update = true;
@@ -51461,7 +51509,12 @@ static void wana_rescan_btn_cb(lv_event_t *e) {
     wana_scanning     = true;
     wana_ssid_count   = 0;
     wana_show_scanning_panel();
-    wifi_scanner_start_scan();
+    esp_err_t rc = wifi_scanner_start_scan();
+    wana_scan_ticket = rc == ESP_OK ? wifi_scanner_scan_generation() : 0;
+    if (rc != ESP_OK) {
+        wana_scanning = false;
+        lv_label_set_text(wana_status_lbl, "Scan start failed; Back and retry");
+    }
 }
 
 static void wana_row_toggle_cb(lv_event_t *e) {
@@ -51840,9 +51893,21 @@ static void wana_ui_timer_cb(lv_timer_t *t) {
     if (!wana_active) return;
     if (!wana_scanning) return;
     if (!wifi_scanner_is_done()) return;
+    if (wifi_scanner_completed_generation() != wana_scan_ticket) {
+        wana_scanning = false;
+        lv_label_set_text(wana_status_lbl, "Scan replaced; Back and retry");
+        return;
+    }
+    uint16_t n = 0;
+    bool busy = false;
+    esp_err_t rc = wifi_scanner_copy_completed(wana_scan_ticket, wana_aps, WANA_MAX_APS, &n, &busy);
+    if (busy) return; // admission contention only; SDK errors are terminal
     wana_scanning = false;
+    if (rc != ESP_OK) {
+        lv_label_set_text(wana_status_lbl, "Scan failed; Back and retry");
+        return;
+    }
 
-    int n = wifi_scanner_get_results(wana_aps, WANA_MAX_APS);
     wana_ap_count = (n > WANA_MAX_APS) ? WANA_MAX_APS : n;
 
     wana_group_ssids();
@@ -51889,7 +51954,8 @@ static void show_wifi_analyzer_screen(void) {
     lv_obj_set_style_bg_color(function_page, lv_color_make(8, 8, 22), 0);
     wana_show_scanning_panel();
 
-    wifi_scanner_start_scan();
+    wana_scanning = false;
+    wana_rescan_btn_cb(NULL);
     wana_ui_timer = lv_timer_create(wana_ui_timer_cb, 300, NULL);
 }
 
@@ -51909,62 +51975,151 @@ static const uint8_t wscope_5g_ch[] = {
 #define WSCOPE_CANVAS_H (WSCOPE_SPEC_H + 1 + WSCOPE_WF_H)
 
 static void IRAM_ATTR wscope_prom_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
-    (void)type;
-    if (!wscope_active) return;
-    wifi_promiscuous_pkt_t *pkt = (wifi_promiscuous_pkt_t *)buf;
-    int8_t rssi = (int8_t)pkt->rx_ctrl.rssi;
-    int idx = wscope_cur_ch_idx;
-    if ((unsigned)idx >= WSCOPE_CH_MAX) return;
+    if (!buf || type == WIFI_PKT_MISC) return;
+    const wifi_promiscuous_pkt_t *pkt = buf;
     portENTER_CRITICAL(&wscope_mux);
-    if (rssi > wscope_ch_peak[idx]) wscope_ch_peak[idx] = rssi;
-    wscope_ch_cnt[idx]++;
+    int idx = wscope_cur_ch_idx;
+    if (wscope_active && wscope_accepting && wscope_worker_epoch == wscope_epoch &&
+        (unsigned)idx < WSCOPE_CH_MAX && pkt->rx_ctrl.channel == wscope_expected_channel) {
+        int8_t rssi = (int8_t)pkt->rx_ctrl.rssi;
+        if (rssi > wscope_ch_peak[idx]) wscope_ch_peak[idx] = rssi;
+        if (wscope_ch_cnt[idx] != UINT16_MAX) ++wscope_ch_cnt[idx];
+    }
     portEXIT_CRITICAL(&wscope_mux);
+}
+
+// UI consumes immutable completed sweeps, never the worker's in-progress array.
+static bool wscope_publish_sweep(uint32_t epoch) {
+    portENTER_CRITICAL(&wscope_mux);
+    bool ok = wscope_active && epoch == wscope_epoch;
+    wscope_accepting = false;
+    if (ok) {
+        memcpy(wscope_ready_peak, wscope_ch_peak, sizeof(wscope_ready_peak));
+        memcpy(wscope_ready_cnt, wscope_ch_cnt, sizeof(wscope_ready_cnt));
+        wscope_ready_rejected = wscope_rejected;
+        wscope_sweep_done = true;
+    }
+    portEXIT_CRITICAL(&wscope_mux);
+    return ok;
+}
+
+static bool wscope_worker_stop(void) {
+    portENTER_CRITICAL(&wscope_mux);
+    wscope_active = false;
+    wscope_accepting = false;
+    wscope_sweep_done = false;
+    ++wscope_epoch;
+    portEXIT_CRITICAL(&wscope_mux);
+    // Worker never takes LVGL. Keep ownership if an SDK operation fails to drain;
+    // no foreign task deletion and no successor radio allowed to be disabled by it.
+    for (int i = 0; i < 50; ++i) {
+        if (!__atomic_load_n(&wscope_create_pending, __ATOMIC_ACQUIRE) &&
+            !__atomic_load_n(&wscope_task_handle, __ATOMIC_ACQUIRE)) return true;
+        vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+    }
+    return false;
 }
 
 static void wscope_task(void *p) {
     (void)p;
-    const uint8_t *chl = wscope_5g_mode ? wscope_5g_ch : wscope_2g_ch;
-    int n = wscope_5g_mode ? WSCOPE_5G_N : WSCOPE_2G_N;
-
-    esp_wifi_set_promiscuous_filter(&(wifi_promiscuous_filter_t){
+    // xTaskCreate may run this task before publishing its handle.
+    while (__atomic_load_n(&wscope_create_pending, __ATOMIC_ACQUIRE)) vTaskDelay(1);
+    esp_err_t rc = esp_wifi_set_promiscuous_filter(&(wifi_promiscuous_filter_t){
         .filter_mask = WIFI_PROMIS_FILTER_MASK_ALL
     });
-    esp_wifi_set_promiscuous_rx_cb(wscope_prom_cb);
-    esp_wifi_set_promiscuous(true);
-
-    while (wscope_active) {
-        chl = wscope_5g_mode ? wscope_5g_ch : wscope_2g_ch;
-        n   = wscope_5g_mode ? WSCOPE_5G_N  : WSCOPE_2G_N;
-        for (int i = 0; i < n && wscope_active; i++) {
-            portENTER_CRITICAL(&wscope_mux);
-            wscope_cur_ch_idx = i;
+    if (rc == ESP_OK) rc = esp_wifi_set_promiscuous_rx_cb(wscope_prom_cb);
+    if (rc == ESP_OK) rc = esp_wifi_set_promiscuous(true);
+    while (rc == ESP_OK) {
+        portENTER_CRITICAL(&wscope_mux);
+        bool active = wscope_active;
+        bool band5 = wscope_5g_mode;
+        uint32_t epoch = wscope_epoch;
+        wscope_worker_epoch = epoch;
+        wscope_accepting = false;
+        wscope_rejected = 0;
+        for (int i = 0; i < WSCOPE_CH_MAX; ++i) {
             wscope_ch_peak[i] = -110;
-            wscope_ch_cnt[i]  = 0;
-            portEXIT_CRITICAL(&wscope_mux);
-            wifi_set_channel_verified((uint8_t)chl[i]);   // P4: retry silent reg-domain rejects
-            vTaskDelay(pdMS_TO_TICKS(60));
+            wscope_ch_cnt[i] = 0;
         }
-        wscope_sweep_done = true;
+        portEXIT_CRITICAL(&wscope_mux);
+        if (!active) break;
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+        rc = esp_wifi_set_band_mode(band5 ? WIFI_BAND_MODE_5G_ONLY : WIFI_BAND_MODE_2G_ONLY);
+        if (rc != ESP_OK) break;
+#endif
+        const uint8_t *chl = band5 ? wscope_5g_ch : wscope_2g_ch;
+        int n = band5 ? WSCOPE_5G_N : WSCOPE_2G_N;
+        for (int i = 0; i < n; ++i) {
+            portENTER_CRITICAL(&wscope_mux);
+            active = wscope_active && epoch == wscope_epoch;
+            wscope_accepting = false;
+            portEXIT_CRITICAL(&wscope_mux);
+            if (!active) break;
+            bool tuned = wifi_set_channel_verified(chl[i]);
+            portENTER_CRITICAL(&wscope_mux);
+            active = wscope_active && epoch == wscope_epoch;
+            wscope_cur_ch_idx = i;
+            wscope_expected_channel = chl[i];
+            wscope_accepting = active && tuned;
+            if (!tuned) ++wscope_rejected;
+            portEXIT_CRITICAL(&wscope_mux);
+            // 120 ms after verified tuning spans a common 102.4 ms beacon period.
+            // Packet-sampled RSSI only: quiet/lost packets are NOT a noise-floor measurement.
+            // Short slices bound cancellation/band-switch latency; no cosmetic persistence.
+            if (tuned && active) for (int slice = 0; slice < 12; ++slice) {
+                vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+                portENTER_CRITICAL(&wscope_mux);
+                active = wscope_active && epoch == wscope_epoch;
+                portEXIT_CRITICAL(&wscope_mux);
+                if (!active) break;
+            }
+        }
+        wscope_publish_sweep(epoch);
+        vTaskDelay(1); // also yield if every channel is rejected
     }
-
-    esp_wifi_set_promiscuous(false);
-    esp_wifi_set_promiscuous_rx_cb(NULL);
-    wscope_task_handle = NULL;
+    portENTER_CRITICAL(&wscope_mux);
+    wscope_accepting = false;
+    if (rc != ESP_OK) wscope_error = rc;
+    portEXIT_CRITICAL(&wscope_mux);
+    for (;;) {
+        esp_err_t stop_rc = esp_wifi_set_promiscuous(false);
+        esp_err_t cb_rc = esp_wifi_set_promiscuous_rx_cb(NULL);
+        esp_err_t band_rc = ESP_OK;
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+        band_rc = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+#endif
+        if (stop_rc == ESP_OK && cb_rc == ESP_OK && band_rc == ESP_OK) break;
+        portENTER_CRITICAL(&wscope_mux);
+        wscope_error = stop_rc != ESP_OK ? stop_rc : cb_rc != ESP_OK ? cb_rc : band_rc;
+        portEXIT_CRITICAL(&wscope_mux);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    __atomic_store_n(&wscope_task_handle, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
 static void wscope_ui_timer_cb(lv_timer_t *t) {
     (void)t;
-    if (!wscope_active || !wscope_canvas || !wscope_buf) return;
-
-    int n_ch = wscope_5g_mode ? WSCOPE_5G_N : WSCOPE_2G_N;
-
-    int8_t   peak[WSCOPE_CH_MAX];
+    if (!wscope_canvas || !wscope_buf) return;
+    int8_t peak[WSCOPE_CH_MAX];
     uint16_t cnt[WSCOPE_CH_MAX];
     portENTER_CRITICAL(&wscope_mux);
-    memcpy(peak, wscope_ch_peak, n_ch * sizeof(int8_t));
-    memcpy(cnt,  wscope_ch_cnt,  n_ch * sizeof(uint16_t));
+    esp_err_t error = wscope_error;
+    bool ready = wscope_active && wscope_sweep_done;
+    bool band5 = wscope_5g_mode;
+    unsigned rejected = wscope_ready_rejected;
+    if (ready) {
+        memcpy(peak, wscope_ready_peak, sizeof(peak));
+        memcpy(cnt, wscope_ready_cnt, sizeof(cnt));
+        wscope_sweep_done = false;
+    }
     portEXIT_CRITICAL(&wscope_mux);
+    if (error != ESP_OK) {
+        if (wscope_status_lbl) lv_label_set_text(wscope_status_lbl, "Scope failed; Back and retry");
+        return;
+    }
+    if (!ready) return;
+    int n_ch = band5 ? WSCOPE_5G_N : WSCOPE_2G_N;
 
     float ppch = (float)wsc_w / n_ch;   // pixels per channel
 
@@ -52003,8 +52158,7 @@ static void wscope_ui_timer_cb(lv_timer_t *t) {
         wscope_buf[WSCOPE_SPEC_H * wsc_w + x] = sep;
 
     // ── Add new waterfall row on each complete sweep ─────────────────────
-    if (wscope_sweep_done) {
-        wscope_sweep_done = false;
+    if (ready) {
         int wf_start = WSCOPE_SPEC_H + 1;
         // Shift waterfall DOWN (newest at top)
         memmove(wscope_buf + wsc_w * (wf_start + 1),
@@ -52024,14 +52178,11 @@ static void wscope_ui_timer_cb(lv_timer_t *t) {
     lv_obj_invalidate(wscope_canvas);
 
     if (wscope_status_lbl) {
-        const uint8_t *cl = wscope_5g_mode ? wscope_5g_ch : wscope_2g_ch;
-        int ci = wscope_cur_ch_idx;
-        int nch = wscope_5g_mode ? WSCOPE_5G_N : WSCOPE_2G_N;
+        unsigned total_pkts = 0;
+        for (int i = 0; i < n_ch; ++i) total_pkts += cnt[i];
         char s[48];
-        snprintf(s, sizeof(s), "Ch%u | %s | sweep %.1fs",
-                 (ci < nch) ? cl[ci] : 0,
-                 wscope_5g_mode ? "5 GHz" : "2.4 GHz",
-                 nch * 0.06f);
+        snprintf(s, sizeof(s), "%s sampled %u pkts; skip %u/%d",
+                 band5 ? "5G" : "2.4G", total_pkts, rejected, n_ch);
         lv_label_set_text(wscope_status_lbl, s);
     }
 }
@@ -52100,11 +52251,15 @@ static void wscope_rebuild_axis(bool ls) {
 
 static void wscope_band_toggle_cb(lv_event_t *e) {
     lv_obj_t *lbl = (lv_obj_t *)lv_event_get_user_data(e);
-    wscope_5g_mode = !wscope_5g_mode;
-    if (lbl) lv_label_set_text(lbl, wscope_5g_mode ? "Band: 5 GHz" : "Band: 2.4GHz");
     portENTER_CRITICAL(&wscope_mux);
-    for (int i = 0; i < WSCOPE_CH_MAX; i++) { wscope_ch_peak[i] = -110; wscope_ch_cnt[i] = 0; }
+    wscope_5g_mode = !wscope_5g_mode;
+    ++wscope_epoch;
+    wscope_accepting = false;
+    wscope_sweep_done = false;
     portEXIT_CRITICAL(&wscope_mux);
+    if (wscope_status_lbl) lv_label_set_text(wscope_status_lbl, "Switching band; sampling...");
+    if (lbl) lv_label_set_text(lbl, wscope_5g_mode ? "Band: 5 GHz" : "Band: 2.4GHz");
+    // The worker alone resets accumulation for the new epoch.
     {   // rebuild axis for the new band (2.4 portrait keeps its tuned label; else bar-aligned)
         bool ls = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
         wscope_rebuild_axis(ls);
@@ -52115,7 +52270,7 @@ static void wscope_band_toggle_cb(lv_event_t *e) {
 
 static void wscope_screen_stop(void)
 {
-    wscope_active = false;   // wscope_task checks this flag and exits its while loop
+    (void)wscope_worker_stop(); // retains handle if SDK drain is delayed
     if (wscope_ui_timer) { lv_timer_del(wscope_ui_timer); wscope_ui_timer = NULL; }
     wscope_canvas     = NULL;
     wscope_status_lbl = NULL;
@@ -52130,13 +52285,16 @@ static void wscope_screen_stop(void)
 static void show_wscope_screen(void) {
     if (clock_defer_radio_navigation(show_wscope_screen)) return;
     if (!ensure_wifi_mode()) return;
+    if (!wscope_worker_stop()) return;
     wifi_scanner_abort();   // stop any in-progress scan
+    if (wifi_scanner_is_scanning()) return; // wait for owned SDK completion before promiscuous tuning
 
     create_function_page_base("WiFi Band Scope");
     g_screen_stop_fn = wscope_screen_stop;
     wscope_active     = true;
     wscope_5g_mode    = false;
     wscope_sweep_done = false;
+    wscope_error = ESP_OK;
     for (int i = 0; i < WSCOPE_CH_MAX; i++) {
         wscope_ch_peak[i] = -110;
         wscope_ch_cnt[i]  = 0;
@@ -52209,7 +52367,11 @@ static void show_wscope_screen(void) {
     lv_obj_add_state(band_btn, LV_STATE_DISABLED);
 #endif
 
-    if (xTaskCreate(wscope_task, "wscope", 3072, NULL, 5, &wscope_task_handle) != pdPASS) {
+    __atomic_store_n(&wscope_create_pending, true, __ATOMIC_RELEASE);
+    BaseType_t created = xTaskCreate(wscope_task, "wscope", 3072, NULL, 5, &wscope_task_handle);
+    __atomic_store_n(&wscope_create_pending, false, __ATOMIC_RELEASE);
+    if (created != pdPASS) {
+        wscope_task_handle = NULL;
         wscope_active = false;
         lv_label_set_text(wscope_status_lbl, "STOPPED: task allocation failed");
         ESP_LOGE(TAG, "WiFiScope: task allocation failed");
@@ -55052,12 +55214,20 @@ static void s_tvbg_progress(int idx, int total, void *ctx)
     if (p) { p->idx = idx; p->total = total; lv_async_call(s_tvbg_prog_lvgl_cb, p); }
 }
 
+static void s_tvbg_failed_lvgl_cb(void *arg)
+{
+    (void)arg;
+    s_tvbg_stopped_lvgl_cb(NULL);
+    if (s_tvbg_status) lv_label_set_text(s_tvbg_status, "Failed: no memory; retry");
+}
+
 static void s_tvbg_task(void *arg)
 {
     (void)arg;
     s_tvbg_user_stop = false;
-    ir_hat_tvbgone(s_tvbg_progress, NULL);
-    lv_async_call(s_tvbg_user_stop ? s_tvbg_stopped_lvgl_cb : s_tvbg_done_lvgl_cb, NULL);
+    esp_err_t rc = ir_hat_tvbgone(s_tvbg_progress, NULL);
+    lv_async_call(rc != ESP_OK ? s_tvbg_failed_lvgl_cb :
+                  s_tvbg_user_stop ? s_tvbg_stopped_lvgl_cb : s_tvbg_done_lvgl_cb, NULL);
     vTaskDelete(NULL);
 }
 

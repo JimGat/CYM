@@ -46,7 +46,15 @@ static TaskHandle_t   s_cap_task   = NULL;
 static ir_hat_cb_t    s_cap_cb     = NULL;
 static void          *s_cap_ctx    = NULL;
 static uint32_t       s_cap_tmo_ms = 5000;
-static ir_signal_t    s_cap_signal;
+// Decoded signal copies are task-only: RX ISR queues symbols; replay converts
+// timings into its separate RMT symbol buffer before handing anything to RMT.
+// Do not move s_rx_buf, queues, RMT controls, or GPIO ISR rings to external RAM.
+#if CONFIG_BOARD_HAS_PSRAM
+#define IR_TASK_DATA_ATTR EXT_RAM_BSS_ATTR
+#else
+#define IR_TASK_DATA_ATTR
+#endif
+IR_TASK_DATA_ATTR static ir_signal_t    s_cap_signal;
 
 // Large line buffer for file I/O — allocated from PSRAM on first use to keep
 // 8 KB out of scarce internal DRAM (BLE extended scan needs ~16 KB controller
@@ -673,28 +681,43 @@ static volatile bool s_tvbg_stop = false;
 
 void ir_hat_tvbgone_stop(void) { s_tvbg_stop = true; }
 
-void ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx)
+esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx)
 {
-    // static: ir_signal_t is ~4140 bytes (1024 timings × 4 B) — too large for any task stack
-    static ir_signal_t sig;
+    // Decoded task data, never RMT staging and never placed on the task stack.
+#if CONFIG_BOARD_HAS_PSRAM
+    IR_TASK_DATA_ATTR static ir_signal_t sig;
+    ir_signal_t *work = &sig;
+#else
+    // No-PSRAM boards cannot reserve this dormant feature's 4140 bytes in BSS.
+    // Allocate only for this invocation; cancellation and normal exit both release it.
+    ir_signal_t *work = heap_caps_malloc(sizeof(*work), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!work) {
+        ESP_LOGE(TAG, "IR sequence allocation failed");
+        return ESP_ERR_NO_MEM;
+    }
+#endif
     s_tvbg_stop = false;
     for (int i = 0; i < (int)TVBG_COUNT; i++) {
         if (s_tvbg_stop) break;
         const tvbg_code_t *c = &TVBG_CODES[i];
-        memset(&sig, 0, sizeof(sig));
-        snprintf(sig.name, IR_HAT_NAME_LEN, "tvbg_%d", i);
-        sig.freq_hz    = c->freq;
-        sig.duty_cycle = IR_CARRIER_DUTY;
-        sig.count      = c->count;
-        memcpy(sig.times_us, c->t, c->count * sizeof(uint32_t));
+        memset(work, 0, sizeof(*work));
+        snprintf(work->name, IR_HAT_NAME_LEN, "tvbg_%d", i);
+        work->freq_hz    = c->freq;
+        work->duty_cycle = IR_CARRIER_DUTY;
+        work->count      = c->count;
+        memcpy(work->times_us, c->t, c->count * sizeof(uint32_t));
         for (int r = 0; r < TVBG_REPEATS; r++) {
-            ir_hat_replay(&sig);
+            ir_hat_replay(work);
             if (r < TVBG_REPEATS - 1)
                 vTaskDelay(pdMS_TO_TICKS(TVBG_REPEAT_GAP_MS));
         }
         if (progress_cb) progress_cb(i, (int)TVBG_COUNT, ctx);
         vTaskDelay(pdMS_TO_TICKS(TVBG_CODE_GAP_MS));
     }
+#if !CONFIG_BOARD_HAS_PSRAM
+    heap_caps_free(work);
+#endif
+    return ESP_OK;
 }
 
 // ── Jammer ───────────────────────────────────────────────────────────────────

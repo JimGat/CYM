@@ -18,6 +18,8 @@ pre=r"""
 
 #include <assert.h>
 #include <stdbool.h>
+static void *wscope_task_handle;
+static bool wscope_worker_stop(void){return !wscope_task_handle;}
 #include <stdint.h>
 #include <stdio.h>
 #include <stddef.h>

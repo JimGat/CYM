@@ -13,13 +13,15 @@ extern void cym_debug_memory_snapshot(const char *where);
 static const char *TAG = "wifi_scanner";
 
 // Scanner state (local)
-static volatile bool g_scan_in_progress = false;
-static volatile bool g_scan_done = false;
+static _Atomic bool g_scan_in_progress = false;
+static _Atomic bool g_scan_done = false;
 // Monotonic scan tickets distinguish a completed scan from a new UI session.
 // The event loop invokes scanner then UI callbacks serially; retain the completed
 // ticket even if the UI starts another scan between those callbacks.
 static _Atomic uint32_t g_scan_generation;
 static _Atomic uint32_t g_scan_completed_generation;
+static _Atomic int g_scan_result_status;
+esp_err_t wifi_scanner_result_status(void){return atomic_load(&g_scan_result_status);}
 uint32_t wifi_scanner_scan_generation(void){return atomic_load(&g_scan_generation);}
 uint32_t wifi_scanner_completed_generation(void){return atomic_load(&g_scan_completed_generation);}
 
@@ -42,20 +44,31 @@ static uint16_t g_scan_time_max = 300;  // default
 static void wifi_scanner_event_handler(void *arg, esp_event_base_t event_base,
                                       int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_SCAN_DONE) {
-        atomic_store(&g_scan_completed_generation,atomic_load(&g_scan_generation));
+        if (!g_scan_in_progress) return; // duplicate/unowned SDK completion
+        const wifi_event_sta_scan_done_t *done = event_data;
+        esp_err_t status = done && done->status ? ESP_FAIL : ESP_OK;
+        uint16_t number = 0;
+        if (status == ESP_OK) status = esp_wifi_scan_get_ap_num(&number);
+        g_shared_scan_count = (number > MAX_SCAN_RESULTS) ? MAX_SCAN_RESULTS : number;
+        if (status == ESP_OK && g_shared_scan_count > 0)
+            status = esp_wifi_scan_get_ap_records(&g_shared_scan_count, g_shared_scan_results);
+        if (status != ESP_OK) {
+            g_shared_scan_count = 0;
+            esp_wifi_clear_ap_list();
+        }
+        atomic_store(&g_scan_result_status, status);
+        // Release publication follows all record reads; UI must match its ticket.
+        atomic_store(&g_scan_completed_generation, atomic_load(&g_scan_generation));
         g_scan_done = true;
         cym_debug_memory_snapshot("wifi-scan-complete");
-        ESP_LOGI(TAG, "Scan done");
-        
-        uint16_t number = MAX_SCAN_RESULTS;
-        esp_wifi_scan_get_ap_num(&number);
-        g_shared_scan_count = (number > MAX_SCAN_RESULTS) ? MAX_SCAN_RESULTS : number;
-        
-        if (g_shared_scan_count > 0) {
-            esp_wifi_scan_get_ap_records(&g_shared_scan_count, g_shared_scan_results);
+        unsigned band2 = 0, band5 = 0;
+        for (unsigned i = 0; i < g_shared_scan_count; ++i) {
+            if (g_shared_scan_results[i].primary <= 14) ++band2;
+            else ++band5;
         }
-        /* Publish idle only after result reads, not while a new scan could
-         * replace the driver's result storage. */
+        ESP_LOGI(TAG, "Scan done: generation=%lu status=%d driver_records=%u retained=%u 2g=%u 5g=%u",
+                 (unsigned long)atomic_load(&g_scan_completed_generation), status,
+                 number, g_shared_scan_count, band2, band5);
         g_scan_in_progress = false;
     }
 }
@@ -73,12 +86,33 @@ esp_err_t wifi_scanner_init(void) {
     return ESP_OK;
 }
 
+static void wifi_scanner_log_acquisition(void) {
+    wifi_country_t country = {0};
+    esp_err_t rc = esp_wifi_get_country(&country);
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    wifi_band_mode_t mode = WIFI_BAND_MODE_AUTO;
+    esp_err_t band_rc = esp_wifi_get_band_mode(&mode);
+    ESP_LOGI(TAG, "acquisition country_rc=%d cc=%.2s policy=%d 2g=%u+%u mask5=0x%lx band_rc=%d mode=%d bitmap=default-regulatory",
+             rc, country.cc, country.policy, country.schan, country.nchan,
+             (unsigned long)country.wifi_5g_channel_mask, band_rc, mode);
+#else
+    ESP_LOGI(TAG, "acquisition country_rc=%d cc=%.2s policy=%d 2g=%u+%u 5g=unsupported",
+             rc, country.cc, country.policy, country.schan, country.nchan);
+#endif
+}
+
 esp_err_t wifi_scanner_start_scan(void) {
-    if (g_scan_in_progress) {
+    if (atomic_exchange(&g_scan_in_progress, true)) {
         ESP_LOGW(TAG, "Scan already in progress");
         return ESP_ERR_INVALID_STATE;
     }
     
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    // Prior connection features may leave 2G_ONLY selected. These APIs request
+    // all permitted bands; AUTO changes capability, not country/channel permission.
+    esp_err_t band_rc = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+    if (band_rc != ESP_OK) { g_scan_in_progress = false; return band_rc; }
+#endif
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
@@ -104,6 +138,7 @@ esp_err_t wifi_scanner_start_scan(void) {
     g_shared_scan_count = 0;
     
     ESP_LOGI(TAG, "Starting WiFi scan...");
+    wifi_scanner_log_acquisition();
     cym_debug_memory_snapshot("wifi-scan-start");
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
     if (ret == ESP_ERR_TIMEOUT) {
@@ -127,13 +162,19 @@ esp_err_t wifi_scanner_start_scan(void) {
 }
 
 esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
-    if (g_scan_in_progress) {
+    if (atomic_exchange(&g_scan_in_progress, true)) {
         ESP_LOGW(TAG, "Scan already in progress");
         return ESP_ERR_INVALID_STATE;
     }
 
     if (per_channel_ms > 1500) per_channel_ms = 1500;
 
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    // Prior connection features may leave 2G_ONLY selected. These APIs request
+    // all permitted bands; AUTO changes capability, not country/channel permission.
+    esp_err_t band_rc = esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+    if (band_rc != ESP_OK) { g_scan_in_progress = false; return band_rc; }
+#endif
     wifi_scan_config_t scan_cfg = {
         .ssid = NULL,
         .bssid = NULL,
@@ -149,6 +190,7 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
     g_shared_scan_count = 0;
 
     ESP_LOGI(TAG, "Starting passive WiFi scan (%lu ms/channel)...", (unsigned long)per_channel_ms);
+    wifi_scanner_log_acquisition();
     cym_debug_memory_snapshot("wifi-scan-start");
     esp_err_t ret = esp_wifi_scan_start(&scan_cfg, false);
     if (ret == ESP_ERR_TIMEOUT) {
@@ -167,6 +209,29 @@ esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
     }
 
     return ESP_OK;
+}
+
+// One bounded task-context copy; a new scan cannot clear/replace this ticket's data.
+esp_err_t wifi_scanner_copy_completed(uint32_t ticket, wifi_ap_record_t *results,
+                                      uint16_t capacity, uint16_t *count, bool *busy) {
+    if (!busy) return ESP_ERR_INVALID_ARG;
+    *busy = false;
+    if (!results || !count) return ESP_ERR_INVALID_ARG;
+    *count = 0;
+    if (atomic_exchange(&g_scan_in_progress, true)) {
+        *busy = true;
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_err_t rc = ESP_ERR_INVALID_STATE;
+    if (g_scan_done && ticket == atomic_load(&g_scan_completed_generation)) {
+        rc = atomic_load(&g_scan_result_status);
+        if (rc == ESP_OK) {
+            *count = g_shared_scan_count < capacity ? g_shared_scan_count : capacity;
+            memcpy(results, g_shared_scan_results, *count * sizeof(*results));
+        }
+    }
+    g_scan_in_progress = false;
+    return rc;
 }
 
 int wifi_scanner_get_results(wifi_ap_record_t *results, uint16_t max_results) {

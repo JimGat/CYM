@@ -25,6 +25,12 @@ esp_err_t wifi_scanner_start_scan(void);
 /* Aligned monotonic ownership tickets; no RF configuration changes. */
 uint32_t wifi_scanner_scan_generation(void);
 uint32_t wifi_scanner_completed_generation(void);
+// Valid only for the completed ticket; failed scans have zero published records.
+esp_err_t wifi_scanner_result_status(void);
+// Admission-gated copy for a UI's exact completed generation.
+// Only *busy=true requests retry; SDK errors and replaced tickets are terminal.
+esp_err_t wifi_scanner_copy_completed(uint32_t ticket, wifi_ap_record_t *results,
+                                      uint16_t capacity, uint16_t *count, bool *busy);
 
 /**
  * @brief Start a background PASSIVE WiFi scan (listen for beacons only —

@@ -10,13 +10,13 @@
 <!-- MEMORY_METRICS_START -->
 | Metric | Value |
 |--------|-------|
-| Version | v3.0.31 |
+| Version | v3.0.32 |
 | Build date | 2026-10-20 |
-| .iram0.text | 139,302 B (136.0 KB) |
+| .iram0.text | 139,362 B (136.1 KB) |
 | .dram0.data | 29,457 B (28.8 KB) |
-| .dram0.bss  (internal) | 95,600 B (93.4 KB) |
-| .ext_ram.bss  (PSRAM) | 223,288 B (218.1 KB) |
-| App binary size | 3,380,720 B (3301.5 KB) |
+| .dram0.bss  (internal) | 87,472 B (85.4 KB) |
+| .ext_ram.bss  (PSRAM) | 231,560 B (226.1 KB) |
+| App binary size | 3,384,720 B (3305.4 KB) |
 <!-- MEMORY_METRICS_END -->
 
 ### Top internal BSS consumers  *(auto-updated)*
@@ -24,14 +24,14 @@
 <!-- BSS_TABLE_START -->
 | Library / object | Internal BSS |
 |-----------------|-------------|
-| `libmain.a` | 60,013 B (58.6 KB) |
+| `libmain.a` | 60,120 B (58.7 KB) |
 | `libnet80211.a` | 13,559 B (13.2 KB) |
-| `librf_hat.a` | 11,352 B (11.1 KB) |
 | `libmesh.a` | 3,955 B (3.9 KB) |
 | `liblwip.a` | 3,940 B (3.8 KB) |
 | `libieee802154.a` | 3,590 B (3.5 KB) |
 | `libespressif__mdns.a` | 3,529 B (3.4 KB) |
 | `libpp.a` | 3,467 B (3.4 KB) |
+| `librf_hat.a` | 3,072 B (3.0 KB) |
 | `libwifi_scanner.a` | 2,400 B (2.3 KB) |
 | `libfreertos.a` | 2,148 B (2.1 KB) |
 | `libwifi_attacks.a` | 1,935 B (1.9 KB) |

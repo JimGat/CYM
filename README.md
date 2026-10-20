@@ -33,6 +33,14 @@
 
 ---
 
+## Development candidate v3.0.32 — radio memory and scan ownership
+
+This unaccepted hardware candidate preserves the v3.0.31 BLE lifecycle repairs. On PSRAM boards, two task-only decoded IR signal copies move out of internal RAM; ISR/RMT/DMA buffers, RTOS objects and the 4096-byte BLE worker stack do not. Allocation pressure during discovery is an explicit incomplete-scan error even with Debug OFF. Bounded diagnostics identify the public allocator boundary, not an opaque controller call site.
+
+Shared all-band scans restore AUTO band selection and check SDK completion/result errors; Channelizer follows its own scan ticket rather than consuming unrelated completion. Its display/group limits are unchanged and are not the explanation for absent 5 GHz reports. Scope verifies channel tuning/readback, validates RX channel, invalidates old-band work, and publishes only completed sweep snapshots. It samples packets for 120 ms per accepted channel; it is not a noise-floor instrument. Unsupported/rejected channels remain explicit; country policy is not widened.
+
+These are software corrections, **not physical BLE/5 GHz acceptance**. Stable remains v3.0.27. [Candidate scope, diagnostic commands and exact neighboring-feature acceptance](docs/operators/radio-repair-v3.0.32.md).
+
 ## Development candidate v3.0.31 — BLE startup, retry and stage diagnostics
 
 The scan worker now blocks for a real RTOS tick while its creator publishes the handle. Failed BLE initialization can be retried under serialized transition admission without bypassing a live owner. Scan and Select preserves explicit failure/cancellation status even with old rows. Debug ON adds bounded numeric lifecycle markers and best-effort, validated RTC breadcrumbs; no per-stage NVS/SD writes or new worker/stack. These are reproduced software corrections and a diagnostic candidate, **not** proof of restored reception, Ultra connectivity, or the cause of an earlier reset. General Home/menu drawing is distinct; intentional Settings delay is unchanged. Stable remains v3.0.27. [Exact capture commands, stage map and hardware acceptance](docs/operators/bluetooth-reliability.md).

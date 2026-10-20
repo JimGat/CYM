@@ -25,6 +25,7 @@ pre=r"""
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
+static bool s_bt_resource_capture;static uint32_t s_bt_resource_failures;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
