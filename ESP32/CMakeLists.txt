@@ -9,7 +9,37 @@ set(EXTRA_COMPONENT_DIRS "../ESP32C5/components")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 
 # ── Single source of truth for firmware version ──────────────────────────────
+# Classic-only candidate. Use actual saved Kconfig when present; on first
+# configure inspect defaults. All deliberately skipped boards keep v3.0.33.
 set(PROJECT_VER "v3.0.33")
+set(_classic_version_config "${SDKCONFIG}")
+if(NOT _classic_version_config)
+    set(_classic_version_config "${CMAKE_SOURCE_DIR}/sdkconfig")
+endif()
+set(_classic_version_lines "")
+if(EXISTS "${_classic_version_config}")
+    file(STRINGS "${_classic_version_config}" _classic_version_lines)
+else()
+    foreach(_classic_defaults IN LISTS SDKCONFIG_DEFAULTS)
+        if(NOT IS_ABSOLUTE "${_classic_defaults}")
+            set(_classic_defaults "${CMAKE_SOURCE_DIR}/${_classic_defaults}")
+        endif()
+        if(EXISTS "${_classic_defaults}")
+            file(STRINGS "${_classic_defaults}" _classic_default_lines)
+            list(APPEND _classic_version_lines ${_classic_default_lines})
+        endif()
+    endforeach()
+endif()
+if("CONFIG_BOARD_CYD2USB=y" IN_LIST _classic_version_lines
+   AND NOT "CONFIG_BOARD_HACKERBOX_CYD=y" IN_LIST _classic_version_lines
+   AND NOT "CONFIG_BOARD_HAS_PSRAM=y" IN_LIST _classic_version_lines
+   AND NOT "CONFIG_SPIRAM=y" IN_LIST _classic_version_lines)
+    set(PROJECT_VER "v3.0.34")
+endif()
+unset(_classic_version_config)
+unset(_classic_version_lines)
+unset(_classic_default_lines)
+unset(_classic_defaults)
 
 # Bootstrap ESP-IDF build system
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

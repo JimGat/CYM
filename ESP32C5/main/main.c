@@ -1393,6 +1393,11 @@ static void init_boot_button(void);
 // Route ESP logging directly to ROM UART to avoid VFS write paths during GUI/ISR contexts
 static int rom_vprintf(const char *fmt, va_list ap)
 {
+#if CYM_CLASSIC_USB_PERSISTENT
+    /* Capture features replace IDF hooks; retain this Classic opt-in sink,
+     * including silent OFF, rather than using ROM TX on the shared GPS pin. */
+    return cym_classic_usb_log_vprintf(fmt, ap);
+#else
 	char buf[256];
 	int len = vsnprintf(buf, sizeof(buf), fmt, ap);
 	if (len > 0) {
@@ -1404,6 +1409,7 @@ static int rom_vprintf(const char *fmt, va_list ap)
 		}
 	}
 	return len;
+#endif
 }
 
 // Scanner UI state
@@ -28592,11 +28598,29 @@ static void classic_usb_style_action(lv_obj_t *button, lv_obj_t *label)
 }
 static lv_obj_t *s_classic_usb_popup, *s_classic_usb_popup_status;
 static lv_obj_t *s_hardware_classic_status;
+#if CYM_CLASSIC_USB_PERSISTENT
+static bool s_classic_usb_popup_error;
+static void classic_usb_popup_sync(void)
+{
+    if (!s_classic_usb_popup_status || s_classic_usb_popup_error) return;
+    cym_classic_usb_uart_stats_t stats;
+    cym_classic_usb_uart_stats(&stats);
+    char status[224];
+    snprintf(status, sizeof(status), "%s\nRecords %lu\ndrops %lu; busy %lu\nretries %lu",
+             cym_classic_usb_active() ? "ON - 115200 8N1. GPS unavailable.\nSaved across reboot." : cym_classic_usb_status(),
+             (unsigned long)stats.accepted_records, (unsigned long)stats.dropped_records,
+             (unsigned long)stats.busy_calls, (unsigned long)stats.retry_writes);
+    lv_label_set_text(s_classic_usb_popup_status, status);
+}
+#endif
 static void classic_usb_popup_close(void)
 {
     if (s_classic_usb_popup) lv_obj_del(s_classic_usb_popup);
     s_classic_usb_popup = NULL;
     s_classic_usb_popup_status = NULL;
+#if CYM_CLASSIC_USB_PERSISTENT
+    s_classic_usb_popup_error = false;
+#endif
 }
 /* Classic has no background GPS reader: this callback executes on the same
  * main/LVGL owner as polling. Inhibition is already published by the controller. */
@@ -28619,6 +28643,9 @@ static void classic_usb_enable_event(lv_event_t *e)
 {
     (void)e;
     esp_err_t rc = cym_classic_usb_enable(true, classic_usb_quiesce_gps);
+#if CYM_CLASSIC_USB_PERSISTENT
+    s_classic_usb_popup_error = rc != ESP_OK;
+#endif
     if (s_classic_usb_popup_status) lv_label_set_text(s_classic_usb_popup_status,
         rc == ESP_OK ? "ON - 115200 8N1. GPS unavailable. Logs only.\n"
 #if CYM_CLASSIC_USB_PERSISTENT
@@ -28626,6 +28653,9 @@ static void classic_usb_enable_event(lv_event_t *e)
 #endif
                        "For more logs, enable Debug diagnostics separately."
                      : "Enable failed - transport OFF. GPS inhibited.\nUse Return normal / Reboot; keep GPS unplugged.");
+#if CYM_CLASSIC_USB_PERSISTENT
+    classic_usb_popup_sync();
+#endif
 }
 static void classic_usb_reboot_event(lv_event_t *e)
 {
@@ -28634,6 +28664,9 @@ static void classic_usb_reboot_event(lv_event_t *e)
      * stay inhibited, do not reboot or claim that reconnecting GPS is safe. */
     esp_err_t rc = cym_classic_usb_disable();
     if (rc != ESP_OK) {
+#if CYM_CLASSIC_USB_PERSISTENT
+        s_classic_usb_popup_error = true;
+#endif
         if (s_classic_usb_popup_status) lv_label_set_text(s_classic_usb_popup_status,
 #if CYM_CLASSIC_USB_PERSISTENT
             "TX shutdown failed or OFF save failed - NOT rebooting.\nKeep GPS disconnected. Retry Return normal; persistent debug may remain ON.");
@@ -28679,6 +28712,11 @@ static void show_classic_usb_popup(void)
     lv_obj_set_style_text_opa(s_classic_usb_popup_status, LV_OPA_COVER, 0);
     lv_obj_set_style_opa(s_classic_usb_popup_status, LV_OPA_COVER, 0);
     lv_label_set_text(s_classic_usb_popup_status, cym_classic_usb_status());
+#if CYM_CLASSIC_USB_PERSISTENT
+    /* Status/counters first, immediately visible; warning/actions still scroll. */
+    lv_obj_move_to_index(s_classic_usb_popup_status, 0);
+    classic_usb_popup_sync();
+#endif
     const char *labels[] = {"I disconnected GPS - Enable", "Return normal / Reboot", "Cancel / Close"};
     lv_event_cb_t callbacks[] = {classic_usb_enable_event, classic_usb_reboot_event, classic_usb_cancel};
     for (int i=0; i<3; ++i) {
@@ -28706,15 +28744,7 @@ static void hardware_debug_sync(lv_timer_t *timer)
 #if defined(CONFIG_BOARD_CYD2USB)
     if (s_hardware_classic_status) lv_label_set_text(s_hardware_classic_status, cym_classic_usb_status());
 #if CYM_CLASSIC_USB_PERSISTENT
-    if (s_classic_usb_popup_status && cym_classic_usb_active()) {
-        cym_classic_usb_uart_stats_t stats;
-        cym_classic_usb_uart_stats(&stats);
-        char status[224];
-        snprintf(status, sizeof(status), "ON - 115200 8N1. GPS unavailable. Logs only.\nSaved across reboot; keep GPS disconnected.\nRecords %lu; drops %lu; busy %lu; retries %lu",
-                 (unsigned long)stats.accepted_records, (unsigned long)stats.dropped_records,
-                 (unsigned long)stats.busy_calls, (unsigned long)stats.retry_writes);
-        lv_label_set_text(s_classic_usb_popup_status, status);
-    }
+    classic_usb_popup_sync();
 #endif
 #endif
     if(!s_hardware_debug_switch)return;

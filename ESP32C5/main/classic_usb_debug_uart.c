@@ -117,6 +117,11 @@ static int classic_log_vprintf(const char *format, va_list args)
     xSemaphoreGive(mutex);
     return n;
 }
+/* Main's legacy capture hook forwards here instead of bypassing opt-in. */
+int cym_classic_usb_log_vprintf(const char *format, va_list args)
+{
+    return classic_log_vprintf(format, args);
+}
 esp_err_t cym_classic_usb_uart_stop(void)
 {
     __atomic_store_n(&enabled, false, __ATOMIC_RELEASE);

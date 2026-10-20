@@ -33,6 +33,12 @@
 
 ---
 
+## Development Classic-only candidate v3.0.34 - USB debug routing and counters
+
+Only Classic CYD-2432S028 **without PSRAM**, excluding HackerBox, is rebuilt in this candidate. Feature log-capture hooks now forward to the same bounded, opt-in transport instead of bypassing it through ROM output. OFF stays silent through that fallback. Popup counters initialize immediately above the scrolling safety warning, in both Home layouts, themes and orientations. Other boards retain their existing source versions, packages and settings.
+
+The production-hook bypass and initially missing/off-screen counters were reproduced in host tests. They are **not proof of the exact cause of the reported 127-byte fragments**, a BLE repair, or physical acceptance. Software verification: 720 unit tests passed, one expected skip; Classic firmware built and packaged; 41 non-Classic package/manifest files remain byte-identical. Physical acceptance remains pending. [Safety and candidate test procedure](docs/operators/classic-usb-debug.md).
+
 ## Development candidate v3.0.33 — bounded Classic diagnostics and C5 scans
 
 Classic CYD **without PSRAM only** now saves the explicit, GPS-disconnected USB Debug opt-in across reboot. Application logs resume after NVS initialization, before GPS can own UART0's shared GPIO1 path. Keep GPS physically disconnected until **Return normal / Reboot** successfully saves OFF and reboots. This is logs only, not ROM/bootloader/panic capture or an interactive console. Complete bounded records use CRLF with queued FIFO-tail retries and visible drop/retry counters; overload is not lossless. HackerBox retains its previous volatile transport. [Safety, exact limits and capture checklist](docs/operators/classic-usb-debug.md).

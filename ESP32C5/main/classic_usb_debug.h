@@ -4,6 +4,12 @@
 #include "sdkconfig.h"
 #define CYM_CLASSIC_USB_PERSISTENT (CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HACKERBOX_CYD && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM)
 #include "esp_err.h"
+#if CYM_CLASSIC_USB_PERSISTENT
+#include <stdarg.h>
+/* Same bounded sink when a feature temporarily owns the IDF log hook.
+ * Returns silently while OFF; never falls back to ROM/shared GPS UART. */
+int cym_classic_usb_log_vprintf(const char *format, va_list args);
+#endif
 /* Main/LVGL owner only for transitions. Read-only predicates are task-safe.
  * Classic no-PSRAM opt-in persists; other boards retain their prior behavior. */
 bool cym_classic_usb_active(void);

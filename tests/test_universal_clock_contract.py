@@ -308,7 +308,8 @@ class ReleaseVersionContract(unittest.TestCase):
         for rel in ("ESP32/CMakeLists.txt", "ESP32C5/CMakeLists.txt", "ESP32S3/CMakeLists.txt"):
             self.assertIn('set(PROJECT_VER "v3.0.33")', (ROOT / rel).read_text(), rel)
         for rel in ("ESP32/docs/manifest.cyd-2432s028.json", "ESP32C5/docs/manifest.json", "ESP32C5/docs/manifest.ws-c5-28.json", "ESP32C5/docs/manifest.pancake-c5.json", "ESP32S3/docs/manifest.hosyond-s3-35.json"):
-            self.assertIn("v3.0.33", (ROOT / rel).read_text(), rel)
+            expected = "v3.0.34" if rel == "ESP32/docs/manifest.cyd-2432s028.json" else "v3.0.33"
+            self.assertIn(expected, (ROOT / rel).read_text(), rel)
 
 
 if __name__ == "__main__":

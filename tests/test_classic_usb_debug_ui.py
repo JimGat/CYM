@@ -49,7 +49,8 @@ static bool cym_debug_enabled(void){return debug_enabled;}
 static esp_err_t cym_debug_set(bool v){debug_enabled=v;return 0;}
 static bool uart_is_driver_installed(int n){assert(n==2);return !gps_deletes;}
 static int uart_driver_delete(int n){assert(n==2&&cym_classic_usb_gps_blocked()&&!g_gps_uart_ready);gps_deletes++;return 0;}
-void cym_classic_usb_uart_stats(cym_classic_usb_uart_stats_t *s){*s=(cym_classic_usb_uart_stats_t){0};}
+static uint32_t record_count=12345;
+void cym_classic_usb_uart_stats(cym_classic_usb_uart_stats_t *s){*s=(cym_classic_usb_uart_stats_t){.accepted_records=record_count,.dropped_records=67,.busy_calls=8,.retry_writes=901};}
 esp_err_t cym_classic_usb_uart_start(void){assert(gps_deletes==1&&!current_gps.valid&&cym_classic_usb_gps_blocked());uart_starts++;return start_fail?ESP_FAIL:ESP_OK;}
 esp_err_t cym_classic_usb_uart_stop(void){uart_stops++;return stop_fail?ESP_FAIL:ESP_OK;}
 static void esp_restart(void){assert(!stop_fail&&uart_stops>0);reboots++;}
@@ -179,15 +180,35 @@ static int readability(int theme,int orient,int navigation,int state){
   if(state==2){start_fail=1;classic_usb_enable_event(NULL);}
   if(state==3){classic_usb_enable_event(NULL);stop_fail=1;classic_usb_reboot_event(NULL);CHECK(reboots==0);}
   lv_obj_update_layout(lv_scr_act());
-  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,0)),"Saved across reboot"));
-  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,0)),"Debug OFF plus reboot"));
+  /* Real production timer must refresh counts but preserve failure captions. */
+  record_count=UINT32_MAX;
+  if(state==1||state==0){
+   CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"Records "));
+   CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"drops 67"));
+   CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"busy 8"));
+   CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"retries 901"));
+  }
+  lv_tick_inc(220);lv_timer_handler();lv_obj_update_layout(lv_scr_act());
+  if(state==1||state==0)CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"Records 4294967295"));
+  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,1)),"Saved across reboot"));
+  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,1)),"Debug OFF plus reboot"));
   CHECK(lv_obj_get_style_bg_opa(s_classic_usb_popup,0)==LV_OPA_COVER);
   CHECK((lv_obj_get_style_bg_color(s_classic_usb_popup,0).full==ui_panel_color().full));
-  text_style(lv_obj_get_child(s_classic_usb_popup,0),ui_text_color(),ui_panel_color(),"warning");
+  text_style(lv_obj_get_child(s_classic_usb_popup,1),ui_text_color(),ui_panel_color(),"warning");
   text_style(s_classic_usb_popup_status,ui_text_color(),ui_panel_color(),"status");
   const char *status=lv_label_get_text(s_classic_usb_popup_status);
   if(state==0)CHECK(!cym_classic_usb_active()&&!gps_deletes&&!uart_starts);
-  if(state==1)CHECK(strstr(status,"ON - 115200")&&cym_classic_usb_active());
+  if(state==0||state==1){
+   lv_area_t status_area;lv_obj_get_coords(s_classic_usb_popup_status,&status_area);
+   CHECK(status_area.x1>=0&&status_area.x2<lv_disp_get_hor_res(NULL));
+   CHECK(status_area.y1>=0&&status_area.y2<lv_disp_get_ver_res(NULL));
+  }
+  if(state==1){
+   CHECK(strstr(status,"ON - 115200")&&cym_classic_usb_active());
+   CHECK(strstr(status,"Records ")&&strstr(status,"drops ")&&strstr(status,"retries "));
+   lv_area_t area;lv_obj_get_coords(s_classic_usb_popup_status,&area);
+   CHECK(area.y1>=0&&area.y2<lv_disp_get_ver_res(NULL));
+  }
   if(state==2)CHECK(strstr(status,"Enable failed")&&!cym_classic_usb_active()&&cym_classic_usb_gps_blocked());
   if(state==3)CHECK(strstr(status,"TX shutdown failed")&&cym_classic_usb_gps_blocked());
   lv_obj_scroll_to_y(s_classic_usb_popup,0,LV_ANIM_OFF);lv_obj_update_layout(lv_scr_act());
