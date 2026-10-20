@@ -1125,6 +1125,8 @@ typedef enum { WD_RADIO_WIFI_ONLY = 0, WD_RADIO_BLE_ONLY } wd_radio_mode_t;
 // Touch calibration NVS
 #if defined(CONFIG_BOARD_HACKERBOX_CYD)
 #define TOUCH_CAL_NVS_NS "touch_hb"
+#elif defined(CONFIG_BOARD_CYD2USB)
+#define TOUCH_CAL_NVS_NS "touch_cyd"   // panel axes changed (MV=0); ignore old MV=1 calibration
 #else
 #define TOUCH_CAL_NVS_NS      "touch_cal"
 #endif
@@ -4710,22 +4712,12 @@ static void init_display(void)
 #endif
 
 #if defined(CONFIG_BOARD_CYD2USB)
-    // ILI9341 on 2432S028 is physically wired with rows/columns transposed relative
-    // to the PCB portrait orientation. swap_xy (MADCTL MV=1) rotates 90 CW into
-    // portrait. Both mirrors flip the resulting portrait 180 degrees so USB is at
-    // the bottom (MADCTL MV=1, MX=1, MY=1).
-#if defined(CONFIG_BOARD_HACKERBOX_CYD)
-    // Explicit hardware-test candidate, not controller identification.
+    // Keep MADCTL MV=0. LVGL renders a native 240x320 frame (CASET 0-239, PASET 0-319),
+    // which only matches the ILI9341 address window with MV=0. MV=1 turns the window
+    // into 320x240, so the old setting left an 80 px unwritten (white) strip and dropped
+    // the bottom 80 rows. Landscape comes from LVGL's rotation (BOARD_DEFAULT_ORIENTATION).
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, false));
-#else
-    ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, true));
-#endif
-#if defined(CONFIG_BOARD_HACKERBOX_CYD)
-    // Physical tester: antenna at top, USB-C bottom; correct reflection + 180 degrees.
     ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, false));
-#else
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
-#endif
 #endif
 }
 
@@ -5947,7 +5939,7 @@ static void run_touch_calibration(void)
             return;
         }
 
-#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+#if defined(CONFIG_BOARD_CYD2USB)
         int dx_x = ((int)raw_x[1] + raw_x[3] - raw_x[0] - raw_x[2]) / 2;
         int dx_y = ((int)raw_y[1] + raw_y[3] - raw_y[0] - raw_y[2]) / 2;
         int dy_x = ((int)raw_x[2] + raw_x[3] - raw_x[0] - raw_x[1]) / 2;

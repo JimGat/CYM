@@ -53,6 +53,9 @@
 #define BOARD_LCD_WIDTH        240
 #define BOARD_LCD_HEIGHT       320
 
+// Landscape default (90 degrees). Used until the user picks an orientation in Settings.
+#define BOARD_DEFAULT_ORIENTATION 1
+
 // ── NM-RF-HAT via SD Card Shim (CONFIG_BOARD_HAS_RF_HAT=y build only) ─────────
 // The SD Card Shim sits in the Classic CYD's microSD slot and routes the HSPI
 // SPI bus (GPIO18/SCK, GPIO23/MOSI, GPIO19/MISO, GPIO5/CS) to the NM-RF-HAT's
