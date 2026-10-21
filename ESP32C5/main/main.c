@@ -44686,8 +44686,8 @@ typedef struct {
 } bt_diag_counts_t;
 static bool s_bt_alloc_hook_registered;
 static bool s_bt_alloc_capture;
-// Operational failure signal is independent of Debug. Global allocation failures
-// during this worker window are evidence of resource pressure, NOT per-call BLE attribution.
+// Failed allocation attempts, independent of Debug; fallback may still succeed.
+// Legacy non-Classic stop policy only, NOT terminal BLE failure attribution.
 static bool s_bt_resource_capture;
 static uint32_t s_bt_resource_failures;
 static char s_bt_alloc_function[32];
@@ -45812,7 +45812,11 @@ static void bt_scan_task(void *pvParameters)
     if (rc == 0) {
         for (int i = 0; i < bt_scan_iters && __atomic_load_n(&bt_scan_active, __ATOMIC_ACQUIRE); i++) {
             vTaskDelay(pdMS_TO_TICKS(100));
+#if !(CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM)
             if (__atomic_load_n(&s_bt_resource_failures, __ATOMIC_RELAXED)) break;
+#endif
+            // Classic has no PSRAM: failed preferred allocations can succeed via
+            // fallback. Global attempt telemetry must not cancel its discovery.
             if (i % 5 == 0) {
                 snprintf(ble_scan_status_text, sizeof(ble_scan_status_text),
                          "Scanning... %d (%ds)", bt_device_count, (bt_scan_iters - i) / 10);
@@ -45826,7 +45830,12 @@ static void bt_scan_task(void *pvParameters)
                  "%d devices (%d AT, %d ST)", bt_device_count, bt_airtag_count, bt_smarttag_count);
         if (!completed)
             snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan cancelled; retry");
+#if CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM
+        // Attempt-level global diagnostics do not establish terminal BLE failure.
+        bool exhausted = false;
+#else
         bool exhausted = __atomic_load_n(&s_bt_resource_failures, __ATOMIC_RELAXED) != 0;
+#endif
         if (exhausted)
             snprintf(ble_scan_status_text, sizeof(ble_scan_status_text), "Scan incomplete: memory pressure; retry");
         __atomic_store_n(&bt_scan_outcome, exhausted ? BT_SCAN_ERROR :

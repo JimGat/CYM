@@ -33,7 +33,7 @@ endif()
 if("CONFIG_BOARD_CYD2USB=y" IN_LIST _classic_version_lines
    AND NOT "CONFIG_BOARD_HAS_PSRAM=y" IN_LIST _classic_version_lines
    AND NOT "CONFIG_SPIRAM=y" IN_LIST _classic_version_lines)
-    set(PROJECT_VER "v3.0.35")
+    set(PROJECT_VER "v3.0.36")
 endif()
 unset(_classic_version_config)
 unset(_classic_version_lines)

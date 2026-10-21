@@ -3504,3 +3504,45 @@ Chameleon reserves shared BLE ownership from discovery through deferred connect 
 ### Classic Development v3.0.35: compact USB debug controls
 
 Classic CYD-2432S028 and HackerBox CYD (without PSRAM) now show counters and all three USB Debug actions immediately, without scrolling in portrait or landscape. The explanatory paragraph is removed; the brief GPS reminder and explicit disconnect acknowledgement remain. Both board packages are v3.0.35; other board packages and Stable are unchanged. All eight profile builds passed, 32 focused tests passed per Classic variant, and the full suite passed (720 passed, one skip). Physical touch acceptance remains pending; no BLE or UI-performance fix is claimed. See [operator guide](docs/operators/classic-usb-debug.md).
+
+
+## Classic Development v3.0.36: prevent false BLE scan cancellation
+
+Applies only to no-PSRAM Classic CYD-2432S028 and HackerBox CYD. The global
+allocation hook records failed attempts, including an unavailable PSRAM attempt
+followed by a successful internal-memory fallback. Previously any such attempt
+cancelled Scan & Select after its first 100 ms poll and falsely reported memory
+pressure. Classic scanning no longer uses this global counter as a terminal BLE
+failure signal. Diagnostic counters remain available; task/GAP start errors,
+explicit cancellation and ownership-safe stop retries remain intact.
+
+The recorded 0x404 capability mask means SPIRAM plus 8-bit memory, not DMA.
+The 10240-byte rotation buffer is a matching allocation candidate, not proven
+capture call-site attribution. This does not claim comprehensive asynchronous
+BLE failure detection, improved UI rendering speed, or hardware-qualified RF reception.
+
+Verification: all eight final-source profiles built successfully; full host suite
+722 tests, 721 passed and one expected skip. Production-extracted regression
+covers successful malloc/realloc fallbacks, Debug ON/OFF, cancellation before
+and during scanning, task/start failures and stop retries. Non-Classic controls
+retain their existing behavior. Other published board packages and Stable remain
+unchanged. The compact popup, bounded logger and GPS safeguards are retained.
+
+### Targeted hardware acceptance (pending)
+
+1. Select the exact board in https://jimgat.github.io/CYM/ and Development v3.0.36.
+   HackerBox must use HackerBox CYD, not the generic image. Prefer matching-profile
+   Quick Flash with Erase OFF. A full image at 0x0000 can overwrite NVS even without
+   erase-all; back up settings first.
+2. If collecting logs, physically disconnect GPS and use one primary USB cable at
+   115200 8N1. Enable Classic USB Debug and diagnostic verbosity separately.
+3. Run Scan & Select untouched for its configured duration. Check that it does not
+   stop at the first poll merely because allocation-attempt counters increase;
+   record advertisement counts, elapsed duration and displayed results.
+4. Exercise Rescan, exit while scanning, Home and re-entry, in both navigation
+   layouts. Check Wi-Fi/BLE transitions and Chameleon/background-monitor busy
+   refusal and recovery. Do not assume simultaneous ownership is allowed.
+5. Repeat with Debug OFF. Validate generic Classic and HackerBox separately.
+   Host tests do not prove RF reception, physical responsiveness or peripheral coexistence.
+6. Keep GPS unplugged while USB Debug is saved ON, including reboots. Successfully
+   use Return normal / Reboot, then power off before reconnecting GPS.
