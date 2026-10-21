@@ -5,11 +5,11 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v3.0.27</b>
+  <b>v3.0.37</b>
 </p>
 
 <p align="center">
-  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — six released targets plus two opt-in development-channel targets across ESP32-C5, ESP32, and ESP32-S3
+  WiFi &amp; BLE security toolkit with SigInt &amp; Wardriving — seven released profiles plus two opt-in development-channel targets across ESP32-C5, ESP32, and ESP32-S3
 </p>
 
 <p align="center">
@@ -33,19 +33,32 @@
 
 ---
 
-## Development Classic-only candidate v3.0.34 - USB debug routing and counters
+## Stable v3.0.37 — Classic fixes and CYD-2432S028-L
+
+[Release/downloads](https://github.com/JimGat/CYM/releases/tag/v3.0.37) · [Full release notes and exact package matrix](docs/releases/v3.0.37.md) · [CYD-2432S028-L operator guide](docs/operators/cyd-2432s028-l.md)
+
+Jim reported all tested and approved Stable release, including removal of **CYD-2432S028-L**'s Development-only restriction. This is owner-reported hardware acceptance, not independent telemetry or an enumerated checklist; it does not qualify all clones, RF paths or peripherals.
+
+- **Classic CYD, HackerBox CYD and -L: v3.0.37.** Includes v3.0.36's false BLE scan-abort fix after successful allocation fallback, compact no-scroll USB Debug controls and bounded, acknowledged debug transport with saved opt-in. **Physically disconnect GPS before enabling; keep disconnected across reboot while saved ON. Return normal / Reboot before reconnecting.**
+- **CYD-2432S028-L is now a normal Stable selection:** https://jimgat.github.io/CYM/?board=cyd-2432s028-l . Dedicated alternate white-bar mapping from **@gabecamp's PR #25**, integrated with corrections by **JimGat**; generic CYD and HackerBox mappings/calibration remain unchanged. Isolated `touch_cyd_l`; landscape fallback, saved orientation wins. Do not substitute another profile.
+- **Four non-Classic release profiles retain tested v3.0.33 packages**, including earlier BLE lifecycle/startup repairs and ESP32-C5 adaptive WiFi scan corrections. They are not rebuilt or relabelled v3.0.37. Waveshare ESP32-C5-Touch-LCD-2.8 (WS-C5-28) and Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35) retain their board-specific hardware limits.
+- **@birolt29 remains co-developer**, with existing orientation/navigation, integrated patches, FSD and official cases credited. Pancake-C5 and WS-S3-5B remain Development-only; seven release profiles does not broaden those boards' availability.
+
+The following Development entries are historical cycle records, superseded by the approved v3.0.37 release and package matrix above. Their original pending observations are not new release blockers or newly measured results. The older v3.0.27 release remains a historical download.
+
+## Historical Development Classic-only candidate v3.0.34 - USB debug routing and counters
 
 Classic CYD-2432S028 and HackerBox Amberjack 0131 CYD **without PSRAM** now both have this candidate. HackerBox completes the v3.0.34 diagnostic cycle using its own board profile; the already-published generic Classic package is unchanged. Feature log-capture hooks now forward to the same bounded, opt-in transport instead of bypassing it through ROM output. OFF stays silent through that fallback. Popup counters initialize immediately above the scrolling safety warning, in both Home layouts, themes and orientations. Other boards retain their existing source versions, packages and settings.
 
 The production-hook bypass and initially missing/off-screen counters were reproduced in host tests. They are **not proof of the exact cause of the reported 127-byte fragments**, a BLE repair, or physical acceptance. Software verification: 720 unit tests passed, one expected skip; Classic firmware built and packaged; All other board packages/manifests remain byte-identical in the HackerBox completion. Physical acceptance remains pending. [Safety and candidate test procedure](docs/operators/classic-usb-debug.md).
 
-## Development candidate v3.0.33 — bounded Classic diagnostics and C5 scans
+## Historical Development candidate v3.0.33 — bounded Classic diagnostics and C5 scans
 
 Classic CYD **without PSRAM only** now saves the explicit, GPS-disconnected USB Debug opt-in across reboot. Application logs resume after NVS initialization, before GPS can own UART0's shared GPIO1 path. Keep GPS physically disconnected until **Return normal / Reboot** successfully saves OFF and reboots. This is logs only, not ROM/bootloader/panic capture or an interactive console. Complete bounded records use CRLF with queued FIFO-tail retries and visible drop/retry counters; overload is not lossless. HackerBox receives the same persistent bounded transport in v3.0.34. [Safety, exact limits and capture checklist](docs/operators/classic-usb-debug.md).
 
 On ESP32-C5 only, WiFi Scan and Attack normally completes **two passes**. If pass two still finds new BSSIDs, it may perform one adaptive third pass, never more than three. The existing 45-second ceiling, cancellation and scan-start failure can end earlier. Classic ESP32 and S3 retain their original two-consecutive-stable/eight-pass adaptive policy. BLE algorithms are unchanged; Classic's memory-pressure warning remains diagnostically unresolved. Software verification is not hardware acceptance; Stable remains unchanged.
 
-## Development candidate v3.0.32 — radio memory and scan ownership
+## Historical Development candidate v3.0.32 — radio memory and scan ownership
 
 This unaccepted hardware candidate preserves the v3.0.31 BLE lifecycle repairs. On PSRAM boards, two task-only decoded IR signal copies move out of internal RAM; ISR/RMT/DMA buffers, RTOS objects and the 4096-byte BLE worker stack do not. Allocation pressure during discovery is an explicit incomplete-scan error even with Debug OFF. Bounded diagnostics identify the public allocator boundary, not an opaque controller call site.
 
@@ -53,15 +66,15 @@ Shared all-band scans restore AUTO band selection and check SDK completion/resul
 
 These are software corrections, **not physical BLE/5 GHz acceptance**. Stable remains v3.0.27. [Candidate scope, diagnostic commands and exact neighboring-feature acceptance](docs/operators/radio-repair-v3.0.32.md).
 
-## Development candidate v3.0.31 — BLE startup, retry and stage diagnostics
+## Historical Development candidate v3.0.31 — BLE startup, retry and stage diagnostics
 
 The scan worker now blocks for a real RTOS tick while its creator publishes the handle. Failed BLE initialization can be retried under serialized transition admission without bypassing a live owner. Scan and Select preserves explicit failure/cancellation status even with old rows. Debug ON adds bounded numeric lifecycle markers and best-effort, validated RTC breadcrumbs; no per-stage NVS/SD writes or new worker/stack. These are reproduced software corrections and a diagnostic candidate, **not** proof of restored reception, Ultra connectivity, or the cause of an earlier reset. General Home/menu drawing is distinct; intentional Settings delay is unchanged. Stable remains v3.0.27. [Exact capture commands, stage map and hardware acceptance](docs/operators/bluetooth-reliability.md).
 
-## Development v3.0.29 — Classic USB Debug readability
+## Historical Development v3.0.29 — Classic USB Debug readability
 
 The popup and Hardware entry now use explicit contrasting opaque text, compiled Montserrat 14 body text and CYM blue actions, with wrapping and scrolling in both orientations. Host LVGL rendering is not physical LCD acceptance. Separate, volatile USB logging for Classic CYD and HackerBox; physically unplug GPS before acknowledging enable. Stable stays v3.0.27. [Original USB Debug design notes](docs/releases/v3.0.28.md) · [Operator instructions](docs/operators/classic-usb-debug.md).
 
-## Stable v3.0.27 — Audio RTA, QR Decoder and USB UI control
+## Historical Stable v3.0.27 — Audio RTA, QR Decoder and USB UI control
 
 [Release and all-board downloads](https://github.com/JimGat/CYM/releases/tag/v3.0.27) · [Full release notes](docs/releases/v3.0.27.md) · [Live Wiki](https://github.com/JimGat/CYM/wiki)
 
@@ -80,7 +93,7 @@ Audio RTA/QR remain WS-C5-35-only. Saved-gain reboot, long-soak, repeated cleanu
 
 ## Earlier v3.0.0 milestone
 
-GPS-disciplined off-grid radio Clock, expanded board support, and official cases by co-developer **@birolt29**. The [v3.0.0 release history](docs/releases/v3.0.0.md) retains its original tag and v3.0.7 refresh provenance; the current release is v3.0.27.
+GPS-disciplined off-grid radio Clock, expanded board support, and official cases by co-developer **@birolt29**. The [v3.0.0 release history](docs/releases/v3.0.0.md) retains its original tag and v3.0.7 refresh provenance; the current release is v3.0.37.
 
 ## Off-grid amateur radio Clock — GPS-disciplined NTP and grid square
 
@@ -155,11 +168,12 @@ CYM uses one shared multi-board firmware source tree. WS-C5-35 now appears in th
 | Board | Status | What you get |
 |---|---|---|
 | **[NM-CYD-C5](https://github.com/RockBase-iot/NM-CYD-C5)** — optionally with the **NM-RF-HAT** | ⭐ **Primary / preferred hardware for all features** | The full feature set: WiFi 6 (2.4 + 5 GHz), BLE 5, 802.15.4 (Zigbee/Thread/WirelessHART passive survey), ESP-NOW, GPS wardriving — and, with the NM-RF-HAT, CC1101 Sub-GHz, nRF24, PN532 NFC/RFID, and IR. New features land here first. |
-| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P1 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Normal GPS mode keeps application/bootloader UART logging disabled. Development v3.0.28 adds an explicit [Classic USB Debug mode](docs/operators/classic-usb-debug.md): physically disconnect GPS before enabling UART0 logs through the USB-to-serial bridge. Original ESP32 has no native USB/JTAG; independent USB socket routing is not established. No 802.15.4. [Screen Orientation](#screen-orientation) is included in Stable v3.0.27 (introduced in v3.0.4) via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
+| **Classic CYD** (ESP32-2432S028R) | ✅ Supported | WiFi (2.4 GHz — original ESP32, no WiFi 6 / 5 GHz radio), BLE, ESP-NOW, and wardriving with an external GPS on the P1 UART expansion JST (GPS TX→GPIO1; leave GPS RX disconnected for the RX-only v2.15.64 development build). Normal GPS mode keeps application/bootloader UART logging disabled. Stable v3.0.37 includes an explicit [Classic USB Debug mode](docs/operators/classic-usb-debug.md): physically disconnect GPS before enabling UART0 logs through the USB-to-serial bridge. Original ESP32 has no native USB/JTAG; independent USB socket routing is not established. No 802.15.4. [Screen Orientation](#screen-orientation) is included in Stable v3.0.27 (introduced in v3.0.4) via Patch #10 from co-developer @birolt29; Jim accepted the v3.0.4 landscape builds on both Classic CYD and HackerBox. NM-RF-HAT remains compatible through the SD Card Shim and its separate GPIO22/GPIO27 control lines, including the wiring used successfully by Bruce on Classic CYD. |
 | **[Waveshare ESP32-C5-Touch-LCD-2.8](https://github.com/waveshareteam/ESP32-C5-Touch-LCD-2.8)** (WS-C5-28) | ✅ Supported | On par with the NM-CYD-C5's core feature set — WiFi 6, BLE 5, 802.15.4, ESP-NOW, GPS wardriving — plus onboard IMU, temperature/humidity sensor, RTC, and an I2S audio codec. Its header now shows a 10-second, voltage-estimated battery percentage from the CH32V003 EXIO_ADC path; `FULL` means VBAT is at least 4.15 V, not that charger completion was detected. |
 | **[C5Lab Pancake DIY](https://github.com/C5Lab/pancake)** (`pancake-c5`) | 🧪 **Development channel only; not stable; remote hardware qualification pending** | ESP32-C5 with a 3.5-inch 480×320 display, FT6336U capacitive touch, microSD, WS2812, battery sensing, and optional UART GPS wiring. Available only through the development channel (`?beta=1`); dedicated to D3h420, Janek, and OyczE. |
-| **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for v3.0.27. Camera/IMU remain unqualified; peripheral qualification is capability-specific. |
-| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.27** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. Jim accepted the Development v3.0.4 landscape builds on both Classic CYD and HackerBox; no additional heap measurements were reported. |
+| **[Waveshare ESP32-C5-Touch-LCD-3.5](https://www.waveshare.com/esp32-c5-touch-lcd-3.5.htm?sku=35419)** (`ws-c5-35`) | **Display/touch, RTC holdover and GPIO28 GPS LOCK owner-tested; battery estimate available** | ESP32-C5 with ST7796 320x480 SPI display, FT6336 capacitive touch, CH32V006 IO expander, AXP2101 PMIC, 32 MB flash, 8 MB PSRAM, TF card, audio codec, sensors. GPS LOCK owner-confirmed using UART1 RX=GPIO28 at 9600 baud, TX disabled; see the board-specific exception below. Available in the normal selector; select Stable for the retained v3.0.33 package. Camera/IMU remain unqualified; peripheral qualification is capability-specific. |
+| **CYD-2432S028-L** (`cyd-2432s028-l`) | ✅ **Owner-tested; approved Stable v3.0.37** | Explicit alternate white-bar mapping; isolated touch calibration and landscape fallback with saved orientation precedence. [Normal flasher](https://jimgat.github.io/CYM/?board=cyd-2432s028-l); generic CYD/HackerBox remain separate. [Scope and acceptance provenance](docs/operators/cyd-2432s028-l.md). |
+| **HackerBox Amberjack 0131 CYD** (`hackerbox-cyd`) | ✅ **Supported; Stable v3.0.37** | Dedicated Classic ESP32 build and panel/touch profile. Owner-confirmed display and touch calibration. Select the HackerBox image, not the generic Classic image; peripheral qualification remains board-specific. Jim accepted the Development v3.0.4 landscape builds on both Classic CYD and HackerBox; no additional heap measurements were reported. |
 | **Waveshare ESP32-S3-Touch-LCD-5B** (`ws-s3-5b`) | 🧪 **Development channel only; not stable** | Experimental 1024×600 RGB display target with capacitive touch and PCF85063 RTC support. No verified GPS UART; hardware qualification pending. Opt in with `?beta=1`. |
 | **[Hosyond/LCDWiki ESP32-S3 2.8-inch](https://www.lcdwiki.com/2.8inch_ESP32-S3_Display)** (`hosyond-s3-28`) | 🧪 **Port planned; not released** | ESP32-S3 N16R8, ILI9341V 240×320 SPI display, FT6336G capacitive touch, SDIO microSD, audio, RGB LED, and battery support. 2.4-GHz Wi-Fi/BLE only; no 5 GHz or 802.15.4. |
 | **[Hosyond/LCDWiki ESP32-S3 3.5-inch](https://www.lcdwiki.com/3.5inch_ESP32-S3_Display)** (`hosyond-s3-35`) | ✅ **Released in v2.15.34; available in the web flasher** | ESP32-S3 N16R8, ST77922 320×480 QSPI/TDDI, 8 MB OPI PSRAM, 2.4-GHz Wi-Fi and BLE. The shared CYM application, display, orientation, colors, capacitive touch, Modern/Classic menus, and Deauth Harvest have been physically exercised. SD, RGB LED, battery voltage, external UART GPS, broader radio coverage, and bounded soak remain pending qualification. No 5 GHz, 802.15.4, audio, vibrator, or RF-HAT. |
@@ -3528,7 +3542,7 @@ and during scanning, task/start failures and stop retries. Non-Classic controls
 retain their existing behavior. Other published board packages and Stable remain
 unchanged. The compact popup, bounded logger and GPS safeguards are retained.
 
-### Targeted hardware acceptance (pending)
+### Historical v3.0.36 targeted hardware procedure (owner acceptance now supplied)
 
 1. Select the exact board in https://jimgat.github.io/CYM/ and Development v3.0.36.
    HackerBox must use HackerBox CYD, not the generic image. Prefer matching-profile
@@ -3548,13 +3562,6 @@ unchanged. The compact popup, bounded logger and GPS safeguards are retained.
    use Return normal / Reboot, then power off before reconnecting GPS.
 
 
-## Development alternate mapping: CYD-2432S028-L
+## Stable alternate mapping: CYD-2432S028-L
 
-PR25 by **@gabecamp** is isolated as **CYD-2432S028-L**, an explicit alternate
-mapping selection, not a global generic CYD change. Generic CYD and HackerBox
-keep their accepted transforms, colors, defaults and calibration. No Stable
-artifact exists; physical touch and all-orientation/BLE-pressure acceptance are
-pending. Contributor reports the white bar fixed on HW458 TPM408-2.8, not touch
-qualification or a proven different controller/mounting. See the [build, selection
-and hardware acceptance guide](docs/operators/cyd-2432s028-l.md). Existing
-co-developer **@birolt29** credit and both navigation layouts are retained.
+**@gabecamp's PR #25** is integrated with adaptations as the explicit **CYD-2432S028-L** profile, not a global generic CYD change. Jim reported all tested and approved Stable v3.0.37 support. Historically the contributor reported a white-bar fix on HW458 TPM408-2.8 with touch unverified; that is historical context, not a current Stable block. No separate controller/mounting or all-clone compatibility is proven. See the [operator guide](docs/operators/cyd-2432s028-l.md). Generic CYD and HackerBox retain accepted transforms, colors, defaults and calibration; co-developer **@birolt29** and both navigation layouts are retained.

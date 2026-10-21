@@ -11,6 +11,8 @@ on:
       - "ESP32C5/binaries-ws-c5-28/*.bin"
       - "ESP32C5/binaries-pancake-c5/*.bin"
       - "ESP32C5/binaries-ws-c5-35/*.bin"
+      - "ESP32/docs/manifest.cyd-2432s028-l.json"
+      - "ESP32/binaries-cyd-2432s028-l/*.bin"
       - "ESP32/docs/manifest.cyd-2432s028.json"
       - "ESP32/binaries-cyd-2432s028/*.bin"
       - "ESP32/docs/manifest.hackerbox-cyd.json"
@@ -67,6 +69,19 @@ jobs:
         working-directory: stable-site
         run: |
           mkdir -p _site/binaries-esp32c5 _site/binaries-ws-c5-28 _site/binaries-pancake-c5 _site/binaries-ws-c5-35 _site/binaries-cyd-2432s028 _site/binaries-hosyond-s3-35 _site/binaries-hackerbox-cyd
+          mkdir -p _site/binaries-cyd-2432s028-l
+          cp ESP32/binaries-cyd-2432s028-l/*.bin _site/binaries-cyd-2432s028-l/
+          python3 - <<"PYL"
+          import json
+          from pathlib import Path
+          m = json.loads(Path("ESP32/docs/manifest.cyd-2432s028-l.json").read_text())
+          for part in m["parts"]:
+              part["path"] = part["path"].removeprefix("../")
+              assert Path("_site", part["path"]).is_file()
+          Path("_site/manifest.cyd-2432s028-l.json").write_text(json.dumps(m, indent=2) + "\n")
+          PYL
+          test -s _site/binaries-cyd-2432s028-l/CYM-CYD-2432S028-L.bin
+          test -s _site/binaries-cyd-2432s028-l/CYM-CYD-2432S028-L-full.bin
           cp ESP32C5/docs/index.html _site/index.html
           sed 's|"\.\./binaries-esp32c5/|"binaries-esp32c5/|g' ESP32C5/docs/manifest.json > _site/manifest.json
           sed 's|"\.\./binaries-ws-c5-28/|"binaries-ws-c5-28/|g' ESP32C5/docs/manifest.ws-c5-28.json > _site/manifest.ws-c5-28.json

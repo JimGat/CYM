@@ -128,7 +128,7 @@ class PromotionContract(unittest.TestCase):
         self.assertIn('fullBin: "CYM-hosyond-s3-35-full.bin"', flasher)
         self.assertIn('id="dlFull"', flasher)
         self.assertIn(
-            'const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35", "hackerbox-cyd"]',
+            'const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35", "hackerbox-cyd", "cyd-2432s028-l"]',
             flasher,
         )
         self.assertIn("parts.map(p => ({", flasher)

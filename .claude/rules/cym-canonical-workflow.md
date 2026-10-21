@@ -166,3 +166,29 @@ pointers to this file.
 ## v3.0.0 owner-approved board promotion
 
 For v3.0.0 and later, the version-synced release-board set is six: NM-CYD-C5, WS-C5-28, Classic CYD-2432S028, Hosyond ES3C35P 3.5, WS-C5-35 and HackerBox Amberjack 0131 CYD. This supersedes the older four-board inventory above. Pancake-C5 DIY and WS-S3-5B remain Development-only experimental targets; all eight application packages are built and independently verified at the shared cycle version. Preserve the narrower per-board peripheral/hardware qualification limits.
+
+## v3.0.37 owner-approved Stable promotion (current inventory)
+
+The current release set is seven profiles: NM-CYD-C5, Waveshare ESP32-C5-Touch-LCD-2.8
+(WS-C5-28), Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35), Classic CYD-2432S028,
+HackerBox Amberjack 0131 CYD, CYD-2432S028-L and Hosyond ES3C35P 3.5. This
+supersedes the historical four/six-board counts above. Pancake-C5 DIY and
+WS-S3-5B remain Development-only experimental profiles; Hosyond 2.8/4.0 ports
+remain planned. Nine existing profiles passed the final compatibility build gate.
+
+Jim reported all tested and explicitly approved Stable release and removal of
+CYD-2432S028-L's Development-only status. This is owner-reported acceptance, not
+new independent captures or enumerated hardware checks; it is not blanket RF,
+peripheral or clone qualification. Preserve all narrower board capability limits.
+
+This metadata-only promotion reuses tested packages: the three Classic profiles
+are v3.0.37; four non-Classic release profiles retain v3.0.33. The two experimental
+packages also retain v3.0.33, without Stable promotion. Do not rebuild, relabel or
+version-bump these accepted bytes. Release attachments require all four artifacts
+for each of the seven release profiles (28 binaries), with collision-safe board
+names and required prior-release compatibility aliases retained.
+
+The compiled Kconfig prompt still says "Development" for -L: that is a historical
+build-time label, not current release support status. Leave compiled inputs alone
+for this promotion; normal flasher Stable and Development both use the exact -L
+manifest, never generic CYD or HackerBox as a substitute.

@@ -74,3 +74,29 @@ compile canary. Hosyond 2.8-inch and 4.0-inch profiles remain experimental and o
 - This rule is about **build correctness**, not feature parity. CYD-2432S028 is expected to
   build 802.15.4-related shared code out entirely (no 802.15.4 hardware) — the rule is that
   it must still *build*, cleanly, not that it must have the same features.
+
+## v3.0.37 owner-approved Stable promotion (current inventory)
+
+The current release set is seven profiles: NM-CYD-C5, Waveshare ESP32-C5-Touch-LCD-2.8
+(WS-C5-28), Waveshare ESP32-C5-Touch-LCD-3.5 (WS-C5-35), Classic CYD-2432S028,
+HackerBox Amberjack 0131 CYD, CYD-2432S028-L and Hosyond ES3C35P 3.5. This
+supersedes the historical four/six-board counts above. Pancake-C5 DIY and
+WS-S3-5B remain Development-only experimental profiles; Hosyond 2.8/4.0 ports
+remain planned. Nine existing profiles passed the final compatibility build gate.
+
+Jim reported all tested and explicitly approved Stable release and removal of
+CYD-2432S028-L's Development-only status. This is owner-reported acceptance, not
+new independent captures or enumerated hardware checks; it is not blanket RF,
+peripheral or clone qualification. Preserve all narrower board capability limits.
+
+This metadata-only promotion reuses tested packages: the three Classic profiles
+are v3.0.37; four non-Classic release profiles retain v3.0.33. The two experimental
+packages also retain v3.0.33, without Stable promotion. Do not rebuild, relabel or
+version-bump these accepted bytes. Release attachments require all four artifacts
+for each of the seven release profiles (28 binaries), with collision-safe board
+names and required prior-release compatibility aliases retained.
+
+The compiled Kconfig prompt still says "Development" for -L: that is a historical
+build-time label, not current release support status. Leave compiled inputs alone
+for this promotion; normal flasher Stable and Development both use the exact -L
+manifest, never generic CYD or HackerBox as a substitute.

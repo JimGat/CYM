@@ -59,7 +59,7 @@ class CydLVariant(unittest.TestCase):
   m=json.loads((R/'ESP32/docs/manifest.cyd-2432s028-l.json').read_text());self.assertEqual(m['version'],'v3.0.37');self.assertEqual([p['offset'] for p in m['parts']],[4096,32768,65536])
   self.assertTrue(all('binaries-cyd-2432s028-l/' in p['path'] for p in m['parts']))
   page=(R/'ESP32C5/docs/index.html').read_text();board=page.split('"cyd-2432s028-l": {',1)[1].split('},',1)[0]
-  self.assertIn('stableAvailable: false',board);self.assertIn('label: "CYD-2432S028-L"',board)
+  self.assertIn('stableAvailable: true',board);self.assertIn('beta: false',board);self.assertIn('label: "CYD-2432S028-L"',board)
   self.assertIn('cyd-2432s028-l',(R/'.github/workflows/deploy-flasher.yml').read_text())
 
  def test_production_solver_and_xpt_mapping_eight_transforms(self):
@@ -93,7 +93,7 @@ int main(void){
    subprocess.run([str(p/'t')],check=True,capture_output=True)
 
 
- def test_real_flasher_channels_preserve_selection_and_refuse_stable(self):
+ def test_real_flasher_channels_preserve_selection_and_ignore_stale(self):
   page=(R/'ESP32C5/docs/index.html').read_text()
   defs=page[page.index('const BOARDS ='):page.index('// Hidden opt-in:')]
   load=page[page.index('let manifestRequest ='):page.index('// ── Connection')]
@@ -112,25 +112,45 @@ const normalizeManifest=m=>m;
 let fetch=async url=>{fetched.push(url);return {ok:true,json:async()=>({name:'L',version:'v3.0.37',parts:[{}]})};};
 """+load+channel+r"""
 (async()=>{
- await loadManifest();assert(fetched[0].includes('Jimgat_Dev/ESP32/docs/manifest.cyd-2432s028-l.json'));
- switchChannel('stable');await new Promise(setImmediate);
- assert.equal(state.board,'cyd-2432s028-l');assert.equal(state.channel,'stable');assert.equal(state.manifest,null);
- assert.equal(fetched.length,1);assert(errors[0].includes('no Stable artifact'));assert(ui.flashBtn.disabled&&ui.quickFlashBtn.disabled);
- switchChannel('dev');await new Promise(setImmediate);assert.equal(state.board,'cyd-2432s028-l');assert(state.manifest);
- assert.equal(fetched.length,2);
- state.board='cyd-2432s028';state.channel='dev';switchChannel('stable');await new Promise(setImmediate);
- assert.equal(state.board,'cyd-2432s028');assert.equal(state.channel,'stable');
- state.board='hackerbox-cyd';switchChannel('dev');await new Promise(setImmediate);switchChannel('stable');await new Promise(setImmediate);
- assert.equal(state.board,'hackerbox-cyd');assert.equal(state.channel,'stable');
- // A slow Development response must not populate the manifest after Stable refusal.
- state.board='cyd-2432s028-l';state.channel='dev';let finish;
- fetch=async()=>({ok:true,json:()=>new Promise(resolve=>finish=resolve)});
- const old=loadManifest();await new Promise(setImmediate);switchChannel('stable');await new Promise(setImmediate);
- finish({name:'stale',version:'v3.0.37',parts:[{}]});await old;
- assert.equal(state.board,'cyd-2432s028-l');assert.equal(state.channel,'stable');assert.equal(state.manifest,null);
- assert(ui.flashBtn.disabled&&ui.quickFlashBtn.disabled);
+ const exact=ch=>BRANCH[ch]+'/ESP32/docs/manifest.cyd-2432s028-l.json';
+ await loadManifest();assert.equal(fetched[0],exact('dev'));
+ for(const ch of ['stable','dev','stable']){
+  switchChannel(ch);await new Promise(setImmediate);
+  assert.equal(state.board,'cyd-2432s028-l');assert.equal(state.channel,ch);assert(state.manifest);
+  assert.equal(fetched.at(-1),exact(ch));
+ }
+ assert(fetched.every(url=>url===exact('stable')||url===exact('dev')));assert.equal(errors.length,0);
+ // A delayed old channel must not replace the current channel's manifest.
+ for(const ch of ['dev','stable']){
+  const other=ch==='dev'?'stable':'dev';state.board='cyd-2432s028-l';state.channel=other;let finish;
+  fetch=async url=>{fetched.push(url);return {ok:true,json:()=>new Promise(resolve=>finish=resolve)};};
+  const old=loadManifest();await new Promise(setImmediate);
+  fetch=async url=>{fetched.push(url);return {ok:true,json:async()=>({name:'current-'+ch,parts:[{}]})};};
+  switchChannel(ch);await new Promise(setImmediate);
+  assert.equal(fetched.at(-1),exact(ch));assert.equal(state.manifest.name,'current-'+ch);
+  finish({name:'stale',parts:[{}]});await old;
+  assert.equal(state.board,'cyd-2432s028-l');assert.equal(state.channel,ch);assert.equal(state.manifest.name,'current-'+ch);
+ }
+ // Preserve the preexisting exact generic/HackerBox identities too.
+ for(const id of ['cyd-2432s028','hackerbox-cyd']){
+  state.board=id;state.channel='dev';switchChannel('stable');await new Promise(setImmediate);
+  assert.equal(state.board,id);assert.equal(fetched.at(-1),'main/ESP32/docs/manifest.'+id+'.json');
+ }
+ // Experimental targets must not gain Stable availability.
+ for(const id of ['pancake-c5','ws-s3-5b']){
+  state.board=id;state.channel='dev';switchChannel('stable');assert.equal(state.channel,'dev');
+ }
+
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
+  p=subprocess.run(['node','-e',code],text=True,capture_output=True);self.assertEqual(p.returncode,0,p.stderr)
+
+
+ def test_normal_root_direct_selection_starts_stable(self):
+  page=(R/'ESP32C5/docs/index.html').read_text()
+  defs=page[page.index('const BOARDS ='):page.index('// Hidden opt-in:')]
+  initial=page[page.index('// Hidden opt-in:'):page.index('const PAGE_VERSION')]
+  code=defs+"const window={location:{search:'?board=cyd-2432s028-l'}};\n"+initial+"\nconst assert=require('assert');assert.equal(betaUnlock,false);assert.equal(initialBoard,'cyd-2432s028-l');assert.equal(state.board,'cyd-2432s028-l');assert.equal(state.channel,'stable');assert.equal(DEFAULT_BOARD_IDS.length,7);"
   p=subprocess.run(['node','-e',code],text=True,capture_output=True);self.assertEqual(p.returncode,0,p.stderr)
 
 if __name__=='__main__':unittest.main()

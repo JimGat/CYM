@@ -487,13 +487,13 @@
         "cyd-2432s028-l": {
           label: "CYD-2432S028-L",
           chip: "ESP32", soc: "ESP32",
-          desc: "Development-only explicit alternate CYD mapping (PR25). Native 240x320; landscape fallback; touch hardware acceptance pending. Not a replacement for generic CYD or HackerBox.",
+          desc: "Owner-tested alternate CYD mapping (PR25), approved for Stable v3.0.37. Native 240x320; landscape fallback; saved orientation wins. Not a replacement for generic CYD or HackerBox.",
           binDir: "binaries-cyd-2432s028-l",
           appBin: "CYM-CYD-2432S028-L.bin",
           fullBin: "CYM-CYD-2432S028-L-full.bin",
           manifest: "docs/manifest.cyd-2432s028-l.json",
-          bootOffset: "0x1000", beta: true,
-          stableAvailable: false,
+          bootOffset: "0x1000", beta: false,
+          stableAvailable: true,
         },
         "hackerbox-cyd": {
           label: "HackerBox CYD",
@@ -560,7 +560,7 @@
       // added to BOARDS above stays hidden from the selector until either it's
       // added here or a visitor passes ?beta=1 (see betaUnlock below), which shows
       // every board BOARDS defines regardless of this list.
-      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35", "hackerbox-cyd"];
+      const DEFAULT_BOARD_IDS = ["nm-cyd-c5", "ws-c5-28", "cyd-2432s028", "hosyond-s3-35", "ws-c5-35", "hackerbox-cyd", "cyd-2432s028-l"];
 
       // Hidden opt-in: ?beta=1 in the URL starts the flasher on the Dev channel
       // (instead of Stable) and unlocks every board BOARDS defines, not just
@@ -1103,7 +1103,7 @@
 
       // ── Channel / Board switching ─────────────────────────────────────────────
       const switchChannel = (ch) => {
-        if (state.board !== "cyd-2432s028-l" && (BOARDS[state.board]?.beta || BOARDS[state.board]?.stableAvailable === false)) ch = "dev";
+        if (BOARDS[state.board]?.beta || BOARDS[state.board]?.stableAvailable === false) ch = "dev";
         if (ch === state.channel) return;
         state.channel  = ch;
         state.manifest = null;
