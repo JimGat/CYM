@@ -3499,3 +3499,8 @@ Classic CYD and HackerBox CYD only: Hardware Options has a separate **Classic US
 ### v3.0.30 Development: Bluetooth lifecycle repair candidate
 
 Chameleon reserves shared BLE ownership from discovery through deferred connect and disconnect drain. Busy scans/Lookout show explicit stop-and-retry feedback instead of silently returning or cancelling foreign work. Retained ports are not published idle. Successful BLE teardown now permits fresh Chameleon initialization without requiring another feature to initialize BLE first; pending/live cleanup and retained-port failures still block admission. Allocation-failure capture starts at NimBLE initialization; scan deltas exclude earlier init failures. Reception and the Ultra connection report still await hardware acceptance (board/failure stage unknown). Development testing only; not hardware-qualified or promoted to Stable. See [operator procedure](docs/operators/bluetooth-reliability.md).
+
+
+### Classic Development v3.0.35: compact USB debug controls
+
+Classic CYD-2432S028 and HackerBox CYD (without PSRAM) now show counters and all three USB Debug actions immediately, without scrolling in portrait or landscape. The explanatory paragraph is removed; the brief GPS reminder and explicit disconnect acknowledgement remain. Both board packages are v3.0.35; other board packages and Stable are unchanged. All eight profile builds passed, 32 focused tests passed per Classic variant, and the full suite passed (720 passed, one skip). Physical touch acceptance remains pending; no BLE or UI-performance fix is claimed. See [operator guide](docs/operators/classic-usb-debug.md).

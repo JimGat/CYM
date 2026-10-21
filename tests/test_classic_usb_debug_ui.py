@@ -121,6 +121,18 @@ static void visible_button(lv_obj_t *obj){
  lv_area_t a;lv_obj_get_coords(obj,&a);
  assert(a.x1>=0&&a.y1>=0&&a.x2<lv_disp_get_hor_res(NULL)&&a.y2<lv_disp_get_ver_res(NULL));
 }
+static void actions_visible_on_entry(void){
+ lv_obj_update_layout(lv_scr_act());
+ CHECK(lv_obj_get_scroll_y(s_classic_usb_popup)==0);
+ lv_area_t panel;lv_obj_get_content_coords(s_classic_usb_popup,&panel);
+ for(int i=2;i<5;i++){
+  lv_obj_t *button=lv_obj_get_child(s_classic_usb_popup,i);
+  lv_area_t a;lv_obj_get_coords(button,&a);
+  CHECK(!lv_obj_has_flag(button,LV_OBJ_FLAG_HIDDEN));
+  CHECK(a.x1>=panel.x1&&a.x2<=panel.x2&&a.y1>=panel.y1&&a.y2<=panel.y2);
+  CHECK(a.x1>=0&&a.y1>=0&&a.x2<lv_disp_get_hor_res(NULL)&&a.y2<lv_disp_get_ver_res(NULL));
+ }
+}
 static void open_popup(void){
  show_hardware_options_screen_measured();
  lv_obj_t *tiles=lv_obj_get_child(function_page,0);assert(lv_obj_get_child_cnt(tiles)==3);
@@ -129,7 +141,8 @@ static void open_popup(void){
  lv_obj_update_layout(lv_scr_act());
  assert(lv_obj_get_height(s_classic_usb_popup)==lv_disp_get_ver_res(NULL)-12);
  assert(lv_obj_get_scroll_dir(s_classic_usb_popup)==LV_DIR_VER);
- /* Every action is reachable by scrolling, not clipped beyond physical screen. */
+ actions_visible_on_entry();
+ /* Every action also remains reachable. */
  for(int i=2;i<5;i++)visible_button(lv_obj_get_child(s_classic_usb_popup,i));
 }
 static int lifecycle(void){
@@ -180,6 +193,7 @@ static int readability(int theme,int orient,int navigation,int state){
   if(state==2){start_fail=1;classic_usb_enable_event(NULL);}
   if(state==3){classic_usb_enable_event(NULL);stop_fail=1;classic_usb_reboot_event(NULL);CHECK(reboots==0);}
   lv_obj_update_layout(lv_scr_act());
+  actions_visible_on_entry();
   /* Real production timer must refresh counts but preserve failure captions. */
   record_count=UINT32_MAX;
   if(state==1||state==0){
@@ -189,9 +203,11 @@ static int readability(int theme,int orient,int navigation,int state){
    CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"retries 901"));
   }
   lv_tick_inc(220);lv_timer_handler();lv_obj_update_layout(lv_scr_act());
+  actions_visible_on_entry();
+  actions_visible_on_entry();
   if(state==1||state==0)CHECK(strstr(lv_label_get_text(s_classic_usb_popup_status),"Records 4294967295"));
-  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,1)),"Saved across reboot"));
-  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,1)),"Debug OFF plus reboot"));
+  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,1)),"GPS: unplug"));
+  CHECK(strstr(lv_label_get_text(lv_obj_get_child(s_classic_usb_popup,1)),"Return normal"));
   CHECK(lv_obj_get_style_bg_opa(s_classic_usb_popup,0)==LV_OPA_COVER);
   CHECK((lv_obj_get_style_bg_color(s_classic_usb_popup,0).full==ui_panel_color().full));
   text_style(lv_obj_get_child(s_classic_usb_popup,1),ui_text_color(),ui_panel_color(),"warning");
@@ -222,6 +238,7 @@ static int readability(int theme,int orient,int navigation,int state){
   lv_event_send(lv_obj_get_child(s_classic_usb_popup,4),LV_EVENT_CLICKED,NULL);
   CHECK(!s_classic_usb_popup&&cym_classic_usb_active()==before);
   show_classic_usb_popup();CHECK(s_classic_usb_popup);
+  actions_visible_on_entry();
   nav_to_menu_flag=false;nav_deferred_show_fn=NULL;
   if(cycle==0){
    nav_back_cb(NULL);CHECK(nav_deferred_show_fn==deferred_parent&&!nav_to_menu_flag);

@@ -69,3 +69,8 @@ Candidate operator procedure:
 5. Reset while saved ON. Application logging should restore after NVS and before GPS access; no ROM/bootloader/panic/crash capture guarantee. Debug diagnostics alone must not enable USB transport. Verify GPS Info remains unavailable.
 6. Return normal / Reboot must commit OFF, release TX and reboot. If OFF-save or TX-shutdown fails, no reboot and a persistent error caption; keep GPS unplugged. Verify application silence after normal reboot, then power off before reconnecting GPS. Check normal GPS separately.
 7. Repeat both layouts, light/dark themes and portrait/landscape. Physical readability, electrical safety, long-load responsiveness and RF/SD coexistence remain hardware-pending. Do not infer a BLE fix from clearer logs.
+
+
+## Development v3.0.35 compact popup
+
+For Classic CYD-2432S028 and HackerBox CYD without PSRAM, the explanatory paragraph is replaced by a brief GPS reminder. Counters and all three actions fit on entry without scrolling in portrait and landscape. The explicit GPS-disconnected enable acknowledgement and Return normal / Reboot behavior are unchanged. Keep GPS disconnected while saved USB Debug is ON; after successfully returning to normal and rebooting, power off before reconnecting GPS. Both board images build successfully; real-LVGL geometry/lifecycle checks and the full host suite pass. All eight profile builds passed; physical touch acceptance remains pending. Other board packages remain unchanged.

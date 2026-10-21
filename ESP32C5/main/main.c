@@ -28607,7 +28607,7 @@ static void classic_usb_popup_sync(void)
     cym_classic_usb_uart_stats(&stats);
     char status[224];
     snprintf(status, sizeof(status), "%s\nRecords %lu\ndrops %lu; busy %lu\nretries %lu",
-             cym_classic_usb_active() ? "ON - 115200 8N1. GPS unavailable.\nSaved across reboot." : cym_classic_usb_status(),
+             cym_classic_usb_active() ? "ON - 115200 8N1 (saved)" : cym_classic_usb_status(),
              (unsigned long)stats.accepted_records, (unsigned long)stats.dropped_records,
              (unsigned long)stats.busy_calls, (unsigned long)stats.retry_writes);
     lv_label_set_text(s_classic_usb_popup_status, status);
@@ -28681,11 +28681,18 @@ static void show_classic_usb_popup(void)
 {
     if (s_classic_usb_popup) return;
     s_classic_usb_popup = lv_obj_create(lv_scr_act());
-    /* 240x320 / 320x240: outer height is always ver-12, all content scrolls.
-     * No fixed-height text card can push acknowledgement or Cancel off-screen. */
+    /* Bounded in either orientation; scrolling remains a safety net. */
     lv_obj_set_size(s_classic_usb_popup, lv_disp_get_hor_res(NULL)-12, lv_disp_get_ver_res(NULL)-12);
     lv_obj_center(s_classic_usb_popup);
     lv_obj_set_flex_flow(s_classic_usb_popup, LV_FLEX_FLOW_COLUMN);
+#if CYM_CLASSIC_USB_PERSISTENT
+    /* Landscape: 228 - 2*4 padding - 2*2 border = 216px content.
+     * 96px status + 16px warning + 3*30px actions + 4*2px gaps = 210px.
+     * Portrait has 296px content and room for wrapped 42px actions. */
+    bool landscape = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
+    lv_obj_set_style_pad_all(s_classic_usb_popup, 4, 0);
+    lv_obj_set_style_pad_row(s_classic_usb_popup, 2, 0);
+#endif
     lv_obj_set_scroll_dir(s_classic_usb_popup, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_classic_usb_popup, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_style_bg_opa(s_classic_usb_popup, LV_OPA_COVER, 0);
@@ -28697,6 +28704,9 @@ static void show_classic_usb_popup(void)
     lv_obj_set_style_text_color(warning, ui_text_color(), 0);
     lv_obj_set_style_text_opa(warning, LV_OPA_COVER, 0);
     lv_obj_set_style_opa(warning, LV_OPA_COVER, 0);
+#if CYM_CLASSIC_USB_PERSISTENT
+    lv_label_set_text(warning, "GPS: unplug until Return normal.");
+#else
     lv_label_set_text(warning, "Classic USB Debug" "\nWARNING: Physically disconnect GPS BEFORE enabling.\nA powered GPS TX can contend on GPIO1 even if firmware GPS is disabled.\nLogs use UART0 TX GPIO1 via USB-UART bridge, 115200 8N1.\n"
 #if CYM_CLASSIC_USB_PERSISTENT
         "Saved across reboot after acknowledgement. Keep GPS physically disconnected until Debug OFF plus reboot. Application logs resume after NVS init, not ROM/bootloader/panic capture.\n"
@@ -28704,6 +28714,7 @@ static void show_classic_usb_popup(void)
         "Volatile: OFF each boot. No early boot, ROM or panic capture promised.\n"
 #endif
         "Back/Close preserves this explicit mode. Return normal reboots; keep GPS unplugged until power off.");
+#endif
     s_classic_usb_popup_status = lv_label_create(s_classic_usb_popup);
     lv_obj_set_width(s_classic_usb_popup_status, lv_pct(100));
     lv_label_set_long_mode(s_classic_usb_popup_status, LV_LABEL_LONG_WRAP);
@@ -28713,7 +28724,7 @@ static void show_classic_usb_popup(void)
     lv_obj_set_style_opa(s_classic_usb_popup_status, LV_OPA_COVER, 0);
     lv_label_set_text(s_classic_usb_popup_status, cym_classic_usb_status());
 #if CYM_CLASSIC_USB_PERSISTENT
-    /* Status/counters first, immediately visible; warning/actions still scroll. */
+    /* Keep counters and all actions visible together on entry. */
     lv_obj_move_to_index(s_classic_usb_popup_status, 0);
     classic_usb_popup_sync();
 #endif
@@ -28721,7 +28732,12 @@ static void show_classic_usb_popup(void)
     lv_event_cb_t callbacks[] = {classic_usb_enable_event, classic_usb_reboot_event, classic_usb_cancel};
     for (int i=0; i<3; ++i) {
         lv_obj_t *button = lv_btn_create(s_classic_usb_popup);
+#if CYM_CLASSIC_USB_PERSISTENT
+        lv_obj_set_size(button, lv_pct(100), landscape ? 30 : 42);
+        lv_obj_set_style_pad_all(button, 2, 0);
+#else
         lv_obj_set_size(button, lv_pct(100), 46);
+#endif
         lv_obj_add_event_cb(button, callbacks[i], LV_EVENT_CLICKED, NULL);
         lv_obj_t *label = lv_label_create(button);
         lv_obj_set_width(label, lv_pct(100));
