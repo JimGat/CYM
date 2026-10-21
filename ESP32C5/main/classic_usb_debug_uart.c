@@ -2,7 +2,7 @@
  * sink below. No console/ROM/bootloader/panic routing is changed. */
 #include "sdkconfig.h"
 #include "classic_usb_debug.h"
-#if CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HACKERBOX_CYD && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM
+#if CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "esp_log.h"

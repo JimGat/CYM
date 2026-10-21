@@ -277,7 +277,7 @@ class ClassicUsbUI(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='classic-lvgl-',dir=os.environ['TMPDIR']) as tmp:
             d=Path(tmp);(d/'test.c').write_text(code);(d/'nvs.h').write_text(NVS_STUB)
             (d/'esp_err.h').write_text('#pragma once\ntypedef int esp_err_t;\n#define ESP_OK 0\n#define ESP_FAIL -1\n#define ESP_ERR_INVALID_ARG 0x102\n#define ESP_ERR_INVALID_STATE 0x103\n#define ESP_ERR_NOT_SUPPORTED 0x106\n')
-            (d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n')
+            (d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n' + ('#define CONFIG_BOARD_HACKERBOX_CYD 1\n' if os.environ.get('CYM_TEST_HACKERBOX') == '1' else ''))
             lvgl=ROOT/'ESP32C5/managed_components/lvgl__lvgl'
             flags=['-std=gnu11','-O1','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=malloc','-DLV_MEM_CUSTOM_FREE=free','-DLV_MEM_CUSTOM_REALLOC=realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_14=1','-DLV_FONT_MONTSERRAT_16=1','-DLV_COLOR_DEPTH=16','-I'+str(lvgl),'-I'+str(d),'-I'+str(MAIN)]
             cmd=['cc',*flags,str(d/'test.c'),str(MAIN/'classic_usb_debug.c'),str(MAIN/'lv_extra_symbols.c'),*[str(p) for p in (lvgl/'src').rglob('*.c')],'-lm','-o',str(d/'test')]

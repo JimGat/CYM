@@ -58,7 +58,7 @@ int main(void){
 }
 """
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
-   d=Path(tmp);(d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n');(d/'mock.h').write_text(STUB)
+   d=Path(tmp);(d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n' + ('#define CONFIG_BOARD_HACKERBOX_CYD 1\n' if os.environ.get('CYM_TEST_HACKERBOX') == '1' else ''));(d/'mock.h').write_text(STUB)
    for h in ['esp_err.h','esp_timer.h','driver/uart.h','driver/gpio.h','esp_log.h','freertos/FreeRTOS.h','freertos/semphr.h','freertos/task.h']:
     p=d/h;p.parent.mkdir(exist_ok=True,parents=True);p.write_text('#include "mock.h"\n')
    (d/'host.c').write_text(code)

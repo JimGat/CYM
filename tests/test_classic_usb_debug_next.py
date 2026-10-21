@@ -69,7 +69,7 @@ int main(int argc,char **argv){
 class NextTransport(unittest.TestCase):
  def test_production_records_and_cleanup(self):
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
-   d=Path(tmp);(d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n');(d/'mock.h').write_text(STUB)
+   d=Path(tmp);(d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n' + ('#define CONFIG_BOARD_HACKERBOX_CYD 1\n' if os.environ.get('CYM_TEST_HACKERBOX') == '1' else ''));(d/'mock.h').write_text(STUB)
    for h in ['esp_err.h','esp_timer.h','driver/uart.h','driver/gpio.h','esp_log.h','freertos/FreeRTOS.h','freertos/semphr.h','freertos/task.h']:
     p=d/h;p.parent.mkdir(exist_ok=True,parents=True);p.write_text('#include "mock.h"\n')
    (d/'host.c').write_text(HARNESS)
@@ -96,7 +96,7 @@ int main(void){
 }
 """
   with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as tmp:
-   d=Path(tmp);(d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n');(d/'mock.h').write_text(STUB)
+   d=Path(tmp);(d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n' + ('#define CONFIG_BOARD_HACKERBOX_CYD 1\n' if os.environ.get('CYM_TEST_HACKERBOX') == '1' else ''));(d/'mock.h').write_text(STUB)
    for h in ['esp_err.h','esp_timer.h','driver/uart.h','driver/gpio.h','esp_log.h','freertos/FreeRTOS.h','freertos/semphr.h','freertos/task.h']:
     p=d/h;p.parent.mkdir(exist_ok=True,parents=True);p.write_text('#include "mock.h"\n')
    (d/'host.c').write_text(code)
@@ -153,7 +153,7 @@ esp_err_t cym_classic_usb_uart_stop(void){stops++;return fault==6?ESP_FAIL:ESP_O
 static esp_err_t quiet(void){assert(cym_classic_usb_gps_blocked());quiesces++;return fault==7?ESP_FAIL:ESP_OK;}
 int main(int argc,char **argv){
  (void)argc;fault=atoi(argv[1]);saved=atoi(argv[2]);int boot=atoi(argv[3]);(void)boot;
-#if CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HACKERBOX_CYD && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM
+#if CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM
  if(boot){
   int rc=cym_classic_usb_restore();
   if(fault||saved==9){assert(rc!=ESP_OK&&!cym_classic_usb_active()&&cym_classic_usb_gps_blocked());}

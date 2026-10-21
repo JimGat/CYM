@@ -65,7 +65,7 @@ class ClassicUsbRuntime(unittest.TestCase):
             (d / "host.c").write_text(HARNESS)
             for supported in (True, False):
                 cmd = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-I"+str(d), "-I"+str(MAIN)]
-                if supported: cmd += ["-DCONFIG_BOARD_CYD2USB=1", "-DCONFIG_BOARD_HACKERBOX_CYD=1"]
+                if supported: cmd += ["-DCONFIG_BOARD_CYD2USB=1", "-DCONFIG_BOARD_HAS_PSRAM=1"]
                 subprocess.run(cmd + [str(MAIN / "classic_usb_debug.c"), str(d / "host.c"), "-o", str(d / "host")], check=True)
                 for fault in range(4):
                     with self.subTest(supported=supported, fault=fault):
@@ -204,7 +204,7 @@ class ClassicUsbTransport(unittest.TestCase):
     def test_production_uart_faults_and_bounded_logging(self):
         with tempfile.TemporaryDirectory(prefix="classic-uart-", dir=os.environ["TMPDIR"]) as tmp:
             d=Path(tmp)
-            (d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n#define CONFIG_BOARD_HACKERBOX_CYD 1\n')
+            (d/'sdkconfig.h').write_text('#define CONFIG_BOARD_CYD2USB 1\n#define CONFIG_BOARD_HAS_PSRAM 1\n')
             (d/'mock.h').write_text(TRANSPORT_STUB)
             for h in ['esp_err.h','driver/uart.h','driver/gpio.h','esp_log.h','freertos/FreeRTOS.h','freertos/semphr.h']:
                 p=d/h;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('#include "mock.h"\n')

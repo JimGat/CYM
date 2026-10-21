@@ -2,7 +2,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "sdkconfig.h"
-#define CYM_CLASSIC_USB_PERSISTENT (CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HACKERBOX_CYD && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM)
+#define CYM_CLASSIC_USB_PERSISTENT (CONFIG_BOARD_CYD2USB && !CONFIG_BOARD_HAS_PSRAM && !CONFIG_SPIRAM)
 #include "esp_err.h"
 #if CYM_CLASSIC_USB_PERSISTENT
 #include <stdarg.h>
