@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only eight-board package gate; never builds, flashes or downloads."""
+"""Read-only nine-board package gate; never builds, flashes or downloads."""
 from pathlib import Path
 import argparse,hashlib,json,re,struct,subprocess
 ROOT=Path(__file__).resolve().parents[1]
@@ -10,6 +10,7 @@ BOARDS=[
  ('hosyond-s3-35','ESP32S3','build_hosyond-s3-35','docs/manifest.hosyond-s3-35.json','HOSYOND_S3_35',16),
  ('ws-c5-35','ESP32C5','build_ws-c5-35','docs/manifest.ws-c5-35.json','WS_C5_35',32),
  ('pancake-c5','ESP32C5','build_pancake-c5','docs/manifest.pancake-c5.json','PANCAKE_C5',8),
+ ('cyd-2432s028-l','ESP32','build_cyd-2432s028-l','docs/manifest.cyd-2432s028-l.json','CYD_2432S028_L',4),
  ('hackerbox-cyd','ESP32','build_hackerbox-cyd','docs/manifest.hackerbox-cyd.json','HACKERBOX_CYD',4),
  ('ws-s3-5b','ESP32S3','build_ws-s3-5b','docs/manifest.ws-s3-5b.json','WS_S3_5B',16)]
 def sha(b):return hashlib.sha256(b).hexdigest()
@@ -19,12 +20,16 @@ def sections(path):
  rows=[struct.unpack_from('<IIIIIIIIII',b,off+i*ents) for i in range(names_count)]
  st=rows[names_idx];strings=b[st[4]:st[4]+st[5]]
  return [dict(name=strings[x[0]:].split(b'\0')[0].decode(),type=x[1],flags=x[2],addr=x[3],size=x[5]) for x in rows]
-def verify(version,commit=None):
+def verify(version,commit=None,build_map=None,package_map=None):
+ build_map=build_map or {};package_map=package_map or {}
  result=[];artifacts=[]
  for board,soc,build_name,mp,flag,mb in BOARDS:
-  base=ROOT/soc;build=base/build_name;manifest_path=base/mp;m=json.loads(manifest_path.read_text())
-  assert m['version']==m['build']==version,(board,'manifest version')
-  d=json.loads((build/'project_description.json').read_text());assert d['project_version']==version
+  package_root=Path(package_map.get(board,ROOT));base=package_root/soc
+  build=Path(build_map.get(board,ROOT/soc/build_name));manifest_path=base/mp;m=json.loads(manifest_path.read_text())
+  # --version is the changed Classic cycle; unaffected SoCs retain their own source version.
+  expected=version if soc=='ESP32' else re.search(r'set\(PROJECT_VER \"([^\"]+)\"\)',(ROOT/soc/'CMakeLists.txt').read_text())[1]
+  assert m['version']==m['build']==expected,(board,'manifest version',expected)
+  d=json.loads((build/'project_description.json').read_text());assert d['project_version']==expected
   cfg=(build/'config/sdkconfig.h').read_text()
   assert '#define CONFIG_BOARD_'+flag+' 1' in cfg,(board,'board flag',flag)
   ws=board in ('ws-c5-28','ws-c5-35')
@@ -37,7 +42,7 @@ def verify(version,commit=None):
    data=p.read_bytes();offset=part['offset'];original=build/f['flash_files'][hex(offset)]
    assert data==original.read_bytes(),(board,'package does not equal generated part',p)
    assert offset+len(data)<=mb*1024*1024
-   rec=dict(board=board,path=str(p.relative_to(ROOT)),size=len(data),sha256=sha(data),offset=offset)
+   rec=dict(board=board,path=str(p.relative_to(package_root)),size=len(data),sha256=sha(data),offset=offset)
    if 'sha256' in part:assert part['sha256']==rec['sha256']
    if 'size' in part:assert part['size']==rec['size']
    artifacts.append(rec);exported[offset]=data
@@ -45,7 +50,7 @@ def verify(version,commit=None):
    if offset==int(f['partition-table']['offset'],0):partition=data
   assert app and partition
   ab=app.read_bytes();assert ab[0]==0xe9 and struct.unpack_from('<I',ab,32)[0]==0xabcd5432
-  descriptor=ab[48:80].split(b'\0')[0].decode();assert descriptor==version,(board,descriptor)
+  descriptor=ab[48:80].split(b'\0')[0].decode();assert descriptor==expected,(board,descriptor)
   flash_mib=1<<(ab[3]>>4);assert flash_mib==mb,(board,flash_mib,mb)
   assert struct.unpack_from('<H',ab,12)[0]=={'esp32':0,'esp32s3':9,'esp32c5':23}[d['target']]
   partitions=[]
@@ -65,7 +70,7 @@ def verify(version,commit=None):
     assert (1<<(actual[3]>>4))==mb
    else:assert actual==data,(board,'merged part mismatch',off)
   assert len(fb)==65536+len(ab) and len(fb)<=mb*1024*1024
-  artifacts.append(dict(board=board,path=str(full.relative_to(ROOT)),size=len(fb),sha256=sha(fb),offset=0))
+  artifacts.append(dict(board=board,path=str(full.relative_to(package_root)),size=len(fb),sha256=sha(fb),offset=0))
   nm=d['c_compiler'].removesuffix('gcc')+'nm'
   sym=subprocess.check_output([nm,'-S','--defined-only',str(build/d['app_elf'])],text=True)
   names={l.split()[-1] for l in sym.splitlines() if l.split()}
@@ -90,14 +95,15 @@ def verify(version,commit=None):
   ram=[x for x in sec if x['flags']&2 and x['size'] and (0x40800000<=x['addr']<0x4084e5a0 if soc=='ESP32C5' else x['name'].startswith(('.dram','.iram')))]
   memory=dict(engine_state_bytes=state_size,reset_ranges=reset_ranges,linked_internal_allocated_bytes=sum(x['size'] for x in ram),sections=ram)
   if soc=='ESP32C5':memory['static_internal_upper_bound_free']=0x4084e5a0-max(x['addr']+x['size'] for x in ram)
-  result.append(dict(board=board,manifest=str(manifest_path.relative_to(ROOT)),manifest_sha256=sha(manifest_path.read_bytes()),version=descriptor,flash_mib=mb,app_bytes=len(ab),app_partition_bytes=ap['size'],app_free_bytes=ap['size']-len(ab),full_bytes=len(fb),partitions=partitions,memory=memory,engine=ws,generated_config=str((build/'config/sdkconfig.h').relative_to(ROOT))))
+  result.append(dict(board=board,manifest=str(manifest_path.relative_to(package_root)),manifest_sha256=sha(manifest_path.read_bytes()),version=descriptor,flash_mib=mb,app_bytes=len(ab),app_partition_bytes=ap['size'],app_free_bytes=ap['size']-len(ab),full_bytes=len(fb),partitions=partitions,memory=memory,engine=ws,generated_config=str(build/'config/sdkconfig.h')))
   print(board,'PASS',descriptor,'app',len(ab),'state',memory['engine_state_bytes'],flush=True)
- assert len(result)==8 and len(artifacts)==32
+ assert len(result)==9 and len(artifacts)==36
  if commit:
+  assert not package_map, 'Git object comparison requires canonical packages'
   for a in artifacts:
    blob=subprocess.check_output(['git','show',commit+':'+a['path']],cwd=ROOT)
    assert len(blob)==a['size'] and sha(blob)==a['sha256'],('Git artifact differs or is LFS pointer',a['path'])
- return dict(version=version,boards=result,artifacts=artifacts,counts=dict(boards=8,artifacts=32),git_objects_verified=commit)
+ return dict(version=version,boards=result,artifacts=artifacts,counts=dict(boards=9,artifacts=36),git_objects_verified=commit)
 if __name__=='__main__':
- p=argparse.ArgumentParser();p.add_argument('--version',required=True);p.add_argument('--output',required=True);p.add_argument('--commit');a=p.parse_args()
- r=verify(a.version,a.commit);Path(a.output).write_text(json.dumps(r,indent=2)+'\n');print('VERIFIED eight boards, 32 artifacts',flush=True)
+ p=argparse.ArgumentParser();p.add_argument('--version',required=True);p.add_argument('--output',required=True);p.add_argument('--commit');p.add_argument('--build-map',help='JSON board-to-build-directory map for isolated evidence builds');p.add_argument('--package-map',help='JSON board-to-package-root map for preserved compatibility builds');a=p.parse_args()
+ r=verify(a.version,a.commit,json.loads(Path(a.build_map).read_text()) if a.build_map else None,json.loads(Path(a.package_map).read_text()) if a.package_map else None);Path(a.output).write_text(json.dumps(r,indent=2)+'\n');print('VERIFIED nine boards, 36 artifacts',flush=True)

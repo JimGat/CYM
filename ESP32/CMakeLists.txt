@@ -33,7 +33,7 @@ endif()
 if("CONFIG_BOARD_CYD2USB=y" IN_LIST _classic_version_lines
    AND NOT "CONFIG_BOARD_HAS_PSRAM=y" IN_LIST _classic_version_lines
    AND NOT "CONFIG_SPIRAM=y" IN_LIST _classic_version_lines)
-    set(PROJECT_VER "v3.0.36")
+    set(PROJECT_VER "v3.0.37")
 endif()
 unset(_classic_version_config)
 unset(_classic_version_lines)
@@ -68,7 +68,13 @@ target_compile_definitions(${lwip_lib} PRIVATE IP_FORWARD_ALLOW_TX_ON_RX_NETIF=1
 # The internal build artifact is always CYM-CYD2USB.bin (project name).
 # It is copied to the export dir under the proper user-facing OUTPUT_BIN_NAME.
 # CONFIG_* variables are available after project() in ESP-IDF CMake.
-if(CONFIG_BOARD_HACKERBOX_CYD)
+if(CONFIG_BOARD_CYD_2432S028_L)
+    set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-cyd-2432s028-l")
+    set(OUTPUT_BIN_NAME "CYM-CYD-2432S028-L")
+    set(FLASH_SIZE "4MB")
+    set(FLASH_FREQ "40m")
+    set(BOOTLOADER_OFFSET "0x1000")
+elseif(CONFIG_BOARD_HACKERBOX_CYD)
     set(EXPORT_DIR "${CMAKE_SOURCE_DIR}/binaries-hackerbox-cyd")
     set(OUTPUT_BIN_NAME "CYM-HackerBox-CYD")
     set(FLASH_SIZE "4MB")

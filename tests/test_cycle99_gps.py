@@ -103,7 +103,14 @@ int main(void){
   self.assertEqual(other(old),other(MAIN.read_text()))
   for name in ['ws_c5_28','nm_cyd_c5','pancake_c5','cyd2usb','hosyond_s3_35','ws_s3_5b']:
    rel=f'ESP32C5/components/board_hal/include/boards/{name}.h'
-   self.assertEqual(subprocess.check_output(['git','show',BASE+':'+rel],cwd=ROOT),(ROOT/rel).read_bytes(),rel)
+   before=subprocess.check_output(['git','show',BASE+':'+rel],cwd=ROOT)
+   after=(ROOT/rel).read_bytes()
+   if name=='cyd2usb':
+    # -L adds identity/default only; compare every existing family's effective definitions.
+    for flags in [[],['CONFIG_BOARD_CYD2USB'],['CONFIG_BOARD_CYD2USB','CONFIG_BOARD_HACKERBOX_CYD']]:
+     cmd=['cc','-E','-dM','-x','c',*['-D'+f+'=1' for f in flags],'-']
+     self.assertEqual(subprocess.check_output(cmd,input=before),subprocess.check_output(cmd,input=after),flags)
+   else:self.assertEqual(before,after,rel)
  def test_game_paths_use_guarded_button_not_gpio28_nmea(self):
   m=MAIN.read_text();game=m[m.index('static game_read game_nvs_read'):m.index('static void app_main',m.index('static game_read game_nvs_read'))] if 'static void app_main' in m else m[m.index('static game_read game_nvs_read'):m.index('void app_main',m.index('static game_read game_nvs_read'))]
   self.assertNotIn('gpio_get_level(BOOT_BTN_GPIO)',game)

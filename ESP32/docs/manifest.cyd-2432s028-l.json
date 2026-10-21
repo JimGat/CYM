@@ -1,0 +1,20 @@
+{
+  "name": "Cheap Yellow Monster - CYD-2432S028-L (Development)",
+  "version": "v3.0.37",
+  "build": "v3.0.37",
+  "chipFamily": "ESP32",
+  "parts": [
+    {
+      "path": "../binaries-cyd-2432s028-l/bootloader.bin",
+      "offset": 4096
+    },
+    {
+      "path": "../binaries-cyd-2432s028-l/partition-table.bin",
+      "offset": 32768
+    },
+    {
+      "path": "../binaries-cyd-2432s028-l/CYM-CYD-2432S028-L.bin",
+      "offset": 65536
+    }
+  ]
+}

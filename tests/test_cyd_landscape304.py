@@ -91,13 +91,14 @@ class Landscape304(unittest.TestCase):
         self.assertIn('nvs_set_u8(h, NVS_KEY_ORIENT, orient)',function('nvs_settings_save_orientation'))
 
     def test_native_mapping_unchanged(self):
-        hashes={'init_display': '0eaadda0b41c61c65442b01e4125e0ae84e2e1fb7303ba415ed90452c9054141', 'lvgl_flush_cb': '043f1ce3355f95792d2ca57400d103b93446bea25b23f606c690d4cf2de8a7b6', 'lvgl_touch_read_cb': '03769dba0cc0f5a6c06bd7c4d3e616db89fac44614b92edaacd2ac223bee2184'}
+        hashes={'lvgl_flush_cb': '043f1ce3355f95792d2ca57400d103b93446bea25b23f606c690d4cf2de8a7b6', 'lvgl_touch_read_cb': '03769dba0cc0f5a6c06bd7c4d3e616db89fac44614b92edaacd2ac223bee2184'}
         for name,digest in hashes.items():
             # Pin native callbacks/panel setup, independently of rotation gates.
             body=function(name); body=body[body.index(name+'('):]
             self.assertEqual(hashlib.sha256(body.encode()).hexdigest(),digest,name)
-        for name,digest in {'ESP32C5/main/xpt2046.c': 'e2c2a96aa39b4da4aa1b9657c3b122bf48062c65c6d3069e2cbc514f4dafd045', 'ESP32C5/components/board_hal/include/boards/cyd2usb.h': '427013f5c09a7ccd2c71fa0fb188f96775fdff84b7a3d79ef4a58f95a0a5b07f', 'ESP32/sdkconfig.defaults.hackerbox-cyd': '62069b3aa5b9d7f7352fcca22948dda55bb450f2b8d37d3c52f9b5d5c29f8d95'}.items():
+        for name,digest in {'ESP32C5/main/xpt2046.c': 'e2c2a96aa39b4da4aa1b9657c3b122bf48062c65c6d3069e2cbc514f4dafd045', 'ESP32/sdkconfig.defaults.hackerbox-cyd': '62069b3aa5b9d7f7352fcca22948dda55bb450f2b8d37d3c52f9b5d5c29f8d95'}.items():
             self.assertEqual(hashlib.sha256((ROOT/name).read_bytes()).hexdigest(),digest,name)
+        # Existing native init/header contracts are now board-preprocessed in test_cyd_l_variant.
         self.assertIn('#define TOUCH_CAL_NVS_NS "touch_hb"',SRC)
 
     def test_installed_lvgl_indev_rotation_native_corners_center(self):

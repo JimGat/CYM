@@ -53,6 +53,14 @@
 #define BOARD_LCD_WIDTH        240
 #define BOARD_LCD_HEIGHT       320
 
+#if defined(CONFIG_BOARD_CYD_2432S028_L)
+#if defined(CONFIG_BOARD_HACKERBOX_CYD)
+#error "CYD-2432S028-L and HackerBox mappings are mutually exclusive"
+#endif
+// Alternate mapping selection only; valid saved orientation still wins.
+#define BOARD_DEFAULT_ORIENTATION 1
+#endif
+
 // ── NM-RF-HAT via SD Card Shim (CONFIG_BOARD_HAS_RF_HAT=y build only) ─────────
 // The SD Card Shim sits in the Classic CYD's microSD slot and routes the HSPI
 // SPI bus (GPIO18/SCK, GPIO23/MOSI, GPIO19/MISO, GPIO5/CS) to the NM-RF-HAT's
@@ -106,6 +114,10 @@
 #define BOARD_TIME_HAS_MDNS                   0
 #define BOARD_TIME_ESTIMATE_CHARACTERIZED     0
 
+#if defined(CONFIG_BOARD_CYD_2432S028_L)
+#define BOARD_NAME             "CYD-2432S028-L"
+#else
 #define BOARD_NAME             "CYD2USB"
+#endif
 #define BOARD_DISPLAY_DRIVER   "ILI9341"
 #define BOARD_TOUCH_DRIVER     "XPT2046"

@@ -3546,3 +3546,15 @@ unchanged. The compact popup, bounded logger and GPS safeguards are retained.
    Host tests do not prove RF reception, physical responsiveness or peripheral coexistence.
 6. Keep GPS unplugged while USB Debug is saved ON, including reboots. Successfully
    use Return normal / Reboot, then power off before reconnecting GPS.
+
+
+## Development alternate mapping: CYD-2432S028-L
+
+PR25 by **@gabecamp** is isolated as **CYD-2432S028-L**, an explicit alternate
+mapping selection, not a global generic CYD change. Generic CYD and HackerBox
+keep their accepted transforms, colors, defaults and calibration. No Stable
+artifact exists; physical touch and all-orientation/BLE-pressure acceptance are
+pending. Contributor reports the white bar fixed on HW458 TPM408-2.8, not touch
+qualification or a proven different controller/mounting. See the [build, selection
+and hardware acceptance guide](docs/operators/cyd-2432s028-l.md). Existing
+co-developer **@birolt29** credit and both navigation layouts are retained.

@@ -1,0 +1,4 @@
+# CYD-2432S028-L: inherit sdkconfig.defaults.cyd2usb first.
+# Explicit alternate native mapping; Development only, physical touch unverified.
+CONFIG_BOARD_CYD_2432S028_L=y
+# CONFIG_BOARD_HACKERBOX_CYD is not set

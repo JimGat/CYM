@@ -63,6 +63,13 @@ case "$BOARD" in
 
     # ── ESP32 boards ─────────────────────────────────────────────────────────
 
+    cyd-2432s028-l)
+        SOC_DIR="$REPO_ROOT/ESP32"
+        TARGET="esp32"
+        BUILD_DIR="build_cyd-2432s028-l"
+        SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cyd2usb;sdkconfig.defaults.cyd-2432s028-l"
+        ;;
+
     hackerbox-cyd)
         SOC_DIR="$REPO_ROOT/ESP32"
         TARGET="esp32"
@@ -118,7 +125,7 @@ case "$BOARD" in
         echo ""
         echo "Known boards:"
         echo "  ESP32-C5: nm-cyd-c5  ws-c5-28  ws-c5-35  pancake-c5"
-        echo "  ESP32:    cyd-2432s028  (alias: cyd2usb)"
+        echo "  ESP32:    cyd-2432s028  (alias: cyd2usb)  hackerbox-cyd  cyd-2432s028-l"
         echo "  ESP32-S3: hosyond-s3-28  hosyond-s3-35  hosyond-s3-40"
         echo ""
         exit 1

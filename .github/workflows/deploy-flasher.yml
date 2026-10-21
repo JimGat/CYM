@@ -131,6 +131,17 @@ jobs:
               assert Path("_site/beta", part["path"]).is_file()
           Path("_site/beta/manifest.ws-s3-5b.json").write_text(json.dumps(m, indent=2) + "\n")
           PY
+          mkdir -p _site/beta/binaries-cyd-2432s028-l
+          cp ESP32/binaries-cyd-2432s028-l/*.bin _site/beta/binaries-cyd-2432s028-l/
+          python3 - <<"PYL"
+          import json
+          from pathlib import Path
+          m = json.loads(Path("ESP32/docs/manifest.cyd-2432s028-l.json").read_text())
+          for part in m["parts"]:
+              part["path"] = part["path"].removeprefix("../")
+              assert Path("_site/beta", part["path"]).is_file()
+          Path("_site/beta/manifest.cyd-2432s028-l.json").write_text(json.dumps(m, indent=2) + "\n")
+          PYL
           test -s _site/beta/index.html
           python3 - <<'PY'
           from pathlib import Path

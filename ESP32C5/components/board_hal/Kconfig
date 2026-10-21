@@ -82,6 +82,14 @@ menu "CYM Board Selection"
         depends on BOARD_CYD2USB
         default n
 
+    config BOARD_CYD_2432S028_L
+        bool "CYD-2432S028-L alternate panel mapping (Development)"
+        depends on BOARD_CYD2USB && !BOARD_HACKERBOX_CYD
+        default n
+        help
+            Explicit alternate native mapping from PR25; not automatic detection.
+            Retains Classic family pins, peripherals and no-PSRAM protections.
+
     config BOARD_HAS_PSRAM
         bool
         default y if BOARD_WS_S3_5B || BOARD_NM_CYD_C5 || BOARD_WS_C5_28 || BOARD_PANCAKE_C5 || BOARD_WS_C5_35 || BOARD_HOSYOND_S3_35 || BOARD_HOSYOND_S3_28 || BOARD_HOSYOND_S3_40

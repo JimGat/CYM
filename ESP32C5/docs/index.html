@@ -484,6 +484,17 @@
           bootOffset: "0x2000",
           beta:    true,
         },
+        "cyd-2432s028-l": {
+          label: "CYD-2432S028-L",
+          chip: "ESP32", soc: "ESP32",
+          desc: "Development-only explicit alternate CYD mapping (PR25). Native 240x320; landscape fallback; touch hardware acceptance pending. Not a replacement for generic CYD or HackerBox.",
+          binDir: "binaries-cyd-2432s028-l",
+          appBin: "CYM-CYD-2432S028-L.bin",
+          fullBin: "CYM-CYD-2432S028-L-full.bin",
+          manifest: "docs/manifest.cyd-2432s028-l.json",
+          bootOffset: "0x1000", beta: true,
+          stableAvailable: false,
+        },
         "hackerbox-cyd": {
           label: "HackerBox CYD",
           chip: "ESP32", soc: "ESP32",
@@ -645,6 +656,9 @@
         ui.dlPart.querySelector("code").textContent = bd.partBin || "partition-table.bin";
         ui.dlManifest.href       = raw(branch, bd.soc, bd.manifest);
         ui.dlManifestName.textContent = bd.manifest.replace("docs/", "");
+        if (state.channel === "stable" && bd.stableAvailable === false) {
+          [ui.dlFull, ui.dlApp, ui.dlBoot, ui.dlPart, ui.dlManifest].forEach(a => a.removeAttribute("href"));
+        }
       };
 
       // ── Manifest ──────────────────────────────────────────────────────────────
@@ -662,15 +676,25 @@
         };
       };
 
+      let manifestRequest = 0;
       const loadManifest = async () => {
+        const request = ++manifestRequest;
         const bd          = BOARDS[state.board];
         const branch      = BRANCH[state.channel];
         const manifestUrl = raw(branch, bd.soc, bd.manifest);
         const binDirUrl   = raw(branch, bd.soc, bd.binDir);
 
+        if (state.channel === "stable" && bd.stableAvailable === false) {
+          state.manifest = null;
+          updateBoardUI();
+          ui.flashBtn.disabled = true;
+          ui.quickFlashBtn.disabled = true;
+          throw new Error(`${bd.label} has no Stable artifact. Select Development; board selection is preserved.`);
+        }
         const res = await fetch(manifestUrl, { cache: "no-store" });
         if (!res.ok) throw new Error(`Manifest fetch failed [${state.channel}/${state.board}]: ${res.status} ${res.statusText}`);
         const rawData = await res.json();
+        if (request !== manifestRequest) return; // Ignore stale board/channel responses.
 
         // Normalize flat and Web Tools builds manifests and rewrite each part.
         state.manifest = normalizeManifest(rawData, binDirUrl);
@@ -1079,7 +1103,7 @@
 
       // ── Channel / Board switching ─────────────────────────────────────────────
       const switchChannel = (ch) => {
-        if (BOARDS[state.board]?.beta || BOARDS[state.board]?.stableAvailable === false) ch = "dev";
+        if (state.board !== "cyd-2432s028-l" && (BOARDS[state.board]?.beta || BOARDS[state.board]?.stableAvailable === false)) ch = "dev";
         if (ch === state.channel) return;
         state.channel  = ch;
         state.manifest = null;
