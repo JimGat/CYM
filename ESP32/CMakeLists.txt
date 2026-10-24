@@ -11,7 +11,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-zmuldefs")
 # ── Single source of truth for firmware version ──────────────────────────────
 # Classic-only candidate. Use actual saved Kconfig when present; on first
 # configure inspect defaults. All deliberately skipped boards keep v3.0.33.
-set(PROJECT_VER "v3.0.33")
+set(PROJECT_VER "v3.0.38")
 set(_classic_version_config "${SDKCONFIG}")
 if(NOT _classic_version_config)
     set(_classic_version_config "${CMAKE_SOURCE_DIR}/sdkconfig")
@@ -33,7 +33,7 @@ endif()
 if("CONFIG_BOARD_CYD2USB=y" IN_LIST _classic_version_lines
    AND NOT "CONFIG_BOARD_HAS_PSRAM=y" IN_LIST _classic_version_lines
    AND NOT "CONFIG_SPIRAM=y" IN_LIST _classic_version_lines)
-    set(PROJECT_VER "v3.0.37")
+    set(PROJECT_VER "v3.0.38")
 endif()
 unset(_classic_version_config)
 unset(_classic_version_lines)

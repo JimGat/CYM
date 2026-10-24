@@ -408,6 +408,7 @@ static lv_obj_t       *s_blaster_layers_lbl = NULL;
 static lv_obj_t       *s_blaster_count_lbl  = NULL;
 static lv_timer_t     *s_blaster_tmr        = NULL;
 static TaskHandle_t    s_blaster_nrf_task   = NULL;
+static bool nrf24_hat_ready(void);
 static volatile int    s_blaster_pkt_count  = 0;
 
 // HoneyPair UI state
@@ -2802,7 +2803,7 @@ PSRAM_ATTR static nrf24_futaba_ctx_t *s_nfut = NULL;
 PSRAM_ATTR static int       s_n24_page = 0;
 PSRAM_ATTR static lv_obj_t *s_n24_pages[NRF24_NUM_PAGES];
 PSRAM_ATTR static lv_obj_t *s_n24_page_lbl = NULL;
-PSRAM_ATTR static bool           s_n24_jam_active    = false;
+PSRAM_ATTR static volatile bool           s_n24_jam_active    = false;
 PSRAM_ATTR static nrf24_jam_mode_t s_n24_jam_mode    = NRF24_JAM_TEST;
 PSRAM_ATTR static lv_obj_t      *s_n24_jam_status    = NULL;
 PSRAM_ATTR static lv_obj_t      *s_n24_mode_btns[10] = {NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
@@ -41028,7 +41029,7 @@ static void s_blaster_nrf_task_fn(void *arg)
     // (±1 MHz guard around nRF24 ch2/ch26/ch80 = BLE adv ch37/38/39).
     // Matches exactly what the ESP32 BLE flood is targeting above.
     nrf24_jam_sweep(&s_blaster_nrf_active, NRF24_JAM_BLE_ADV);
-    s_blaster_nrf_task = NULL;
+    __atomic_store_n(&s_blaster_nrf_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -41089,6 +41090,7 @@ static void s_blaster_start_cb(lv_event_t *e)
 {
     (void)e;
     if (s_blaster_active) return;
+    if (!nrf24_hat_ready()) return;
     if (!ensure_ble_mode()) {
         if (s_blaster_status_lbl)
             lv_label_set_text(s_blaster_status_lbl, "BLE init failed");
@@ -53786,20 +53788,66 @@ static void show_whisperpair_screen(void)
 // before activating either module guarantees the competing driver has released
 // the GPIO matrix before raw GPIO or the other peripheral touches those pins.
 
-static void ir_hat_claim(void)
+/* Integration safeguard: cancellation is not worker completion. Keep the driver
+ * and shared board-adapted pins owned until every nRF24 worker acknowledges exit.
+ * These workers never need the LVGL lock to publish their final task=NULL. */
+static bool nrf24_hat_quiesce(void)
 {
+    if (s_ncs)    { s_ncs->active = false;    s_ncs->cancel = true; }
+    if (s_nsniff) { s_nsniff->active = false; s_nsniff->cancel = true; }
+    if (s_nfut)   { s_nfut->active = false;   s_nfut->cancel = true; }
+    s_n24_jam_active = false;
+    s_blaster_nrf_active = false;
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t interval = pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1;
+    while ((s_ncs && __atomic_load_n(&s_ncs->task, __ATOMIC_ACQUIRE)) ||
+           (s_nsniff && __atomic_load_n(&s_nsniff->task, __ATOMIC_ACQUIRE)) ||
+           (s_nfut && __atomic_load_n(&s_nfut->task, __ATOMIC_ACQUIRE)) ||
+           __atomic_load_n(&s_n24_jam_task, __ATOMIC_ACQUIRE) ||
+           __atomic_load_n(&s_blaster_nrf_task, __ATOMIC_ACQUIRE)) {
+        if ((TickType_t)(xTaskGetTickCount() - start) >= pdMS_TO_TICKS(1500))
+            return false;  // no deinit, free, re-probe or competing GPIO takeover
+        vTaskDelay(interval);
+    }
+    return true;
+}
+
+static bool nrf24_hat_ready(void)
+{
+    if (nrf24_hat_quiesce()) return true;
+    ESP_LOGW("RFHAT", "nRF24 worker still stopping; shared pins retained");
+    static const char *buttons[] = { "" };
+    lv_obj_t *box = lv_msgbox_create(NULL, "RF HAT busy",
+        "Radio is still stopping.\nPlease retry shortly.", buttons, true);
+    lv_obj_set_width(box, lv_disp_get_hor_res(NULL) - 20);
+    lv_obj_center(box);
+    return false;
+}
+
+static bool ir_hat_claim(void)
+{
+    if (!nrf24_hat_ready()) return false;
     if (cc1101_is_init())        cc1101_deinit();
     if (rfid_manager_is_init()) rfid_manager_deinit();
     if (rf433_hat_is_init())    rf433_hat_deinit();
+    // Also tear down a stale nRF24: it shares GPIO8/9, and if left initialised (e.g. the user
+    // opened an nRF24 screen first) it keeps GPIO9 driven as CSN output -> the IR RX (IR_DR on
+    // the same pin) reads the driven pad, not the IRM-3638T receiver, so Capture returns "No
+    // signal" even though RX hardware + pins are correct. Same shared-GPIO8/9 root as GH #28.
+    if (nrf24_is_init())        nrf24_deinit();
     if (!ir_hat_is_init())      ir_hat_init();
+    return true;
 }
 
-static void rf433_hat_claim(void)
+static bool rf433_hat_claim(void)
 {
+    if (!nrf24_hat_ready()) return false;
     if (cc1101_is_init())        cc1101_deinit();
     if (rfid_manager_is_init()) rfid_manager_deinit();
     if (ir_hat_is_init())       ir_hat_deinit();
+    if (nrf24_is_init())        nrf24_deinit();   // shares HAT control pins - see ir_hat_claim (GH #28)
     if (!rf433_hat_is_init())   rf433_hat_init();
+    return true;
 }
 
 // PSRAM-allocated card buffers — declared here so rfid_hat_claim() can see them.
@@ -53807,25 +53855,31 @@ static void rf433_hat_claim(void)
 static rfid_card_t *s_rfid_last_card = NULL;
 static rfid_card_t *s_rfid_kt_card   = NULL;
 
-static void rfid_hat_claim(void)
+static bool rfid_hat_claim(void)
 {
+    if (!nrf24_hat_ready()) return false;
     if (cc1101_is_init())    cc1101_deinit();
     if (ir_hat_is_init())    ir_hat_deinit();
     if (rf433_hat_is_init()) rf433_hat_deinit();
+    if (nrf24_is_init())     nrf24_deinit();   // shares HAT control pins - see ir_hat_claim (GH #28)
     if (!s_rfid_last_card)
         s_rfid_last_card = heap_caps_calloc(1, sizeof(rfid_card_t), MALLOC_CAP_SPIRAM);
     if (!s_rfid_kt_card)
         s_rfid_kt_card   = heap_caps_calloc(1, sizeof(rfid_card_t), MALLOC_CAP_SPIRAM);
     if (!rfid_manager_is_init()) rfid_manager_init();
+    return true;
 }
 
-static void cc1101_hat_claim(void)
+static bool cc1101_hat_claim(void)
 {
+    if (!nrf24_hat_ready()) return false;
     if (rfid_manager_is_init()) rfid_manager_deinit();
     if (ir_hat_is_init())       ir_hat_deinit();
     if (rf433_hat_is_init())    rf433_hat_deinit();
+    if (nrf24_is_init())        nrf24_deinit();   // shares HAT control pins - see ir_hat_claim (GH #28)
     // cc1101_init() is called lazily from the HW test screen so the UI can
     // display the result — don't auto-init here.
+    return true;
 }
 
 // Back-to-parent wrappers that release GPIO8/9 before leaving the module menu.
@@ -54621,7 +54675,7 @@ static void led_rmt_screen_stop(void)
 
 static void show_ir_led_rmt_screen(void)
 {
-    ir_hat_claim();   /* init RMT TX, release CC1101/RFID/RF433 GPIO */
+    if (!ir_hat_claim()) return;   /* init RMT TX, release CC1101/RFID/RF433 GPIO */
     create_function_page_base("LED Remote");
     g_screen_stop_fn = led_rmt_screen_stop;
     apply_menu_bg();
@@ -54762,7 +54816,7 @@ static void s_ir_capture_done(ir_hat_err_t result, const ir_signal_t *sig, void 
 static void ir_cap_start_cb(lv_event_t *e)
 {
     (void)e;
-    ir_hat_claim();
+    if (!ir_hat_claim()) return;
     if (s_ir_cap_status_lbl) {
         lv_label_set_text(s_ir_cap_status_lbl, "Listening... (5s)");
         lv_obj_set_style_text_color(s_ir_cap_status_lbl, lv_color_hex(0xFFB300), 0);
@@ -55171,7 +55225,7 @@ static void ir_do_replay_cb(lv_event_t *e)
 {
     (void)e;
     if (s_ir_sel_signal < 0 || s_ir_sel_signal >= s_ir_signal_count) return;
-    ir_hat_claim();
+    if (!ir_hat_claim()) return;
     if (s_ir_sig_status) {
         lv_label_set_text(s_ir_sig_status, "Transmitting...");
         lv_obj_set_style_text_color(s_ir_sig_status, ui_text_color(), 0);
@@ -55322,7 +55376,7 @@ static void tvbg_start_cb(lv_event_t *e)
         if (s_tvbg_start_btn) lv_obj_add_state(s_tvbg_start_btn, LV_STATE_DISABLED);
         return;
     }
-    ir_hat_claim();
+    if (!ir_hat_claim()) return;
     s_tvbg_running = true;
     if (s_tvbg_status)    lv_label_set_text(s_tvbg_status, "Transmitting...");
     if (s_tvbg_bar)       lv_bar_set_value(s_tvbg_bar, 0, LV_ANIM_OFF);
@@ -55400,7 +55454,7 @@ static void ir_jam_toggle_cb(lv_event_t *e)
             if (lbl) lv_label_set_text(lbl, LV_SYMBOL_WARNING "  START JAM");
         }
     } else {
-        ir_hat_claim();
+        if (!ir_hat_claim()) return;
         ir_hat_jam_start(0);
         if (s_ir_jam_status) lv_label_set_text(s_ir_jam_status, "JAMMING - 38kHz active");
         if (s_ir_jam_status) lv_obj_set_style_text_color(s_ir_jam_status, lv_color_hex(0xFF5722), 0);
@@ -55520,7 +55574,7 @@ static void ur_refresh_brand_ui(void)
 static ir_hat_err_t ur_try_signal(const char *remote, const char *sig_name)
 {
     PSRAM_ATTR static ir_signal_t s_ur_sig;
-    ir_hat_claim();
+    if (!ir_hat_claim()) return IR_HAT_ERR_BUSY;
     ir_hat_err_t r = ir_hat_load_signal(remote, sig_name, &s_ur_sig);
     if (r == IR_HAT_OK) ir_hat_replay(&s_ur_sig);
     return r;
@@ -55938,6 +55992,7 @@ static void rf433_lbk_task(void *arg)
 
 static void rf433_lbk_run(void)
 {
+    if (!nrf24_hat_ready()) return;
     // Claim exclusive GPIO8/9 ownership before raw GPIO loopback.
     // Every peripheral that can mux onto these shared lines must be torn down.
     if (cc1101_is_init())       cc1101_deinit();
@@ -56444,7 +56499,7 @@ static void show_cc1101_screen(void)
     s_cc1101_cap_state       = CC1101_CAP_IDLE;
     s_cc1101_rep_state       = CC1101_REP_IDLE;
 
-    cc1101_hat_claim();
+    if (!cc1101_hat_claim()) return;
     // Keep the page the user was on so returning from a page-2 child screen restores
     // page 2 (was forced to page 1). Clamp only, in case it is somehow out of range.
     if (s_cc1101_page < 0 || s_cc1101_page >= CC1101_NUM_PAGES) s_cc1101_page = 0;
@@ -60068,12 +60123,14 @@ static void show_cc1101_zwave_screen(void)
 
 // ── Hat claim / back-nav helpers ─────────────────────────────────────────────
 
-static void nrf24_hat_claim(void)
+static bool nrf24_hat_claim(void)
 {
+    if (!nrf24_hat_ready()) return false;
     if (rfid_manager_is_init()) rfid_manager_deinit();
     if (ir_hat_is_init())       ir_hat_deinit();
     if (rf433_hat_is_init())    rf433_hat_deinit();
     if (cc1101_is_init())       cc1101_deinit();   // frees GPIO8 + GPIO9
+    return true;
 }
 
 // ── Stub helper ───────────────────────────────────────────────────────────────
@@ -60200,7 +60257,7 @@ static void show_nrf24_screen(void)
     s_n24fox_bar = NULL; s_n24fox_lbl = NULL; s_n24fox_ch_lbl = NULL;
     s_n24fox_hbtn = NULL; s_n24fox_status = NULL;
 
-    nrf24_hat_claim();
+    if (!nrf24_hat_claim()) return;
     // Keep the page the user was on so returning from a page-2 child screen restores
     // page 2 (was forced to page 1). Clamp only, in case it is somehow out of range.
     if (s_n24_page < 0 || s_n24_page >= NRF24_NUM_PAGES) s_n24_page = 0;
@@ -60319,7 +60376,14 @@ static void show_nrf24_hw_test_screen(void)
     lv_obj_set_style_text_font(hdr, &g_font_icon14, 0);
     lv_obj_set_style_text_color(hdr, lv_color_hex(0x42A5F5), 0);
 
-    nrf24_hat_claim();
+    if (!nrf24_hat_claim()) return;
+    // Mirror the CC1101 HW Test (see show_cc1101 HW test: deinit-before-init): tear down a
+    // STALE nRF24 so this test ALWAYS does a real fresh probe, never reports a cached "init OK".
+    // Without this, once nRF24 is detected (DIP 2) the driver stays live; switching the DIP to
+    // CC1101 (DIP 1) keeps GPIO8 driven as nRF24 CE against CC1101's GDO0 clock output on the
+    // same pin -> shared-SPI contention corrupts XPT2046 touch reads = runaway "ghost touch",
+    // and HW Test keeps showing "Detected" as if the DIP never moved (GH #28).
+    if (nrf24_is_init()) nrf24_deinit();
     esp_err_t err = nrf24_init();
     // Landscape + detected: the ~13-line register dump is too tall for the 240px
     // landscape card, so split it into two side-by-side columns. Portrait and the
@@ -60450,7 +60514,7 @@ static void s_ncs_task_fn(void *arg)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     ESP_LOGI("NCS", "task exit sweep_count=%lu", (unsigned long)ctx->sweep_count);
-    ctx->task = NULL;
+    __atomic_store_n(&ctx->task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -60613,11 +60677,12 @@ static void nrf24_chscan_screen_stop(void)
 
 static void show_nrf24_ch_scan_screen(void)
 {
+    if (!nrf24_hat_claim()) return;
     ESP_LOGI("NCS", "enter: s_ncs=%p nrf24_is_init=%d", s_ncs, (int)nrf24_is_init());
     if (s_ncs) { s_ncs->active = false; s_ncs->cancel = true; }
 
     if (!nrf24_is_init()) {
-        nrf24_hat_claim();
+        if (!nrf24_hat_claim()) return;
         esp_err_t ierr = nrf24_init();
         ESP_LOGI("NCS", "nrf24_init -> %s", esp_err_to_name(ierr));
         if (ierr != ESP_OK) {
@@ -60739,7 +60804,7 @@ static void s_nsniff_task_fn(void *arg)
     }
 
     ctx->active = false;
-    ctx->task = NULL;
+    __atomic_store_n(&ctx->task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -60814,6 +60879,7 @@ static void nrf24_sniffer_screen_stop(void)
 
 static void show_nrf24_sniffer_screen(void)
 {
+    if (!nrf24_hat_claim()) return;
     if (s_nsniff) {
         s_nsniff->active = false;
         s_nsniff->cancel = true;
@@ -60824,7 +60890,7 @@ static void show_nrf24_sniffer_screen(void)
     }
 
     if (!nrf24_is_init()) {
-        nrf24_hat_claim();
+        if (!nrf24_hat_claim()) return;
         if (nrf24_init() != ESP_OK) {
             s_n24_stub_screen(LV_SYMBOL_EYE_OPEN "  Sniffer", "nRF24 not detected.");
             return;
@@ -61108,7 +61174,7 @@ static void s_n24_jam_task_fn(void *arg)
 {
     (void)arg;
     nrf24_jam_sweep(&s_n24_jam_active, s_n24_jam_mode);
-    s_n24_jam_task = NULL;
+    __atomic_store_n(&s_n24_jam_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -61197,6 +61263,7 @@ static void s_n24_mode_btn_cb(lv_event_t *e)
 
 static void show_nrf24_jammer_screen(void)
 {
+    if (!nrf24_hat_claim()) return;
     /* Survey lock: 2.4 GHz jammer must not run during OT passive survey. */
     if (g_ot_survey_active) {
         s_n24_stub_screen(LV_SYMBOL_WARNING "  Survey Active",
@@ -61204,7 +61271,7 @@ static void show_nrf24_jammer_screen(void)
         return;
     }
     if (!nrf24_is_init()) {
-        nrf24_hat_claim();
+        if (!nrf24_hat_claim()) return;
         if (nrf24_init() != ESP_OK) {
             s_n24_stub_screen(MY_SYMBOL_SKULL_CROSS "  Jammer", "nRF24 not detected.");
             return;
@@ -61499,7 +61566,7 @@ static void s_nfut_task_fn(void *arg)
     nrf24_sfhss_scan(&ctx->result, 10000, &ctx->cancel);
     ctx->result_ready = true;
     ctx->active = false;
-    ctx->task = NULL;
+    __atomic_store_n(&ctx->task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -61590,10 +61657,11 @@ static void nrf24_futaba_screen_stop(void)
 
 static void show_nrf24_futaba_screen(void)
 {
+    if (!nrf24_hat_claim()) return;
     if (s_nfut) { s_nfut->active = false; s_nfut->cancel = true; }
 
     if (!nrf24_is_init()) {
-        nrf24_hat_claim();
+        if (!nrf24_hat_claim()) return;
         if (nrf24_init() != ESP_OK) {
             s_n24_stub_screen(MY_SYMBOL_CAR "  Futaba S-FHSS",
                 "nRF24 not detected.");
@@ -66760,6 +66828,7 @@ static void nrf24_foxhunt_screen_stop(void)
 
 static void show_nrf24_foxhunt_screen(void)
 {
+    if (!nrf24_hat_claim()) return;
     if (s_n24fox_tmr) { lv_timer_del(s_n24fox_tmr); s_n24fox_tmr = NULL; }
     s_n24fox_bar = NULL; s_n24fox_lbl = NULL;
     s_n24fox_ch_lbl = NULL; s_n24fox_hbtn = NULL; s_n24fox_status = NULL;
@@ -66770,7 +66839,7 @@ static void show_nrf24_foxhunt_screen(void)
     // nrf24_chip_present(), which failed whenever another peripheral still held the bus or
     // the radio wasn't inited (DIP 2 ON but "No nRF24" until HW Test ran first).
     if (!nrf24_is_init()) {
-        nrf24_hat_claim();
+        if (!nrf24_hat_claim()) return;
         if (nrf24_init() != ESP_OK) {
             s_n24_stub_screen(MY_SYMBOL_PERSON_WALKING "  nRF24 Fox Hunt - No nRF24",
                               "Check DIP 2 ON.\nRun HW Test first.");
@@ -67231,7 +67300,7 @@ static void show_rf433_ook_scan_screen(void)
 static void show_rfid_menu_screen(void)
 {
     // Claim GPIO8/9 for PN532 I2C (releases IR/RF433 if active)
-    rfid_hat_claim();
+    if (!rfid_hat_claim()) return;
     rfid_storage_ensure_dirs();
 
     create_function_page_base("RFID / NFC");
@@ -69006,7 +69075,7 @@ static void s_rf433_done(rf433_hat_err_t result, const rf433_signal_t *sig, void
 static void rf433_cap_start_cb(lv_event_t *e)
 {
     (void)e;
-    rf433_hat_claim();
+    if (!rf433_hat_claim()) return;
     if (s_rf433_cap_status) {
         lv_label_set_text(s_rf433_cap_status, "Listening... (10s)");
         lv_obj_set_style_text_color(s_rf433_cap_status, lv_color_hex(0xFFB300), 0);
@@ -69258,7 +69327,7 @@ static void rf433_do_replay_cb(lv_event_t *e)
 {
     (void)e;
     if (s_rf433_sel_signal < 0 || s_rf433_sel_signal >= s_rf433_signal_count) return;
-    rf433_hat_claim();
+    if (!rf433_hat_claim()) return;
     if (s_rf433_sig_status) lv_label_set_text(s_rf433_sig_status, "Transmitting x3...");
     rf433_hat_err_t r = rf433_hat_load_signal_by_index(s_rf433_cur_remote,
                                                         s_rf433_sel_signal,

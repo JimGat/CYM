@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>v3.0.37</b>
+  <b>Stable v3.0.37 · Development v3.0.38</b>
 </p>
 
 <p align="center">
@@ -32,6 +32,20 @@
 </p>
 
 ---
+
+## Development v3.0.38 — RF HAT shared-pin release
+
+Integrates **@birolt29's** stale-nRF24 patch for shared RF HAT control-pin ownership
+(GH #28), with separately owned integration safeguards by **JimGat**: bounded worker
+acknowledgment before teardown/reuse, refusal while still stopping, and pin cleanup
+on SPI-device setup failure as well as failed detection. HW Test now probes afresh.
+All nine Development profiles are version-synced for this cycle; board pin maps and
+Classic/Modern layouts are unchanged. **Stable remains v3.0.37.**
+
+[Change details and operator checks](docs/releases/v3.0.38-dev.md).
+Compilation/host regression checks are not physical qualification: switching HATs,
+IR reception and touch stability still require checks on the exact board/package.
+No remote flashing is part of this cycle.
 
 ## Stable v3.0.37 — Classic fixes and CYD-2432S028-L
 

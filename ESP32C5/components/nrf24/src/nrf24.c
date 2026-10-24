@@ -227,6 +227,9 @@ esp_err_t nrf24_init(void)
         ESP_LOGE(TAG, "spi_bus_add_device: %s", esp_err_to_name(err));
         heap_caps_free(s_drv);
         s_drv = NULL;
+        // Setup already configured both shared control pins; unwind on SPI refusal too.
+        gpio_reset_pin(RF_HAT_NRF24_CE_GPIO);
+        gpio_reset_pin(RF_HAT_NRF24_CS_GPIO);
         return err;
     }
 
@@ -242,6 +245,11 @@ esp_err_t nrf24_init(void)
         spi_bus_remove_device(s_drv->spi);
         heap_caps_free(s_drv);
         s_drv = NULL;
+        // Release the shared pins on a FAILED probe too (not just in nrf24_deinit): otherwise
+        // GPIO8 stays driven as CE after a miss and keeps fighting CC1101's GDO0 on DIP 1,
+        // which is what left the ghost touch latched on until the DIP was switched back.
+        gpio_reset_pin(RF_HAT_NRF24_CE_GPIO);
+        gpio_reset_pin(RF_HAT_NRF24_CS_GPIO);
         return ESP_ERR_NOT_FOUND;
     }
 
