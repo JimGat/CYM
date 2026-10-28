@@ -62,6 +62,7 @@ class Landscape304(unittest.TestCase):
         code+='static int present=1, rotation=-1, calls; static lv_disp_t display;\n'
         code+='static lv_disp_t *lv_disp_get_default(void){return present?&display:NULL;}\n'
         code+='static void lv_disp_set_rotation(lv_disp_t *d,int r){assert(d==&display);rotation=r;calls++;}\n#define ESP_LOGI(...) ((void)0)\n'
+        code+='#define cym_fsd_input_epoch() ((void)0)\n'
         code+=helper+'\nint main(void){for(int i=0;i<4;i++){apply_screen_orientation(i);assert(rotation==i);}apply_screen_orientation(255);assert(rotation==0);present=0;int n=calls;apply_screen_orientation(1);assert(calls==n);}\n'
         native(code)
 
@@ -91,9 +92,10 @@ class Landscape304(unittest.TestCase):
         self.assertIn('nvs_set_u8(h, NVS_KEY_ORIENT, orient)',function('nvs_settings_save_orientation'))
 
     def test_native_mapping_unchanged(self):
-        hashes={'lvgl_flush_cb': '043f1ce3355f95792d2ca57400d103b93446bea25b23f606c690d4cf2de8a7b6', 'lvgl_touch_read_cb': '03769dba0cc0f5a6c06bd7c4d3e616db89fac44614b92edaacd2ac223bee2184'}
+        hashes={'lvgl_flush_cb': '043f1ce3355f95792d2ca57400d103b93446bea25b23f606c690d4cf2de8a7b6', 'lvgl_touch_read_cb': 'e0692178871b4b4cadd4f0ac89e74081334937756c176c14de5989a752d44c3b'}
         for name,digest in hashes.items():
-            # Pin native callbacks/panel setup, independently of rotation gates.
+            # Pin callbacks/panel setup; v3.0.40 adds guarded FSD ownership,
+            # not sensor mapping (sensor source and installed rotation pinned below).
             body=function(name); body=body[body.index(name+'('):]
             self.assertEqual(hashlib.sha256(body.encode()).hexdigest(),digest,name)
         for name,digest in {'ESP32C5/main/xpt2046.c': 'e2c2a96aa39b4da4aa1b9657c3b122bf48062c65c6d3069e2cbc514f4dafd045', 'ESP32/sdkconfig.defaults.hackerbox-cyd': '62069b3aa5b9d7f7352fcca22948dda55bb450f2b8d37d3c52f9b5d5c29f8d95'}.items():

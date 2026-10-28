@@ -37,6 +37,7 @@ class BuildNav(unittest.TestCase):
         variables=sorted(set(re.findall(r'\b(\w+)\s*=\s*(?:NULL|false|0);',home,re.M)))
         code='#include <assert.h>\n#include <stdbool.h>\n#include <stddef.h>\n#define LV_OBJ_FLAG_HIDDEN 1\n'
         code+='static void *'+',*'.join(variables+['title_bar'])+';\nstatic int g_home_layout_4cat,stops,radio,deleted,classic,modern,released;static void(*g_screen_stop_fn)(void);\n'
+        code+='#define cym_fsd_input_epoch() ((void)0)\n'
         code+=function(source,'run_screen_stop_fn')
         code+=r"""
 static void stop(void){assert(!g_screen_stop_fn);assert(!radio&&!deleted);stops++;}

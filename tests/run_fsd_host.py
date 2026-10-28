@@ -49,6 +49,9 @@ static int64_t now;
 static int64_t esp_timer_get_time(void){return now;}
 static int mbedtls_base64_encode(unsigned char*d,size_t n,size_t*o,const unsigned char*s,size_t z){(void)d;(void)n;(void)o;(void)s;(void)z;return 1;}
 static lv_obj_t *brightness_overlay;
+static bool g_home_layout_4cat,go_dark_active,screen_dimmed,ignore_touch_until_release,ui_locked,touch_pressed_flag;
+static int64_t g_radio_settle_until_ms;
+static bool doom_ui_exclusive(void){return false;}
 static int nav_stack_depth;static const char *nav_stack[12];static void(*g_screen_back_fn)(void);
 static unsigned char screen_orientation;
 static void parent(void){nav_stack_depth=1;nav_stack[0]="Settings";}
@@ -74,13 +77,15 @@ static int auto_poll=1;
 static void vTaskDelay(unsigned n){now+=(int64_t)n*1000;if(auto_poll)cym_fsd_poll();}
 static void flush(lv_disp_drv_t*d,const lv_area_t*a,lv_color_t*p){(void)a;(void)p;lv_disp_flush_ready(d);}
 static void event_cb(lv_event_t*e){int c=lv_event_get_code(e);if(timeout_during_event&&c==LV_EVENT_PRESSED){__atomic_store_n(&timeout_during_event->cancelled,1,__ATOMIC_RELEASE);cym_fsd_release(timeout_during_event);timeout_during_event=NULL;}if(c==LV_EVENT_PRESSED||c==LV_EVENT_RELEASED||c==LV_EVENT_SHORT_CLICKED||c==LV_EVENT_CLICKED){events++;if(disable_on_pressed&&c==LV_EVENT_PRESSED)lv_obj_add_state(lv_event_get_target(e),LV_STATE_DISABLED);if(c==LV_EVENT_CLICKED)clicks++;if(c==delete_event)lv_obj_del(lv_event_get_target(e));}}
-static cym_fsd_request_t *send(int op,int id,int a,int b,const char*t){cym_fsd_request_t*r=cym_fsd_submit(op,id,a,b,t);assert(r);cym_fsd_poll();assert(r->done);return r;}
+static lv_indev_t *host_pointer;
+static void read_touch(lv_indev_drv_t*d,lv_indev_data_t*v){(void)d;if(!cym_fsd_touch_inject(v,false,false))v->state=LV_INDEV_STATE_RELEASED;}
+static cym_fsd_request_t *send(int op,int id,int a,int b,const char*t){cym_fsd_request_t*r=cym_fsd_submit(op,id,a,b,t);assert(r);cym_fsd_poll();for(int i=0;!r->done&&i<40;i++){lv_indev_read_timer_cb(host_pointer->driver->read_timer);cym_fsd_poll();}assert(r->done);return r;}
 static void release(cym_fsd_request_t*r){cym_fsd_release(r);assert(live==0);}
 static void command(int argc,char**argv,int expect){assert(fsd_command(argc,argv)==expect);assert(live<=1);}
 int main(void){
- output=tmpfile();assert(output);lv_init();static lv_color_t pixels[800*10];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,pixels,NULL,800*10);static lv_disp_drv_t drv;lv_disp_drv_init(&drv);drv.hor_res=240;drv.ver_res=320;drv.draw_buf=&db;drv.flush_cb=flush;lv_disp_t*d=lv_disp_drv_register(&drv);assert(d);
- for(int f=1;f<=13;f++){reg_calls=registered=del_calls=0;fail_reg=f;cym_fsd_register();assert(!registered&&del_calls==f-1&&!fsd_registered);}
- fail_reg=0;reg_calls=0;cym_fsd_register();assert(registered==13);cym_fsd_register();assert(registered==13);cym_fsd_unregister();assert(!registered);
+ output=tmpfile();assert(output);lv_init();static lv_color_t pixels[800*10];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,pixels,NULL,800*10);static lv_disp_drv_t drv;lv_disp_drv_init(&drv);drv.hor_res=240;drv.ver_res=320;drv.draw_buf=&db;drv.flush_cb=flush;lv_disp_t*d=lv_disp_drv_register(&drv);assert(d);static lv_indev_drv_t input;lv_indev_drv_init(&input);input.type=LV_INDEV_TYPE_POINTER;input.read_cb=read_touch;host_pointer=lv_indev_drv_register(&input);assert(host_pointer);
+ for(int f=1;f<=14;f++){reg_calls=registered=del_calls=0;fail_reg=f;cym_fsd_register();assert(!registered&&del_calls==f-1&&!fsd_registered);}
+ fail_reg=0;reg_calls=0;cym_fsd_register();assert(registered==14);cym_fsd_register();assert(registered==14);cym_fsd_unregister();assert(!registered);
  fail_alloc=allocation+1;assert(!cym_fsd_submit(FSD_WHERE,0,0,0,""));assert(!s_fsd_busy&&!live);fail_alloc=0;
  cym_fsd_request_t*r=cym_fsd_submit(FSD_TEXT,0,0,0,"old");assert(r);assert(!cym_fsd_submit(FSD_TEXT,0,0,0,"new"));__atomic_store_n(&r->cancelled,1,__ATOMIC_RELEASE);cym_fsd_release(r);assert(live==1);cym_fsd_poll();assert(live==0&&!s_fsd_busy);
  /* Defensive publication failure injection, without replacing existing request. */
@@ -93,7 +98,7 @@ int main(void){
   lv_obj_t *btn=lv_btn_create(container);lv_obj_set_pos(btn,20,30);lv_obj_set_size(btn,100,50);lv_obj_t *lbl=lv_label_create(btn);lv_label_set_text(lbl,"Settings");lv_obj_add_event_cb(btn,event_cb,LV_EVENT_ALL,NULL);lv_obj_update_layout(lv_scr_act());
   r=send(FSD_TAPT,0,0,0,"Settings");assert(r->status);int id=r->id;release(r);
   lv_obj_add_state(btn,LV_STATE_DISABLED);r=send(FSD_TAPT,0,0,0,"Settings");assert(!r->status);release(r);r=send(FSD_TAPID,id,0,0,"");assert(!r->status);release(r);lv_obj_clear_state(btn,LV_STATE_DISABLED);
-  lv_obj_add_flag(btn,LV_OBJ_FLAG_HIDDEN);r=send(FSD_TAP,0,25,35,"");assert(!r->status);release(r);lv_obj_clear_flag(btn,LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(btn,LV_OBJ_FLAG_HIDDEN);r=send(FSD_TAP,0,25,35,"");assert(r->status); /* consumed, not proof of a hit */release(r);lv_obj_clear_flag(btn,LV_OBJ_FLAG_HIDDEN);
   lv_obj_t *modal=lv_obj_create(lv_layer_top());lv_obj_set_size(modal,150,150);r=send(FSD_TAPID,id,0,0,"");assert(!r->status);release(r);r=send(FSD_TAPT,0,0,0,"Settings");assert(!r->status);release(r);
   lv_obj_set_pos(modal,0,0);lv_obj_set_size(modal,200,240);lv_obj_set_style_radius(modal,0,0);lv_obj_set_style_border_width(modal,0,0);lv_obj_set_style_bg_color(modal,lv_color_hex(0xff0000),0);lv_obj_set_style_bg_opa(modal,LV_OPA_COVER,0);brightness_overlay=lv_obj_create(lv_layer_top());
   r=send(FSD_SHOT,0,0,0,"");assert(r->status&&(unsigned char)r->data[0]==255&&r->data[1]==0&&r->data[2]==0&&!lv_obj_has_flag(brightness_overlay,LV_OBJ_FLAG_HIDDEN));release(r);lv_obj_del(brightness_overlay);brightness_overlay=NULL;lv_obj_del(modal);

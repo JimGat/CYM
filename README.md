@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>Stable v3.0.37 · Development v3.0.39</b>
+  <b>Stable v3.0.37 · Development v3.0.40</b>
 </p>
 
 <p align="center">
@@ -33,7 +33,22 @@
 
 ---
 
-## Development v3.0.39 — RF-HAT receive integration
+## Development v3.0.40 - FSD input lifecycle and BT Observer
+
+Patch #20 from co-developer **@birolt29** adds indev coordinate tap/swipe, inverse
+rotation, scroll flags, orientation/layout reporting, deferred completion and BT
+Observer spinner parent/size. **JimGat integration corrections** safely cancel
+pending input on timeout, page/rotation changes, physical collision and existing
+locks, without new waits, debounce or keyboard delays. HOST software owns run/route
+consent; firmware adds no new authorization prompts. Gesture success reports input
+consumption, not proof of a hit, destination or completed action. BT Observer is a
+normal UI change on **both Classic and Modern**, including console-disabled builds.
+Stable remains **v3.0.37**. Builds/native tests are not physical qualification.
+
+[Scope and remaining acceptance](docs/releases/v3.0.40-dev.md) |
+[FSD operator commands](docs/operators/fsd-usb-ui.md).
+
+## Historical Development v3.0.39 — RF-HAT receive integration
 
 Retains co-developer **@birolt29's** RF433 EV1527 polarity/24-bit correction,
 persistent OOK ISR, clean-entry receive preparation and IR timeout recovery intent.

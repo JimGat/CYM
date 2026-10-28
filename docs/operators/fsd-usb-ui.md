@@ -16,6 +16,56 @@ hardware and controlled RF environment. There is no remote authentication layer;
 physical USB access is the trust boundary. This work did not connect, flash or
 operate any board, validate RF behavior, or validate GPS operation.
 
+## Patch #20 additions - Development v3.0.40
+
+HOST software owns run/route consent and authorization. Firmware adds no new
+consent prompts or blanket automation restrictions; existing dark/dim/lock/
+settling, physical-input and exclusive-screen ownership guards remain effective.
+The pre-existing Python driver's own safe route policy is unchanged.
+
+On an authorized host console (not executed by this integration):
+
+```text
+where
+  where depth=<N> back_fn=<name> stack=[...] orient=<L|P> layout=<C|M>
+tree
+  <<<TREE>>> ... object records ... <<<ENDTREE>>>
+tap 40 60
+  tap ok
+swipe 100 180 -100
+  swipe ok
+```
+
+Coordinates/deltas are logical pixels. Tree flag `S` means scrollable. `where`
+includes firmware orientation and layout; maintained Python client accepts its
+unchanged prefix and retains raw tree output. No PC API rewrite/swipe helper added.
+
+`tap ok` / `swipe ok` means final sample consumption, NOT proof of a widget hit,
+destination, completed action or authorized use. Validate with `where`, `tree`,
+`shot` and application status. Normal final-release navigation is valid. Console
+waits for asynchronous UI completion; UI never waits for drain.
+
+Pending samples abort on caller cancellation, armed deadline, page/rotation/
+geometry change, physical collision or existing locks. Errors describe `gesture
+cancelled`, `gesture deadline expired`, `gesture page or rotation changed`,
+`gesture input locked or settling`, `gesture interrupted by physical touch`, or
+`input locked, settling, or physical touch active`. Inspect effects before retry:
+earlier samples may already change selection/scrolling. Never blindly retry after
+transport timeout. Ownership remains busy until real consumption/cancellation.
+A colliding finger is suppressed until real release; nonphysical cancellation
+adds no retry cooldown. Dropdown transient overlays remain valid.
+
+No new sleep/drain wait/debounce/timer throttle/keyboard delay or ordinary-touch
+tree scans. Idle work is constant-time; native timings are not hardware latency.
+BT Observer changes normal UI in BOTH Classic and Modern, even console-disabled:
+function_page parent, 18x18 y=32, list rebuild survival and stop/Back/Home teardown.
+
+Remaining exact-board hardware acceptance: ordinary finger/navigation/keyboard
+responsiveness in both layouts and supported rotations; tap/swipe/dropdown,
+cancel/deadline/late-release, physical collision, page/rotation ownership, no
+phantom clicks/stuck press and retry; Observer rebuild/Back/Home/reentry; existing
+RF-HAT/display/SD gates. Builds/sanitizers do not qualify physical behavior.
+
 ## Boards and orientation
 
 | PC board argument | PSRAM | Logical UI at profile default | FSD rotation |

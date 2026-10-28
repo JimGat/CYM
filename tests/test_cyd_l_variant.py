@@ -56,7 +56,7 @@ class CydLVariant(unittest.TestCase):
  def test_package_build_and_channel_identity(self):
   s=(R/'scripts/build.sh').read_text();self.assertIn('cyd-2432s028-l)',s);self.assertIn('sdkconfig.defaults.cyd2usb;sdkconfig.defaults.cyd-2432s028-l',s)
   cm=(R/'ESP32/CMakeLists.txt').read_text();self.assertIn('binaries-cyd-2432s028-l',cm);self.assertIn('CYM-CYD-2432S028-L',cm)
-  m=json.loads((R/'ESP32/docs/manifest.cyd-2432s028-l.json').read_text());self.assertEqual(m['version'],'v3.0.39');self.assertEqual([p['offset'] for p in m['parts']],[4096,32768,65536])
+  m=json.loads((R/'ESP32/docs/manifest.cyd-2432s028-l.json').read_text());self.assertEqual(m['version'],'v3.0.40');self.assertEqual([p['offset'] for p in m['parts']],[4096,32768,65536])
   self.assertTrue(all('binaries-cyd-2432s028-l/' in p['path'] for p in m['parts']))
   page=(R/'ESP32C5/docs/index.html').read_text();board=page.split('"cyd-2432s028-l": {',1)[1].split('},',1)[0]
   self.assertIn('stableAvailable: true',board);self.assertIn('beta: false',board);self.assertIn('label: "CYD-2432S028-L"',board)
@@ -109,7 +109,7 @@ const document={querySelectorAll:()=>[],title:''};
 const updateBoardUI=()=>{};const setStatus=()=>{};const log=()=>{};
 const PAGE_VERSION='test';const manifestError=e=>errors.push(e.message);
 const normalizeManifest=m=>m;
-let fetch=async url=>{fetched.push(url);return {ok:true,json:async()=>({name:'L',version:'v3.0.39',parts:[{}]})};};
+let fetch=async url=>{fetched.push(url);return {ok:true,json:async()=>({name:'L',version:'v3.0.40',parts:[{}]})};};
 """+load+channel+r"""
 (async()=>{
  const exact=ch=>BRANCH[ch]+'/ESP32/docs/manifest.cyd-2432s028-l.json';

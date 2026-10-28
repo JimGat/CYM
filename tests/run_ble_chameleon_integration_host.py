@@ -17,6 +17,7 @@ pre=r"""
 #define bt_stage(stage,rc) ((void)0)
 
 #include <assert.h>
+#define cym_fsd_input_epoch() ((void)0) /* unrelated FSD hook mocked */
 #include <stdbool.h>
 static void *wscope_task_handle;
 static bool wscope_worker_stop(void){return !wscope_task_handle;}

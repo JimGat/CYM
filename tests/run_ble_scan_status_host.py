@@ -19,6 +19,7 @@ static bool bt_sas_list_changed(void){return false;} // separately executed prod
 static void bt_sas_refresh_list(void){refreshes++;}
 """
 navpre=r"""
+#define cym_fsd_input_epoch() ((void)0) /* unrelated FSD hook mocked */
 typedef int lv_event_t;
 static bool init_ok,ui_locked;
 static bool ensure_ble_mode(void){return init_ok;}

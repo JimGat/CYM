@@ -50,18 +50,6 @@ static bool fsd_on_top(lv_obj_t *o)
     for(lv_obj_t *p=o;p;p=lv_obj_get_parent(p))if(p==lv_layer_top())return true;
     return false;
 }
-static lv_obj_t *fsd_hit(lv_obj_t *o,const lv_point_t *pt)
-{
-    if(!o||!lv_obj_is_visible(o)||lv_obj_has_state(o,LV_STATE_DISABLED))return NULL;
-    /* Clip to each ancestor. Deliberately conservative for overflowing widgets. */
-    lv_area_t area;lv_obj_get_coords(o,&area);
-    if(pt->x<area.x1||pt->x>area.x2||pt->y<area.y1||pt->y>area.y2)return NULL;
-    for(int i=(int)lv_obj_get_child_cnt(o)-1;i>=0;i--){
-        lv_obj_t *hit=fsd_hit(lv_obj_get_child(o,(uint32_t)i),pt);if(hit)return hit;
-    }
-    if(o==lv_layer_top()||o==lv_scr_act())return NULL;
-    return fsd_clickable(o)&&lv_obj_hit_test(o,pt)?o:NULL;
-}
 static bool fsd_click(lv_obj_t *o)
 {
     if(!fsd_clickable(o)||(fsd_has_overlay()&&!fsd_on_top(o)))return false;
@@ -91,7 +79,10 @@ static void fsd_walk(fsd_walk_t *v,lv_obj_t *o,int depth)
     if(r->op==FSD_TREE){
         lv_area_t a;lv_obj_get_coords(o,&a);const char *t=fsd_text_of(o);char text[64]="";size_t j=0;
         if(t){for(;t[j]&&j<sizeof(text)-2;j++){unsigned char c=t[j];text[j]=c=='\n'?'|':c>=32&&c<127?(char)c:'.';}if(t[j])text[j++]='~';text[j]=0;}
-        int n=snprintf(r->data+v->off,24576-v->off,"%d %d %s %d %d %d %d %c%c %s\n",id,depth,fsd_class(o),a.x1,a.y1,lv_area_get_width(&a),lv_area_get_height(&a),lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)?'H':lv_obj_is_visible(o)?'-':'h',fsd_clickable(o)?'C':'-',text);
+        /* flags = [hidden H/h/-][clickable C/-][scrollable S/-]. The scrollable flag lets a
+         * PC-side layout checker tell genuinely off-screen widgets (bad layout) from list
+         * content scrolled past the viewport inside a scroll container (fine). */
+        int n=snprintf(r->data+v->off,24576-v->off,"%d %d %s %d %d %d %d %c%c%c %s\n",id,depth,fsd_class(o),a.x1,a.y1,lv_area_get_width(&a),lv_area_get_height(&a),lv_obj_has_flag(o,LV_OBJ_FLAG_HIDDEN)?'H':lv_obj_is_visible(o)?'-':'h',fsd_clickable(o)?'C':'-',lv_obj_has_flag(o,LV_OBJ_FLAG_SCROLLABLE)?'S':'-',text);
         if(n<0||(size_t)n>=24576-v->off){v->overflow=true;return;}v->off+=(size_t)n;
     }else if((r->op==FSD_TAPT&&fsd_clickable(o)&&fsd_text_match(fsd_text_of(o),r->text)&&(!fsd_has_overlay()||fsd_on_top(o)))||(r->op!=FSD_TAPT&&id==r->id)){
         v->found=o;r->id=id;return;
@@ -137,6 +128,114 @@ cleanup:
     lv_snapshot_free(d);if(td)lv_snapshot_free(td);
 }
 #endif
+/* Synthetic samples use the existing indev timer, never a UI wait/delay.
+ * All gesture state belongs to the UI owner under lvgl_mutex. Host software
+ * owns route/run consent; these guards are physical input ownership, not policy. */
+#define FSD_INJ_MAX 40
+static struct { int16_t x,y; uint8_t pressed; } s_fsd_inj[FSD_INJ_MAX];
+static int s_fsd_inj_len, s_fsd_inj_pos;
+static cym_fsd_request_t *s_fsd_inj_req;
+static int64_t s_fsd_inj_deadline;
+static unsigned fsd_page_epoch, s_fsd_inj_epoch;
+static lv_disp_t *s_fsd_inj_disp;
+static lv_obj_t *s_fsd_inj_screen;
+static lv_disp_rot_t s_fsd_inj_rotation;
+static lv_indev_t *s_fsd_inj_indev;
+static int s_fsd_inj_width, s_fsd_inj_height;
+
+void cym_fsd_input_epoch(void) { ++fsd_page_epoch; }
+
+/* No object traversal or allocation. Called only while a gesture is pending.
+ * Checking before EACH sample closes the release-after-deadline/poll race.
+ * Do not check ownership after the final release: its normal click may navigate. */
+static const char *fsd_inj_invalid(void)
+{
+    if(__atomic_load_n(&s_fsd_inj_req->cancelled,__ATOMIC_ACQUIRE))return "gesture cancelled";
+    if(esp_timer_get_time()>=s_fsd_inj_deadline)return "gesture deadline expired";
+    lv_disp_t *d=lv_disp_get_default();
+    if(d!=s_fsd_inj_disp||lv_scr_act()!=s_fsd_inj_screen||
+       fsd_page_epoch!=s_fsd_inj_epoch||lv_disp_get_rotation(d)!=s_fsd_inj_rotation||
+       lv_disp_get_hor_res(d)!=s_fsd_inj_width||lv_disp_get_ver_res(d)!=s_fsd_inj_height)
+        return "gesture page or rotation changed";
+    return NULL;
+}
+static void fsd_inj_abort(const char *why, bool physical)
+{
+    /* Installed LVGL 8 processes reset_query after read_cb and before pointer
+     * dispatch. reset clears act_obj/last_obj/scroll state: RELEASE alone would
+     * click. wait_release suppresses ONLY a colliding finger until it lifts;
+     * an absent finger must not swallow a legitimate immediate retry.
+     * Only reset our pointer, never all indevs (keyboard editing stays intact). */
+    if(s_fsd_inj_indev){
+        /* Mirror LVGL's wait-release cancellation event (not RELEASE/CLICK).
+         * reset alone leaves button/button-matrix pressed styling latched.
+         * act_obj is the pinned LVGL pointer's current owner; event dispatch
+         * tolerates deletion, and we never dereference that object afterward. */
+        lv_obj_t *pressed=s_fsd_inj_indev->proc.types.pointer.act_obj;
+        if(pressed)lv_event_send(pressed,LV_EVENT_PRESS_LOST,s_fsd_inj_indev);
+        lv_indev_reset(s_fsd_inj_indev,NULL);
+        if(physical)lv_indev_wait_release(s_fsd_inj_indev);
+    }
+    touch_pressed_flag=false;
+    cym_fsd_request_t *r=s_fsd_inj_req;
+    s_fsd_inj_req=NULL;s_fsd_inj_indev=NULL;
+    s_fsd_inj_len=s_fsd_inj_pos=0;
+    r->status=0;snprintf(r->desc,sizeof(r->desc),"%s; inspect effects before retry",why);
+    fsd_complete(r); /* may free r after caller timeout; do not touch it again */
+}
+bool cym_fsd_touch_inject(void *data_v, bool blocked, bool physical)
+{
+    if(!s_fsd_inj_req||s_fsd_inj_pos>=s_fsd_inj_len)return false;
+    lv_indev_data_t *data=(lv_indev_data_t*)data_v;
+    const char *why=fsd_inj_invalid();
+    if(!why&&blocked)why="gesture input locked or settling";
+    if(!why&&physical)why="gesture interrupted by physical touch";
+    if(why){
+        fsd_inj_abort(why,physical);
+        /* With a colliding finger keep wait_release armed until its REAL lift.
+         * reset_query removes the old synthetic press before this is dispatched. */
+        data->state=physical?LV_INDEV_STATE_PRESSED:LV_INDEV_STATE_RELEASED;
+        return true;
+    }
+    s_fsd_inj_indev=lv_indev_get_act();
+    int i=s_fsd_inj_pos++;
+    /* Buffer holds LOGICAL (on-screen, post-rotation) coords. LVGL's indev_pointer_proc rotates the
+     * raw read point to logical (lv_indev.c: ROT_180/270 flip x/y; ROT_90/270 swap). So we must hand
+     * it the RAW (pre-rotation) point whose forward rotation yields our logical point = inverse map,
+     * using the driver's NATIVE hor/ver_res. (Verified: raw(46,135) fwd-rot90 -> logical(184,46).) */
+    lv_coord_t lx=s_fsd_inj[i].x, ly=s_fsd_inj[i].y, rx=lx, ry=ly;
+    lv_disp_t *disp=lv_disp_get_default();
+    if(disp&&disp->driver){
+        lv_coord_t H=disp->driver->hor_res, V=disp->driver->ver_res;
+        switch(lv_disp_get_rotation(disp)){
+            case LV_DISP_ROT_90:  rx=ly;        ry=V-1-lx;  break;
+            case LV_DISP_ROT_180: rx=H-1-lx;    ry=V-1-ly;  break;
+            case LV_DISP_ROT_270: rx=H-1-ly;    ry=lx;      break;
+            default: /* ROT_NONE */             break;
+        }
+    }
+    data->point.x=rx;data->point.y=ry;
+    data->state=s_fsd_inj[i].pressed?LV_INDEV_STATE_PRESSED:LV_INDEV_STATE_RELEASED;
+    return true;
+}
+
+static void fsd_inj_reset(void){s_fsd_inj_len=0;s_fsd_inj_pos=0;s_fsd_inj_indev=NULL;}
+static void fsd_inj_push(int x,int y,int pressed)
+{
+    if(s_fsd_inj_len>=FSD_INJ_MAX)return;
+    s_fsd_inj[s_fsd_inj_len].x=(int16_t)x;s_fsd_inj[s_fsd_inj_len].y=(int16_t)y;
+    s_fsd_inj[s_fsd_inj_len].pressed=(uint8_t)pressed;s_fsd_inj_len++;
+}
+static int fsd_clampc(int v,int max){return v<0?0:(v>=max?max-1:v);}
+static void fsd_inj_arm(cym_fsd_request_t *r)
+{
+    s_fsd_inj_disp=lv_disp_get_default();s_fsd_inj_screen=lv_scr_act();
+    s_fsd_inj_rotation=lv_disp_get_rotation(s_fsd_inj_disp);
+    s_fsd_inj_width=lv_disp_get_hor_res(s_fsd_inj_disp);
+    s_fsd_inj_height=lv_disp_get_ver_res(s_fsd_inj_disp);
+    s_fsd_inj_epoch=fsd_page_epoch;
+    s_fsd_inj_req=r;s_fsd_inj_deadline=esp_timer_get_time()+2000000;
+}
 static void fsd_execute(cym_fsd_request_t *r)
 {
 #if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
@@ -151,7 +250,23 @@ static void fsd_execute(cym_fsd_request_t *r)
         int n=snprintf(r->desc,sizeof(r->desc),"depth=%d back_fn=%s stack=[",nav_stack_depth,g_screen_back_fn?"set":"none");
         size_t off=n>0?(size_t)n:sizeof(r->desc);
         for(int i=0;i<nav_stack_depth&&off<sizeof(r->desc);i++){n=snprintf(r->desc+off,sizeof(r->desc)-off,"%s%s",i?" > ":"",nav_stack[i]?nav_stack[i]:"?");if(n<0)break;off+=(size_t)n;}
-        if(off+2>sizeof(r->desc)){strcpy(r->desc,"nav state exceeds response bound");return;}strcpy(r->desc+off,"]");r->status=1;return;
+        if(off+2>sizeof(r->desc)){strcpy(r->desc,"nav state exceeds response bound");return;}
+        r->desc[off++]=']';r->desc[off]=0;
+        /* Append board state so a PC report can label orientation (L/P) and home layout
+         * (C=Classic tiles / M=Modern 4-category). Parsers that read only up to ']' ignore it. */
+        {int nn=snprintf(r->desc+off,sizeof(r->desc)-off," orient=%c layout=%c",
+            (screen_orientation==1||screen_orientation==3)?'L':'P',g_home_layout_4cat?'M':'C');
+         if(nn<0||(size_t)nn>=sizeof(r->desc)-off)r->desc[off]=0;}
+        r->status=1;return;
+    }
+    if(r->op==FSD_TAP||r->op==FSD_SWIPE||r->op==FSD_TAPID||r->op==FSD_TAPT){
+        if(go_dark_active||screen_dimmed||ignore_touch_until_release||ui_locked||
+           touch_pressed_flag||esp_timer_get_time()/1000<g_radio_settle_until_ms){
+            strcpy(r->desc,"input locked, settling, or physical touch active");return;
+        }
+#if defined(CONFIG_BOARD_WS_C5_28) || defined(CONFIG_BOARD_WS_C5_35)
+        if(doom_ui_exclusive()){strcpy(r->desc,"input owned by exclusive screen");return;}
+#endif
     }
     if(r->op==FSD_NAV){
         void(*fn)(void)=nav_show_lookup(r->text);
@@ -179,10 +294,28 @@ static void fsd_execute(cym_fsd_request_t *r)
     }
     lv_obj_update_layout(lv_scr_act());lv_obj_update_layout(lv_layer_top());
     if(r->op==FSD_TAP){
-        if(r->a<0||r->b<0||r->a>=lv_disp_get_hor_res(NULL)||r->b>=lv_disp_get_ver_res(NULL)){strcpy(r->desc,"coordinate outside logical display");return;}
-        lv_point_t pt={(lv_coord_t)r->a,(lv_coord_t)r->b};lv_obj_t *o=fsd_hit(lv_layer_top(),&pt);
-        if(!o&&!fsd_has_overlay())o=fsd_hit(lv_scr_act(),&pt);
-        r->status=fsd_click(o);if(!r->status)strcpy(r->desc,"no eligible widget");return;
+        int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
+        if(r->a<0||r->b<0||r->a>=w||r->b>=h){strcpy(r->desc,"coordinate outside logical display");return;}
+        /* Real synthetic touch at the point (press held a few reads, then release) rather than a
+         * bare widget event: position-sensitive widgets (e.g. lv_dropdown option) select by the
+         * indev point, so a faithful tap must be a genuine press+release at (x,y). */
+        fsd_inj_reset();
+        fsd_inj_push(r->a,r->b,1);fsd_inj_push(r->a,r->b,1);fsd_inj_push(r->a,r->b,1);
+        fsd_inj_push(r->a,r->b,0);
+        fsd_inj_arm(r);return; /* completion follows input consumption */
+    }
+    if(r->op==FSD_SWIPE){
+        int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
+        if(r->a<0||r->b<0||r->a>=w||r->b>=h){strcpy(r->desc,"coordinate outside logical display");return;}
+        /* Real finger drag from (x,y) to (x,y+dy) over several pressed samples, then release.
+         * LVGL scrolls the container under the point natively (lv_dropdown list, lists, pages).
+         * Positive dy drags the finger DOWN = reveals content ABOVE (an option above the selected). */
+        int x=r->a,y0=r->b,dy=r->id,steps=10;
+        fsd_inj_reset();
+        fsd_inj_push(x,y0,1);
+        for(int s=1;s<=steps;s++)fsd_inj_push(x,fsd_clampc(y0+dy*s/steps,h),1);
+        fsd_inj_push(x,fsd_clampc(y0+dy,h),0);
+        fsd_inj_arm(r);return; /* completion follows input consumption */
     }
     if(r->op==FSD_TREE){r->data=fsd_alloc(24576);if(!r->data){strcpy(r->desc,"tree allocation failed");return;}}
     fsd_walk_t v={.r=r};fsd_walk(&v,lv_layer_top(),0);fsd_walk(&v,lv_scr_act(),0);
@@ -197,8 +330,22 @@ static void fsd_execute(cym_fsd_request_t *r)
 }
 void cym_fsd_poll(void)
 {
+    if(s_fsd_inj_req){
+        if(s_fsd_inj_pos>=s_fsd_inj_len){
+            /* Final release has been read and LVGL has returned to the owner.
+             * A normal completed tap may already have navigated/rebuilt its page. */
+            cym_fsd_request_t *r=s_fsd_inj_req;
+            s_fsd_inj_req=NULL;s_fsd_inj_indev=NULL;
+            r->status=1;fsd_complete(r);
+        }else{
+            const char *why=fsd_inj_invalid();
+            if(why)fsd_inj_abort(why,false);
+        }
+        return;
+    }
     cym_fsd_request_t *r=fsd_take();if(!r)return;
     if(!__atomic_load_n(&r->cancelled,__ATOMIC_ACQUIRE))fsd_execute(r);
+    if(r==s_fsd_inj_req)return;    /* R9: fsd_execute armed a gesture on r -> defer its completion */
     fsd_complete(r);
 }
 #endif

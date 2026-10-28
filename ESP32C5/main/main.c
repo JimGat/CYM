@@ -3477,6 +3477,7 @@ static void screenshot_save_task(void *arg);
 // g_screen_stop_fn; run_screen_stop_fn() clears-then-calls so it runs exactly once.
 static void (*g_screen_stop_fn)(void) = NULL;
 static void run_screen_stop_fn(void) {
+    cym_fsd_input_epoch(); // invalidate only pending synthetic samples; no tree scan
     void (*fn)(void) = g_screen_stop_fn;
     g_screen_stop_fn = NULL;
     if (fn) fn();
@@ -4977,6 +4978,7 @@ static void apply_screen_orientation(uint8_t orient)
         case 0:
         default: rot = LV_DISP_ROT_NONE; break; // 0   Portrait
     }
+    cym_fsd_input_epoch(); // orientation ownership boundary, even if rebuilt in place
     lv_disp_set_rotation(disp, rot);
     ESP_LOGI(TAG, "Screen orientation applied: %u (rot=%d)", orient, (int)rot);
 }
@@ -10683,6 +10685,7 @@ void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_
 void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
     if (go_dark_active) {
+        (void)cym_fsd_touch_inject(data,true,false);
         /* Screen is off — suppress all LVGL touch events.
          * Touch-to-wake is handled directly in the main loop alongside the
          * boot-button poll (see go_dark_active block in app_main). */
@@ -10692,6 +10695,7 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 
 #if CONFIG_BOARD_WS_C5_28 || CONFIG_BOARD_WS_C5_35
     if(doom_ui_exclusive()){
+        (void)cym_fsd_touch_inject(data,true,false);
         uint16_t px[2]={0},py[2]={0};uint8_t n=0;
 #if CONFIG_BOARD_WS_C5_35
         (void)ws_c5_35_touch_read_points(px,py,&n,2);
@@ -10758,6 +10762,20 @@ void lvgl_touch_read_cb(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
         last_input_ms = now_ms;
     }
 #endif
+
+    /* Hardware read and existing ownership gates precede synthetic consumption.
+     * No gesture pending: one bounded check, then the original finger path.
+     * Do not classify dropdowns or keyboards as page ownership changes. */
+    if (cym_fsd_touch_inject(data,
+            screen_dimmed || ignore_touch_until_release || ui_locked ||
+            now_ms < g_radio_settle_until_ms, touched)) {
+        touch_pressed_flag = data->state == LV_INDEV_STATE_PRESSED;
+        if (touch_pressed_flag) {
+            touch_x_flag = data->point.x; touch_y_flag = data->point.y;
+            last_input_ms = now_ms;
+        }
+        return;
+    }
 
     if (screen_dimmed) {
         if (touched) {
@@ -36884,10 +36902,20 @@ static void show_bt_observer_screen(void)
     // Start 1s refresh timer
     bto_refresh_timer = lv_timer_create(bto_refresh_cb, 1000, NULL);
 
-    // Spinner overlay on lv_layer_top() — visible while scanning/walking
+    // Progress spinner — visible while scanning/walking. Parented to function_page
+    // (NOT lv_layer_top): a decorative spinner on the global top layer makes the FSD
+    // overlay guard (fsd_has_overlay) treat the screen as modal and refuse the top-bar
+    // ‹ Back that is this screen's intended stop/exit. It never blocked a real user
+    // (non-interactive, top-right, the ‹ Back is top-left) — only FSD. On function_page
+    // it floats in the same spot, survives bto_rebuild_list (which rebuilds bto_list),
+    // and is torn down by bto_stop (stop hook) before function_page is deleted.
     bto_spinner_destroy();
-    bto_spinner = lv_spinner_create(lv_layer_top(), 1000, 60);
-    lv_obj_set_size(bto_spinner, 28, 28);
+    bto_spinner = lv_spinner_create(function_page, 1000, 60);
+    // 18px (was 28): the status row between the title bar (ends y30) and the device list
+    // (top y52) is only 22px tall, so a 28px spinner at y32 overran the list frame's top
+    // border by ~8px (its lower third) in BOTH orientations. 18px at y32 leaves a clean 2px
+    // gap above the list and below the title bar. (Found on-device 2026-10-23, FSD 4d visual.)
+    lv_obj_set_size(bto_spinner, 18, 18);
     lv_obj_align(bto_spinner, LV_ALIGN_TOP_RIGHT, -5, 32);
     lv_obj_set_style_bg_opa(bto_spinner, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(bto_spinner, 0, 0);

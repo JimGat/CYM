@@ -59,6 +59,9 @@ static int fsd_command(int argc,char **argv)
         op=FSD_ROTATE;valid=argc==2;
         if(valid){if(!strcmp(argv[1],"portrait"))a=0;else if(!strcmp(argv[1],"landscape"))a=1;else valid=fsd_integer(argv[1],0,3,&a);}
     }
+    /* swipe <x> <y> <dy>: scroll the scrollable container under (x,y) by dy pixels, like a finger
+     * drag (positive dy reveals content above, negative reveals below). id carries dy. */
+    if(!strcmp(cmd,"swipe")){op=FSD_SWIPE;valid=argc==4&&fsd_integer(argv[1],0,799,&a)&&fsd_integer(argv[2],0,799,&b)&&fsd_integer(argv[3],-800,800,&id);}
     if(!valid||op<0)goto invalid;
     cym_fsd_request_t *r=cym_fsd_submit(op,id,a,b,text);
     if(!r){fprintf(out,"%s error: busy or request allocation failed\n",cmd);return 1;}
@@ -108,7 +111,8 @@ static const esp_console_cmd_t fsd_commands[]={
     FSD_CMD("move","Volatile logical widget position","<id> <x> <y>"),
     FSD_CMD("size","Volatile widget dimensions","<id> <w> <h>"),
     FSD_CMD("text","Volatile label edit, maximum 95 bytes","<id> <text>"),
-    FSD_CMD("rotate","Supported boards only; volatile orientation then Home","<0-3|portrait|landscape>")
+    FSD_CMD("rotate","Supported boards only; volatile orientation then Home","<0-3|portrait|landscape>"),
+    FSD_CMD("swipe","Scroll the scrollable container at a point (finger drag; +dy reveals above)","<x> <y> <dy>")
 #undef FSD_CMD
 };
 static size_t fsd_registered;

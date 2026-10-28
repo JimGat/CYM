@@ -15,6 +15,7 @@ b=s.index('                show_touch_dot = true;',a)
 dispatch=s[a:b]+' rebuilds++; }\n'
 pre=r"""
 #include <assert.h>
+#define cym_fsd_input_epoch() ((void)0) /* unrelated FSD hook mocked */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
