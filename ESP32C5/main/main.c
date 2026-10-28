@@ -2834,6 +2834,8 @@ static lv_obj_t    *s_rf433_scan_status = NULL;
 static lv_obj_t    *s_rf433_scan_list   = NULL;
 static TaskHandle_t s_rf433_scan_task   = NULL;
 static volatile bool s_rf433_scan_stop  = false;
+static uint32_t s_rf433_scan_epoch = 0;
+static bool rf433_ook_quiesce(void);
 
 // ── RF433 Fox Hunt state (declared very early — cleanup in show_rf433_menu_screen) ──
 static volatile int  s_rf433_fox_edges         = 0;
@@ -58099,38 +58101,39 @@ static void show_cc1101_tpms_screen(void)
 // ═══════════════════════════════════════════════════════════════════════════════
 // OOK PROTOCOL DECODERS — EV1527 (alarm sensors) + Fine Offset (weather)
 // Used by CC1101 Alarm Screen, CC1101 Weather Screen, and RF433 OOK Scan.
-// All decoders take the same int32_t pulse array (positive=HIGH µs, negative=LOW µs)
-// produced by cc1101_raw_capture() / rf433_ook_capture().
+// Capture signs reflect the level AFTER an edge: preceding HIGH is negative,
+// preceding LOW positive. Raw storage/replay and other decoders are unchanged.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ── EV1527 universal OOK sensor decoder ──────────────────────────────────────
-// Covers EV1527, PT2262/PT2272, HS1527, SC5262 and compatible chips.
-// Used in ~90% of cheap wireless alarm sensors, door contacts, PIR detectors.
-// Frame: 1T sync-high, 31T sync-low, 28 data bits (24-bit addr + 4-bit data).
-// Bit encoding: '1' = 3T HIGH + 1T LOW,  '0' = 1T HIGH + 3T LOW,  T≈350 µs.
+// EV1527 / Princeton-style 24-bit PWM: 20-bit address + 4-bit data.
+// Sync HIGH 1T + LOW ~30T; '1' HIGH 3T/LOW 1T, '0' HIGH 1T/LOW 3T.
+// This is not a protocol-wide claim for trinary PT2262 or weather decoders.
 static bool ook_decode_ev1527(const int32_t *p, int n,
-                               uint32_t *addr_out, uint8_t *data_out)
+                               uint32_t *addr_out, uint8_t *data_out,
+                               int *consumed_out)
 {
-    for (int i = 0; i + 28*2 + 2 < n; i++) {
-        int hi =  p[i];      // should be ~350 µs (1T)
-        int lo = -p[i+1];    // should be ~10500 µs (30T sync gap)
-        if (hi < 150 || hi > 700) continue;
-        if (lo < 7000 || lo > 16000) continue;
-        // Sync found — decode 28 bits
+    *consumed_out = 0;
+    for (int i = 0; i <= n - 50; i++) {
+        // Widen before negation: malformed INT32_MIN must not overflow.
+        int64_t hi = -(int64_t)p[i], lo = p[i + 1];
+        if (hi < 150 || hi > 700 || lo < 7000 || lo > 16000) continue;
+        if (lo < hi * 20 || lo > hi * 40) continue;
         uint32_t bits = 0;
         bool ok = true;
-        int j = i + 2;
-        for (int b = 0; b < 28 && j + 1 < n; b++, j += 2) {
-            int bhi =  p[j];
-            int blo = -p[j+1];
-            if (bhi <= 0 || blo <= 0) { ok = false; break; }
-            if (bhi > 700 && blo < 700)      bits = (bits << 1) | 1; // '1'
-            else if (bhi < 700 && blo > 700) bits = (bits << 1);     // '0'
+        for (int b = 0, j = i + 2; b < 24; b++, j += 2) {
+            int64_t bhi = -(int64_t)p[j], blo = p[j + 1];
+            bool hs = bhi * 2 >= hi && bhi * 5 <= hi * 8;
+            bool ls = blo * 2 >= hi && blo * 5 <= hi * 8;
+            bool hl = bhi >= hi * 2 && bhi * 2 <= hi * 9;
+            bool ll = blo >= hi * 2 && blo * 2 <= hi * 9;
+            if (hl && ls) bits = (bits << 1) | 1;
+            else if (hs && ll) bits <<= 1;
             else { ok = false; break; }
         }
         if (ok) {
-            *addr_out = (bits >> 4) & 0xFFFFFF;
+            *addr_out = (bits >> 4) & 0xFFFFF;
             *data_out = bits & 0x0F;
+            *consumed_out = i + 50; // includes any skipped noise, never rescan a frame
             return true;
         }
     }
@@ -58283,45 +58286,134 @@ static volatile int32_t  s_rf433_ook_buf[256];  // reduced for DRAM budget (8 KB
 #endif
 static volatile int      s_rf433_ook_wr   = 0;
 static volatile int64_t  s_rf433_ook_last = 0;
+static bool              s_rf433_ook_isr_installed = false;
+static portMUX_TYPE      s_rf433_ook_mux = portMUX_INITIALIZER_UNLOCKED;
 
 IRAM_ATTR static void s_rf433_ook_cap_isr(void *arg)
 {
-    if (!s_rf433_ook_cap_active || s_rf433_ook_wr >= (int)(sizeof(s_rf433_ook_buf)/sizeof(s_rf433_ook_buf[0])) - 1) return;
-    int64_t now = esp_timer_get_time();
-    if (s_rf433_ook_last == 0) { s_rf433_ook_last = now; return; }
-    int64_t dt = now - s_rf433_ook_last;
-    s_rf433_ook_last = now;
-    int lv = gpio_get_level((gpio_num_t)RF_HAT_RF433_RX_GPIO);
-    s_rf433_ook_buf[s_rf433_ook_wr++] = lv ? (int32_t)dt : -(int32_t)dt;
+    (void)arg;
+    portENTER_CRITICAL_ISR(&s_rf433_ook_mux);
+    if (s_rf433_ook_cap_active && s_rf433_ook_wr < (int)(sizeof(s_rf433_ook_buf)/sizeof(s_rf433_ook_buf[0]))) {
+        int64_t now = esp_timer_get_time();
+        if (s_rf433_ook_last != 0) {
+            int64_t dt = now - s_rf433_ook_last;
+            // Long idle gaps are not pulses; preserve signed raw-edge convention.
+            if (dt > 0 && dt <= INT32_MAX) {
+                int lv = gpio_get_level((gpio_num_t)RF_HAT_RF433_RX_GPIO);
+                s_rf433_ook_buf[s_rf433_ook_wr++] = lv ? (int32_t)dt : -(int32_t)dt;
+            }
+        }
+        s_rf433_ook_last = now;
+    }
+    portEXIT_CRITICAL_ISR(&s_rf433_ook_mux);
 }
 
-static esp_err_t rf433_ook_capture(int32_t *out, int *count_out, uint32_t timeout_ms)
+// Fail closed if a previous screen still owns the shared radio. In particular,
+// do not invoke RFID's force-delete fallback or dismantle a live CC1101 worker.
+static bool rf433_rx_owners_ready(void)
 {
+    return !rfid_manager_is_polling() && !rfid_manager_is_emulating() &&
+        !s_cc1101_cap_task && !s_cc1101_rep_task && !s_wx_task && !s_alm_task &&
+        !(s_bs && s_bs->task) && !(s_zwave && s_zwave->task) &&
+        !(s_tpms && s_tpms->task) && !s_cc1101_jamming;
+}
+
+// Clean-entry receive preparation retained from @birolt29. This owns TX idle
+// as well as RX, without assuming that cached is_init means a worker has stopped.
+static esp_err_t rf433_rx_prepare(void)
+{
+    if (!nrf24_hat_ready()) return ESP_ERR_INVALID_STATE;
+    if (!rf433_ook_quiesce() || !rf433_rx_owners_ready() ||
+        !ir_hat_quiesce() || !rf433_hat_quiesce()) return ESP_ERR_INVALID_STATE;
+    if (!ir_hat_release()) return ESP_ERR_INVALID_STATE;
+    if (cc1101_is_init())       cc1101_deinit();
+    if (nrf24_is_init())        nrf24_deinit();
+    if (rfid_manager_is_init()) rfid_manager_deinit();
+    rf433_hat_deinit();
+    gpio_config_t tx_cfg = {
+        .pin_bit_mask = 1ULL << RF_HAT_RF433_TX_GPIO,
+        .mode = GPIO_MODE_OUTPUT, .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE, .intr_type = GPIO_INTR_DISABLE,
+    };
+    esp_err_t err = gpio_config(&tx_cfg);
+    if (err != ESP_OK) return err;
+    return gpio_set_level((gpio_num_t)RF_HAT_RF433_TX_GPIO, 0);
+}
+
+// One handler per session; startup failures never publish a working receiver.
+static esp_err_t rf433_ook_rx_begin(void)
+{
+    esp_err_t e = rf433_rx_prepare();
+    if (e != ESP_OK) return e;
+    gpio_config_t io = {
+        .pin_bit_mask = 1ULL << RF_HAT_RF433_RX_GPIO, .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    e = gpio_config(&io);
+    if (e != ESP_OK) return e;
+    e = gpio_install_isr_service(0);
+    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) return e;
+    e = gpio_isr_handler_add((gpio_num_t)RF_HAT_RF433_RX_GPIO, s_rf433_ook_cap_isr, NULL);
+    if (e != ESP_OK) return e;
+    portENTER_CRITICAL(&s_rf433_ook_mux);
     s_rf433_ook_wr = 0;
     s_rf433_ook_last = 0;
+    s_rf433_ook_isr_installed = true;
     s_rf433_ook_cap_active = true;
+    portEXIT_CRITICAL(&s_rf433_ook_mux);
+    return ESP_OK;
+}
 
-    gpio_config_t io = {
-        .pin_bit_mask  = 1ULL << RF_HAT_RF433_RX_GPIO,
-        .mode          = GPIO_MODE_INPUT,
-        .pull_up_en    = GPIO_PULLUP_DISABLE,
-        .pull_down_en  = GPIO_PULLDOWN_DISABLE,
-        .intr_type     = GPIO_INTR_ANYEDGE,
-    };
-    gpio_config(&io);
-    esp_err_t e = gpio_install_isr_service(0);
-    if (e != ESP_OK && e != ESP_ERR_INVALID_STATE) { s_rf433_ook_cap_active = false; return e; }
-    gpio_isr_handler_add((gpio_num_t)RF_HAT_RF433_RX_GPIO, s_rf433_ook_cap_isr, NULL);
-
-    vTaskDelay(pdMS_TO_TICKS(timeout_ms));
-
+static void rf433_ook_rx_end(void)
+{
+    portENTER_CRITICAL(&s_rf433_ook_mux);
     s_rf433_ook_cap_active = false;
-    gpio_isr_handler_remove((gpio_num_t)RF_HAT_RF433_RX_GPIO);
+    ++s_rf433_scan_epoch; // invalidate snapshots and queued UI callbacks on every exit
+    bool installed = s_rf433_ook_isr_installed;
+    s_rf433_ook_isr_installed = false;
+    portEXIT_CRITICAL(&s_rf433_ook_mux);
+    if (installed) gpio_isr_handler_remove((gpio_num_t)RF_HAT_RF433_RX_GPIO);
+}
 
-    *count_out = s_rf433_ook_wr;
-    if (*count_out > 0)
-        memcpy(out, (const void *)s_rf433_ook_buf, *count_out * sizeof(int32_t));
-    return (*count_out > 10) ? ESP_OK : ESP_ERR_TIMEOUT;
+// Snapshot the edges accumulated since the last call, then reset the window. The
+// persistent ISR keeps filling s_rf433_ook_buf between calls, so no re-install churn.
+static void rf433_ook_snapshot(int32_t *out, int capacity, int *count_out)
+{
+    if (!out || !count_out || capacity <= 0) {
+        if (count_out) *count_out = 0;
+        return;
+    }
+    // The lock joins an in-flight cross-core ISR, then freezes its writes. Copy
+    // outside the critical section; stop invalidates the ticket and wins forever.
+    portENTER_CRITICAL(&s_rf433_ook_mux);
+    s_rf433_ook_cap_active = false;
+    uint32_t epoch = s_rf433_scan_epoch;
+    int n = s_rf433_ook_wr;
+    if (n > capacity) n = capacity;  // no-PSRAM task copy is only 256 entries
+    portEXIT_CRITICAL(&s_rf433_ook_mux);
+    if (n > 0) memcpy(out, (const void *)s_rf433_ook_buf, n * sizeof(int32_t));
+    portENTER_CRITICAL(&s_rf433_ook_mux);
+    s_rf433_ook_wr = 0;
+    s_rf433_ook_last = 0;
+    s_rf433_ook_cap_active = epoch == s_rf433_scan_epoch &&
+        s_rf433_ook_isr_installed && !__atomic_load_n(&s_rf433_scan_stop, __ATOMIC_ACQUIRE);
+    portEXIT_CRITICAL(&s_rf433_ook_mux);
+    *count_out = n;
+}
+
+// Completion is published after the worker's last ring/table/callback access.
+// Never reset stop or reuse task-only storage while that acknowledgment is absent.
+static bool rf433_ook_quiesce(void)
+{
+    __atomic_store_n(&s_rf433_scan_stop, true, __ATOMIC_RELEASE);
+    rf433_ook_rx_end();
+    const TickType_t start = xTaskGetTickCount();
+    while (__atomic_load_n(&s_rf433_scan_task, __ATOMIC_ACQUIRE)) {
+        if ((TickType_t)(xTaskGetTickCount() - start) >= pdMS_TO_TICKS(1500)) return false;
+        vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+    }
+    return true;
 }
 
 // ── CC1101 Weather Station ────────────────────────────────────────────────────
@@ -58527,14 +58619,15 @@ static void s_alm_task_fn(void *arg)
         esp_err_t r = cc1101_raw_capture(&raw, 600);
         if (r == ESP_OK && raw.count > 10) {
             uint32_t addr; uint8_t data;
-            for (int start = 0; start < raw.count - 56 && !s_alm_stop; start++) {
-                if (ook_decode_ev1527(raw.timings + start, raw.count - start, &addr, &data)) {
+            int consumed = 0;
+            for (int start = 0; start <= raw.count - 50 && !s_alm_stop;) {
+                if (ook_decode_ev1527(raw.timings + start, raw.count - start, &addr, &data, &consumed)) {
                     int8_t rssi = cc1101_get_rssi_dbm();
                     ook_alarm_update(addr, data, rssi);
                     wx_update_t *u = malloc(sizeof(wx_update_t));
                     if (u) { u->changed = true; lv_async_call(s_alm_lvgl_cb, u); }
-                    start += 56;  // skip past this packet
-                }
+                    start += consumed;
+                } else break;
             }
             cc1101_raw_free(&raw);
         }
@@ -67086,25 +67179,34 @@ static void show_rf433_foxhunt_screen(void)
     s_rf433_fox_hbtn = NULL; s_rf433_fox_status = NULL;
     s_rf433_fox_edges = 0; s_rf433_fox_rate = 0;
 
-    // Configure GPIO9 (RF433 RX) as input
-    gpio_config_t io_cfg = {
-        .pin_bit_mask  = (1ULL << RF_HAT_RF433_RX_GPIO),
-        .mode          = GPIO_MODE_INPUT,
-        .pull_up_en    = GPIO_PULLUP_DISABLE,
-        .pull_down_en  = GPIO_PULLDOWN_DISABLE,
-        .intr_type     = GPIO_INTR_ANYEDGE,
-    };
-    gpio_config(&io_cfg);
-    esp_err_t isr_err = gpio_install_isr_service(0);
-    if (isr_err == ESP_OK || isr_err == ESP_ERR_INVALID_STATE) {
-        gpio_isr_handler_add(RF_HAT_RF433_RX_GPIO, s_rf433_fox_isr, NULL);
-        s_rf433_fox_isr_installed = true;
-    }
-
-    s_rf433_fox_saved_vib_pct = g_vibtest_strength_pct;
-
+    // Run the old screen stop hook before installing this session's handler.
     create_function_page_base("RF433 Fox Hunt");
+    s_rf433_fox_saved_vib_pct = g_vibtest_strength_pct;
     g_screen_stop_fn = rf433_foxhunt_screen_stop;
+
+    esp_err_t rx_err = rf433_rx_prepare();
+    if (rx_err != ESP_OK) {
+        s_cc1101_stub_screen("RF433 busy", "Receiver unavailable. Retry after the radio stops.");
+        return;
+    }
+    gpio_config_t io_cfg = {
+        .pin_bit_mask = 1ULL << RF_HAT_RF433_RX_GPIO, .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE, .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE,
+    };
+    rx_err = gpio_config(&io_cfg);
+    if (rx_err == ESP_OK) {
+        rx_err = gpio_install_isr_service(0);
+        if (rx_err == ESP_OK || rx_err == ESP_ERR_INVALID_STATE)
+            rx_err = gpio_isr_handler_add(RF_HAT_RF433_RX_GPIO, s_rf433_fox_isr, NULL);
+    }
+    if (rx_err != ESP_OK) {
+        s_cc1101_stub_screen("RF433 unavailable", "Receiver startup failed. Retry shortly.");
+        return;
+    }
+    s_rf433_fox_isr_installed = true;
+
+
     apply_menu_bg();
     int y = 34;
 
@@ -67174,8 +67276,8 @@ static void show_rf433_foxhunt_screen(void)
 
 static void s_rf433_scan_lvgl_cb(void *arg)
 {
-    free(arg);
-    if (!s_rf433_scan_list) return;
+    if ((uint32_t)(uintptr_t)arg != s_rf433_scan_epoch ||
+        __atomic_load_n(&s_rf433_scan_stop, __ATOMIC_ACQUIRE) || !s_rf433_scan_list) return;
     lv_obj_clean(s_rf433_scan_list);
     for (int i = 0; i < s_ook_alarm_count; i++) {
         ook_alarm_entry_t *e = &s_ook_alarms[i];
@@ -67214,49 +67316,60 @@ static void s_rf433_scan_lvgl_cb(void *arg)
 
 static void s_rf433_scan_task_fn(void *arg)
 {
-    (void)arg;
+    const uint32_t epoch = (uint32_t)(uintptr_t)arg;
 #if defined(CONFIG_BOARD_WS_C5_35)
-    /* Task-only copy, populated AFTER ISR removal by rf433_ook_capture.
+    /* Task-only copy, filled by rf433_ook_snapshot() from the ISR ring each window.
      * No DMA/ISR references: retain all 2048 samples but leave scarce internal
      * RAM for SD/camera. The separate s_rf433_ook_buf ISR ring stays internal. */
     static EXT_RAM_BSS_ATTR int32_t rf433_task_samples[2048];
     int32_t *buf = rf433_task_samples;
+    const int buf_capacity = sizeof(rf433_task_samples) / sizeof(rf433_task_samples[0]);
 #elif defined(CONFIG_BOARD_HAS_PSRAM) && CONFIG_BOARD_HAS_PSRAM
     static int32_t buf[2048];
+    const int buf_capacity = sizeof(buf) / sizeof(buf[0]);
 #else
     static int32_t buf[256];  // reduced for DRAM budget; enough for short OOK packets
+    const int buf_capacity = sizeof(buf) / sizeof(buf[0]);
 #endif
-    while (!s_rf433_scan_stop) {
+    while (!__atomic_load_n(&s_rf433_scan_stop, __ATOMIC_ACQUIRE)) {
+        // Short cancellable waits bound Back/Home/reentry without force deletion.
+        for (int ms = 0; ms < 700 && !__atomic_load_n(&s_rf433_scan_stop, __ATOMIC_ACQUIRE); ms += 10)
+            vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+        if (__atomic_load_n(&s_rf433_scan_stop, __ATOMIC_ACQUIRE)) break;
         int count = 0;
-        rf433_ook_capture(buf, &count, 700);
-        if (count > 10 && !s_rf433_scan_stop) {
+        rf433_ook_snapshot(buf, buf_capacity, &count);
+        // A bounded UI-lock attempt serializes the shared visible result table.
+        // A stop hook can join us while holding LVGL: never block on it forever.
+        if (count >= 50 && xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
             uint32_t addr; uint8_t data;
-            for (int start = 0; start < count - 56; start++) {
-                if (ook_decode_ev1527(buf + start, count - start, &addr, &data)) {
-                    ook_alarm_update(addr, data, -127);  // -127 = no RSSI
-                    wx_update_t *u = malloc(sizeof(wx_update_t));
-                    if (u) { u->changed = true; lv_async_call(s_rf433_scan_lvgl_cb, u); }
-                    start += 56;
-                }
+            int consumed = 0;
+            for (int start = 0; start <= count - 50 && !s_rf433_scan_stop;) {
+                if (ook_decode_ev1527(buf + start, count - start, &addr, &data, &consumed)) {
+                    ook_alarm_update(addr, data, -127); // no RSSI
+                    lv_async_call(s_rf433_scan_lvgl_cb, (void *)(uintptr_t)epoch);
+                    start += consumed;
+                } else break;
             }
+            xSemaphoreGive(lvgl_mutex);
         }
-        if (!s_rf433_scan_stop) vTaskDelay(pdMS_TO_TICKS(50));
     }
-    s_rf433_scan_task = NULL;
+    __atomic_store_n(&s_rf433_scan_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
 static void rf433_ook_scan_stop(void)
 {
-    s_rf433_scan_stop   = true;
+    (void)rf433_ook_quiesce(); // timeout retains worker ownership; next entry refuses
     s_rf433_scan_status = NULL;
-    s_rf433_scan_list   = NULL;
+    s_rf433_scan_list = NULL;
 }
 
 static void show_rf433_ook_scan_screen(void)
 {
-    if (s_rf433_scan_task) { s_rf433_scan_stop = true; vTaskDelay(pdMS_TO_TICKS(100)); }
-    s_rf433_scan_stop = false;
+    if (!rf433_ook_quiesce()) {
+        s_cc1101_stub_screen("RF433 busy", "Previous scan is still stopping. Retry shortly.");
+        return;
+    }
     s_rf433_scan_status = NULL;
     s_rf433_scan_list   = NULL;
     s_ook_alarm_count   = 0;
@@ -67291,8 +67404,19 @@ static void show_rf433_ook_scan_screen(void)
 
     rfhat_add_back_btn("RF433", show_rf433_menu_screen);
 
-    xTaskCreate(s_rf433_scan_task_fn, "rf433_scan", 6144, NULL,
-                tskIDLE_PRIORITY + 2, &s_rf433_scan_task);
+    esp_err_t err = rf433_ook_rx_begin();
+    if (err != ESP_OK) {
+        lv_label_set_text(s_rf433_scan_status, "Receiver unavailable. Retry after radio stops.");
+        return;
+    }
+    __atomic_store_n(&s_rf433_scan_stop, false, __ATOMIC_RELEASE);
+    if (xTaskCreate(s_rf433_scan_task_fn, "rf433_scan", 6144,
+                    (void *)(uintptr_t)s_rf433_scan_epoch,
+                    tskIDLE_PRIORITY + 2, &s_rf433_scan_task) != pdPASS) {
+        __atomic_store_n(&s_rf433_scan_stop, true, __ATOMIC_RELEASE);
+        rf433_ook_rx_end();
+        lv_label_set_text(s_rf433_scan_status, "Scan task startup failed. Retry shortly.");
+    }
 }
 
 // ── RFID Main Menu ─────────────────────────────────────────────────────────────

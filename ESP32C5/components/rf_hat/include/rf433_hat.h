@@ -78,6 +78,8 @@ bool            rf433_hat_is_init(void);
 // (inter-frame gap > 30 ms) or on timeout.
 rf433_hat_err_t rf433_hat_capture_start(rf433_hat_cb_t cb, void *ctx, uint32_t timeout_ms);
 void            rf433_hat_capture_cancel(void);
+// Cancel and join boundedly; false retains driver/pins/resources for retry.
+bool rf433_hat_quiesce(void);
 
 // ── Replay ───────────────────────────────────────────────────────────────────
 // Transmits sig on RF_HAT_RF433_TX_GPIO. repeat=0 treated as 1.

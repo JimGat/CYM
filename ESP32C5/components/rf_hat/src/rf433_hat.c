@@ -31,10 +31,17 @@ static bool              s_jamming      = false;
 static esp_timer_handle_t s_jam_tmr = NULL;
 static volatile bool      s_jam_gpio_state = false;
 
+static portMUX_TYPE s_jam_mux = portMUX_INITIALIZER_UNLOCKED;
+
 static void s_jam_timer_cb(void *arg)
 {
-    s_jam_gpio_state = !s_jam_gpio_state;
-    gpio_set_level(RF_HAT_RF433_TX_GPIO, s_jam_gpio_state ? 1 : 0);
+    (void)arg;
+    portENTER_CRITICAL(&s_jam_mux);
+    if (s_jamming) {
+        s_jam_gpio_state = !s_jam_gpio_state;
+        gpio_set_level(RF_HAT_RF433_TX_GPIO, s_jam_gpio_state ? 1 : 0);
+    }
+    portEXIT_CRITICAL(&s_jam_mux);
 }
 
 // ISR double-buffer in DRAM — capped at 256, enough for all standard OOK frames.
@@ -43,6 +50,8 @@ static uint32_t s_isr_buf[RF433_ISR_BUF_MAX];
 static volatile bool s_frame_ready = false;
 
 static TaskHandle_t      s_cap_task   = NULL;
+static bool s_cap_cancel = false;
+static portMUX_TYPE s_capture_mux = portMUX_INITIALIZER_UNLOCKED;
 static rf433_hat_cb_t    s_cap_cb     = NULL;
 static void             *s_cap_ctx    = NULL;
 static uint32_t          s_cap_tmo_ms = 5000;
@@ -143,13 +152,14 @@ static void s_setup_tx(void)
 
 static void IRAM_ATTR s_gpio_isr(void *arg)
 {
-    if (!s_capturing) return;
+    portENTER_CRITICAL_ISR(&s_capture_mux);
+    if (!s_capturing) { portEXIT_CRITICAL_ISR(&s_capture_mux); return; }
 
     int64_t now    = esp_timer_get_time();
     int64_t gap_us = now - s_last_edge_us;
     s_last_edge_us = now;
 
-    if (gap_us < RF433_MIN_PULSE_US) return;
+    if (gap_us < RF433_MIN_PULSE_US) { portEXIT_CRITICAL_ISR(&s_capture_mux); return; }
 
     if (gap_us > RF433_FRAME_GAP_US) {
         if (s_pulse_count > 4 && !s_frame_ready) {
@@ -159,25 +169,38 @@ static void IRAM_ATTR s_gpio_isr(void *arg)
             if (woken) portYIELD_FROM_ISR();
         }
         s_pulse_count = 0;
+        portEXIT_CRITICAL_ISR(&s_capture_mux);
         return;
     }
 
     if (s_pulse_count < RF433_ISR_BUF_MAX)
         s_isr_buf[s_pulse_count++] = (uint32_t)gap_us;
+    portEXIT_CRITICAL_ISR(&s_capture_mux);
 }
 
 // ── Capture background task ───────────────────────────────────────────────────
 
 static void s_capture_task(void *arg)
 {
+    portENTER_CRITICAL(&s_capture_mux);
     s_last_edge_us = esp_timer_get_time();
-    s_capturing    = true;
+    s_capturing    = !__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE);
     s_frame_ready  = false;
     s_pulse_count  = 0;
+    portEXIT_CRITICAL(&s_capture_mux);
 
     rf433_hat_err_t result = RF433_HAT_ERR_TIMEOUT;
 
-    if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(s_cap_tmo_ms)) == pdTRUE && s_frame_ready) {
+    bool ready = false;
+    TickType_t start = xTaskGetTickCount();
+    while (!__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE) &&
+           (TickType_t)(xTaskGetTickCount() - start) < pdMS_TO_TICKS(s_cap_tmo_ms)) {
+        if (xSemaphoreTake(s_frame_sem, pdMS_TO_TICKS(20) ? pdMS_TO_TICKS(20) : 1) == pdTRUE) {
+            ready = s_frame_ready;
+            break;
+        }
+    }
+    if (ready && !__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE)) {
         uint32_t n = s_pulse_count;
         if (n > RF433_HAT_MAX_PULSES) n = RF433_HAT_MAX_PULSES;
         if (s_cap_buf) {
@@ -189,9 +212,12 @@ static void s_capture_task(void *arg)
         result = (n > 4 && s_cap_buf) ? RF433_HAT_OK : RF433_HAT_ERR_TIMEOUT;
     }
 
+    portENTER_CRITICAL(&s_capture_mux);
     s_capturing = false;
-    if (s_cap_cb) s_cap_cb(result, result == RF433_HAT_OK ? s_cap_buf : NULL, s_cap_ctx);
-    s_cap_task = NULL;
+    portEXIT_CRITICAL(&s_capture_mux);
+    if (!__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE) && s_cap_cb)
+        s_cap_cb(result, result == RF433_HAT_OK ? s_cap_buf : NULL, s_cap_ctx);
+    __atomic_store_n(&s_cap_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -239,7 +265,8 @@ fail:
 
 void rf433_hat_deinit(void)
 {
-    rf433_hat_capture_cancel();
+    if (!rf433_hat_quiesce()) return;
+    rf433_hat_jam_stop();
     s_capturing = false;
     if (s_init && RF_HAT_RF433_RX_GPIO >= 0) gpio_isr_handler_remove(RF_HAT_RF433_RX_GPIO);
     if (s_frame_sem) { vSemaphoreDelete(s_frame_sem); s_frame_sem = NULL; }
@@ -261,6 +288,7 @@ rf433_hat_err_t rf433_hat_capture_start(rf433_hat_cb_t cb, void *ctx, uint32_t t
     if (!s_init)    return RF433_HAT_ERR_NOT_INIT;
     if (s_cap_task) return RF433_HAT_ERR_BUSY;
 
+    __atomic_store_n(&s_cap_cancel, false, __ATOMIC_RELEASE);
     s_cap_cb     = cb;
     s_cap_ctx    = ctx;
     s_cap_tmo_ms = timeout_ms ? timeout_ms : 5000;
@@ -271,10 +299,20 @@ rf433_hat_err_t rf433_hat_capture_start(rf433_hat_cb_t cb, void *ctx, uint32_t t
     return (ok == pdPASS) ? RF433_HAT_OK : RF433_HAT_ERR_HW;
 }
 
+bool rf433_hat_quiesce(void)
+{
+    __atomic_store_n(&s_cap_cancel, true, __ATOMIC_RELEASE);
+    TickType_t start = xTaskGetTickCount();
+    while (__atomic_load_n(&s_cap_task, __ATOMIC_ACQUIRE)) {
+        if ((TickType_t)(xTaskGetTickCount() - start) >= pdMS_TO_TICKS(1500)) return false;
+        vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+    }
+    return true;
+}
+
 void rf433_hat_capture_cancel(void)
 {
-    s_capturing = false;
-    if (s_cap_task) { vTaskDelete(s_cap_task); s_cap_task = NULL; }
+    (void)rf433_hat_quiesce();
 }
 
 // ── Public API — Replay ───────────────────────────────────────────────────────
@@ -482,8 +520,8 @@ rf433_hat_err_t rf433_hat_delete_signal(const char *remote_name, int index)
 void rf433_hat_jam_start(void)
 {
     if (s_jamming) return;
+    if (!rf433_hat_quiesce()) return;
     s_setup_tx();
-    rf433_hat_capture_cancel();
 
     if (!s_jam_tmr) {
         esp_timer_create_args_t a = { .callback = s_jam_timer_cb, .name = "rf433_jam" };
@@ -499,10 +537,15 @@ void rf433_hat_jam_start(void)
 
 void rf433_hat_jam_stop(void)
 {
-    if (!s_jamming) return;
+    // Join any callback already touching the pad; a delayed timer callback sees
+    // false under this same mux and cannot drive a later receiver session.
+    portENTER_CRITICAL(&s_jam_mux);
+    bool was_jamming = s_jamming;
+    s_jamming = false;
+    portEXIT_CRITICAL(&s_jam_mux);
+    if (!was_jamming) return;
     if (s_jam_tmr) esp_timer_stop(s_jam_tmr);
     gpio_set_level(RF_HAT_RF433_TX_GPIO, 0);
-    s_jamming = false;
     ESP_LOGI(TAG, "RF433 jam stop");
 }
 

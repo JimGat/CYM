@@ -40,12 +40,17 @@ static rmt_encoder_handle_t s_tx_enc  = NULL;
 static QueueHandle_t        s_rx_queue = NULL;
 static bool                 s_init     = false;
 static bool                 s_jamming  = false;
+static bool                 s_jam_configured = false;
 
 // Capture task state
 static TaskHandle_t   s_cap_task   = NULL;
 static ir_hat_cb_t    s_cap_cb     = NULL;
 static void          *s_cap_ctx    = NULL;
 static uint32_t       s_cap_tmo_ms = 5000;
+static bool s_cap_cancel = false;
+static bool s_tx_enabled = false; // cleared only after successful disable
+static bool s_rx_enabled = false, s_rx_healthy = false;
+static int s_rx_core = 0;
 // Decoded signal copies are task-only: RX ISR queues symbols; replay converts
 // timings into its separate RMT symbol buffer before handing anything to RMT.
 // Do not move s_rx_buf, queues, RMT controls, or GPIO ISR rings to external RAM.
@@ -157,46 +162,82 @@ static bool IRAM_ATTR s_rx_done_cb(rmt_channel_handle_t chan,
     return (woken == pdTRUE);
 }
 
+// Runs on the core that allocated the non-DMA RMT RX interrupt. That ISR
+// cannot remain in flight while this task disables RX and drains the old queue.
+// A callback queued between application timeout and disable is discarded ONLY
+// after disable succeeds; failed disable retains ownership and blocks reception.
+static esp_err_t s_rx_rearm(void)
+{
+    s_rx_healthy = false;
+    if (s_rx_enabled) {
+        esp_err_t err = rmt_disable(s_rx_chan);
+        if (err != ESP_OK) return err;
+        s_rx_enabled = false;
+    }
+    xQueueReset(s_rx_queue);
+    esp_err_t err = rmt_enable(s_rx_chan);
+    if (err != ESP_OK) return err;
+    s_rx_enabled = true;
+    s_rx_healthy = true;
+    return ESP_OK;
+}
+
 // ── Capture background task ───────────────────────────────────────────────────
 
 static void s_capture_task(void *arg)
 {
+    (void)arg;
     rmt_receive_config_t rx_cfg = {
         .signal_range_min_ns = IR_MIN_PULSE_NS,
         .signal_range_max_ns = IR_FRAME_GAP_NS,
     };
-
-    esp_err_t ret = rmt_receive(s_rx_chan, s_rx_buf, sizeof(s_rx_buf), &rx_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "rmt_receive failed: %s", esp_err_to_name(ret));
-        if (s_cap_cb) s_cap_cb(IR_HAT_ERR_HW, NULL, s_cap_ctx);
-        s_cap_task = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
-
-    rmt_rx_done_event_data_t rx_data;
-    ir_hat_err_t result = IR_HAT_ERR_TIMEOUT;
-
-    if (xQueueReceive(s_rx_queue, &rx_data, pdMS_TO_TICKS(s_cap_tmo_ms)) == pdTRUE) {
-        uint32_t n = rx_data.num_symbols;
-        if (n > IR_HAT_MAX_TIMINGS / 2) n = IR_HAT_MAX_TIMINGS / 2;
-
-        uint32_t idx = 0;
-        for (uint32_t i = 0; i < n && idx < IR_HAT_MAX_TIMINGS - 1; i++) {
-            const rmt_symbol_word_t *sym = &rx_data.received_symbols[i];
-            if (sym->duration0) s_cap_signal.times_us[idx++] = sym->duration0;
-            if (sym->duration1) s_cap_signal.times_us[idx++] = sym->duration1;
+    ir_hat_err_t result = IR_HAT_ERR_HW;
+    esp_err_t ret = s_rx_healthy ? ESP_OK : s_rx_rearm();
+    if (ret == ESP_OK && !__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE))
+        ret = rmt_receive(s_rx_chan, s_rx_buf, sizeof(s_rx_buf), &rx_cfg);
+    if (ret == ESP_OK) {
+        rmt_rx_done_event_data_t rx_data;
+        bool done = false;
+        TickType_t start = xTaskGetTickCount();
+        while (!__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE) &&
+               (TickType_t)(xTaskGetTickCount() - start) < pdMS_TO_TICKS(s_cap_tmo_ms)) {
+            if (xQueueReceive(s_rx_queue, &rx_data, pdMS_TO_TICKS(20) ? pdMS_TO_TICKS(20) : 1) == pdTRUE) {
+                done = true;
+                break;
+            }
         }
-        s_cap_signal.count      = idx;
-        s_cap_signal.freq_hz    = IR_CARRIER_HZ;
-        s_cap_signal.duty_cycle = IR_CARRIER_DUTY;
-        snprintf(s_cap_signal.name, IR_HAT_NAME_LEN, "signal");
-        result = (idx > 0) ? IR_HAT_OK : IR_HAT_ERR_TIMEOUT;
+        result = IR_HAT_ERR_TIMEOUT;
+        if (done && !__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE)) {
+            uint32_t n = rx_data.num_symbols;
+            if (n > IR_HAT_MAX_TIMINGS / 2) n = IR_HAT_MAX_TIMINGS / 2;
+            uint32_t idx = 0;
+            for (uint32_t i = 0; i < n && idx < IR_HAT_MAX_TIMINGS - 1; i++) {
+                const rmt_symbol_word_t *sym = &rx_data.received_symbols[i];
+                if (sym->duration0) s_cap_signal.times_us[idx++] = sym->duration0;
+                if (sym->duration1) s_cap_signal.times_us[idx++] = sym->duration1;
+            }
+            s_cap_signal.count = idx;
+            s_cap_signal.freq_hz = IR_CARRIER_HZ;
+            s_cap_signal.duty_cycle = IR_CARRIER_DUTY;
+            snprintf(s_cap_signal.name, IR_HAT_NAME_LEN, "signal");
+            result = idx ? IR_HAT_OK : IR_HAT_ERR_TIMEOUT;
+        }
+        // Normal SDK completion already restores ENABLE. Only retire a receive
+        // with no consumed completion (timeout/cancel) through disable/drain/enable.
+        if (!done && s_rx_rearm() != ESP_OK) result = IR_HAT_ERR_HW;
+    } else {
+        s_rx_healthy = false;
+        ESP_LOGE(TAG, "IR receive/rearm failed: %s", esp_err_to_name(ret));
     }
-
-    if (s_cap_cb) s_cap_cb(result, result == IR_HAT_OK ? &s_cap_signal : NULL, s_cap_ctx);
-    s_cap_task = NULL;
+    // Failed disable still owns a live RX transaction. Keep the worker/resources
+    // until it can quiesce; callers time out safely rather than freeing under ISR.
+    while (s_rx_enabled && !s_rx_healthy) {
+        vTaskDelay(pdMS_TO_TICKS(20) ? pdMS_TO_TICKS(20) : 1);
+        (void)s_rx_rearm();
+    }
+    if (!__atomic_load_n(&s_cap_cancel, __ATOMIC_ACQUIRE) && s_cap_cb)
+        s_cap_cb(result, result == IR_HAT_OK ? &s_cap_signal : NULL, s_cap_ctx);
+    __atomic_store_n(&s_cap_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -204,7 +245,12 @@ static void s_capture_task(void *arg)
 
 ir_hat_err_t ir_hat_init(void)
 {
+    if (__atomic_load_n(&s_cap_task, __ATOMIC_ACQUIRE)) return IR_HAT_ERR_BUSY;
+    if (s_jamming) return IR_HAT_ERR_BUSY;
     if (s_init) return IR_HAT_OK;
+    // A failed init/release can retain handles. Never overwrite or duplicate them.
+    if ((s_tx_chan || s_rx_chan || s_tx_enc || s_rx_queue) && !ir_hat_release())
+        return IR_HAT_ERR_HW;
 
     s_rx_queue = xQueueCreate(4, sizeof(rmt_rx_done_event_data_t));
     if (!s_rx_queue) return IR_HAT_ERR_HW;
@@ -227,11 +273,12 @@ ir_hat_err_t ir_hat_init(void)
         .frequency_hz = IR_CARRIER_HZ,
         .duty_cycle   = IR_CARRIER_DUTY,
     };
-    rmt_apply_carrier(s_tx_chan, &carrier);
+    if (rmt_apply_carrier(s_tx_chan, &carrier) != ESP_OK) goto fail;
 
     rmt_copy_encoder_config_t enc_cfg = {};
     if (rmt_new_copy_encoder(&enc_cfg, &s_tx_enc) != ESP_OK) goto fail;
-    rmt_enable(s_tx_chan);
+    if (rmt_enable(s_tx_chan) != ESP_OK) goto fail;
+    s_tx_enabled = true;
 
     // 128 → mem_block_num=3, needs 3 consecutive RX slots (only 2 exist) → always fails.
     // 48 → mem_block_num=1, ping_pong_symbols=24; adequate for all common IR protocols.
@@ -243,11 +290,13 @@ ir_hat_err_t ir_hat_init(void)
         .flags.invert_in   = false,
         .flags.with_dma    = false,
     };
+    s_rx_core = xPortGetCoreID(); // interrupt affinity established by new_rx_channel
     if (rmt_new_rx_channel(&rx_cfg, &s_rx_chan) != ESP_OK) goto fail;
 
     rmt_rx_event_callbacks_t rx_cbs = { .on_recv_done = s_rx_done_cb };
-    rmt_rx_register_event_callbacks(s_rx_chan, &rx_cbs, s_rx_queue);
-    rmt_enable(s_rx_chan);
+    if (rmt_rx_register_event_callbacks(s_rx_chan, &rx_cbs, s_rx_queue) != ESP_OK) goto fail;
+    if (rmt_enable(s_rx_chan) != ESP_OK) goto fail;
+    s_rx_enabled = s_rx_healthy = true;
 
     s_init = true;
     ESP_LOGI(TAG, "IR init OK  TX=GPIO%d  RX=GPIO%d", RF_HAT_IR_TX_GPIO, RF_HAT_IR_RX_GPIO);
@@ -259,26 +308,47 @@ fail:
     return IR_HAT_ERR_HW;
 }
 
+bool ir_hat_release(void)
+{
+    if (!ir_hat_quiesce()) return false; // never free a live capture worker
+    // Initialization status is not ownership. Partial cleanup is not replayable.
+    s_init = false;
+    if (s_jamming) {
+        if (ledc_stop(LEDC_LOW_SPEED_MODE, IR_JAM_LEDC_CHANNEL, 0) != ESP_OK)
+            return false;
+        s_jamming = s_jam_configured = false;
+    }
+    if (s_tx_chan) {
+        // IDF disable accepts ENABLE/RUN, not INIT. A delete failure must retry
+        // deletion without disabling the already-disabled channel again.
+        if (s_tx_enabled && rmt_disable(s_tx_chan) != ESP_OK) return false;
+        s_tx_enabled = false;
+        if (rmt_del_channel(s_tx_chan) != ESP_OK) return false;
+        s_tx_chan = NULL;
+    }
+    if (s_tx_enc) {
+        if (rmt_del_encoder(s_tx_enc) != ESP_OK) return false;
+        s_tx_enc = NULL;
+    }
+    if (s_rx_chan) {
+        if (s_rx_enabled && rmt_disable(s_rx_chan) != ESP_OK) return false;
+        s_rx_enabled = s_rx_healthy = false;
+        if (rmt_del_channel(s_rx_chan) != ESP_OK) return false;
+        s_rx_chan = NULL;
+    }
+    // vQueueDelete has no failure result; RX deletion and worker join above
+    // establish that neither the ISR nor the capture task can still use it.
+    if (s_rx_queue) { vQueueDelete(s_rx_queue); s_rx_queue = NULL; }
+    s_tx_enabled = s_rx_enabled = s_rx_healthy = false;
+    // No GPIO changes on any retained-resource refusal. Check both resets.
+    if (gpio_reset_pin(RF_HAT_IR_TX_GPIO) != ESP_OK) return false;
+    if (gpio_reset_pin(RF_HAT_IR_RX_GPIO) != ESP_OK) return false;
+    return true;
+}
+
 void ir_hat_deinit(void)
 {
-    // If the IR jammer (LEDC on GPIO8) is running, stop it here.
-    // ir_hat_jam_start() sets s_init=false so ir_hat_is_init() returns false even
-    // while the jammer is active. Inline the LEDC stop here to avoid the
-    // unwanted ir_hat_init() that ir_hat_jam_stop() performs.
-    if (s_jamming) {
-        ledc_stop(LEDC_LOW_SPEED_MODE, IR_JAM_LEDC_CHANNEL, 0);
-        s_jamming = false;
-    }
-    ir_hat_capture_cancel();
-    if (s_tx_chan) { rmt_disable(s_tx_chan); rmt_del_channel(s_tx_chan); s_tx_chan = NULL; }
-    if (s_rx_chan) { rmt_disable(s_rx_chan); rmt_del_channel(s_rx_chan); s_rx_chan = NULL; }
-    if (s_tx_enc)  { rmt_del_encoder(s_tx_enc);  s_tx_enc  = NULL; }
-    if (s_rx_queue){ vQueueDelete(s_rx_queue);    s_rx_queue = NULL; }
-    // Reset shared GPIO8/9 to safe floating inputs so the next HAT module
-    // starts from a known-neutral IO-matrix state.
-    gpio_reset_pin(RF_HAT_IR_TX_GPIO);
-    gpio_reset_pin(RF_HAT_IR_RX_GPIO);
-    s_init = false;
+    (void)ir_hat_release(); // compatibility: checked admission uses release directly
 }
 
 bool ir_hat_is_init(void) { return s_init; }
@@ -290,22 +360,30 @@ ir_hat_err_t ir_hat_capture_start(ir_hat_cb_t cb, void *ctx, uint32_t timeout_ms
     if (!s_init)    return IR_HAT_ERR_NOT_INIT;
     if (s_cap_task) return IR_HAT_ERR_BUSY;
 
+    __atomic_store_n(&s_cap_cancel, false, __ATOMIC_RELEASE);
     s_cap_cb     = cb;
     s_cap_ctx    = ctx;
     s_cap_tmo_ms = timeout_ms ? timeout_ms : 5000;
 
-    BaseType_t ok = xTaskCreate(s_capture_task, "ir_cap", 4096, NULL,
-                                tskIDLE_PRIORITY + 2, &s_cap_task);
+    BaseType_t ok = xTaskCreatePinnedToCore(s_capture_task, "ir_cap", 4096, NULL,
+                                tskIDLE_PRIORITY + 2, &s_cap_task, s_rx_core);
     return (ok == pdPASS) ? IR_HAT_OK : IR_HAT_ERR_HW;
+}
+
+bool ir_hat_quiesce(void)
+{
+    __atomic_store_n(&s_cap_cancel, true, __ATOMIC_RELEASE);
+    TickType_t start = xTaskGetTickCount();
+    while (__atomic_load_n(&s_cap_task, __ATOMIC_ACQUIRE)) {
+        if ((TickType_t)(xTaskGetTickCount() - start) >= pdMS_TO_TICKS(1500)) return false;
+        vTaskDelay(pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1);
+    }
+    return true;
 }
 
 void ir_hat_capture_cancel(void)
 {
-    if (s_cap_task) { vTaskDelete(s_cap_task); s_cap_task = NULL; }
-    if (s_rx_queue) xQueueReset(s_rx_queue);
-    // vTaskDelete leaves the RMT RX channel in FSM_RUN; cycle it back to FSM_ENABLE
-    // so the next rmt_receive() call does not fail with "channel not in enable state".
-    if (s_rx_chan) { rmt_disable(s_rx_chan); rmt_enable(s_rx_chan); }
+    (void)ir_hat_quiesce();
 }
 
 // ── Public API — Replay ───────────────────────────────────────────────────────
@@ -724,13 +802,11 @@ esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx)
 
 ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz)
 {
-    if (s_jamming) return IR_HAT_OK;
+    if (s_jamming && s_jam_configured) return IR_HAT_OK;
     if (!freq_hz) freq_hz = 38000;
 
-    ir_hat_capture_cancel();
-    if (s_tx_chan) { rmt_disable(s_tx_chan); rmt_del_channel(s_tx_chan); s_tx_chan = NULL; }
-    if (s_tx_enc)  { rmt_del_encoder(s_tx_enc); s_tx_enc = NULL; }
-    s_init = false;
+    // Includes retained resources from a previous failed init/jammer entry.
+    if (!ir_hat_release()) return IR_HAT_ERR_HW;
 
     ledc_timer_config_t t = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
@@ -750,9 +826,14 @@ ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz)
         .hpoint     = 0,
         .intr_type  = LEDC_INTR_DISABLE,
     };
-    if (ledc_channel_config(&ch) != ESP_OK) return IR_HAT_ERR_HW;
-
+    // Timer config established the LEDC context. Channel config can fail after
+    // enabling output; retain ownership until a checked stop succeeds.
     s_jamming = true;
+    if (ledc_channel_config(&ch) != ESP_OK) {
+        (void)ir_hat_release();
+        return IR_HAT_ERR_HW;
+    }
+    s_jam_configured = true;
     ESP_LOGI(TAG, "IR jam start @ %lu Hz", (unsigned long)freq_hz);
     return IR_HAT_OK;
 }
@@ -760,10 +841,8 @@ ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz)
 void ir_hat_jam_stop(void)
 {
     if (!s_jamming) return;
-    ledc_stop(LEDC_LOW_SPEED_MODE, IR_JAM_LEDC_CHANNEL, 0);
-    gpio_set_level(RF_HAT_IR_TX_GPIO, 0);
-    s_jamming = false;
-    ir_hat_init();
+    if (!ir_hat_release()) return;
+    (void)ir_hat_init();
     ESP_LOGI(TAG, "IR jam stop");
 }
 

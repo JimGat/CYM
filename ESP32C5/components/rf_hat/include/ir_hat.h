@@ -69,12 +69,17 @@ typedef void (*ir_hat_progress_cb_t)(int index, int total, void *ctx);
 // Call ir_hat_init() when entering the IR menu; ir_hat_deinit() on exit.
 ir_hat_err_t ir_hat_init(void);
 void         ir_hat_deinit(void);
+// Checked, retryable release of all owned resources; false forbids pin reuse.
+// Unlike status flags, this also inspects retained partial-init/jammer handles.
+bool         ir_hat_release(void);
 bool         ir_hat_is_init(void);
 
 // ── Capture ──────────────────────────────────────────────────────────────────
 // Starts a background task. Calls cb(result, sig, ctx) when done or timed out.
 ir_hat_err_t ir_hat_capture_start(ir_hat_cb_t cb, void *ctx, uint32_t timeout_ms);
 void         ir_hat_capture_cancel(void);
+// Cancel and join boundedly; false retains driver/pins/resources for retry.
+bool         ir_hat_quiesce(void);
 
 // ── Replay ───────────────────────────────────────────────────────────────────
 // Transmits sig synchronously. Blocks until TX complete (~100 ms typical).

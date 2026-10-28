@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>Stable v3.0.37 · Development v3.0.38</b>
+  <b>Stable v3.0.37 · Development v3.0.39</b>
 </p>
 
 <p align="center">
@@ -33,7 +33,26 @@
 
 ---
 
-## Development v3.0.38 — RF HAT shared-pin release
+## Development v3.0.39 — RF-HAT receive integration
+
+Retains co-developer **@birolt29's** RF433 EV1527 polarity/24-bit correction,
+persistent OOK ISR, clean-entry receive preparation and IR timeout recovery intent.
+**JimGat's integration corrections** cover exact-frame bounds and both consumers,
+validated timing, checked startup, bounded worker completion, cross-core snapshot
+ownership and checked IR disable/drain/rearm. Parent-review correction adds unconditional
+checked IR resource release before RF433 GPIO handoff, including failed init/jammer
+states and retry after partial cleanup. The v3.0.38 nRF24 ownership guard is preserved.
+Fox Hunt remains **activity only, not true RSSI**. PN532 and other protocol decoders
+are not repaired or qualified by this change. Stable remains **v3.0.37**.
+
+[Scope, evidence limits and operator checks](docs/releases/v3.0.39-dev.md).
+Production-extracted host tests are synthetic SDK/edge checks, not physical RF proof.
+All nine profile builds and 36 packaged artifacts passed verification. The software
+suite passed 749 tests with one explicit private-capture skip; all 12 focused tests
+passed an independent rerun. Exact-board RF, IR, rapid navigation and touch checks
+remain pending. This is Development delivery only: no flashing or Stable promotion.
+
+## Historical Development v3.0.38 — RF HAT shared-pin release
 
 Integrates **@birolt29's** stale-nRF24 patch for shared RF HAT control-pin ownership
 (GH #28), with separately owned integration safeguards by **JimGat**: bounded worker
