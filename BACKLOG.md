@@ -12,6 +12,12 @@ Last updated: 2026-09-23.
 
 ---
 
+## Owner priority: revisit next
+
+- **PN532 investigation** — TABLED for this display integration, but first deferred
+  backlog item to revisit at Jim's request. Root cause remains unproven; collect
+  targeted evidence before choosing a fix. No PN532 implementation in v3.0.41.
+
 ## Features (firmware)
 
 - **Audio RTA (WS-C5-35 first)** — PLANNED; owner-approved direction, design only.

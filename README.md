@@ -5,7 +5,7 @@
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>Stable v3.0.37 · Development v3.0.40</b>
+  <b>Stable v3.0.37 · Development v3.0.41</b>
 </p>
 
 <p align="center">
@@ -33,7 +33,25 @@
 
 ---
 
-## Development v3.0.40 - FSD input lifecycle and BT Observer
+## Development v3.0.41 - display/layout integration
+
+Co-developer **@birolt29's** fixes make WiFi scan pagination height-aware, cover
+wallpaper using live display/asset dimensions, bound and vertically scroll the
+Clock card, and scroll the CC1101 HW Test and WiFi menu. **JimGat integration
+corrections** top-align wrapped WiFi tracks so FIRST/LAST rows remain reachable,
+and rename only the floating scan action **ATK**. ATK opens attack selection;
+it does not itself launch RF. Pagination Next/Prev is unchanged. Clock Cancel
+is reachable by scrolling, not necessarily visible with every other action.
+Classic/Modern routes and accepted panel/touch/color/calibration transforms are
+preserved. No new waits or keyboard/menu throttles. Larger pages and covered
+wallpaper have measurable native allocation/render cost; hardware timing and
+heap qualification remain pending. Stable stays **v3.0.37**.
+
+[Fixes, evidence/cost and preservation checklist](docs/releases/v3.0.41-dev.md) |
+[Board-specific memory evidence](docs/testing/display-layout-memory-v3.0.41.md).
+PN532 is deferred with unproven root cause and is first to revisit in `BACKLOG.md`.
+
+## Historical Development v3.0.40 - FSD input lifecycle and BT Observer
 
 Patch #20 from co-developer **@birolt29** adds indev coordinate tap/swipe, inverse
 rotation, scroll flags, orientation/layout reporting, deferred completion and BT

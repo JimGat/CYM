@@ -1490,7 +1490,17 @@ static lv_obj_t *scan_status_label = NULL;
 static lv_obj_t *scan_list = NULL;
 // WiFi scan pagination
 static int        wifi_sas_page      = 0;
-#define WIFI_SAS_PAGE_SIZE 8
+// Rows per page = scan_list interior (height ver_res-116) / row pitch (24px row +
+// 1px pad_row = 25px), so a page fills the list with no scrollbar and adapts to the
+// panel height (mirrors bt_sas_page_size()/cam_page_size()). 240x320 portrait -> 8
+// (identical to the old hardcoded WIFI_SAS_PAGE_SIZE = no change on NM-CYD-C5 /
+// WS-C5-28), 320x480 3.5" portrait -> 14 (fills the tall panel instead of ~45% black),
+// 320x240 landscape -> 4.
+static inline int wifi_sas_page_size(void)
+{
+    int rows = (lv_disp_get_ver_res(NULL) - 116) / 25;
+    return rows < 1 ? 1 : rows;
+}
 static lv_obj_t  *wifi_sas_nav_bar  = NULL;
 static lv_obj_t  *wifi_sas_nav_prev = NULL;
 static lv_obj_t  *wifi_sas_nav_lbl  = NULL;
@@ -9418,7 +9428,7 @@ log_heap_stats("display-drawbuffers-before");
                 lv_obj_set_style_radius(next_btn, 14, 0);
                 lv_obj_set_style_shadow_width(next_btn, 0, 0);
                 lv_obj_t *next_lbl = lv_label_create(next_btn);
-                lv_label_set_text(next_lbl, "Next " LV_SYMBOL_RIGHT);
+                lv_label_set_text(next_lbl, "ATK");
                 lv_obj_set_style_text_color(next_lbl, ui_text_color(), 0);
                 lv_obj_set_style_text_font(next_lbl, &lv_font_montserrat_14, 0);
                 lv_obj_center(next_lbl);
@@ -18540,13 +18550,24 @@ static void apply_menu_bg(void)
     lv_obj_align(home_bg_img, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_img_recolor(home_bg_img, lv_color_black(), 0);
     lv_obj_set_style_img_recolor_opa(home_bg_img, LV_OPA_50, 0);
-    // lab_bg is 240x320 (portrait). In landscape the screen is 320 wide x 240 tall.
-    // Fit-height (zoom 192 = 0.75x) left ~70px empty on each side (Jim's report:
-    // "background didn't fill the screen"). Instead COVER the screen by scaling to the
-    // full 320px width (320/240 = 1.333x = 341/256); the extra height overflows top/bottom
-    // and is clipped by the screen -- fine for a darkened backdrop. Portrait keeps 1:1.
-    if (screen_orientation == 1 || screen_orientation == 3) {
-        lv_img_set_zoom(home_bg_img, 341);
+    // lab_bg is a 240x320 portrait asset. COVER whatever panel/orientation we are on by
+    // scaling it so BOTH axes reach the screen edges (overflow is clipped -- fine for a
+    // darkened backdrop); never scale DOWN. zoom is 1/256 fixed-point, image pivots on its
+    // centre (lv_obj_align CENTER) so it covers symmetrically.
+    //   - 240x320 portrait panels (NM-CYD-C5, WS-C5-28): z==256 -> 1:1, unchanged.
+    //   - 320x240 landscape (same boards): z~=342 == the old hardcoded 341 (unchanged).
+    //   - 320x480 portrait 3.5" (S3-35, WS-C5-35): z=384 -> fills the tall panel instead of
+    //     leaving ~80px bare top/bottom + ~40px each side (the reported wallpaper bug).
+    //   - 480x320 landscape 3.5": z=512 -> covers the wide panel too (was 160px bare at 341).
+    {
+        int sw = lv_disp_get_hor_res(NULL);
+        int sh = lv_disp_get_ver_res(NULL);
+        int aw = lab_bg.header.w ? (int)lab_bg.header.w : 240;
+        int ah = lab_bg.header.h ? (int)lab_bg.header.h : 320;
+        int zw = (sw * 256 + aw - 1) / aw;   // zoom to cover width  (ceil)
+        int zh = (sh * 256 + ah - 1) / ah;   // zoom to cover height (ceil)
+        int z  = zw > zh ? zw : zh;          // cover = the larger of the two
+        if (z > 256) lv_img_set_zoom(home_bg_img, z);
     }
     // Push to back so everything else renders on top
     lv_obj_move_to_index(home_bg_img, 0);
@@ -18679,13 +18700,14 @@ static void wifi_scan_rebuild_page(void)
 
     const wifi_ap_record_t *records = wifi_scanner_get_results_ptr();
     int total = (int)wifi_scanner_get_count();
-    int pages = (total + WIFI_SAS_PAGE_SIZE - 1) / WIFI_SAS_PAGE_SIZE;
+    int ps    = wifi_sas_page_size();
+    int pages = (total + ps - 1) / ps;
     if (pages < 1) pages = 1;
     if (wifi_sas_page < 0) wifi_sas_page = 0;
     if (wifi_sas_page >= pages) wifi_sas_page = pages - 1;
 
-    int start = wifi_sas_page * WIFI_SAS_PAGE_SIZE;
-    int end   = start + WIFI_SAS_PAGE_SIZE;
+    int start = wifi_sas_page * ps;
+    int end   = start + ps;
     if (end > total) end = total;
 
     // Capture current selections to restore checkbox visual state
@@ -18857,7 +18879,8 @@ static void wifi_scan_next_page_cb(lv_event_t *e)
 {
     (void)e;
     int total = (int)wifi_scanner_get_count();
-    int pages = (total + WIFI_SAS_PAGE_SIZE - 1) / WIFI_SAS_PAGE_SIZE;
+    int ps    = wifi_sas_page_size();
+    int pages = (total + ps - 1) / ps;
     if (pages < 1) pages = 1;
     if (wifi_sas_page < pages - 1) { wifi_sas_page++; wifi_scan_rebuild_page(); }
 }
@@ -22456,8 +22479,14 @@ static void show_wifi_menu_screen(void)
     lv_obj_set_style_pad_all(tiles, 4, 0);
     lv_obj_set_style_pad_gap(tiles, 4, 0);
     lv_obj_set_flex_flow(tiles, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_clear_flag(tiles, LV_OBJ_FLAG_SCROLLABLE);
+    // Wrapped rows must begin at the top: CENTER puts overflow above scroll zero.
+    lv_obj_set_flex_align(tiles, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+    lv_obj_set_scroll_dir(tiles, LV_DIR_VER);
+    // 10 tiles wrap to 4 rows on a 240x320 portrait panel (3 cols x 74px row = 308px > the
+    // ~290px container) so the bottom "Passive Log" tile fell below the screen and was
+    // unreachable. Keep the grid scrollable (default) so every tile is reachable; on wider/
+    // taller panels (3.5" portrait, landscape) all tiles fit, so no scrollbar shows.
+    lv_obj_set_scrollbar_mode(tiles, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *scan_tile = create_tile(tiles, LV_SYMBOL_WIFI,       "Scan &\nAttack",   UI_ACCENT_BLUE,   main_tile_event_cb, "WiFi Scan & Attack");
     (void)scan_tile;
@@ -29104,7 +29133,16 @@ static void show_clock_mode_popup(void)
     }
     clock_mode_popup_close();
     s_ntp_mode_popup = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(s_ntp_mode_popup, 280, 250);
+    // Bound the 280x250 card to the live panel so it never runs off-screen: on 240px-wide
+    // portrait (NM-CYD-C5/WS-C5-28) 280>240 clipped the sides; on 240px-tall landscape
+    // 250>240 pushed the Cancel button off the bottom. Fit to the screen (12px margin each
+    // side) and cap at the design size; the column scrolls if a short panel still can't show
+    // all four buttons.
+    {
+        int cw = lv_disp_get_hor_res(NULL) - 24; if (cw > 280) cw = 280;
+        int ch = lv_disp_get_ver_res(NULL) - 24; if (ch > 250) ch = 250;
+        lv_obj_set_size(s_ntp_mode_popup, cw, ch);
+    }
     lv_obj_center(s_ntp_mode_popup);
     lv_obj_set_style_bg_color(s_ntp_mode_popup, ui_bg_color(), 0);
     lv_obj_set_style_border_color(s_ntp_mode_popup, UI_ACCENT_CYAN, 0);
@@ -29115,6 +29153,8 @@ static void show_clock_mode_popup(void)
     lv_obj_set_flex_align(s_ntp_mode_popup, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_gap(s_ntp_mode_popup, 6, 0);
+    lv_obj_set_scroll_dir(s_ntp_mode_popup, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_ntp_mode_popup, LV_SCROLLBAR_MODE_AUTO);
 
     lv_obj_t *title = lv_label_create(s_ntp_mode_popup);
     lv_label_set_text(title, "Clock Mode");
@@ -56921,7 +56961,12 @@ static void show_cc1101_hw_test_screen(void)
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_style_pad_row(card, 2, 0);  // compact rows so calibration section is visible
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    // Landscape (240px tall) can't show all rows down to the [Set Offset]/[CAL TX 433] row
+    // (populated content ~240px > card interior ~180px), so those two buttons fell below
+    // y=240 and were unreachable. Let the card scroll vertically so every row is reachable
+    // in landscape; in portrait everything fits, so no scrollbar appears (no change there).
+    lv_obj_set_scroll_dir(card, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(card, LV_SCROLLBAR_MODE_AUTO);
 
     // Title
     lv_obj_t *hdr = lv_label_create(card);
