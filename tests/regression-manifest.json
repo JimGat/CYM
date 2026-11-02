@@ -1,0 +1,574 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "test_regression_runner",
+      "path": "tests/test_regression_runner.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "runner-contract",
+      "requires": []
+    },
+    {
+      "id": "test_audio_rta_contracts",
+      "path": "tests/test_audio_rta_contracts.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_ble_reliability_candidate",
+      "path": "tests/test_ble_reliability_candidate.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_chameleon_ble_scan_contract",
+      "path": "tests/test_chameleon_ble_scan_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_chameleon_phase5_6_contract",
+      "path": "tests/test_chameleon_phase5_6_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_classic_cyd_gps_contract",
+      "path": "tests/test_classic_cyd_gps_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_classic_cyd_gps_test_tool",
+      "path": "tests/test_classic_cyd_gps_test_tool.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_classic_rgb_led_boot_contract",
+      "path": "tests/test_classic_rgb_led_boot_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_cycle79_loading",
+      "path": "tests/test_cycle79_loading.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_cyd2432s028_display_contract",
+      "path": "tests/test_cyd2432s028_display_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_detect_defend_harvester_contract",
+      "path": "tests/test_detect_defend_harvester_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_doom_finish_contract",
+      "path": "tests/test_doom_finish_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_es3c35p_promotion_contract",
+      "path": "tests/test_es3c35p_promotion_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_footer_launch_access",
+      "path": "tests/test_footer_launch_access.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_hackerbox_cyd_contract",
+      "path": "tests/test_hackerbox_cyd_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_modern_attack_disclaimer_contract",
+      "path": "tests/test_modern_attack_disclaimer_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_pancake_c5_contract",
+      "path": "tests/test_pancake_c5_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_patch03_battery_camera_contract",
+      "path": "tests/test_patch03_battery_camera_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_qr_font309",
+      "path": "tests/test_qr_font309.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_reboot_startup",
+      "path": "tests/test_reboot_startup.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_release300_contract",
+      "path": "tests/test_release300_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_release_workflow_contract",
+      "path": "tests/test_release_workflow_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_s3_lvgl_memory_contract",
+      "path": "tests/test_s3_lvgl_memory_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_screen_settings_contract",
+      "path": "tests/test_screen_settings_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_universal_clock_contract",
+      "path": "tests/test_universal_clock_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_ws35_rotation",
+      "path": "tests/test_ws35_rotation.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_ws_c5_28_ntp_clock_contract",
+      "path": "tests/test_ws_c5_28_ntp_clock_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_ws_c5_35_support_contract",
+      "path": "tests/test_ws_c5_35_support_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_ws_default_orientation",
+      "path": "tests/test_ws_default_orientation.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "test_fsd_pc",
+      "path": "tests/test_fsd_pc.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": []
+    },
+    {
+      "id": "ble_spam_sdk",
+      "path": "tests/run_ble_spam_sdk_host.py",
+      "kind": "ble",
+      "suite": "sdk-native",
+      "taxonomy": "installed-sdk-host",
+      "requires": [
+        "cc",
+        "idf-nimble"
+      ]
+    },
+    {
+      "id": "audio_rta_gain_store",
+      "path": "tests/run_audio_rta_gain_store_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "audio_rta_incremental",
+      "path": "tests/run_audio_rta_incremental_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "audio_rta_lifecycle",
+      "path": "tests/run_audio_rta_lifecycle_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "audio_rta_scheduling",
+      "path": "tests/run_audio_rta_scheduling_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "audio_rta_snapshot",
+      "path": "tests/run_audio_rta_snapshot_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_chameleon_integration",
+      "path": "tests/run_ble_chameleon_integration_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_scan_diag",
+      "path": "tests/run_ble_scan_diag_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_scan_lifecycle",
+      "path": "tests/run_ble_scan_lifecycle_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_scan_list",
+      "path": "tests/run_ble_scan_list_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_scan_reports",
+      "path": "tests/run_ble_scan_reports_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_scan_session",
+      "path": "tests/run_ble_scan_session_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ble_stage_diag",
+      "path": "tests/run_ble_stage_diag_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "classic_ble_fallback",
+      "path": "tests/run_classic_ble_fallback_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "fsd_lifecycle",
+      "path": "tests/run_fsd_lifecycle_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ir_task_lifetime",
+      "path": "tests/run_ir_task_lifetime_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "memory_boundary",
+      "path": "tests/run_memory_boundary_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "radio_repair",
+      "path": "tests/run_radio_repair_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "scope_lifecycle",
+      "path": "tests/run_scope_lifecycle_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "wifi_sas_lifecycle",
+      "path": "tests/run_wifi_sas_lifecycle_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "wifi_scan_generation",
+      "path": "tests/run_wifi_scan_generation_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "targeted_console",
+      "path": "tests/run_targeted_console_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "targeted_owner",
+      "path": "tests/run_targeted_owner_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ot_lifetime",
+      "path": "tests/run_ot_lifetime_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ntp_clock_owner",
+      "path": "tests/run_ntp_clock_owner_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "audio_rta_board",
+      "path": "tests/run_audio_rta_board_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "codec"
+      ]
+    },
+    {
+      "id": "audio_rta_input",
+      "path": "tests/run_audio_rta_input_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "codec",
+        "idf-i2s"
+      ]
+    },
+    {
+      "id": "audio_rta_ui",
+      "path": "tests/run_audio_rta_ui_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "id": "fsd",
+      "path": "tests/run_fsd_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "id": "fsd_gesture",
+      "path": "tests/run_fsd_gesture_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "id": "display_layout",
+      "path": "tests/run_display_layout_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "id": "private_gatt23_captures",
+      "path": "tests/test_gatt23_metadata.py",
+      "kind": "private",
+      "suite": "private-optional",
+      "taxonomy": "private-optional",
+      "requires": [
+        "cc",
+        "git-gatt-history"
+      ]
+    }
+  ]
+}

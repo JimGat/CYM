@@ -14,7 +14,7 @@ D=Path(os.environ['CYM_TEST_OUT'])/'rta-input'; D.mkdir(parents=True,exist_ok=Tr
 from audio_rta_nvs_stubs import write_nvs_stub
 write_nvs_stub(D)
 M=R/'ESP32C5/managed_components/espressif__esp_codec_dev'
-SDK=Path(os.environ.get('IDF_PATH','/home/dev/esp/esp-idf'))/'components/esp_driver_i2s/i2s_common.c'
+SDK=Path(os.environ['IDF_PATH'])/'components/esp_driver_i2s/i2s_common.c'
 sdk=SDK.read_text()
 def extract(signature):
     start=sdk.index(signature); a=sdk.index('{',start); depth=1; b=a+1

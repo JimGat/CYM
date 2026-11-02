@@ -1,9 +1,43 @@
 #!/usr/bin/env python3
 """Extract production layout, pagination and callbacks; execute installed LVGL without RF."""
 from pathlib import Path
-import re,subprocess,os,json,sys,hashlib
-R=Path(__file__).resolve().parents[1];E=Path(os.environ['CYM_TEST_OUT']);E.mkdir(parents=True,exist_ok=True)
-S=subprocess.check_output(['git','show','HEAD:ESP32C5/main/main.c'],cwd=R,text=True) if os.environ.get('BASELINE') else (R/'ESP32C5/main/main.c').read_text();LV=R/'ESP32C5/managed_components/lvgl__lvgl';D=E/(sys.argv[1] if len(sys.argv)>1 else "display-layout");D.mkdir(exist_ok=True)
+import re,subprocess,os,json,sys,hashlib,argparse
+R=Path(__file__).resolve().parents[1]
+if "CYM_TEST_OUT" not in os.environ:
+ raise SystemExit("required: CYM_TEST_OUT (use tests/run_regression.py --suite sdk-native --output DIR)")
+E=Path(os.environ["CYM_TEST_OUT"]);E.mkdir(parents=True,exist_ok=True)
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--verify-mutations',action='store_true')
+parser.add_argument('--mutation-clock-size',action='store_true',help='test-only in-memory negative fixture; expected to return failure')
+args=parser.parse_args()
+if args.verify_mutations:
+ records=[]
+ for label,negative in [('accepted',False),('fixed-clock-size',True)]:
+  out=E/label
+  env=os.environ.copy();env['CYM_TEST_OUT']=str(out)
+  command=[sys.executable,'-B',str(Path(__file__).resolve())]+(['--mutation-clock-size'] if negative else [])
+  run=subprocess.run(command,env=env,capture_output=True,text=True)
+  (E/(label+'.log')).write_text(run.stdout+run.stderr)
+  logpath=out/'display-layout/run.log'
+  text=logpath.read_text() if logpath.exists() else ''
+  match=re.search(r'RESULT checks=(\d+) failures=(\d+)',text)
+  ok=bool(match) and ((run.returncode==1 and int(match[2])>0 and 'FAIL Clock bounded card' in text) if negative else (run.returncode==0 and int(match[2])==0))
+  records.append(dict(name=label,command=command,exit_code=run.returncode,status='PASS' if ok else 'FAIL',expected_failure=negative,checks=int(match[1]) if match else None,failures=int(match[2]) if match else None))
+  (E/'layout-verification.json').write_text(json.dumps(dict(runs=records),indent=2)+'\n')
+  print(label+': '+records[-1]['status'],flush=True)
+  if not ok:sys.exit(1)
+ print('PASS: production layout and semantic fixed-size Clock mutation kill; no canonical source changes')
+ sys.exit(0)
+S=(R/"ESP32C5/main/main.c").read_text()
+source_sha256=hashlib.sha256(S.encode()).hexdigest()
+if args.mutation_clock_size:
+ original='lv_obj_set_size(s_ntp_mode_popup, cw, ch);'
+ assert S.count(original)==1,'mutation site drifted'
+ S=S.replace(original,'lv_obj_set_size(s_ntp_mode_popup, 280, 250);',1)
+LV=R/"ESP32C5/managed_components/lvgl__lvgl"
+if not (LV/"src/core/lv_obj.c").is_file():
+ raise SystemExit("required managed LVGL 8.4.0 missing; see tests/README.md")
+D=E/"display-layout";D.mkdir(exist_ok=False)
 def function(n):
  m=re.search(r'(?:static\s+)?(?:inline\s+)?(?:lv_obj_t\s*\*|void\s+|int\s+)'+n+r'\([^;]*?\)\s*\{',S);assert m,n
  i=m.end();depth=1
@@ -48,6 +82,8 @@ void*track_realloc(void*p,size_t n){size_t old=p?malloc_usable_size(p):0;void*q=
 #define MY_SYMBOL_SHIELD "S"
 #define MY_SYMBOL_RADAR "R"
 #define MY_SYMBOL_NETWORK "N"
+static lv_obj_t *s_home_tx_icon;
+static void tx_icon_refresh(lv_obj_t*p){(void)p;}
 static bool dark_mode_enabled=true;
 static int screen_orientation,clicks,attacks;
 static lv_obj_t *function_page,*home_bg_img,*s_ntp_mode_popup;
@@ -136,17 +172,18 @@ static void read_cb(lv_indev_drv_t*d,lv_indev_data_t*v){(void)d;v->point.x=px;v-
 static void sample(int x,int y,bool down){int rx=x,ry=y;lv_disp_drv_t*dr=lv_disp_get_default()->driver;if(screen_orientation==1){rx=y;ry=dr->ver_res-x-1;}else if(screen_orientation==2){rx=dr->hor_res-x-1;ry=dr->ver_res-y-1;}else if(screen_orientation==3){rx=dr->hor_res-y-1;ry=x;}px=rx;py=ry;state=down?LV_INDEV_STATE_PR:LV_INDEV_STATE_REL;lv_tick_inc(20);lv_indev_read_timer_cb(pointer->driver->read_timer);}
 static void flush(lv_disp_drv_t*d,const lv_area_t*a,lv_color_t*p){(void)a;(void)p;lv_disp_flush_ready(d);}
 static void render(void){lv_obj_update_layout(lv_scr_act());lv_obj_update_layout(lv_layer_top());lv_refr_now(NULL);}
-static bool contained(lv_obj_t*p,lv_obj_t*c){lv_area_t a,b;lv_obj_get_coords(p,&a);lv_obj_get_coords(c,&b);return b.x1>=a.x1&&b.x2<=a.x2&&b.y1>=a.y1&&b.y2<=a.y2;}
+static bool contained(lv_obj_t*p,lv_obj_t*c){if(!p||!c)return false;lv_area_t a,b;lv_obj_get_coords(p,&a);lv_obj_get_coords(c,&b);return b.x1>=a.x1&&b.x2<=a.x2&&b.y1>=a.y1&&b.y2<=a.y2;}
 static void reachable(lv_obj_t*p,lv_obj_t*c,const char*n){lv_obj_scroll_to_view_recursive(c,LV_ANIM_OFF);render();CHECK(contained(p,c),n);}
 static void swipe(lv_obj_t*p,lv_obj_t*target){lv_indev_reset(pointer,NULL);sample(0,0,false);lv_obj_scroll_to_y(p,0,LV_ANIM_OFF);render();if(lv_obj_get_scroll_bottom(p)<=0)return;lv_area_t a;lv_obj_get_coords(target,&a);int x=(a.x1+a.x2)/2,y=(a.y1+a.y2)/2;int before=clicks;sample(x,y,true);for(int i=1;i<=5;i++)sample(x,y-i*9,true);sample(x,y-45,false);CHECK(lv_obj_get_scroll_y(p)>0,"gesture actually scrolls");CHECK(clicks==before,"scroll release must not activate action");lv_indev_reset(pointer,NULL);}
 static uint64_t ns(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (uint64_t)t.tv_sec*1000000000ull+t.tv_nsec;}
-int main(void){lv_init();static lv_color_t buf[480*32];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,buf,NULL,480*32);static lv_disp_drv_t dr;lv_disp_drv_init(&dr);dr.hor_res=240;dr.ver_res=320;dr.draw_buf=&db;dr.flush_cb=flush;lv_disp_t*d=lv_disp_drv_register(&dr);static lv_indev_drv_t in;lv_indev_drv_init(&in);in.type=LV_INDEV_TYPE_POINTER;in.read_cb=read_cb;pointer=lv_indev_drv_register(&in);
-int sizes[][2]={{240,320},{320,480}};
-for(int menu=0;menu<2;menu++)for(int dim=0;dim<2;dim++)for(int rot=0;rot<4;rot++){
+int main(void){setvbuf(stdout,NULL,_IONBF,0);lv_init();static lv_color_t buf[480*32];static lv_disp_draw_buf_t db;lv_disp_draw_buf_init(&db,buf,NULL,480*32);static lv_disp_drv_t dr;lv_disp_drv_init(&dr);dr.hor_res=240;dr.ver_res=320;dr.draw_buf=&db;dr.flush_cb=flush;lv_disp_t*d=lv_disp_drv_register(&dr);static lv_indev_drv_t in;lv_indev_drv_init(&in);in.type=LV_INDEV_TYPE_POINTER;in.read_cb=read_cb;pointer=lv_indev_drv_register(&in);
+int sizes[][2]={{240,320},{320,480},{512,300}};
+for(int menu=0;menu<2;menu++)for(int dim=0;dim<3;dim++)for(int rot=0;rot<4;rot++){
  dr.hor_res=sizes[dim][0];dr.ver_res=sizes[dim][1];lv_disp_drv_update(d,&dr);screen_orientation=rot;lv_disp_set_rotation(d,rot);int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
  create_function_page_base("blank");render();size_t menu_base=lv_live;show_wifi_menu_screen();render();for(unsigned ti=0;ti<lv_obj_get_child_cnt(lv_obj_get_child(function_page,0));ti++)lv_obj_add_event_cb(lv_obj_get_child(lv_obj_get_child(function_page,0),ti),clicked,LV_EVENT_CLICKED,NULL);printf("ALLOC wifi %dx%d rot%d delta=%zu live=%zu\n",w,h,rot,lv_live-menu_base,lv_live);lv_obj_t*grid=lv_obj_get_child(function_page,0);unsigned cnt=lv_obj_get_child_cnt(grid);CHECK(cnt>=10,"WiFi tile inventory");CHECK(lv_obj_has_flag(grid,LV_OBJ_FLAG_SCROLLABLE),"WiFi scrollable");reachable(grid,lv_obj_get_child(grid,0),"WiFi FIRST fully reachable");reachable(grid,lv_obj_get_child(grid,cnt-1),"WiFi LAST fully reachable");swipe(grid,lv_obj_get_child(grid,0));
  lv_area_t bg;lv_img_t*image=(lv_img_t*)home_bg_img;_lv_img_buf_get_transformed_area(&bg,lv_obj_get_width(home_bg_img),lv_obj_get_height(home_bg_img),image->angle,image->zoom,&image->pivot);bg.x1+=home_bg_img->coords.x1;bg.x2+=home_bg_img->coords.x1;bg.y1+=home_bg_img->coords.y1;bg.y2+=home_bg_img->coords.y1;CHECK(bg.x1<=0&&bg.y1<=0&&bg.x2>=w-1&&bg.y2>=h-1,"wallpaper covers live panel");printf("BG %dx%d zoom=%u area=%d,%d,%d,%d\n",w,h,image->zoom,bg.x1,bg.y1,bg.x2,bg.y2);
  lv_obj_t*route=lv_btn_create(function_page);lv_obj_add_event_cb(route,main_tile_event_cb,LV_EVENT_CLICKED,(void*)(menu?"Clock Modern":"Clock Classic"));lv_event_send(route,LV_EVENT_CLICKED,NULL);CHECK(s_ntp_return_fn==(menu?show_cat_tools:show_main_tiles),"Classic/Modern Clock return route");render();lv_area_t ca;lv_obj_get_coords(s_ntp_mode_popup,&ca);CHECK(ca.x1>=12&&ca.y1>=12&&ca.x2<w-12&&ca.y2<h-12,"Clock bounded card");CHECK(lv_obj_get_width(s_ntp_mode_popup)<=280&&lv_obj_get_height(s_ntp_mode_popup)<=250,"Clock design caps");CHECK(lv_obj_get_scroll_dir(s_ntp_mode_popup)==LV_DIR_VER,"Clock vertical scroll");
+ for(int i=2;i<6;i++){lv_obj_t*b=lv_obj_get_child(s_ntp_mode_popup,i);CHECK(contained(s_ntp_mode_popup,b),"Clock simultaneous fit incl Cancel");lv_obj_t*l=lv_obj_get_child(b,0);lv_point_t ts;lv_txt_get_size(&ts,lv_label_get_text(l),lv_obj_get_style_text_font(l,0),0,0,LV_COORD_MAX,LV_TEXT_FLAG_NONE);CHECK(ts.x<=lv_obj_get_width(b)&&ts.y<=lv_obj_get_height(b),"Clock actual font text fits button");}
  for(int i=2;i<6;i++)reachable(s_ntp_mode_popup,lv_obj_get_child(s_ntp_mode_popup,i),"Clock action reachable incl Cancel");swipe(s_ntp_mode_popup,lv_obj_get_child(s_ntp_mode_popup,2));clock_mode_popup_close();
  show_cc1101_hw_test_screen();render();lv_obj_t*card=lv_obj_get_child(function_page,0);CHECK(lv_obj_get_scroll_dir(card)==LV_DIR_VER&&lv_obj_has_flag(card,LV_OBJ_FLAG_SCROLLABLE),"CC1101 scroll enabled");
  const char*texts[]={"Part: 0x00","Version: 0x14","MARCSTATE: IDLE","RSSI: -100 dBm","Frequency: 433.920 MHz"};lv_obj_t*labs[]={s_cc1101_ht_pn,s_cc1101_ht_ver,s_cc1101_ht_marc,s_cc1101_ht_rssi,s_cc1101_ht_freq};for(int i=0;i<5;i++)lv_label_set_text(labs[i],texts[i]);render();reachable(card,lv_obj_get_child(card,0),"CC FIRST");reachable(card,lv_obj_get_parent(s_cc1101_ht_cal_btn),"CC LAST calibration row");swipe(card,lv_obj_get_child(card,7));
@@ -165,10 +202,10 @@ dr.hor_res=100;dr.ver_res=100;lv_disp_set_rotation(d,0);lv_disp_drv_update(d,&dr
 (D/'host.c').write_text(pre+page+'\n'.join(function(n)for n in functions)+floating+post)
 (D/'allocator.h').write_text('#include <stddef.h>\nvoid*track_alloc(size_t);void track_free(void*);void*track_realloc(void*,size_t);\n')
 flags=['-include',str(D/'allocator.h'),'-std=gnu11','-O2','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=track_alloc','-DLV_MEM_CUSTOM_FREE=track_free','-DLV_MEM_CUSTOM_REALLOC=track_realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_16=1','-I'+str(LV)]
-assets=[str(p)for p in(R/'ESP32C5').rglob('lab_bg.c') if 'build_'not in str(p)];assert len(assets)==1,assets
-cmd=['cc',*flags,str(D/'host.c'),*assets,*[str(p)for p in(LV/'src').rglob('*.c')],'-lm','-o',str(D/'host')]
+assets=[str(R/'ESP32C5/main/lab_bg.c')];assert Path(assets[0]).is_file(),assets
+cmd=[os.environ.get('CC','cc'),*flags,str(D/'host.c'),*assets,*[str(p)for p in(LV/'src').rglob('*.c')],'-lm','-o',str(D/'host')]
 with(D/'compile.log').open('w')as f:rc=subprocess.run(cmd,stdout=f,stderr=subprocess.STDOUT).returncode
 if rc:print((D/'compile.log').read_text()[-10000:]);sys.exit(rc)
 with(D/'run.log').open('w')as f:rc=subprocess.run([str(D/'host')],stdout=f,stderr=subprocess.STDOUT).returncode
-(D/'provenance.json').write_text(json.dumps(dict(source_sha256=hashlib.sha256(S.encode()).hexdigest(),functions=functions,command=cmd,exit_code=rc),indent=2))
+(D/'provenance.json').write_text(json.dumps(dict(source_sha256=source_sha256,input_sha256=hashlib.sha256(S.encode()).hexdigest(),mutation=args.mutation_clock_size,functions=functions,command=cmd,exit_code=rc,lvgl_version=(LV/'idf_component.yml').read_text(),lvgl_sha256={str(p.relative_to(LV)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((LV/'src').rglob('*')) if p.is_file()},limitations=['SDK/radio/route endpoints stubbed; no physical touch, heap, RF or embedded timing proof']),indent=2))
 print((D/'run.log').read_text());sys.exit(rc)

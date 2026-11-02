@@ -192,3 +192,13 @@ The compiled Kconfig prompt still says "Development" for -L: that is a historica
 build-time label, not current release support status. Leave compiled inputs alone
 for this promotion; normal flasher Stable and Development both use the exact -L
 manifest, never generic CYD or HackerBox as a substitute.
+
+## Future qualification standard (owner-approved; existing labels preserved)
+
+[Future supported/Stable qualification](cym-qualification-policy.md) is part of
+this canonical rule set. Newly added boards remain Development until scoped
+per-board hardware qualification and explicit owner approval. Current labels are
+grandfathered, not automatically demoted. Reusable reviewable repository tests
+are a prerequisite to future promotion; all-nine build compatibility remains
+separate from per-board hardware acceptance. Test/docs/CI-only consolidation does
+not rebuild or re-version unchanged historical v3.0.42 artifacts.

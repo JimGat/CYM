@@ -1,0 +1,4 @@
+# Maintained test outputs only; never overwrite private evidence or legacy _out.
+/_generated/
+/_out/
+__pycache__/

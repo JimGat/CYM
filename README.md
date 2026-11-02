@@ -1,6 +1,11 @@
 <!-- v3.0.42 bounded contributor split: BLE correctness and compact Clock only. -->
 Development v3.0.42: narrow fixes from co-developer @birolt29; see [release notes](docs/releases/v3.0.42-dev.md) and [operator checks](docs/testing/patch22-23-split-operator-v3.0.42.txt). New global TX/AP/inhibit, power persistence, broad layout and HAT/PN532 routing changes are deferred; no new RF-silence or PN532 card-detection claim.
 
+Regression review: [reusable tests and operator commands](tests/README.md),
+[reproduce or dispute a result](CONTRIBUTING.md), and
+[future supported/Stable qualification](.claude/rules/cym-qualification-policy.md).
+Existing board labels remain unchanged; host/CI success is not hardware acceptance.
+
 <p align="center">
  
 </p>

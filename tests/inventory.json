@@ -1,0 +1,2655 @@
+{
+  "schema_version": 1,
+  "scope": "Top-level tests Python modules and standalone runners; inventory is not total-path coverage",
+  "files": [
+    {
+      "path": "tests/audio_rta_nvs_stubs.py",
+      "kind": "helper",
+      "flags": [],
+      "imports": [],
+      "gate": "helper",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/audio_rta_sdk_slots.py",
+      "kind": "helper",
+      "flags": [],
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re"
+      ],
+      "gate": "helper",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/qr_native.py",
+      "kind": "helper",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile"
+      ],
+      "gate": "helper",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/run_audio_rta_board_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "codec"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_gain_store_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "audio_rta_nvs_stubs",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_incremental_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_input_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "audio_rta_nvs_stubs",
+        "audio_rta_sdk_slots",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "codec",
+        "idf-i2s"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "audio_rta_nvs_stubs",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_scheduling_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "audio_rta_nvs_stubs",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_snapshot_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "audio_rta_nvs_stubs",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_audio_rta_ui_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "path": "tests/run_ble_chameleon_integration_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ble_scan_diag_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ble_scan_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ble_scan_list_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ble_scan_reports_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ble_scan_scheduling_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/run_ble_scan_session_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ble_scan_status_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "pathlib",
+        "runpy",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/run_ble_spam_sdk_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "argparse",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "resource",
+        "subprocess",
+        "sys"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-sdk-host",
+      "requires": [
+        "cc",
+        "idf-nimble"
+      ]
+    },
+    {
+      "path": "tests/run_ble_stage_diag_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_classic_ble_fallback_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_console_stream_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/run_display_layout_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "sys"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "path": "tests/run_doom_engine_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "argparse",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/run_fsd_gesture_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "path": "tests/run_fsd_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "path": "tests/run_fsd_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ir_task_lifetime_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_legacy_log_lifetime_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/run_mdns_allocation_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/run_memory_boundary_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "resource",
+        "subprocess",
+        "tempfile"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_netif_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/run_ntp_clock_owner_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "resource",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_ntp_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "resource",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/run_ot_lifetime_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_radio_repair_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_scope_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_selector_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked",
+        "external package"
+      ],
+      "imports": [
+        "PIL",
+        "json",
+        "pathlib",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked; external package"
+    },
+    {
+      "path": "tests/run_targeted_console_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_targeted_mdns_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/run_targeted_owner_host.py",
+      "kind": "standalone",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_wifi_sas_lifecycle_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_wifi_scan_generation_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/test_audio_backend.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_audio_rta_contracts.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_audio_rta_dsp_host.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked",
+        "external package"
+      ],
+      "imports": [
+        "ctypes",
+        "math",
+        "numpy",
+        "os",
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked; external package"
+    },
+    {
+      "path": "tests/test_ble_reliability_candidate.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_camera_lifecycle.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_chameleon96.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_chameleon_ble_scan_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_chameleon_phase5_6_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_chameleon_t55xx_contract.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "textwrap",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_classic_ble_fallback.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_classic_candidate_version.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_classic_cyd_gps_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_classic_cyd_gps_test_tool.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_classic_rgb_led_boot_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_classic_usb_debug.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_classic_usb_debug_next.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_classic_usb_debug",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_classic_usb_debug_routing.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "test_classic_usb_debug_next",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_classic_usb_debug_ui.py",
+      "kind": "unittest",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "test_classic_usb_debug_next",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/test_clock_data_placement_host.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle79_gatt_ui.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked",
+        "external package"
+      ],
+      "imports": [
+        "PIL",
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked; external package"
+    },
+    {
+      "path": "tests/test_cycle79_loading.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_cycle79_transport.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle79_validation.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "run_selector_host",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle81_controls.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle81_touch_driver.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle84_dma_timekeeper.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle85_battery_visibility.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "test_cycle84_dma_timekeeper",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/test_cycle85_startup_transport.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "test_cycle84_dma_timekeeper",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/test_cycle85_startup_ui.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "test_cycle84_dma_timekeeper",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle87_display_diagnostics.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "test_cycle84_dma_timekeeper",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle90_native.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle90_native_transport.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "test_cycle84_dma_timekeeper",
+        "test_exclusive_owner_lifecycle",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle98_audio_policy.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle98_gps.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_cycle99_gps.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "historical git prerequisite"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked; historical git prerequisite"
+    },
+    {
+      "path": "tests/test_cyd2432s028_display_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_cyd_l_variant.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "historical git prerequisite"
+      ],
+      "imports": [
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked; historical git prerequisite"
+    },
+    {
+      "path": "tests/test_cyd_landscape304.py",
+      "kind": "unittest",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/test_debug94.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "test_revision91",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/test_defensive_validation.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/test_detect_defend_harvester_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_display_layout_host.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_doom_contracts.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_doom_finish_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "hashlib",
+        "json",
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_doom_real_asset.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "ctypes",
+        "hashlib",
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_es3c35p_promotion_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "json",
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_exclusive_audio.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_exclusive_owner_lifecycle.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_flasher95.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "json",
+        "pathlib",
+        "re",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_flasher_channel_deployment.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "textwrap",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_footer_launch_access.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_fsd_build_nav.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ast",
+        "importlib.util",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_fsd_gesture_contract.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_fsd_pc.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "base64",
+        "importlib.util",
+        "os",
+        "pathlib",
+        "queue",
+        "tempfile",
+        "time",
+        "types",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": []
+    },
+    {
+      "path": "tests/test_game_mode.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_gatt23_metadata.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "historical git prerequisite"
+      ],
+      "imports": [
+        "copy",
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "struct",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "private-optional",
+      "note": "Only private capture method gated",
+      "taxonomy": "private-optional",
+      "requires": [
+        "cc",
+        "git-gatt-history"
+      ]
+    },
+    {
+      "path": "tests/test_go_dark_wake.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_hackerbox_cyd_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_memory_boundary_host.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess",
+        "sys",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_modern_attack_disclaimer_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_ntp_lifecycle_host.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "sys",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_observer315.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "test_qr_ui_stop",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_observer95.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_pancake_c5_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "json",
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_patch03_battery_camera_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_patch0506_contract.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_project_image_assets.py",
+      "kind": "unittest",
+      "flags": [
+        "external package"
+      ],
+      "imports": [
+        "PIL",
+        "importlib.util",
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "external package"
+    },
+    {
+      "path": "tests/test_qr310.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "external package"
+      ],
+      "imports": [
+        "PIL",
+        "ctypes",
+        "json",
+        "pathlib",
+        "qrcode",
+        "re",
+        "subprocess",
+        "tempfile",
+        "test_qr_decoder_contract",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked; external package"
+    },
+    {
+      "path": "tests/test_qr311.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_qr_ui_stop",
+        "test_qr_worker309",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr311_packet.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ctypes",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_qr_ui_stop",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr312.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ctypes",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_qr311",
+        "test_qr_decoder_contract",
+        "test_qr_ui_stop",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr312_admission.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_qr312",
+        "test_qr_ui_stop",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr315.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "test_qr311",
+        "test_qr_worker309",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/test_qr316.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "test_qr311",
+        "test_qr_worker309",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/test_qr_allocations.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "qr_native",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr_decoder_contract.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "external package"
+      ],
+      "imports": [
+        "PIL",
+        "ctypes",
+        "pathlib",
+        "qr_native",
+        "qrcode",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked; external package"
+    },
+    {
+      "path": "tests/test_qr_font309.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "importlib.util",
+        "json",
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_qr_payload.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ctypes",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr_record_faults.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "ctypes",
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr_sd_pack.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "importlib.util",
+        "json",
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest",
+        "zipfile"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr_ui_stop.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_qr_worker309.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_reboot_startup.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_reboot_transaction.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "test_exclusive_owner_lifecycle",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_release300_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "json",
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_release_workflow_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_revision91.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "importlib.util",
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; SDK/managed; native-mocked"
+    },
+    {
+      "path": "tests/test_revision95.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_rfhat_nrf24_ownership.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_rfhat_receive_integration.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "historical git prerequisite"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked; historical git prerequisite"
+    },
+    {
+      "path": "tests/test_s3_lvgl_memory_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_screen_settings_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_sd_no_psram305.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "test_sd_psram_led_capabilities",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_sd_psram_led_capabilities.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_selector_ui.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "run_selector_host",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/test_startup_diag306.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_sd_psram_led_capabilities",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_startup_seek307.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "test_sd_psram_led_capabilities",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_storage_gate.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_targeted92.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "test_revision91",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "Transitive legacy helper/import or not yet reviewed for output isolation"
+    },
+    {
+      "path": "tests/test_targeted93.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "test_revision91",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_tile_trigger.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_universal_clock_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_wardrive_startup_lifecycle.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked"
+    },
+    {
+      "path": "tests/test_ws28_audio_settle97.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/test_ws35_rotation.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_ws_c5_28_ntp_clock_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "datetime",
+        "pathlib",
+        "re",
+        "struct",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_ws_c5_35_power_rtc.py",
+      "kind": "unittest",
+      "flags": [
+        "native-mocked",
+        "historical git prerequisite"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "native-mocked; historical git prerequisite"
+    },
+    {
+      "path": "tests/test_ws_c5_35_support_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "json",
+        "pathlib",
+        "re",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_ws_default_orientation.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [
+        "pathlib",
+        "unittest"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "path": "tests/test_ws_s3_5b_contract.py",
+      "kind": "unittest",
+      "flags": [
+        "private/output legacy",
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "subprocess",
+        "tempfile",
+        "unittest"
+      ],
+      "gate": "not-automated",
+      "note": "private/output legacy; native-mocked"
+    },
+    {
+      "path": "tests/run_regression.py",
+      "kind": "orchestrator",
+      "flags": [],
+      "imports": [],
+      "gate": "orchestrator",
+      "note": "Explicit manifest orchestrator; no unrestricted discovery"
+    },
+    {
+      "path": "tests/test_regression_runner.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [],
+      "gate": "portable",
+      "note": "Maintained gate contract tests",
+      "taxonomy": "runner-contract",
+      "requires": []
+    }
+  ],
+  "support_files": [
+    "tests/ble_spam_host_cases.c",
+    "tests/ble_spam_host_scaffold.h",
+    "tests/defensive_native_cases.c",
+    "tests/defensive_native_stubs.h",
+    "tests/defensive_startup_stubs.h",
+    "tests/doom_contract_cases.c",
+    "tests/doom_engine_host.c",
+    "tests/exclusive_audio_cases.c",
+    "tests/extra_symbols_baseline.json",
+    "tests/fixtures/classic_ble_fallback.c",
+    "tests/ntp_lifecycle_host.c",
+    "tests/ws35_pmic_cases.c",
+    "tests/ws_s3_rtc_gate_test.c",
+    "tests/ws_s3_viewport_test.c"
+  ],
+  "other_runners": [
+    {
+      "path": "scripts/verify-dev-packages.py",
+      "gate": "not-automated",
+      "note": "Read-only nine-board ELF/package/manifests verifier; requires built ELF/config/package inputs; separate manual package gate, not host test coverage"
+    },
+    {
+      "path": "tools/WS28AudioDiag/tests/test_host.py",
+      "gate": "not-automated",
+      "note": "Separate diagnostic firmware host test; fixed private scratch prerequisite"
+    },
+    {
+      "path": "tools/WS28AudioDiag/tests/test_console.py",
+      "gate": "not-automated",
+      "note": "Separate diagnostic ELF/link/config verifier; requires diagnostic build and cross nm"
+    },
+    {
+      "path": "tools/qr_frame_replay.py",
+      "gate": "not-automated",
+      "note": "Optional private offline image replay; Pillow/zxing-cpp and authorized captures; not default gate"
+    },
+    {
+      "path": "tools/fsd.py",
+      "gate": "not-automated",
+      "note": "Explicit hardware serial tool; installed but unavailable on this VM due absent physical serial access"
+    }
+  ]
+}
