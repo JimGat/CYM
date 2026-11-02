@@ -29152,7 +29152,8 @@ static void show_clock_mode_popup(void)
     lv_obj_set_flex_flow(s_ntp_mode_popup, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(s_ntp_mode_popup, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(s_ntp_mode_popup, 6, 0);
+    bool clk_landscape = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
+    lv_obj_set_style_pad_gap(s_ntp_mode_popup, clk_landscape ? 4 : 6, 0);
     lv_obj_set_scroll_dir(s_ntp_mode_popup, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(s_ntp_mode_popup, LV_SCROLLBAR_MODE_AUTO);
 
@@ -29174,7 +29175,7 @@ static void show_clock_mode_popup(void)
                                   clock_mode_ap_cb, clock_mode_cancel_cb };
     for (int i = 0; i < 4; i++) {
         lv_obj_t *btn = lv_btn_create(s_ntp_mode_popup);
-        lv_obj_set_size(btn, lv_pct(88), 36);
+        lv_obj_set_size(btn, lv_pct(88), clk_landscape ? 30 : 36);
         lv_obj_set_style_bg_color(btn, i == 3 ? lv_color_hex(0x616161) : ui_accent_color(), 0);
         lv_obj_add_event_cb(btn, callbacks[i], LV_EVENT_CLICKED, NULL);
         lv_obj_t *lbl = lv_label_create(btn);
@@ -39424,6 +39425,7 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         const uint8_t *k = s_airtag_keys[st->airtag_idx];
         st->airtag_idx = (st->airtag_idx + 1) % AIRTAG_KEY_COUNT;
         ble_addr_t at_addr;
+        at_addr.type = BLE_ADDR_RANDOM;  // Required by installed NimBLE address validation.
         at_addr.val[0] = k[5]; at_addr.val[1] = k[4];
         at_addr.val[2] = k[3]; at_addr.val[3] = k[2];
         at_addr.val[4] = k[1]; at_addr.val[5] = k[0] | 0xC0;
@@ -39469,8 +39471,8 @@ static void ble_spam_timer_cb(lv_timer_t *timer)
         win_mfg[3] = 0x00;                      // Reserved
         win_mfg[4] = 0x80;                      // Confidence/Flags
 
-        // Generate random UTF-8 device name (5–10 bytes)
-        int name_len = 5 + (esp_random() % 6);
+        // Both manufacturer data and local name carry the name: 12 + 2*n <= 31.
+        int name_len = 5 + (esp_random() % 5);
         for (int i = 0; i < name_len; i++) {
             win_name[i] = 'A' + (esp_random() % 26);
         }

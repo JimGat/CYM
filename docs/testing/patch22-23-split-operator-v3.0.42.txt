@@ -1,0 +1,18 @@
+CYM v3.0.42 bounded split operator checks
+
+Ask: What passed from patches #22 and #23?
+Expected: BLE address-type initialization, nine-byte duplicated-name cap, compact landscape Clock. No new global TX feature or power persistence redesign. @birolt29 remains co-developer.
+
+Ask: Verify Clock in Classic and Modern, every rotation on 240x320, 320x480 and logical 512x300 profiles.
+Expected: Four buttons including Cancel within the popup on entry; readable labels; repeated Cancel/Back/Home and reentry leave no stale popup/timer. Hardware screenshots/finger input still required; native geometry is not panel latency proof. Topbar/battery ownership remains baseline.
+
+Ask: Verify BLE in an authorized shielded hardware setup.
+Expected: AirTag set_addr receives random type; Windows names 5-9 bytes, serialized legacy length 22-30; unsupported extended-advertising build refuses start. Inject allocation/address/data/start/stop failures, cancellation, Home/Back/reentry, radio reset and reboot. Status and counts must follow actual API acceptance, not inferred RF reception. No new retry loop or sleep is added. Existing delays are unchanged, not claimed repaired.
+
+Ask: Is TX globally disabled, or Low power new?
+Expected: No. The new TX/AP/inhibit and Low/persistence feature set is excluded; baseline behavior is unchanged. Do not use these binaries as a new RF-silence interlock. Future migrations must never silently reenable a disabled unit or erase NVS.
+
+Ask: Does this fix original NM-CYD-C5 PN532 card detection or qualify unsupported PN532 boards?
+Expected: No. HAT/controller/routing cluster deferred. Do not exercise PN532 on unsupported boards; native preexisting WS-S3-5B route can reset touch GPIO before admission. This remains a separately documented backlog, not a newly accepted route or #23 regression.
+
+Parent-only actions: independent source/evidence review, exact SHA insertion in contributor prompt, commit/publish/notify. No flash or RF action performed by implementation worker.
