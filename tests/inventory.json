@@ -905,10 +905,12 @@
         "re",
         "unittest"
       ],
-      "gate": "portable",
-      "note": "Explicit manifest entry; see prerequisite list",
+      "gate": "sdk-native",
+      "note": "Requires existing generated board headers; not portable or hardware acceptance",
       "taxonomy": "structural",
-      "requires": []
+      "requires": [
+        "generated-tick-configs"
+      ]
     },
     {
       "path": "tests/test_camera_lifecycle.py",

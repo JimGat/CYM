@@ -79,7 +79,7 @@ counts; invocation count must not be presented as assertion count.
 | [`test_audio_backend.py`](../tests/test_audio_backend.py) | not-automated | private/output legacy; native-mocked |
 | [`test_audio_rta_contracts.py`](../tests/test_audio_rta_contracts.py) | portable | structural; prerequisites:  |
 | [`test_audio_rta_dsp_host.py`](../tests/test_audio_rta_dsp_host.py) | not-automated | private/output legacy; native-mocked; external package |
-| [`test_ble_reliability_candidate.py`](../tests/test_ble_reliability_candidate.py) | portable | structural; prerequisites:  |
+| [`test_ble_reliability_candidate.py`](../tests/test_ble_reliability_candidate.py) | sdk-native | structural; prerequisites: generated-tick-configs |
 | [`test_camera_lifecycle.py`](../tests/test_camera_lifecycle.py) | not-automated | native-mocked |
 | [`test_chameleon96.py`](../tests/test_chameleon96.py) | not-automated | native-mocked |
 | [`test_chameleon_ble_scan_contract.py`](../tests/test_chameleon_ble_scan_contract.py) | portable | structural; prerequisites:  |

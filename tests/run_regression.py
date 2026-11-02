@@ -43,6 +43,13 @@ def unit_worker(module, output, method=None):
 
 
 def missing(requirement):
+    if requirement == 'generated-tick-configs':
+        builds = ['ESP32C5/build_' + n for n in ('nm-cyd-c5', 'ws-c5-28', 'ws-c5-35', 'pancake-c5')]
+        builds += ['ESP32/build_cyd2usb', 'ESP32/build_hackerbox-cyd', 'ESP32S3/build_hosyond-s3-35', 'ESP32S3/build_ws-s3-5b']
+        for build in builds:
+            if not (ROOT/build/'config/sdkconfig.h').is_file():
+                return 'required generated board config absent: ' + build + '/config/sdkconfig.h'
+        return None
     if requirement == 'cc':
         return None if shutil.which('cc') and shutil.which(os.environ.get('CC','cc')) else 'host C compiler missing (cc / CC)'
     if requirement == 'lvgl':

@@ -21,9 +21,11 @@
       "id": "test_ble_reliability_candidate",
       "path": "tests/test_ble_reliability_candidate.py",
       "kind": "unittest",
-      "suite": "portable",
+      "suite": "sdk-native",
       "taxonomy": "structural",
-      "requires": []
+      "requires": [
+        "generated-tick-configs"
+      ]
     },
     {
       "id": "test_chameleon_ble_scan_contract",

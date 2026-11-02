@@ -31,6 +31,10 @@ class RunnerContract(unittest.TestCase):
         result = runner.execute_entry(entry, output, 5)
         self.assertEqual((result['status'], result['exit_code']), ('FAIL', 7))
 
+    def test_generated_build_prerequisite(self):
+        with patch.object(runner, 'ROOT', self.root):
+            self.assertIn('generated board config absent', runner.missing('generated-tick-configs'))
+
     def test_required_dependency_is_not_run(self):
         entry, output = self.entry('raise AssertionError("must not execute")\n')
         entry['requires']=['idf-nimble']

@@ -41,6 +41,11 @@ python3 -B tests/run_regression.py --suite portable --suite sdk-native --output 
 python3 -B tests/run_regression.py --suite sdk-native --only ble_spam_sdk --output tests/_generated/ble-001
 ```
 
+The SDK-native gate also includes the legacy BLE tick-matrix contract, which reads
+existing generated config/sdkconfig.h files for its eight enumerated build directories.
+These build outputs must already exist; absence reports NOT_RUN, not SKIP or PASS.
+This legacy matrix is not the complete nine-profile release build gate.
+
 Native prerequisites: installed ESP-IDF v6.0.2, with its NimBLE submodule, and the
 managed components resolved for ESP32C5 from the repository's existing
 `ESP32C5/dependencies.lock`: LVGL 8.4.0 and esp_codec_dev 1.5.11. This gate does not
