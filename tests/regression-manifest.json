@@ -445,6 +445,16 @@
       ]
     },
     {
+      "id": "wardrive_gps_prompt_nav",
+      "path": "tests/run_wardrive_gps_prompt_nav_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
       "id": "wifi_scan_generation",
       "path": "tests/run_wifi_scan_generation_host.py",
       "kind": "script",

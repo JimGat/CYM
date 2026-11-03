@@ -15752,6 +15752,10 @@ static lv_timer_t *wd_gps_wait_timer = NULL;
 static lv_obj_t *wd_gps_wait_modal = NULL;  // Reference to waiting modal (not just text overlay)
 static lv_obj_t *wd_gps_wait_msg = NULL;   // Reference to waiting message for updates
 static int wd_gps_wait_sats_logged = 0;     // track if we logged GPS status
+// Wardrive GPS-start popups that live OUTSIDE function_page and therefore survive
+// go_home()->show_menu() (which only lv_obj_del(function_page)). Tracked so a nav-away
+// (top-bar Home / ‹ Back) can dismiss them instead of orphaning them over Home.
+static lv_obj_t *s_wd_gps_prompt_modal = NULL;  // "Cached GPS Data" modal (child of lv_scr_act())
 
 // Cancel button callback - user clicked Cancel while waiting for GPS
 static void wd_gps_cancel_wait_cb(lv_event_t *e)
@@ -15834,6 +15838,7 @@ static void wd_gps_use_now_cb(lv_event_t *e)
 {
     lv_obj_t *modal = (lv_obj_t *)lv_event_get_user_data(e);
     if (modal) lv_obj_del(modal);
+    s_wd_gps_prompt_modal = NULL;
     ESP_LOGI(TAG, "[GPS PROMPT] User chose 'Use Now' - starting wardrive with cached GPS");
     wd_gps_prompt_state = 2;  // use cached
     // Continue wardrive setup immediately (skip GPS check since we've already decided)
@@ -15844,6 +15849,7 @@ static void wd_gps_wait_lock_cb(lv_event_t *e)
 {
     lv_obj_t *modal = (lv_obj_t *)lv_event_get_user_data(e);
     if (modal) lv_obj_del(modal);
+    s_wd_gps_prompt_modal = NULL;
 
     // Create persistent modal with Cancel button
     wd_gps_wait_modal = lv_obj_create(lv_scr_act());
@@ -15961,6 +15967,7 @@ static void wd_gps_show_prompt_modal(void)
     lv_obj_set_style_text_font(wait_lbl, &lv_font_montserrat_12, 0);
     lv_obj_center(wait_lbl);
 
+    s_wd_gps_prompt_modal = modal;  // track so a nav-away can dismiss it (orphan fix)
     wd_gps_prompt_state = 1;  // prompt shown
 }
 
@@ -15973,6 +15980,18 @@ static void wd_gps_no_data_mbox_cb(lv_event_t *e)
 {
     lv_obj_t *mbox = lv_event_get_current_target(e);
     if (mbox) lv_msgbox_close_async(mbox);
+}
+
+static void wd_gps_cleanup_prompts(void)
+{
+    if (wd_gps_wait_timer) { lv_timer_del(wd_gps_wait_timer); wd_gps_wait_timer = NULL; }
+    if (wd_gps_wait_modal && lv_obj_is_valid(wd_gps_wait_modal)) lv_obj_del(wd_gps_wait_modal);
+    wd_gps_wait_modal = NULL;
+    wd_gps_wait_msg = NULL;
+    if (s_wd_gps_prompt_modal && lv_obj_is_valid(s_wd_gps_prompt_modal)) lv_obj_del(s_wd_gps_prompt_modal);
+    s_wd_gps_prompt_modal = NULL;
+    wd_gps_wait_sats_logged = 0;
+    wd_gps_prompt_state = 0;
 }
 
 static void wardrive_start_btn_cb(lv_event_t *e);
@@ -17653,6 +17672,7 @@ static void nav_back_cb(lv_event_t *e)
 {
     clock_cancel_radio_navigation();
     (void)e;
+    wd_gps_cleanup_prompts();  // dismiss a pending Wardrive GPS popup so ‹ Back can't orphan it
     // Resolve the go-up target, then DEFER it to the main loop (see
     // nav_deferred_show_fn) so any stop-hook runs off the LVGL event stack.
     void (*fn)(void) = NULL;
@@ -18176,6 +18196,7 @@ static void home_btn_event_cb(lv_event_t *e)
     (void)e;
     // GPS has no supported ASCII "reboot" navigation contract. Keep the USB
     // console and show_menu stop-hook/radio cleanup path unchanged.
+    wd_gps_cleanup_prompts();  // dismiss a pending Wardrive GPS popup so it can't orphan over Home
     nav_to_menu_flag = true;
 }
 

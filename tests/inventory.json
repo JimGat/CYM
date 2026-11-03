@@ -900,6 +900,27 @@
       ]
     },
     {
+      "path": "tests/run_wardrive_gps_prompt_nav_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "portable",
+      "note": "Explicit manifest entry; see prerequisite list",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
       "path": "tests/run_wifi_sas_lifecycle_host.py",
       "kind": "standalone",
       "flags": [

@@ -74,6 +74,7 @@ counts; invocation count must not be presented as assertion count.
 | [`run_targeted_console_host.py`](../tests/run_targeted_console_host.py) | portable | mocked-host; prerequisites: cc |
 | [`run_targeted_mdns_host.py`](../tests/run_targeted_mdns_host.py) | not-automated | private/output legacy; SDK/managed; native-mocked |
 | [`run_targeted_owner_host.py`](../tests/run_targeted_owner_host.py) | portable | mocked-host; prerequisites: cc |
+| [`run_wardrive_gps_prompt_nav_host.py`](../tests/run_wardrive_gps_prompt_nav_host.py) | portable | mocked-host; prerequisites: cc |
 | [`run_wifi_sas_lifecycle_host.py`](../tests/run_wifi_sas_lifecycle_host.py) | portable | mocked-host; prerequisites: cc |
 | [`run_wifi_scan_generation_host.py`](../tests/run_wifi_scan_generation_host.py) | portable | mocked-host; prerequisites: cc |
 | [`test_audio_backend.py`](../tests/test_audio_backend.py) | not-automated | private/output legacy; native-mocked |
