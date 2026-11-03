@@ -59,6 +59,7 @@ static bool nav_to_menu_flag,g_home_layout_4cat;
 static void (*nav_deferred_show_fn)(void),(*g_screen_back_fn)(void);
 static int nav_stack_depth=2;
 static const char *nav_stack[]={"Settings","Hardware Options"};
+static void wd_gps_cleanup_prompts(void){} /* unrelated GPS endpoint; native GPS gate */
 static void clock_cancel_radio_navigation(void){}
 static void deferred_parent(void){if(g_screen_stop_fn)g_screen_stop_fn();}
 static void (*nav_show_lookup(const char *name))(void){assert(!strcmp(name,"Settings"));return deferred_parent;}

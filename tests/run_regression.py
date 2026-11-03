@@ -118,7 +118,7 @@ def execute_entry(entry, output, timeout):
         command=[sys.executable,'-B',str(Path(__file__).resolve()),'--unit-worker',Path(entry['path']).stem,'--worker-output',str(output)]
         if entry['kind']=='private':command+=['--method','GattMetadata.test_actual_private_nine']
     elif entry['kind']=='ble':command+=['--output',str(output/'generated/ble-spam')]
-    elif entry.get('id')=='display_layout':command+=['--verify-mutations']
+    elif entry.get('id') in ('display_layout','wardrive_gps_prompt_lvgl'):command+=['--verify-mutations']
     code,reason=run_process(command,output,env,timeout)
     record=dict(status='PASS' if code==0 and not reason else 'FAIL',exit_code=code,command=command,log=str(output/'run.log'))
     if reason:record['reason']=reason

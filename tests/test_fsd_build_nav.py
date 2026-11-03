@@ -23,7 +23,7 @@ class BuildNav(unittest.TestCase):
             self.assertEqual(subprocess.check_output(['ar','p',str(d/'out.a'),'new.o']),(d/'expect.o').read_bytes())
     def test_real_nav_stack(self):
         s=(R/'ESP32C5/main/main.c').read_text()
-        code='#include <assert.h>\n#include <stdbool.h>\n#define NAV_STACK_MAX 12\n#include <string.h>\n#include <stddef.h>\ntypedef void lv_event_t;\nstatic const char *nav_stack[12];static int nav_stack_depth,nav_to_menu_flag,stops,cancelled,layout;static void (*g_screen_back_fn)(void),(*nav_deferred_show_fn)(void);static void clock_cancel_radio_navigation(void){cancelled++;}\n'
+        code='#include <assert.h>\n#include <stdbool.h>\n#define NAV_STACK_MAX 12\n#include <string.h>\n#include <stddef.h>\ntypedef void lv_event_t;\nstatic const char *nav_stack[12];static int nav_stack_depth,nav_to_menu_flag,stops,cancelled,layout;static void (*g_screen_back_fn)(void),(*nav_deferred_show_fn)(void);static void wd_gps_cleanup_prompts(void){} /* unrelated GPS endpoint; native GPS gate */ static void clock_cancel_radio_navigation(void){cancelled++;}\n'
         code+=function(s,'nav_stack_enter')+'\nstatic void parent(void){nav_stack_enter("Parent");} static void grand(void){nav_stack_enter("Grand");} static void (*nav_show_lookup(const char *n))(void){return !strcmp(n,"Parent")?parent:!strcmp(n,"Grand")?grand:NULL;}\n'+function(s,'nav_back_cb')
         code+='\nstatic void drain(void){if(nav_to_menu_flag){nav_to_menu_flag=0;stops++;nav_stack_depth=0;}if(nav_deferred_show_fn){void(*fn)(void)=nav_deferred_show_fn;nav_deferred_show_fn=NULL;stops++;fn();}}\nint main(void){for(layout=0;layout<2;layout++){\nnav_stack_depth=0;nav_stack_enter("Shortcut");g_screen_back_fn=parent;int old=stops;nav_back_cb(NULL);assert(stops==old);drain();assert(nav_stack_depth==1&&!strcmp(nav_stack[0],"Parent"));nav_back_cb(NULL);drain();assert(nav_stack_depth==0);\nnav_stack_enter("Grand");nav_stack_enter("Parent");nav_stack_enter("Leaf");g_screen_back_fn=parent;nav_back_cb(NULL);drain();assert(nav_stack_depth==2);nav_back_cb(NULL);drain();assert(nav_stack_depth==1);nav_back_cb(NULL);drain();assert(!nav_stack_depth);\nnav_stack_enter("Parent");nav_stack_enter("Leaf");nav_back_cb(NULL);drain();assert(nav_stack_depth==1);nav_back_cb(NULL);drain();nav_back_cb(NULL);drain();assert(!nav_stack_depth);assert(!g_screen_back_fn&&!nav_deferred_show_fn);\n}assert(cancelled>0&&stops==cancelled);return 0;}\n'
         with tempfile.TemporaryDirectory(dir=os.environ['TMPDIR']) as d:
@@ -42,6 +42,7 @@ class BuildNav(unittest.TestCase):
         code+=function(source,'run_screen_stop_fn')
         code+=r"""
 static void stop(void){assert(!g_screen_stop_fn);assert(!radio&&!deleted);stops++;}
+static void wd_gps_cleanup_prompts(void){} /* unrelated GPS endpoint; native GPS gate */
 static void clock_cancel_radio_navigation(void){}
 static void radio_reset_to_idle(void){assert(stops==1);radio++;}
 static void wifi_attacks_set_evil_twin_event_cb(void*p){assert(!p);}

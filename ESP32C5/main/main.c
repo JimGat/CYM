@@ -1112,6 +1112,7 @@ static bool clock_radio_reset_admit(void);
 static bool clock_defer_radio_navigation(void (*fn)(void));
 static void clock_radio_handoff_poll(void);
 static void clock_cancel_radio_navigation(void);
+static void wd_gps_cleanup_prompts(void);
 
 
 // Wardrive band selection
@@ -15756,6 +15757,33 @@ static int wd_gps_wait_sats_logged = 0;     // track if we logged GPS status
 // go_home()->show_menu() (which only lv_obj_del(function_page)). Tracked so a nav-away
 // (top-bar Home / ‹ Back) can dismiss them instead of orphaning them over Home.
 static lv_obj_t *s_wd_gps_prompt_modal = NULL;  // "Cached GPS Data" modal (child of lv_scr_act())
+static lv_obj_t *s_wd_gps_nodata_mbox  = NULL;  // Owns an LVGL auto-parent backdrop.
+static bool s_wd_gps_nodata_close_pending = false;
+static void wd_gps_close_nodata_async(void *arg);
+
+// DELETE includes the built-in X. A validity check cannot reject address reuse.
+static void wd_gps_popup_deleted(lv_event_t *e)
+{
+    lv_obj_t **slot = (lv_obj_t **)lv_event_get_user_data(e);
+    lv_obj_t *obj = lv_event_get_target(e);
+    if (!slot || *slot != obj) return;
+    if (slot == &s_wd_gps_nodata_mbox) {
+        if (s_wd_gps_nodata_close_pending) lv_async_call_cancel(wd_gps_close_nodata_async, obj);
+        s_wd_gps_nodata_close_pending = false;
+    }
+    *slot = NULL;
+}
+
+// Installed LVGL 8.4 does NOT cancel lv_obj_del_async on synchronous deletion.
+// Own the queued callback instead so DELETE/navigation can cancel it exactly.
+static void wd_gps_close_nodata_async(void *arg)
+{
+    if (arg != s_wd_gps_nodata_mbox) return;
+    // The running async callback still owns its LVGL info until return: DELETE
+    // must not cancel it (lv_async_call_cancel would free that info twice).
+    s_wd_gps_nodata_close_pending = false;
+    lv_msgbox_close(s_wd_gps_nodata_mbox);
+}
 
 // Cancel button callback - user clicked Cancel while waiting for GPS
 static void wd_gps_cancel_wait_cb(lv_event_t *e)
@@ -15763,6 +15791,7 @@ static void wd_gps_cancel_wait_cb(lv_event_t *e)
     (void)e;
     ESP_LOGI(TAG, "[GPS WAIT] User cancelled GPS wait");
 
+    clock_cancel_radio_navigation();
     // Clean up timer and modal
     if (wd_gps_wait_timer) {
         lv_timer_del(wd_gps_wait_timer);
@@ -15774,6 +15803,7 @@ static void wd_gps_cancel_wait_cb(lv_event_t *e)
     wd_gps_wait_modal = NULL;
     wd_gps_wait_msg = NULL;
     wd_gps_prompt_state = 0;
+    wd_gps_wait_sats_logged = 0;
 
     // Return to wardrive menu
     show_wardrive_menu_screen();
@@ -15781,7 +15811,7 @@ static void wd_gps_cancel_wait_cb(lv_event_t *e)
 
 static void wd_gps_wait_timer_cb(lv_timer_t *timer)
 {
-    (void)timer;
+    if (timer != wd_gps_wait_timer || !wd_gps_wait_timer) return;
 
     // Check if user made a choice
     if (wd_gps_prompt_state == 0 || wd_gps_prompt_state == 1) return;  // no choice yet or prompt showing
@@ -15853,6 +15883,7 @@ static void wd_gps_wait_lock_cb(lv_event_t *e)
 
     // Create persistent modal with Cancel button
     wd_gps_wait_modal = lv_obj_create(lv_scr_act());
+    lv_obj_add_event_cb(wd_gps_wait_modal, wd_gps_popup_deleted, LV_EVENT_DELETE, &wd_gps_wait_modal);
     lv_obj_set_size(wd_gps_wait_modal, 220, 160);
     lv_obj_align(wd_gps_wait_modal, LV_ALIGN_CENTER, 0, -20);
     lv_obj_set_style_bg_color(wd_gps_wait_modal, lv_color_make(25, 25, 40), 0);
@@ -15968,20 +15999,23 @@ static void wd_gps_show_prompt_modal(void)
     lv_obj_center(wait_lbl);
 
     s_wd_gps_prompt_modal = modal;  // track so a nav-away can dismiss it (orphan fix)
+    lv_obj_add_event_cb(modal, wd_gps_popup_deleted, LV_EVENT_DELETE, &s_wd_gps_prompt_modal);
     wd_gps_prompt_state = 1;  // prompt shown
 }
 
-// Closes the "No GPS data available" error msgbox when OK (or the X) is pressed.
-// lv_msgbox_create() footer buttons do NOT self-close in LVGL 8 — without this the
-// popup stayed stuck forever. Use the _async close: deleting the msgbox inside its
-// own button VALUE_CHANGED event would free the object mid-dispatch (use-after-free);
-// the async variant defers deletion to the next lv_timer_handler.
+// Footer OK needs deferred close; the built-in X closes synchronously in LVGL.
+// Keep ownership until DELETE so navigation can cancel a pending close safely.
 static void wd_gps_no_data_mbox_cb(lv_event_t *e)
 {
     lv_obj_t *mbox = lv_event_get_current_target(e);
-    if (mbox) lv_msgbox_close_async(mbox);
+    if (mbox != s_wd_gps_nodata_mbox || s_wd_gps_nodata_close_pending) return;
+    s_wd_gps_nodata_close_pending = (lv_async_call(wd_gps_close_nodata_async, mbox) == LV_RES_OK);
 }
 
+// Cached prompt/wait are children of lv_scr_act(), outside function_page. Home
+// and Back retire them before deferred navigation. No-data blocks touch navigation
+// and was NOT reported orphaned; close its owned backdrop for programmatic exits.
+// Timer first, owned popups next, then decision reset (never on successful setup).
 static void wd_gps_cleanup_prompts(void)
 {
     if (wd_gps_wait_timer) { lv_timer_del(wd_gps_wait_timer); wd_gps_wait_timer = NULL; }
@@ -15990,6 +16024,12 @@ static void wd_gps_cleanup_prompts(void)
     wd_gps_wait_msg = NULL;
     if (s_wd_gps_prompt_modal && lv_obj_is_valid(s_wd_gps_prompt_modal)) lv_obj_del(s_wd_gps_prompt_modal);
     s_wd_gps_prompt_modal = NULL;
+    if (s_wd_gps_nodata_mbox) {
+        lv_async_call_cancel(wd_gps_close_nodata_async, s_wd_gps_nodata_mbox);
+        s_wd_gps_nodata_close_pending = false;
+        lv_msgbox_close(s_wd_gps_nodata_mbox);  // includes only its auto-parent backdrop
+    }
+    s_wd_gps_nodata_mbox = NULL;
     wd_gps_wait_sats_logged = 0;
     wd_gps_prompt_state = 0;
 }
@@ -16025,6 +16065,8 @@ static void wardrive_start_btn_cb(lv_event_t *e)
                                                   gps_no_data_btns, true);
                 lv_obj_center(mbox);
                 lv_obj_add_event_cb(mbox, wd_gps_no_data_mbox_cb, LV_EVENT_VALUE_CHANGED, NULL);
+                s_wd_gps_nodata_mbox = mbox;
+                lv_obj_add_event_cb(mbox, wd_gps_popup_deleted, LV_EVENT_DELETE, &s_wd_gps_nodata_mbox);
                 return;
             }
         }
@@ -18109,6 +18151,7 @@ static void radio_reset_to_idle(void)
 void show_menu(void)
 {
     clock_cancel_radio_navigation();
+    wd_gps_cleanup_prompts();  // direct/IR Home retires pending GPS decisions too
     // Run the current screen's own teardown FIRST, while its radio mode is still
     // intact — symmetric with the top-bar ‹ Back path (nav_back_cb → parent →
     // reset_function_page_children → run_screen_stop_fn). radio_reset_to_idle()
@@ -18193,6 +18236,7 @@ void show_function_page(const char *name)
 // Home must not send accessory commands on the GPS-owned UART.
 static void home_btn_event_cb(lv_event_t *e)
 {
+    clock_cancel_radio_navigation();
     (void)e;
     // GPS has no supported ASCII "reboot" navigation contract. Keep the USB
     // console and show_menu stop-hook/radio cleanup path unchanged.

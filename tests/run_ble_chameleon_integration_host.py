@@ -130,6 +130,7 @@ static int nav_stack_depth,nav_stack[4],parent_calls,home_calls,stop_calls;
 static void *s_cham_tmr,*s_cham_prog_lbl,*s_cham_content,*s_cham_bat_lbl,*s_cham_scan_list;
 static int s_cham_ui_st,s_cham_list_n;
 static void lv_timer_del(void*p){}
+static void wd_gps_cleanup_prompts(void){} /* unrelated GPS endpoint; native GPS gate */
 static void clock_cancel_radio_navigation(void){}
 static void run_screen_stop_fn(void);
 static void parent(void){parent_calls++;}

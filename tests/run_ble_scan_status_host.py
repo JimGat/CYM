@@ -28,6 +28,7 @@ static int bt_sas_rendered_count,bt_sas_page,home_calls,parent_calls;static bool
 static int nav_stack_depth,nav_stack[4];
 static void (*nav_deferred_show_fn)(void),(*g_screen_stop_fn)(void),(*g_screen_back_fn)(void);
 static void lv_obj_del(void*p){(void)p;}
+static void wd_gps_cleanup_prompts(void){} /* unrelated GPS endpoint; native GPS gate */
 static void clock_cancel_radio_navigation(void){}
 static void hat_ui_depart(void){}
 static void run_screen_stop_fn(void);

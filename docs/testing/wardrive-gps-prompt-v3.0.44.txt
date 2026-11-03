@@ -1,0 +1,31 @@
+Wardrive GPS prompt — v3.0.44 operator checklist
+
+Software (checkout root on ESP32-Dev as dev; each output path must be new):
+  export IDF_PATH="$HOME/esp/esp-idf"
+  export PYTHONDONTWRITEBYTECODE=1
+  python3 -B tests/run_regression.py --suite portable --suite sdk-native --only wardrive_gps_prompt_nav --only wardrive_gps_prompt_lvgl --output /home/dev/projects/NEW-wardrive-proof
+Expected: both entries PASS; portable cleanup and installed-LVGL callback proof
+include compiled semantic mutation rejection. A crash/startup/compile failure is
+not a mutation kill. Installed LVGL is SDK-native, never portable. Full maintained
+commands and prerequisites: tests/README.md. Optional private captures: explicit
+SKIP unless privately provisioned; no public/private capture fabrication.
+
+Physical acceptance still required on exact final artifacts (no flash performed):
+  1. Record board/profile, artifact SHA256, layout and rotation, serial evidence.
+  2. With stale cached GPS/unplugged receiver, open Wardrive. Home then Back on
+     separate runs must dismiss Cached GPS Data; no later Wardrive start.
+  3. Use Now starts once. Wait stays responsive, updates satellites, then starts
+     once on a fresh lock. Cancel returns to Wardrive menu, never re-prompts or
+     starts after later lock. Repeat Home/Back during Wait and after cancellation.
+  4. No cached data: no-data modal blocks topbar touch; OK and X each close it.
+     No invisible backdrop should block later input. Repeat OK/X/entry/exit.
+  5. Exercise Classic/Modern and all supported rotations; retain topbar HAT
+     control, long-press screenshot, Back/Home and existing FSD/IR behavior.
+  6. Exercise Clock-deferred Wardrive then Home/Back: no delayed start; normal
+     fresh-GPS entry must still work. Capture heap minima/largest internal block
+     and responsiveness across repeated cycles if qualifying runtime margins.
+
+Report contributor bench evidence separately from these exact-artifact checks.
+Nine successful builds prove compatibility, not physical nine-board acceptance.
+Parent must independently review, apply attribution split and publish Development;
+no Stable/main promotion or Wiki remote edits are authorized by this checklist.

@@ -652,6 +652,17 @@
       "requires": [
         "cc"
       ]
+    },
+    {
+      "id": "wardrive_gps_prompt_lvgl",
+      "path": "tests/run_wardrive_gps_prompt_lvgl_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
     }
   ]
 }

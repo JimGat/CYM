@@ -43,6 +43,9 @@ int main(void){uint16_t keep=output_shadow&~32;assert(ws_c5_35_audio_amp(false))
 #define GPS_UART_NUM 1
 #define """+board+r""" 1
 typedef int lv_event_t;static bool nav_to_menu_flag;static unsigned writes;
+/* GPS lifecycle is independently exercised by wardrive_gps_prompt_lvgl. */
+static void wd_gps_cleanup_prompts(void){}
+static void clock_cancel_radio_navigation(void){}
 int uart_write_bytes(int port,const char*p,unsigned n){(void)port;(void)p;(void)n;writes++;return -1;}
 """+fn+r"""
 int main(void){home_btn_event_cb(0);assert(nav_to_menu_flag&&writes==0);return 0;}

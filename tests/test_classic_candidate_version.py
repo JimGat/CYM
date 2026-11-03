@@ -11,7 +11,7 @@ class ClassicCandidateVersion(unittest.TestCase):
    extra=d/'sdkconfig.defaults.extra';config=d/'sdkconfig';out=d/'result';script=d/'version.cmake'
    script.write_text('cmake_minimum_required(VERSION 3.16)\nset(CMAKE_SOURCE_DIR \"'+str(d)+'\")\n'+selector+'\nfile(WRITE "'+str(out)+'" "${PROJECT_VER}")\n')
    work=d/'build';work.mkdir()
-   cases=[('classic-defaults',None,'','v3.0.43'),('hackerbox-defaults',None,'CONFIG_BOARD_HACKERBOX_CYD=y\n','v3.0.43'),('board-psram-defaults',None,'CONFIG_BOARD_HAS_PSRAM=y\n','v3.0.43'),('spiram-defaults',None,'CONFIG_SPIRAM=y\n','v3.0.43'),('classic-config','CONFIG_BOARD_CYD2USB=y\n','','v3.0.43'),('hackerbox-config','CONFIG_BOARD_CYD2USB=y\nCONFIG_BOARD_HACKERBOX_CYD=y\n','','v3.0.43'),('psram-config','CONFIG_BOARD_CYD2USB=y\nCONFIG_SPIRAM=y\n','','v3.0.43'),('nonclassic-config','CONFIG_BOARD_WS_C5_35=y\n','','v3.0.43')]
+   cases=[('classic-defaults',None,'','v3.0.44'),('hackerbox-defaults',None,'CONFIG_BOARD_HACKERBOX_CYD=y\n','v3.0.44'),('board-psram-defaults',None,'CONFIG_BOARD_HAS_PSRAM=y\n','v3.0.44'),('spiram-defaults',None,'CONFIG_SPIRAM=y\n','v3.0.44'),('classic-config','CONFIG_BOARD_CYD2USB=y\n','','v3.0.44'),('hackerbox-config','CONFIG_BOARD_CYD2USB=y\nCONFIG_BOARD_HACKERBOX_CYD=y\n','','v3.0.44'),('psram-config','CONFIG_BOARD_CYD2USB=y\nCONFIG_SPIRAM=y\n','','v3.0.44'),('nonclassic-config','CONFIG_BOARD_WS_C5_35=y\n','','v3.0.44')]
    for name,saved,more,expected in cases:
     with self.subTest(case=name):
      if config.exists():config.unlink()

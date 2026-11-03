@@ -2746,6 +2746,30 @@
       ],
       "gate": "portable",
       "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
+    },
+    {
+      "path": "tests/run_wardrive_gps_prompt_lvgl_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-lvgl"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "sys"
+      ],
+      "gate": "sdk-native",
+      "note": "Installed LVGL 8.4.0; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
     }
   ],
   "support_files": [

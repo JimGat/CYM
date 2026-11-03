@@ -1,39 +1,11 @@
 #!/usr/bin/env python3
-"""Wardrive GPS-start popup nav-orphan fix: production-extracted native proof that a
-nav-away (top-bar Home / ‹ Back) dismisses every pending GPS-start popup instead of
-orphaning it over the rebuilt Home menu.
-
-Base: v3.0.43 (0a91e303) + this fix.
-
-Background (the Stable-blocker this locks in):
-  Wardrive start can show popups that live OUTSIDE `function_page`:
-    * "Cached GPS Data / Use Now / Wait" modal  -> child of lv_scr_act()
-    * "Acquiring GPS Lock" wait modal + 100ms timer -> child of lv_scr_act()
-    * "No GPS data available" msgbox -> lv_msgbox_create(NULL,...) => lv_layer_top()
-  go_home()->show_menu() only `lv_obj_del(function_page)`, so none of these are
-  deleted on Home; pressing Home/‹ Back left the popup orphaned over the new menu.
-  The fix adds wd_gps_cleanup_prompts(), called from home_btn_event_cb() and
-  nav_back_cb() (the only nav controls reachable while the popup is up), which the
-  normal proceed path (Use Now / Wait / Cancel) never routes through.
-
-What this host proof verifies (logic + source wiring):
-  * wd_gps_cleanup_prompts() (EXTRACTED verbatim from main.c, sha256 in
-    provenance.json) deletes all three tracked popups, cancels the wait timer,
-    NULLs every handle, and resets wd_gps_prompt_state to 0.
-  * Ordering: the wait timer is deleted BEFORE the modal it drives, so a mid-cleanup
-    tick cannot touch a freed object.
-  * Idempotency: a second call (and a call with nothing pending) is a no-op and never
-    double-deletes (the fake lv_obj_del aborts on a stale handle).
-  * Orphan reproduction: WITHOUT the cleanup, a function_page-only teardown leaves the
-    popups alive -> demonstrates the fix is load-bearing.
-  * Source wiring (real main.c): Home and ‹ Back call wd_gps_cleanup_prompts();
-    the wardrive success tail does NOT; the three tracking assignments exist.
-  * Mutation sensitivity: a mutant that drops one popup-delete FAILS the proof.
-
-Scope boundary (NOT proven here, verified ON DEVICE / COM21):
-  that LVGL actually reparents a NULL-parent msgbox onto lv_layer_top(), and that
-  show_menu() deletes only function_page. Those are LVGL-runtime/firmware facts; this
-  is a host logic + source-wiring proof, not an on-device or LVGL-rendering proof.
+"""@birolt29's production-extracted portable cleanup proof, extended at integration.
+Cached prompt/wait are screen children outside function_page and were reported
+orphaned by Home/Back. No-data blocks touch navigation and was NOT reported
+orphaned. Its defensive cleanup is modeled here; actual auto-parent/X/async and
+normal prompt callbacks are exercised separately with installed LVGL (SDK-native).
+This mock verifies timer-first cleanup, resets, idempotency and semantic mutation;
+it is not hardware evidence or an independent LVGL ownership implementation.
 """
 from pathlib import Path
 import os, re, subprocess, hashlib, json
@@ -84,10 +56,9 @@ for needle in ('s_wd_gps_prompt_modal = modal;',
                's_wd_gps_prompt_modal = NULL;'):
     assert needle in src, f'tracking assignment missing: {needle!r}'
 
-# The success path (wardrive_start_btn_cb) must not reset state via cleanup: the only
-# cleanup calls in the file are the two nav handlers.
-assert src.count('wd_gps_cleanup_prompts();') == 2, \
-    'cleanup must be called from exactly the two nav handlers (Home, ‹ Back)'
+# Successful admission must retain the decision; valid lifecycle exits may add calls.
+assert 'wd_gps_cleanup_prompts();' not in fn_body('wardrive_start_btn_cb'), \
+    'successful Wardrive admission must not reset the GPS decision'
 
 PRE = r'''
 #include <assert.h>
@@ -124,6 +95,10 @@ static lv_obj_t   *wd_gps_wait_modal;
 static lv_obj_t   *wd_gps_wait_msg;
 static lv_obj_t   *s_wd_gps_prompt_modal;
 static lv_obj_t   *s_wd_gps_nodata_mbox;
+static bool s_wd_gps_nodata_close_pending;
+static void wd_gps_close_nodata_async(void *arg) { (void)arg; }
+static void lv_async_call_cancel(void (*cb)(void *), void *arg) { (void)cb; (void)arg; }
+static void lv_msgbox_close(lv_obj_t *obj) { lv_obj_del(obj); }
 static int          wd_gps_wait_sats_logged;
 static volatile int wd_gps_prompt_state;
 
@@ -218,12 +193,12 @@ host_c = PRE + POST
     'extracted_verbatim': ['wd_gps_cleanup_prompts'],
     'source_wiring_checked': ['home_btn_event_cb calls wd_gps_cleanup_prompts()',
                               'nav_back_cb calls wd_gps_cleanup_prompts()',
-                              'exactly 2 cleanup call sites'],
+                              'successful admission does not reset decision'],
     'note': 'host logic + source-wiring proof; NOT an on-device or LVGL-rendering proof',
 }, indent=2), encoding='utf-8')
 
 cc = os.environ.get('CC', 'cc')
-san = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all']
+san = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all', '-fno-pie', '-no-pie']
 base = [cc, '-std=gnu11', '-O1', '-g'] + san
 
 
@@ -235,11 +210,12 @@ def build_run(csrc, exe, expect_pass):
     subprocess.run(cmd, check=True)
     runp = D / exe
     run = str(runp) if runp.exists() else str(runp) + '.exe'
-    r = subprocess.run([run])
+    r = subprocess.run([run], capture_output=True, text=True)
+    print(r.stdout+r.stderr)
     if expect_pass:
         assert r.returncode == 0, f'{csrc} expected PASS, exit {r.returncode}'
     else:
-        assert r.returncode != 0, f'{csrc} (mutant) expected FAIL, but it PASSED'
+        assert r.returncode == 1 and 'FAIL line ' in r.stderr and 'Sanitizer' not in r.stderr, f'{csrc} must fail semantically'
 
 
 # clean proof
@@ -256,7 +232,9 @@ print('compile(mutant):', ' '.join(mcmd))
 subprocess.run(mcmd, check=True)
 mp = D / 'mutant'
 mrun = str(mp) if mp.exists() else str(mp) + '.exe'
-mr = subprocess.run([mrun])
-assert mr.returncode != 0, 'mutant (dropped prompt-modal delete) unexpectedly PASSED'
+mr = subprocess.run([mrun], capture_output=True, text=True)
+print(mr.stdout+mr.stderr)
+assert mr.returncode == 1 and '!o_prompt_modal.valid' in mr.stderr and 'FAIL line ' in mr.stderr and 'Sanitizer' not in mr.stderr, 'mutant must fail the intended prompt deletion assertion, not compile/startup/sanitizer'
+(D / 'mutation.json').write_text(json.dumps(dict(exit_code=mr.returncode,semantic_assertion='!o_prompt_modal.valid',stderr=mr.stderr),indent=2))
 print('PASS mutation sensitivity: dropping the prompt-modal delete fails the proof')
 print('ALL PASS: wardrive GPS prompt nav-orphan host proof')

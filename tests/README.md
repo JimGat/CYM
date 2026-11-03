@@ -190,3 +190,28 @@ I2C fault reproduction, RF silence or stop-latency qualification is implied.
 ## Package C HAT TX regression
 
 `hat_tx`, `hat_emitters`, and `hat_runtime` are maintained portable production-extracted ASAN/UBSAN gates. They cover synchronized admission/cancellation and stale tickets, the real four-emitter SDK/GPIO request boundaries, raw diagnostic and timer ownership, checked stop errors and retained resources/retry, copied-signal/mailbox lifetime, stale UI epochs and aggregate state/no restart. Seven semantic mutants require assertion failures, not compiler failures. `display_layout` additionally uses installed LVGL and exact production topbar geometry for both layouts/all rotations. See [operator and physical limits](../docs/testing/package-c-hat-tx.md); no physical RF/optical or timing qualification is implied.
+
+## Wardrive GPS prompt navigation (Patch24, Development v3.0.44)
+
+`wardrive_gps_prompt_nav` is @birolt29's readable portable cleanup extraction,
+extended with semantic mutation validation and behavior wiring rather than an
+exact call-site count. `wardrive_gps_prompt_lvgl` is SDK-native (`cc`, installed
+LVGL 8.4), executes the production prompt/Use Now/Wait/Cancel/no-data callbacks,
+wait timer, Home/Back and GPS admission prefix. The post-admission UI/radio task
+endpoint and Clock admission boundary are mocked; actual Clock cancellation is
+extracted. Direct Home uses the production entry prefix; FSD overlay rejection
+is source-checked and full FSD tests separately exercise installed LVGL.
+
+The native runner covers OK before/after timer handling, pending OK followed by X,
+repeated cleanup, unrelated overlay survival, timer-after-departure, normal fresh/
+cached/lock/cancel and deferred cancellation. Its layout loop repeats shared
+callbacks; full geometry is the separate display_layout gate. ASan/UBSan are on;
+LeakSanitizer alone is disabled for LVGL process-global display allocations.
+Explicit popup/backdrop child counts remain required. Both runners reject a
+compiled mutant semantically, never by accepting a crash/compile/startup failure.
+No-data blocks touch navigation and was NOT reported orphaned on the device.
+See [cycle/operator evidence limits](../docs/testing/wardrive-gps-prompt-v3.0.44.txt).
+
+```sh
+python3 -B tests/run_regression.py --suite portable --suite sdk-native --only wardrive_gps_prompt_nav --only wardrive_gps_prompt_lvgl --output /path/to/new/wardrive-proof
+```
