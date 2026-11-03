@@ -218,3 +218,12 @@ Package A's supplied standalone script is not imported as accepted proof; see th
 [corrected note](../docs/testing/package-a-corrected-coverage.md). No unaccepted
 candidate firmware, entire evidence tree, private capture, or generated binary is
 added to this repository. Historical FSD/RF claims are not upgraded by consolidation.
+
+## Package G maintained additions
+
+- `tests/run_pn532_ownership_host.py`: portable, mocked-host; prerequisites cc.
+- `tests/run_pn532_manager_host.py`: portable, mocked-host; prerequisites cc.
+- `tests/run_pn532_claims_host.py`: portable, mocked-host; prerequisites cc.
+- `tests/run_pn532_idf_contract_host.py`: sdk-native, installed-sdk-host; prerequisites cc, idf-i2c.
+
+Package C: `run_hat_tx_host.py`, `run_hat_emitters_host.py`, and `run_hat_runtime_host.py` execute production state/emitter/control code with sanitizers, synthetic SDK faults and semantic mutants (portable gate). Actual LVGL topbar geometry/click/delete coverage is in the existing display-layout SDK-native gate. None establishes physical RF/optical silence.

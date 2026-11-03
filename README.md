@@ -3639,3 +3639,14 @@ unchanged. The compact popup, bounded logger and GPS safeguards are retained.
 ## Stable alternate mapping: CYD-2432S028-L
 
 **@gabecamp's PR #25** is integrated with adaptations as the explicit **CYD-2432S028-L** profile, not a global generic CYD change. Jim reported all tested and approved Stable v3.0.37 support. Historically the contributor reported a white-bar fix on HW458 TPM408-2.8 with touch unverified; that is historical context, not a current Stable block. No separate controller/mounting or all-clone compatibility is proven. See the [operator guide](docs/operators/cyd-2432s028-l.md). Generic CYD and HackerBox retain accepted transforms, colors, defaults and calibration; co-developer **@birolt29** and both navigation layouts are retained.
+
+### PN532 ownership and scoped HAT TX candidate
+
+Development v3.0.43 prepares the bounded PN532 retained-handle correction supplied
+by co-developer @birolt29, with separately owned readiness/cleanup and shared-pin
+integration corrections. See [Package G operator and acceptance limits](docs/testing/package-g-ownership.md).
+Original NM card detection remains open. Package C implements runtime admission,
+checked stopping and asynchronous replay for CC1101, nRF24, IR and RF433 only.
+@birolt29 supplied its design origin; JimGat owns the synchronization, emitter/UI
+corrections and validation. See [HAT TX operation and acceptance limits](docs/testing/package-c-hat-tx.md).
+Wi-Fi/BLE/AP/NVS are not controlled. This is not an all-RF-silent control.

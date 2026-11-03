@@ -690,6 +690,92 @@
       ]
     },
     {
+      "path": "tests/run_pn532_claims_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "os",
+        "re",
+        "subprocess",
+        "json",
+        "hashlib"
+      ],
+      "gate": "portable",
+      "note": "Production-extracted Package G regression; see tests/README.md",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_pn532_idf_contract_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked",
+        "SDK/managed"
+      ],
+      "imports": [
+        "pathlib",
+        "os",
+        "re",
+        "subprocess",
+        "json",
+        "hashlib"
+      ],
+      "gate": "sdk-native",
+      "note": "Production-extracted Package G regression; see tests/README.md",
+      "taxonomy": "installed-sdk-host",
+      "requires": [
+        "cc",
+        "idf-i2c"
+      ]
+    },
+    {
+      "path": "tests/run_pn532_manager_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "os",
+        "re",
+        "subprocess",
+        "json",
+        "hashlib"
+      ],
+      "gate": "portable",
+      "note": "Production-extracted Package G regression; see tests/README.md",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "path": "tests/run_pn532_ownership_host.py",
+      "kind": "standalone",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "pathlib",
+        "os",
+        "re",
+        "subprocess",
+        "json",
+        "hashlib"
+      ],
+      "gate": "portable",
+      "note": "Production-extracted Package G regression; see tests/README.md",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
       "path": "tests/run_radio_repair_host.py",
       "kind": "standalone",
       "flags": [
@@ -709,6 +795,14 @@
       "requires": [
         "cc"
       ]
+    },
+    {
+      "path": "tests/run_regression.py",
+      "kind": "orchestrator",
+      "flags": [],
+      "imports": [],
+      "gate": "orchestrator",
+      "note": "Explicit manifest orchestrator; no unrestricted discovery"
     },
     {
       "path": "tests/run_scope_lifecycle_host.py",
@@ -2199,6 +2293,16 @@
       "note": "private/output legacy; native-mocked"
     },
     {
+      "path": "tests/test_regression_runner.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [],
+      "gate": "portable",
+      "note": "Maintained gate contract tests",
+      "taxonomy": "runner-contract",
+      "requires": []
+    },
+    {
       "path": "tests/test_release300_contract.py",
       "kind": "unittest",
       "flags": [],
@@ -2593,22 +2697,34 @@
       "note": "private/output legacy; native-mocked"
     },
     {
-      "path": "tests/run_regression.py",
-      "kind": "orchestrator",
+      "path": "tests/run_hat_tx_host.py",
+      "kind": "script",
       "flags": [],
-      "imports": [],
-      "gate": "orchestrator",
-      "note": "Explicit manifest orchestrator; no unrestricted discovery"
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
     },
     {
-      "path": "tests/test_regression_runner.py",
-      "kind": "unittest",
+      "path": "tests/run_hat_emitters_host.py",
+      "kind": "script",
       "flags": [],
-      "imports": [],
+      "imports": [
+        "stdlib"
+      ],
       "gate": "portable",
-      "note": "Maintained gate contract tests",
-      "taxonomy": "runner-contract",
-      "requires": []
+      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
+    },
+    {
+      "path": "tests/run_hat_runtime_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
     }
   ],
   "support_files": [

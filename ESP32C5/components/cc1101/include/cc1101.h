@@ -135,3 +135,11 @@ void cc1101_capture_cancel(void);
 int  cc1101_capture_count(void);
 // Signal an in-progress raw_replay to stop between repetitions.
 void cc1101_replay_cancel(void);
+
+// Worker-only checked SIDLE/readback; retains driver on failure.
+esp_err_t cc1101_tx_stop_checked(void);
+
+#include "hat_tx.h"
+esp_err_t cc1101_raw_replay_owned(const cc1101_raw_t *sig,int count,hat_tx_ticket_t ticket);
+
+esp_err_t cc1101_tx_checked(void);

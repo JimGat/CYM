@@ -63,7 +63,8 @@ def missing(requirement):
     if requirement.startswith('idf-'):
         if not os.environ.get('IDF_PATH'):return 'required IDF_PATH not configured; see tests/README.md'
         p=Path(os.environ['IDF_PATH'])
-        suffix = 'components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c' if requirement=='idf-nimble' else 'components/esp_driver_i2s/i2s_common.c'
+        suffix = {'idf-nimble':'components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c', 'idf-i2c':'components/esp_driver_i2c/i2c_master.c', 'idf-i2s':'components/esp_driver_i2s/i2s_common.c'}.get(requirement)
+        if suffix is None:return 'unknown SDK prerequisite: '+requirement
         return None if (p/suffix).is_file() else 'required installed SDK source absent: '+suffix
     if requirement=='git-gatt-history':
         p=subprocess.run(['git','cat-file','-e','4c699a66acaac50731529aea773a411eb8b4b68c:ESP32C5/main/gatt_walker.c'],cwd=ROOT,capture_output=True)
@@ -132,6 +133,10 @@ def execute_entry(entry, output, timeout):
         verification=json.loads((output/'generated/layout-verification.json').read_text())
         record['counted_native_checks']=verification['runs'][0]['checks']
         record['mutation_kills']=[x['name'] for x in verification['runs'] if x['expected_failure'] and x['status']=='PASS']
+    if code==0 and entry.get('id')=='pn532_ownership':
+        provenance=json.loads((output/'generated/pn532-ownership/provenance.json').read_text())
+        record['mutation_kills']=[x['name'] for x in provenance['runs'] if x['expected_failure'] and x['status']=='PASS']
+        record['native_scenario_groups']=provenance['scenario_groups']
     return record
 
 
@@ -151,7 +156,7 @@ def dependency_provenance(suites):
             if path.exists():
                 run=subprocess.run(['git','rev-parse','HEAD'],cwd=path,text=True,capture_output=True)
                 result[key+'_commit']=run.stdout.strip() if run.returncode==0 else 'not a git checkout; use file hashes'
-        sources=[sdk/'components/esp_driver_i2s/i2s_common.c']
+        sources=[sdk/'components/esp_driver_i2s/i2s_common.c', sdk/'components/esp_driver_i2c/i2c_master.c', sdk/'components/esp_driver_i2c/include/driver/i2c_master.h']
         result['sdk_files']={str(p.relative_to(sdk)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources if p.is_file()}
     return result
 

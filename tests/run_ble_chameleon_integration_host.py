@@ -14,6 +14,7 @@ def fn(s,n):
  while d:d+=(s[i]=='{')-(s[i]=='}');i+=1
  return s[m.start():i]
 pre=r"""
+static void hat_ui_depart(void){}
 #define bt_stage(stage,rc) ((void)0)
 
 #include <assert.h>

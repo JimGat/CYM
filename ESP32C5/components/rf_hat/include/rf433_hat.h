@@ -117,6 +117,11 @@ rf433_hat_err_t rf433_hat_delete_signal(const char *remote_name, int index);
 // ── Jammer ───────────────────────────────────────────────────────────────────
 // Holds RF_HAT_RF433_TX_GPIO HIGH — outputs a continuous 433 MHz carrier.
 // Safe to call without rf433_hat_init() (TX-only GPIO, no ISR needed).
-void rf433_hat_jam_start(void);
+rf433_hat_err_t rf433_hat_jam_start(void);
 void rf433_hat_jam_stop(void);
 bool rf433_hat_is_jamming(void);
+
+#include "hat_tx.h"
+#include "esp_err.h"
+esp_err_t rf433_hat_tx_stop_checked(void);
+rf433_hat_err_t rf433_hat_replay_owned(const rf433_signal_t *sig,uint8_t repeat,hat_tx_ticket_t ticket);

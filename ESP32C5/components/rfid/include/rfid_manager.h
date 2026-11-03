@@ -34,7 +34,11 @@ typedef struct {
 // init: acquires I2C bus on GPIO8/9 (SCL/SDA), powers PN532 SAM, claims GPIO.
 rfid_err_t rfid_manager_init(void);
 
-// deinit: stops poll, turns off RF field, releases I2C bus and GPIO.
+// release: request worker cancellation without waiting. false means retained
+// ownership; retry later, do not configure competing shared pins. Lifecycle
+// admission/release is serialized by the UI owner, never called by a worker.
+bool       rfid_manager_release(void);
+// Compatibility wrapper: logs refusal; new shared-pin callers must use release.
 void       rfid_manager_deinit(void);
 
 bool       rfid_manager_is_init(void);

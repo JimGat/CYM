@@ -571,6 +571,77 @@
         "cc",
         "git-gatt-history"
       ]
+    },
+    {
+      "id": "pn532_ownership",
+      "path": "tests/run_pn532_ownership_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "pn532_manager",
+      "path": "tests/run_pn532_manager_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "pn532_claims",
+      "path": "tests/run_pn532_claims_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "pn532_idf_contract",
+      "path": "tests/run_pn532_idf_contract_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-sdk-host",
+      "requires": [
+        "cc",
+        "idf-i2c"
+      ]
+    },
+    {
+      "id": "hat_tx",
+      "path": "tests/run_hat_tx_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "hat_emitters",
+      "path": "tests/run_hat_emitters_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "hat_runtime",
+      "path": "tests/run_hat_runtime_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
     }
   ]
 }

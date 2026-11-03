@@ -1,0 +1,1 @@
+Staged combined G+C Wiki proposals only. Parent must review live Wiki drift before publication. No Wiki repository or external state was changed. PN532-Ownership.md preserves G attribution; HAT-TX-Control.md describes the separately implemented C runtime control and unmeasured physical gates.

@@ -60,6 +60,7 @@ typedef enum {
     IR_HAT_ERR_IO,          // SD card read/write error
     IR_HAT_ERR_BUSY,        // capture already in progress
     IR_HAT_ERR_NOT_FOUND,   // signal name or index not in file
+    IR_HAT_PENDING = 100, // async admission only, not successful emission
 } ir_hat_err_t;
 
 typedef void (*ir_hat_cb_t)(ir_hat_err_t result, const ir_signal_t *sig, void *ctx);
@@ -126,3 +127,8 @@ void ir_hat_tvbgone_stop(void);
 ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz);
 void         ir_hat_jam_stop(void);
 bool         ir_hat_is_jamming(void);
+
+#include "hat_tx.h"
+esp_err_t ir_hat_tx_stop_checked(void);
+ir_hat_err_t ir_hat_replay_owned(const ir_signal_t *sig,hat_tx_ticket_t ticket);
+esp_err_t ir_hat_tvbgone_owned(ir_hat_progress_cb_t cb,void *ctx,hat_tx_ticket_t ticket);

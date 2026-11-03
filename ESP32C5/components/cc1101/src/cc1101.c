@@ -1,4 +1,5 @@
 #include "cc1101.h"
+#include "hat_tx.h"
 #include "cc1101_regs.h"
 #include "rf_hat_config.h"
 #include "esp_log.h"
@@ -22,6 +23,8 @@ extern SemaphoreHandle_t sd_spi_mutex;
 // ── State ─────────────────────────────────────────────────────────────────────
 static spi_device_handle_t s_spi = NULL;
 static bool                s_init = false;
+static hat_tx_ticket_t s_tx_ticket;
+static bool s_tx_session;
 static float               s_freq_mhz = 433.92f;
 static bool                s_isr_installed = false;  // gpio_install_isr_service called
 
@@ -64,7 +67,7 @@ static uint8_t s_spi_xfer(uint8_t addr, uint8_t data)
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-uint8_t cc1101_strobe(uint8_t strobe)
+static uint8_t s_strobe_raw(uint8_t strobe)
 {
     spi_transaction_t t = {
         .length   = 8,
@@ -75,6 +78,55 @@ uint8_t cc1101_strobe(uint8_t strobe)
     spi_device_polling_transmit(s_spi, &t);
     if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
     return t.rx_data[0];
+}
+
+// Only STX is a TX request; receive strobes keep baseline behavior.
+static esp_err_t s_checked_xfer(uint8_t addr,uint8_t *value,bool read);
+uint8_t cc1101_strobe(uint8_t strobe)
+{
+    if (strobe != CC1101_STX) return s_strobe_raw(strobe);
+    if (!s_tx_session) {
+        if (!hat_tx_begin(HAT_TX_CC1101,&s_tx_ticket)) return 0xFF;
+        s_tx_session=true;
+    }
+    if (!hat_tx_enter(s_tx_ticket)) return 0xFF;
+    esp_err_t result=s_checked_xfer(strobe,NULL,false);
+    hat_tx_leave(s_tx_ticket);
+    if(result!=ESP_OK){hat_tx_cancel(HAT_TX_CC1101);hat_tx_finish(s_tx_ticket,false);return 0xFF;}
+    return 0;
+}
+
+static esp_err_t s_checked_xfer(uint8_t addr, uint8_t *value, bool read)
+{
+    if (!s_spi) return ESP_ERR_INVALID_STATE;
+    spi_transaction_t t={.length=read?16:8,.tx_data={addr,0},
+        .flags=SPI_TRANS_USE_TXDATA|SPI_TRANS_USE_RXDATA};
+    TickType_t wait=pdMS_TO_TICKS(20); if (!wait) wait=1;
+    if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex,wait)!=pdTRUE) return ESP_ERR_TIMEOUT;
+    esp_err_t err=spi_device_polling_transmit(s_spi,&t);
+    if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
+    if (value) *value=t.rx_data[1];
+    return err;
+}
+
+esp_err_t cc1101_tx_stop_checked(void)
+{
+    if (!s_spi) return hat_tx_owned(HAT_TX_CC1101)?ESP_ERR_INVALID_STATE:ESP_OK;
+    esp_err_t err=s_checked_xfer(CC1101_SIDLE,NULL,false);
+    if (err!=ESP_OK) return err;
+    // Existing tick-rounded polling budget, now reports exhaustion; worker-only.
+    for (int i=0;i<50;i++) {
+        uint8_t state;
+        err=s_checked_xfer(CC1101_MARCSTATE|CC1101_READ|CC1101_BURST,&state,true);
+        if (err!=ESP_OK) return err;
+        if ((state&0x1F)==CC1101_STATE_IDLE) {
+            if (gpio_set_level(RF_HAT_CC1101_GDO0_GPIO,0)!=ESP_OK) return ESP_FAIL;
+            s_tx_session=false;
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return ESP_ERR_TIMEOUT;
 }
 
 uint8_t cc1101_read_reg(uint8_t addr)
@@ -155,6 +207,7 @@ esp_err_t cc1101_init(void)
 
 void cc1101_deinit(void)
 {
+    if (hat_tx_owned(HAT_TX_CC1101)) return;
     if (!s_init) return;
     s_cap_active = false;
     // Only remove ISR handler if the service was ever installed (raw capture used)
@@ -285,12 +338,12 @@ void cc1101_rx(void)
     cc1101_strobe(CC1101_SRX);
 }
 
-void cc1101_tx(void)
+esp_err_t cc1101_tx_checked(void)
 {
-    cc1101_idle();
-    cc1101_flush_tx();
-    cc1101_strobe(CC1101_STX);
+    cc1101_idle();cc1101_flush_tx();
+    return cc1101_strobe(CC1101_STX)==0xFF?ESP_FAIL:ESP_OK;
 }
+void cc1101_tx(void){(void)cc1101_tx_checked();}
 
 void cc1101_flush_rx(void) { cc1101_strobe(CC1101_SFRX); }
 void cc1101_flush_tx(void) { cc1101_strobe(CC1101_SFTX); }
@@ -570,9 +623,18 @@ esp_err_t cc1101_raw_capture(cc1101_raw_t *out, uint32_t timeout_ms)
 
 // ── RAW Replay ────────────────────────────────────────────────────────────────
 
-esp_err_t cc1101_raw_replay(const cc1101_raw_t *sig, int repeat_count)
+esp_err_t cc1101_raw_replay_owned(const cc1101_raw_t *sig, int repeat_count,hat_tx_ticket_t ticket)
 {
-    if (!s_init || !sig || sig->count == 0) return ESP_ERR_INVALID_ARG;
+    if (!s_init || !sig || !sig->timings || sig->count<=0 || sig->count>CC1101_RAW_MAX_EDGES || repeat_count<1 || repeat_count>20) return ESP_ERR_INVALID_ARG;
+    uint64_t total=0;
+    for (int i=0;i<sig->count;i++) {
+        int64_t t=sig->timings[i]; uint64_t us=t<0?(uint64_t)(-t):(uint64_t)t;
+        if (!us || us>30000) return ESP_ERR_INVALID_ARG;
+        total+=us;
+    }
+    if (total>2000000) return ESP_ERR_INVALID_ARG;
+    if (!hat_tx_valid(ticket))return ESP_ERR_INVALID_STATE;
+    s_tx_ticket=ticket;s_tx_session=true;
 
     s_replay_cancel = false;
 
@@ -581,19 +643,18 @@ esp_err_t cc1101_raw_replay(const cc1101_raw_t *sig, int repeat_count)
     cc1101_write_reg(CC1101_IOCFG0,   0x2E);  // GDO0: drive LOW (hardwired 0)
 
     // Configure GDO0 as ESP32 GPIO output
-    gpio_set_direction(RF_HAT_CC1101_GDO0_GPIO, GPIO_MODE_OUTPUT);
-    gpio_set_level(RF_HAT_CC1101_GDO0_GPIO, 0);
+    esp_err_t waveform=gpio_set_direction(RF_HAT_CC1101_GDO0_GPIO,GPIO_MODE_OUTPUT);
+    if(waveform==ESP_OK)waveform=gpio_set_level(RF_HAT_CC1101_GDO0_GPIO,0);
+    if(waveform==ESP_OK)waveform=cc1101_tx_checked();
 
-    cc1101_tx();
-
-    for (int rep = 0; rep < repeat_count && !s_replay_cancel; rep++) {
-        for (int i = 0; i < sig->count && !s_replay_cancel; i++) {
+    for (int rep = 0; rep < repeat_count && waveform==ESP_OK && !s_replay_cancel && hat_tx_valid(s_tx_ticket); rep++) {
+        for (int i = 0; i < sig->count && waveform==ESP_OK && !s_replay_cancel && hat_tx_valid(s_tx_ticket); i++) {
             int32_t t = sig->timings[i];
             if (t > 0) {
-                gpio_set_level(RF_HAT_CC1101_GDO0_GPIO, 1);
+                waveform=gpio_set_level(RF_HAT_CC1101_GDO0_GPIO,1);
                 esp_rom_delay_us((uint32_t)t);
             } else {
-                gpio_set_level(RF_HAT_CC1101_GDO0_GPIO, 0);
+                waveform=gpio_set_level(RF_HAT_CC1101_GDO0_GPIO,0);
                 esp_rom_delay_us((uint32_t)(-t));
             }
         }
@@ -601,16 +662,29 @@ esp_err_t cc1101_raw_replay(const cc1101_raw_t *sig, int repeat_count)
         vTaskDelay(pdMS_TO_TICKS(20));  // inter-repeat gap
     }
 
-    cc1101_idle();
-    // Restore GDO0 as input
+    esp_err_t stopped=cc1101_tx_stop_checked();
+    // A failed stop retains the pin/chip configuration for checked retry.
+    if(stopped==ESP_OK){
     gpio_set_direction(RF_HAT_CC1101_GDO0_GPIO, GPIO_MODE_INPUT);
     cc1101_write_reg(CC1101_IOCFG0, CC1101_GDO0_RX_DATA);
     cc1101_write_reg(CC1101_PKTCTRL0, CC1101_PKT_ASYNC_SERIAL);
-    return s_replay_cancel ? ESP_ERR_TIMEOUT : ESP_OK;
+    }
+    bool cancelled=s_replay_cancel || !hat_tx_valid(s_tx_ticket);
+
+    return stopped!=ESP_OK?stopped:waveform!=ESP_OK?waveform:cancelled?ESP_ERR_TIMEOUT:ESP_OK;
 }
 
 void cc1101_capture_cancel(void) { s_cap_active = false; }
 int  cc1101_capture_count(void)  { return (int)s_cap_count; }
+esp_err_t cc1101_raw_replay(const cc1101_raw_t *sig,int count)
+{
+    hat_tx_ticket_t t;if(!hat_tx_begin(HAT_TX_CC1101,&t))return ESP_ERR_INVALID_STATE;
+    if(!hat_tx_enter(t)){hat_tx_finish(t,true);return ESP_ERR_INVALID_STATE;}
+    esp_err_t e=cc1101_raw_replay_owned(sig,count,t);
+    bool stopped=cc1101_tx_stop_checked()==ESP_OK;
+    hat_tx_leave(t);hat_tx_finish(t,stopped);return stopped?e:ESP_FAIL;
+}
+
 void cc1101_replay_cancel(void)  { s_replay_cancel = true; }
 
 void cc1101_raw_free(cc1101_raw_t *r)

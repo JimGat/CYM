@@ -25,10 +25,22 @@ static void          *s_poll_ctx    = NULL;
 static uint32_t       s_poll_ms     = 500;
 static volatile bool  s_poll_stop   = false;
 static bool           s_mgr_init    = false;
+static bool           s_cleanup_pending = false;
 static bool           s_addr_ok     = false;  // last pn532_probe_device() result
 
 // Shared card buffer for poll task — PSRAM-allocated to keep s_poll_card out of DRAM
 static rfid_card_t *s_poll_card = NULL;
+
+static TaskHandle_t  s_emu_task = NULL;
+static volatile bool s_emu_stop = false;
+static rfid_emu_cb_t s_emu_cb   = NULL;
+static void         *s_emu_ctx  = NULL;
+// Heap-allocated to avoid 5 KB static BSS: only allocated when emulate starts.
+// On PSRAM builds the malloc goes to PSRAM (CONFIG_SPIRAM_USE_MALLOC=y).
+// On no-PSRAM builds this is never called (no PN532 hardware present).
+static rfid_card_t  *s_emu_card = NULL;
+
+
 
 static void s_poll_task_fn(void *arg)
 {
@@ -42,7 +54,7 @@ static void s_poll_task_fn(void *arg)
         // Brief gap between polls to let LVGL process and card to be removed
         if (!s_poll_stop) vTaskDelay(pdMS_TO_TICKS(250));
     }
-    s_poll_task = NULL;
+    __atomic_store_n(&s_poll_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -50,7 +62,12 @@ static void s_poll_task_fn(void *arg)
 
 rfid_err_t rfid_manager_init(void)
 {
-    if (s_mgr_init) return RFID_OK;
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    return RFID_ERR_NOT_SUPPORTED; // no allocation or peripheral touch
+#endif
+    if (s_cleanup_pending && !rfid_manager_release()) return RFID_ERR_HW;
+    if (s_mgr_init && pn532_driver_is_init()) return RFID_OK;
+    if (rfid_manager_is_polling() || rfid_manager_is_emulating()) return RFID_ERR_HW;
 
     if (!s_poll_card) {
         s_poll_card = heap_caps_calloc(1, sizeof(rfid_card_t), MALLOC_CAP_SPIRAM);
@@ -99,16 +116,34 @@ rfid_err_t rfid_manager_init(void)
     return RFID_OK;
 }
 
-void rfid_manager_deinit(void)
+// Called by the serialized UI/shared-pin owner. Never join a worker on the
+// main task: request cancellation, retain every resource, and let entry retry.
+// Workers publish task=NULL with release ordering AFTER their final driver and
+// callback access. A false result forbids all competing GPIO configuration.
+bool rfid_manager_release(void)
 {
-    rfid_manager_stop_poll();
-    pn532_driver_deinit();
-    if (s_poll_card) { free(s_poll_card); s_poll_card = NULL; }
+    s_cleanup_pending = true;
     s_mgr_init = false;
+    s_addr_ok = false;
+    s_poll_stop = true;
+    s_emu_stop = true;
+    if (__atomic_load_n(&s_poll_task, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_emu_task, __ATOMIC_ACQUIRE)) return false;
+    if (!pn532_driver_release()) return false;
+    if (s_poll_card) { free(s_poll_card); s_poll_card = NULL; }
+    if (s_emu_card) { free(s_emu_card); s_emu_card = NULL; }
+    s_cleanup_pending = false;
     ESP_LOGI(TAG, "deinit");
+    return true;
 }
 
-bool rfid_manager_is_init(void)    { return s_mgr_init; }
+void rfid_manager_deinit(void)
+{
+    if (!rfid_manager_release())
+        ESP_LOGW(TAG, "PN532 cleanup pending; shared pins retained, retry required");
+}
+
+bool rfid_manager_is_init(void)    { return s_mgr_init && !s_cleanup_pending && pn532_driver_is_init(); }
 bool rfid_manager_is_addr_ok(void) { return s_addr_ok; }
 
 // ── Probe ─────────────────────────────────────────────────────────────────────
@@ -141,6 +176,8 @@ rfid_err_t rfid_manager_start_poll(rfid_poll_cb_t cb, void *ctx, uint32_t poll_i
     if (!s_mgr_init) return RFID_ERR_NOT_INIT;
 
     rfid_manager_stop_poll();
+    if (rfid_manager_is_polling() || rfid_manager_is_emulating() || s_cleanup_pending)
+        return RFID_ERR_HW;
 
     s_poll_cb   = cb;
     s_poll_ctx  = ctx;
@@ -163,29 +200,20 @@ void rfid_manager_stop_poll(void)
         wait += 50;
     }
     if (s_poll_task) {
-        vTaskDelete(s_poll_task);
-        s_poll_task = NULL;
+        // Never delete a task in the middle of an SDK transaction/callback.
+        ESP_LOGW(TAG, "poll still stopping; owner and card retained");
     }
 }
 
-bool rfid_manager_is_polling(void) { return s_poll_task != NULL; }
+bool rfid_manager_is_polling(void) { return __atomic_load_n(&s_poll_task, __ATOMIC_ACQUIRE) != NULL; }
 
 // ── Card emulation ─────────────────────────────────────────────────────────────
-
-static TaskHandle_t  s_emu_task = NULL;
-static volatile bool s_emu_stop = false;
-static rfid_emu_cb_t s_emu_cb   = NULL;
-static void         *s_emu_ctx  = NULL;
-// Heap-allocated to avoid 5 KB static BSS: only allocated when emulate starts.
-// On PSRAM builds the malloc goes to PSRAM (CONFIG_SPIRAM_USE_MALLOC=y).
-// On no-PSRAM builds this is never called (no PN532 hardware present).
-static rfid_card_t  *s_emu_card = NULL;
 
 static void s_emu_task_fn(void *arg)
 {
     (void)arg;
     pn532_emulate_card(s_emu_card, s_emu_cb, s_emu_ctx, &s_emu_stop);
-    s_emu_task = NULL;
+    __atomic_store_n(&s_emu_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
@@ -195,6 +223,8 @@ rfid_err_t rfid_manager_start_emulate(const rfid_card_t *card,
     if (!s_mgr_init) return RFID_ERR_NOT_INIT;
     if (!card) return RFID_ERR_HW;
     rfid_manager_stop_emulate();
+    if (rfid_manager_is_polling() || rfid_manager_is_emulating() || s_cleanup_pending)
+        return RFID_ERR_HW;
     if (!s_emu_card) {
         s_emu_card = malloc(sizeof(rfid_card_t));
         if (!s_emu_card) return RFID_ERR_HW;
@@ -219,12 +249,11 @@ void rfid_manager_stop_emulate(void)
         wait += 50;
     }
     if (s_emu_task) {
-        vTaskDelete(s_emu_task);
-        s_emu_task = NULL;
+        ESP_LOGW(TAG, "emulation still stopping; owner and card retained");
     }
 }
 
-bool rfid_manager_is_emulating(void) { return s_emu_task != NULL; }
+bool rfid_manager_is_emulating(void) { return __atomic_load_n(&s_emu_task, __ATOMIC_ACQUIRE) != NULL; }
 
 // ── One-shot scan ─────────────────────────────────────────────────────────────
 

@@ -30,6 +30,8 @@ if args.verify_mutations:
  sys.exit(0)
 S=(R/"ESP32C5/main/main.c").read_text()
 source_sha256=hashlib.sha256(S.encode()).hexdigest()
+H=(R/"ESP32C5/main/hat_tx_runtime.inc").read_text()
+S+='\n'+H
 if args.mutation_clock_size:
  original='lv_obj_set_size(s_ntp_mode_popup, cw, ch);'
  assert S.count(original)==1,'mutation site drifted'
@@ -82,6 +84,11 @@ void*track_realloc(void*p,size_t n){size_t old=p?malloc_usable_size(p):0;void*q=
 #define MY_SYMBOL_SHIELD "S"
 #define MY_SYMBOL_RADAR "R"
 #define MY_SYMBOL_NETWORK "N"
+static lv_obj_t *s_hat_control_label;
+static int hat_clicks,hat_screenshots;
+static void screenshot_btn_event_cb(lv_event_t*e){hat_screenshots++;}
+static void hat_control_clicked(lv_event_t*e){hat_clicks++;}
+static void hat_ui_poll(lv_timer_t*t){if(s_hat_control_label)lv_label_set_text(s_hat_control_label,"HAT TX\\nALLOWED");}
 static lv_obj_t *s_home_tx_icon;
 static void tx_icon_refresh(lv_obj_t*p){(void)p;}
 static bool dark_mode_enabled=true;
@@ -160,10 +167,13 @@ static void show_attack_tiles_screen(void){attacks++;}
 """
 if 'static inline int wifi_sas_page_size(void)' in S: page=function('wifi_sas_page_size')
 else: page='#define WIFI_SAS_PAGE_SIZE 8\nstatic int wifi_sas_page_size(void){return WIFI_SAS_PAGE_SIZE;}\n'
-functions=['create_tile','apply_menu_bg','show_wifi_menu_screen','show_clock_mode_popup','show_cc1101_hw_test_screen','wifi_sas_row_geom','scan_row_click_cb','wifi_scan_rebuild_page','wifi_scan_prev_page_cb','wifi_scan_next_page_cb','wifi_scan_next_btn_cb','show_clock_or_mode_prompt','main_tile_event_cb']
+functions=['hat_control_deleted','hat_control_attach','create_tile','apply_menu_bg','show_wifi_menu_screen','show_clock_mode_popup','show_cc1101_hw_test_screen','wifi_sas_row_geom','scan_row_click_cb','wifi_scan_rebuild_page','wifi_scan_prev_page_cb','wifi_scan_next_page_cb','wifi_scan_next_btn_cb','show_clock_or_mode_prompt','main_tile_event_cb']
 a=S.index('                lv_obj_t *next_btn =',S.index('bool wifi_sas_owns_completion ='))
 b=S.index('                }  // End of "if (wifi_sas_should_finalize)"',a)
 floating='static lv_obj_t* floating(void){'+S[a:b]+'return next_btn;}\n'
+a=S.index('    lv_obj_t *page_title_label = lv_label_create(page_title_bar);')
+b=S.index('    lv_obj_add_flag(page_title_label, LV_OBJ_FLAG_CLICKABLE);',a)
+hat_geometry='static lv_obj_t*hat_geometry(lv_obj_t *page_title_bar,const char*name){'+S[a:b]+'lv_obj_add_event_cb(page_title_label,screenshot_btn_event_cb,LV_EVENT_CLICKED,NULL);hat_control_attach(page_title_label);return page_title_label;}\n'
 post=r"""
 static int failures,checks;
 #define CHECK(b,n) do{checks++;if(!(b)){failures++;printf("FAIL %s %dx%d rot%d\n",n,lv_disp_get_hor_res(NULL),lv_disp_get_ver_res(NULL),screen_orientation);}}while(0)
@@ -180,6 +190,10 @@ int main(void){setvbuf(stdout,NULL,_IONBF,0);lv_init();static lv_color_t buf[480
 int sizes[][2]={{240,320},{320,480},{512,300}};
 for(int menu=0;menu<2;menu++)for(int dim=0;dim<3;dim++)for(int rot=0;rot<4;rot++){
  dr.hor_res=sizes[dim][0];dr.ver_res=sizes[dim][1];lv_disp_drv_update(d,&dr);screen_orientation=rot;lv_disp_set_rotation(d,rot);int w=lv_disp_get_hor_res(NULL),h=lv_disp_get_ver_res(NULL);
+ create_function_page_base("hat");lv_obj_t*bar=lv_obj_create(function_page);lv_obj_remove_style_all(bar);lv_obj_set_size(bar,lv_pct(100),30);lv_obj_t*ht=hat_geometry(bar,"Radio");
+ const char*states[]={"HAT TX\nALLOWED","HAT TX\nACTIVE","HAT TX\nSTOPPING","HAT TX\nSTOPPED","HAT TX\nERROR"};
+ for(int hs=0;hs<5;hs++){lv_label_set_text(ht,states[hs]);render();CHECK(contained(bar,ht),"HAT TX exact topbar label bounded");CHECK(lv_obj_get_width(ht)<=w-180,"HAT TX preserves Home/Back/battery slots");}
+ int hc=hat_clicks,ss=hat_screenshots;lv_event_send(ht,LV_EVENT_SHORT_CLICKED,NULL);CHECK(hat_clicks==hc+1 && hat_screenshots==ss,"HAT TX short click only");lv_event_send(ht,LV_EVENT_LONG_PRESSED,NULL);lv_event_send(ht,LV_EVENT_CLICKED,NULL);CHECK(hat_clicks==hc+1 && hat_screenshots==ss+1,"HAT screenshot retained without toggling");lv_obj_del(bar);CHECK(!s_hat_control_label,"HAT TX delete clears pointer");
  create_function_page_base("blank");render();size_t menu_base=lv_live;show_wifi_menu_screen();render();for(unsigned ti=0;ti<lv_obj_get_child_cnt(lv_obj_get_child(function_page,0));ti++)lv_obj_add_event_cb(lv_obj_get_child(lv_obj_get_child(function_page,0),ti),clicked,LV_EVENT_CLICKED,NULL);printf("ALLOC wifi %dx%d rot%d delta=%zu live=%zu\n",w,h,rot,lv_live-menu_base,lv_live);lv_obj_t*grid=lv_obj_get_child(function_page,0);unsigned cnt=lv_obj_get_child_cnt(grid);CHECK(cnt>=10,"WiFi tile inventory");CHECK(lv_obj_has_flag(grid,LV_OBJ_FLAG_SCROLLABLE),"WiFi scrollable");reachable(grid,lv_obj_get_child(grid,0),"WiFi FIRST fully reachable");reachable(grid,lv_obj_get_child(grid,cnt-1),"WiFi LAST fully reachable");swipe(grid,lv_obj_get_child(grid,0));
  lv_area_t bg;lv_img_t*image=(lv_img_t*)home_bg_img;_lv_img_buf_get_transformed_area(&bg,lv_obj_get_width(home_bg_img),lv_obj_get_height(home_bg_img),image->angle,image->zoom,&image->pivot);bg.x1+=home_bg_img->coords.x1;bg.x2+=home_bg_img->coords.x1;bg.y1+=home_bg_img->coords.y1;bg.y2+=home_bg_img->coords.y1;CHECK(bg.x1<=0&&bg.y1<=0&&bg.x2>=w-1&&bg.y2>=h-1,"wallpaper covers live panel");printf("BG %dx%d zoom=%u area=%d,%d,%d,%d\n",w,h,image->zoom,bg.x1,bg.y1,bg.x2,bg.y2);
  lv_obj_t*route=lv_btn_create(function_page);lv_obj_add_event_cb(route,main_tile_event_cb,LV_EVENT_CLICKED,(void*)(menu?"Clock Modern":"Clock Classic"));lv_event_send(route,LV_EVENT_CLICKED,NULL);CHECK(s_ntp_return_fn==(menu?show_cat_tools:show_main_tiles),"Classic/Modern Clock return route");render();lv_area_t ca;lv_obj_get_coords(s_ntp_mode_popup,&ca);CHECK(ca.x1>=12&&ca.y1>=12&&ca.x2<w-12&&ca.y2<h-12,"Clock bounded card");CHECK(lv_obj_get_width(s_ntp_mode_popup)<=280&&lv_obj_get_height(s_ntp_mode_popup)<=250,"Clock design caps");CHECK(lv_obj_get_scroll_dir(s_ntp_mode_popup)==LV_DIR_VER,"Clock vertical scroll");
@@ -199,7 +213,7 @@ for(int menu=0;menu<2;menu++)for(int dim=0;dim<3;dim++)for(int rot=0;rot<4;rot++
 }
 dr.hor_res=100;dr.ver_res=100;lv_disp_set_rotation(d,0);lv_disp_drv_update(d,&dr);CHECK(wifi_sas_page_size()==1,"tiny panel page floor");printf("RESULT checks=%d failures=%d\n",checks,failures);return failures?1:0;}
 """
-(D/'host.c').write_text(pre+page+'\n'.join(function(n)for n in functions)+floating+post)
+(D/'host.c').write_text(pre+page+'\n'.join(function(n)for n in functions)+floating+hat_geometry+post)
 (D/'allocator.h').write_text('#include <stddef.h>\nvoid*track_alloc(size_t);void track_free(void*);void*track_realloc(void*,size_t);\n')
 flags=['-include',str(D/'allocator.h'),'-std=gnu11','-O2','-DLV_CONF_SKIP=1','-DLV_MEM_CUSTOM=1','-DLV_MEM_CUSTOM_ALLOC=track_alloc','-DLV_MEM_CUSTOM_FREE=track_free','-DLV_MEM_CUSTOM_REALLOC=track_realloc','-DLV_MEM_CUSTOM_INCLUDE="stdlib.h"','-DLV_FONT_MONTSERRAT_12=1','-DLV_FONT_MONTSERRAT_16=1','-I'+str(LV)]
 assets=[str(R/'ESP32C5/main/lab_bg.c')];assert Path(assets[0]).is_file(),assets

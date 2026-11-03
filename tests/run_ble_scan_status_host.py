@@ -29,6 +29,7 @@ static int nav_stack_depth,nav_stack[4];
 static void (*nav_deferred_show_fn)(void),(*g_screen_stop_fn)(void),(*g_screen_back_fn)(void);
 static void lv_obj_del(void*p){(void)p;}
 static void clock_cancel_radio_navigation(void){}
+static void hat_ui_depart(void){}
 static void run_screen_stop_fn(void);
 static void parent(void){parent_calls++;}
 static void (*nav_show_lookup(int n))(void){(void)n;return parent;}

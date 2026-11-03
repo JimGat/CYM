@@ -1,4 +1,5 @@
 #include "nrf24.h"
+#include "hat_tx.h"
 #include "rf_hat_config.h"
 #include "esp_log.h"
 #include "esp_attr.h"
@@ -275,6 +276,7 @@ esp_err_t nrf24_init(void)
 
 void nrf24_deinit(void)
 {
+    if (hat_tx_owned(HAT_TX_NRF24)) return;
     if (!s_drv) return;
     s_drv->cancel = true;
     ce_low();
@@ -416,8 +418,32 @@ static bool s_jam_fhss = false;   // set via nrf24_jam_set_fhss()
 
 void nrf24_jam_set_fhss(bool fhss) { s_jam_fhss = fhss; }
 
-static void s_contwave_jam(volatile bool *active, const uint8_t *ch_in, int nch)
+esp_err_t nrf24_tx_stop_checked(void)
 {
+    if (!s_drv) return hat_tx_owned(HAT_TX_NRF24)?ESP_ERR_INVALID_STATE:ESP_OK;
+    if (gpio_set_level(RF_HAT_NRF24_CE_GPIO,0)!=ESP_OK) return ESP_FAIL;
+    uint8_t tx[2]={CMD_W_REG|REG_CONFIG,CONFIG_EN_CRC|CONFIG_CRCO};
+    uint8_t rx[2]={0};
+    spi_transaction_t t={.length=16,.tx_buffer=tx,.rx_buffer=rx};
+    TickType_t wait=pdMS_TO_TICKS(20);if(!wait)wait=1;
+    if (sd_spi_mutex && xSemaphoreTake(sd_spi_mutex,wait)!=pdTRUE) return ESP_ERR_TIMEOUT;
+    esp_err_t e=gpio_set_level(RF_HAT_NRF24_CS_GPIO,0);
+    if (e==ESP_OK) e=spi_device_polling_transmit(s_drv->spi,&t);
+    if (gpio_set_level(RF_HAT_NRF24_CS_GPIO,1)!=ESP_OK) e=ESP_FAIL;
+    if (e==ESP_OK) {
+        tx[0]=CMD_R_REG|REG_CONFIG;tx[1]=CMD_NOP;
+        e=gpio_set_level(RF_HAT_NRF24_CS_GPIO,0);
+        if(e==ESP_OK)e=spi_device_polling_transmit(s_drv->spi,&t);
+        if(gpio_set_level(RF_HAT_NRF24_CS_GPIO,1)!=ESP_OK)e=ESP_FAIL;
+        if(e==ESP_OK && (rx[1]!=(CONFIG_EN_CRC|CONFIG_CRCO) || gpio_get_level(RF_HAT_NRF24_CE_GPIO)!=0))e=ESP_FAIL;
+    }
+    if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
+    return e;
+}
+
+static void s_contwave_jam(volatile bool *active, const uint8_t *ch_in, int nch,hat_tx_ticket_t ticket)
+{
+    if(!active || !*active || !hat_tx_valid(ticket)){if(active)*active=false;return;}
     const uint8_t RF_SETUP_JAM = RF_SETUP_CONT_WAVE | RF_SETUP_PLL_LOCK | RF_SETUP_PWR(3);
 
     // Working copy: may be shuffled per sweep in FHSS mode.
@@ -431,7 +457,7 @@ static void s_contwave_jam(volatile bool *active, const uint8_t *ch_in, int nch)
     nrf24_write_reg(REG_RF_CH,      channels[0]);
     nrf24_write_reg(REG_RF_SETUP,   RF_SETUP_JAM);
     // Prime: first channel already written above; settle once at startup.
-    ce_high();
+    if (hat_tx_valid(ticket)) ce_high();
     esp_rom_delay_us(500);   // one-time: PLL lock + AT2401C TX mode engagement
     ce_low();
 
@@ -450,9 +476,9 @@ static void s_contwave_jam(volatile bool *active, const uint8_t *ch_in, int nch)
     // Test mode (40 ch): ~20 ms/sweep + 10 ms yield → ~33 sweeps/sec.
     // BT   mode (79 ch): ~40 ms/sweep + 10 ms yield → ~20 sweeps/sec.
     int idx = 0;
-    while (active && *active) {
+    while (active && *active && hat_tx_valid(ticket)) {
         nrf24_write_reg(REG_RF_CH, channels[idx]);
-        ce_high();
+        if (hat_tx_valid(ticket)) ce_high();
         esp_rom_delay_us(500);   // 500us confirmed minimum for TinySA-visible output
         ce_low();
 
@@ -474,12 +500,14 @@ static void s_contwave_jam(volatile bool *active, const uint8_t *ch_in, int nch)
     nrf24_write_reg(REG_RF_SETUP, RF_SETUP_PWR(3));  // clear CONT_WAVE+PLL_LOCK
     nrf24_write_reg(REG_CONFIG,   0x00);
     vTaskDelay(pdMS_TO_TICKS(2));
-    nrf24_standby();
+    esp_err_t stopped=nrf24_tx_stop_checked();
+    *active=false;
+    (void)stopped;
 }
 
 // ── Jammer sweep ─────────────────────────────────────────────────────────────
 
-void nrf24_jam_sweep(volatile bool *active, nrf24_jam_mode_t mode)
+void nrf24_jam_sweep_owned(volatile bool *active, nrf24_jam_mode_t mode,hat_tx_ticket_t ticket)
 {
     if (!s_drv) return;
 
@@ -567,7 +595,16 @@ void nrf24_jam_sweep(volatile bool *active, nrf24_jam_mode_t mode)
             break;
     }
 
-    s_contwave_jam(active, channels, nch);
+    s_contwave_jam(active, channels, nch,ticket);
+}
+
+void nrf24_jam_sweep(volatile bool *active,nrf24_jam_mode_t mode)
+{
+    hat_tx_ticket_t t;if(!hat_tx_begin(HAT_TX_NRF24,&t)){if(active)*active=false;return;}
+    if(!hat_tx_enter(t)){hat_tx_finish(t,true);if(active)*active=false;return;}
+    nrf24_jam_sweep_owned(active,mode,t);
+    bool stopped=nrf24_tx_stop_checked()==ESP_OK;
+    hat_tx_leave(t);hat_tx_finish(t,stopped);
 }
 
 // ── Capture control ───────────────────────────────────────────────────────────

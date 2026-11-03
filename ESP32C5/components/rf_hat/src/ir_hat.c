@@ -1,4 +1,6 @@
 #include "ir_hat.h"
+#include "hat_tx.h"
+#include "esp_heap_caps.h"
 #include "rf_hat_config.h"
 #include "driver/rmt_tx.h"
 #include "driver/rmt_rx.h"
@@ -48,6 +50,8 @@ static ir_hat_cb_t    s_cap_cb     = NULL;
 static void          *s_cap_ctx    = NULL;
 static uint32_t       s_cap_tmo_ms = 5000;
 static bool s_cap_cancel = false;
+static rmt_symbol_word_t *s_tx_payload;
+static hat_tx_ticket_t s_jam_ticket;
 static bool s_tx_enabled = false; // cleared only after successful disable
 static bool s_rx_enabled = false, s_rx_healthy = false;
 static int s_rx_core = 0;
@@ -310,6 +314,7 @@ fail:
 
 bool ir_hat_release(void)
 {
+    if (hat_tx_owned(HAT_TX_IR)) return false;
     if (!ir_hat_quiesce()) return false; // never free a live capture worker
     // Initialization status is not ownership. Partial cleanup is not replayable.
     s_init = false;
@@ -388,49 +393,69 @@ void ir_hat_capture_cancel(void)
 
 // ── Public API — Replay ───────────────────────────────────────────────────────
 
+// Retained payload is released ONLY after the SDK has recycled the transaction.
+// One admitted RMT frame may drain after inhibit; no new RMT request is issued.
+esp_err_t ir_hat_tx_stop_checked(void)
+{
+    if (s_jamming) {
+        esp_err_t e=ledc_stop(LEDC_LOW_SPEED_MODE,IR_JAM_LEDC_CHANNEL,0);
+        if (e!=ESP_OK) return e;
+        s_jamming=s_jam_configured=false;
+    }
+    if (s_tx_payload) {
+        esp_err_t e=rmt_tx_wait_all_done(s_tx_chan,0);
+        if (e!=ESP_OK) return e;
+        free(s_tx_payload);s_tx_payload=NULL;
+    }
+    return ESP_OK;
+}
+
+ir_hat_err_t ir_hat_replay_owned(const ir_signal_t *sig, hat_tx_ticket_t ticket)
+{
+    if (!s_init || !s_tx_enabled || s_tx_payload) return IR_HAT_ERR_NOT_INIT;
+    if (!sig || !sig->count || sig->count>IR_HAT_MAX_TIMINGS) return IR_HAT_ERR_HW;
+    uint64_t duration=0;
+    for (uint32_t i=0;i<sig->count;i++) {
+        // RMT duration fields are 15-bit microseconds; reject instead of truncating.
+        if (!sig->times_us[i] || sig->times_us[i]>32767) return IR_HAT_ERR_HW;
+        duration+=sig->times_us[i];
+    }
+    if (duration>2000000 || (sig->freq_hz && (sig->freq_hz<1000 || sig->freq_hz>100000)) ||
+        !(sig->duty_cycle>=0.0f && sig->duty_cycle<1.0f)) return IR_HAT_ERR_HW;
+    if (!hat_tx_valid(ticket)) return IR_HAT_ERR_BUSY;
+    uint32_t pairs=(sig->count+1)/2;
+    rmt_symbol_word_t *syms=heap_caps_calloc(pairs,sizeof(*syms),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+    if (!syms) return IR_HAT_ERR_HW;
+    for (uint32_t i=0;i<pairs;i++) {
+        syms[i].duration0=sig->times_us[2*i];syms[i].level0=1;
+        syms[i].duration1=2*i+1<sig->count?sig->times_us[2*i+1]:0;syms[i].level1=0;
+    }
+    rmt_carrier_config_t carrier={.frequency_hz=sig->freq_hz?sig->freq_hz:IR_CARRIER_HZ,
+        .duty_cycle=sig->duty_cycle>0?sig->duty_cycle:IR_CARRIER_DUTY};
+    esp_err_t e=rmt_apply_carrier(s_tx_chan,&carrier);
+    if (e!=ESP_OK) {free(syms);return IR_HAT_ERR_HW;}
+    if (!hat_tx_valid(ticket)) {free(syms);return IR_HAT_ERR_BUSY;}
+    rmt_transmit_config_t cfg={.loop_count=0,.flags.queue_nonblocking=true,.flags.eot_level=0};
+    e=rmt_transmit(s_tx_chan,s_tx_enc,syms,pairs*sizeof(*syms),&cfg);
+    if (e!=ESP_OK) {free(syms);return IR_HAT_ERR_HW;}
+    s_tx_payload=syms;
+    // API timeout is milliseconds, NOT ticks. All waits occur on independent owner.
+    e=rmt_tx_wait_all_done(s_tx_chan,2100);
+    if (e!=ESP_OK) return IR_HAT_ERR_HW; // payload/channel retained for checked retry
+    free(s_tx_payload);s_tx_payload=NULL;
+    carrier=(rmt_carrier_config_t){.frequency_hz=IR_CARRIER_HZ,.duty_cycle=IR_CARRIER_DUTY};
+    if (rmt_apply_carrier(s_tx_chan,&carrier)!=ESP_OK) return IR_HAT_ERR_HW;
+    return hat_tx_valid(ticket)?IR_HAT_OK:IR_HAT_ERR_BUSY;
+}
+
 ir_hat_err_t ir_hat_replay(const ir_signal_t *sig)
 {
-    if (!s_init) return IR_HAT_ERR_NOT_INIT;
-    if (!sig || sig->count == 0) return IR_HAT_ERR_HW;
-
-    uint32_t n_pairs = (sig->count + 1) / 2;
-    if (n_pairs > IR_HAT_MAX_TIMINGS / 2) n_pairs = IR_HAT_MAX_TIMINGS / 2;
-
-    rmt_symbol_word_t *syms = malloc(n_pairs * sizeof(rmt_symbol_word_t));
-    if (!syms) return IR_HAT_ERR_HW;
-
-    // Apply per-signal carrier frequency if it differs from the init default
-    if (sig->freq_hz && sig->freq_hz != IR_CARRIER_HZ) {
-        rmt_carrier_config_t carrier = {
-            .frequency_hz = sig->freq_hz,
-            .duty_cycle   = sig->duty_cycle > 0.0f ? sig->duty_cycle : IR_CARRIER_DUTY,
-        };
-        rmt_apply_carrier(s_tx_chan, &carrier);
-    }
-
-    for (uint32_t i = 0; i < n_pairs; i++) {
-        uint32_t hi = sig->times_us[i * 2];
-        uint32_t lo = (i * 2 + 1 < sig->count) ? sig->times_us[i * 2 + 1] : 0;
-        syms[i].duration0 = hi;
-        syms[i].level0    = 1;
-        syms[i].duration1 = lo;
-        syms[i].level1    = 0;
-    }
-
-    rmt_transmit_config_t tx_cfg = { .loop_count = 0 };
-    esp_err_t ret = rmt_transmit(s_tx_chan, s_tx_enc, syms,
-                                  n_pairs * sizeof(rmt_symbol_word_t), &tx_cfg);
-    if (ret == ESP_OK) rmt_tx_wait_all_done(s_tx_chan, pdMS_TO_TICKS(2000));
-    free(syms);
-
-    // Restore default carrier
-    if (sig->freq_hz && sig->freq_hz != IR_CARRIER_HZ) {
-        rmt_carrier_config_t carrier = { .frequency_hz = IR_CARRIER_HZ,
-                                         .duty_cycle   = IR_CARRIER_DUTY };
-        rmt_apply_carrier(s_tx_chan, &carrier);
-    }
-
-    return (ret == ESP_OK) ? IR_HAT_OK : IR_HAT_ERR_HW;
+    hat_tx_ticket_t ticket;
+    if (!hat_tx_begin(HAT_TX_IR,&ticket)) return IR_HAT_ERR_BUSY;
+    if (!hat_tx_enter(ticket)) {hat_tx_finish(ticket,true);return IR_HAT_ERR_BUSY;}
+    ir_hat_err_t result=ir_hat_replay_owned(sig,ticket);
+    hat_tx_leave(ticket);hat_tx_finish(ticket,s_tx_payload==NULL);
+    return result;
 }
 
 // ── Public API — Storage (Flipper-compatible) ─────────────────────────────────
@@ -757,9 +782,9 @@ static const tvbg_code_t TVBG_CODES[] = {
 
 static volatile bool s_tvbg_stop = false;
 
-void ir_hat_tvbgone_stop(void) { s_tvbg_stop = true; }
+void ir_hat_tvbgone_stop(void) { s_tvbg_stop = true; hat_tx_cancel(HAT_TX_IR); }
 
-esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx)
+esp_err_t ir_hat_tvbgone_owned(ir_hat_progress_cb_t progress_cb, void *ctx, hat_tx_ticket_t ticket)
 {
     // Decoded task data, never RMT staging and never placed on the task stack.
 #if CONFIG_BOARD_HAS_PSRAM
@@ -774,9 +799,10 @@ esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx)
         return ESP_ERR_NO_MEM;
     }
 #endif
-    s_tvbg_stop = false;
+    s_tvbg_stop=false;
+    esp_err_t result=ESP_OK;
     for (int i = 0; i < (int)TVBG_COUNT; i++) {
-        if (s_tvbg_stop) break;
+        if (s_tvbg_stop || !hat_tx_valid(ticket)) {result=ESP_ERR_INVALID_STATE;break;}
         const tvbg_code_t *c = &TVBG_CODES[i];
         memset(work, 0, sizeof(*work));
         snprintf(work->name, IR_HAT_NAME_LEN, "tvbg_%d", i);
@@ -785,17 +811,29 @@ esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t progress_cb, void *ctx)
         work->count      = c->count;
         memcpy(work->times_us, c->t, c->count * sizeof(uint32_t));
         for (int r = 0; r < TVBG_REPEATS; r++) {
-            ir_hat_replay(work);
+            if (s_tvbg_stop || ir_hat_replay_owned(work,ticket)!=IR_HAT_OK) {result=ESP_FAIL;break;}
             if (r < TVBG_REPEATS - 1)
                 vTaskDelay(pdMS_TO_TICKS(TVBG_REPEAT_GAP_MS));
         }
+        if (result!=ESP_OK) break;
         if (progress_cb) progress_cb(i, (int)TVBG_COUNT, ctx);
         vTaskDelay(pdMS_TO_TICKS(TVBG_CODE_GAP_MS));
     }
 #if !CONFIG_BOARD_HAS_PSRAM
     heap_caps_free(work);
 #endif
-    return ESP_OK;
+    return result;
+}
+
+esp_err_t ir_hat_tvbgone(ir_hat_progress_cb_t cb,void *ctx)
+{
+    hat_tx_ticket_t ticket;
+    if (!hat_tx_begin(HAT_TX_IR,&ticket)) return ESP_ERR_INVALID_STATE;
+    s_tvbg_stop=false;
+    if (!hat_tx_enter(ticket)) {hat_tx_finish(ticket,true);return ESP_ERR_INVALID_STATE;}
+    esp_err_t e=ir_hat_tvbgone_owned(cb,ctx,ticket);
+    hat_tx_leave(ticket);hat_tx_finish(ticket,s_tx_payload==NULL);
+    return e;
 }
 
 // ── Jammer ───────────────────────────────────────────────────────────────────
@@ -808,6 +846,8 @@ ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz)
     // Includes retained resources from a previous failed init/jammer entry.
     if (!ir_hat_release()) return IR_HAT_ERR_HW;
 
+    if (!hat_tx_begin(HAT_TX_IR,&s_jam_ticket)) return IR_HAT_ERR_BUSY;
+    if (!hat_tx_enter(s_jam_ticket)) {hat_tx_finish(s_jam_ticket,true);return IR_HAT_ERR_BUSY;}
     ledc_timer_config_t t = {
         .speed_mode      = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_8_BIT,
@@ -815,7 +855,7 @@ ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz)
         .freq_hz         = freq_hz,
         .clk_cfg         = LEDC_AUTO_CLK,
     };
-    if (ledc_timer_config(&t) != ESP_OK) return IR_HAT_ERR_HW;
+    if (ledc_timer_config(&t) != ESP_OK) {hat_tx_leave(s_jam_ticket);hat_tx_finish(s_jam_ticket,true);return IR_HAT_ERR_HW;}
 
     ledc_channel_config_t ch = {
         .gpio_num   = RF_HAT_IR_TX_GPIO,
@@ -828,22 +868,23 @@ ir_hat_err_t ir_hat_jam_start(uint32_t freq_hz)
     };
     // Timer config established the LEDC context. Channel config can fail after
     // enabling output; retain ownership until a checked stop succeeds.
+    if (!hat_tx_valid(s_jam_ticket)) {hat_tx_leave(s_jam_ticket);hat_tx_finish(s_jam_ticket,true);return IR_HAT_ERR_BUSY;}
     s_jamming = true;
     if (ledc_channel_config(&ch) != ESP_OK) {
-        (void)ir_hat_release();
+        bool stopped=ir_hat_tx_stop_checked()==ESP_OK;
+        hat_tx_leave(s_jam_ticket);hat_tx_finish(s_jam_ticket,stopped);
         return IR_HAT_ERR_HW;
     }
     s_jam_configured = true;
+    hat_tx_leave(s_jam_ticket);
     ESP_LOGI(TAG, "IR jam start @ %lu Hz", (unsigned long)freq_hz);
     return IR_HAT_OK;
 }
 
 void ir_hat_jam_stop(void)
 {
-    if (!s_jamming) return;
-    if (!ir_hat_release()) return;
-    (void)ir_hat_init();
-    ESP_LOGI(TAG, "IR jam stop");
+    // Compatibility request only. Independent HAT control owner performs stop.
+    hat_tx_cancel(HAT_TX_IR);
 }
 
 bool ir_hat_is_jamming(void) { return s_jamming; }

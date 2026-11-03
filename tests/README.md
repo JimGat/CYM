@@ -2,8 +2,9 @@
 
 These maintained tests are intended for co-developer @birolt29 and other reviewers
 to reproduce, challenge, and improve **before future Stable promotion**. They do
-not retrospectively demote any board or certify hardware. Historical packages
-remain v3.0.42; this integration changes no firmware, version, manifest or binary.
+not retrospectively demote any board or certify hardware. The original test-only consolidation retained historical v3.0.42 packages.
+The Package G ownership candidate is a separate v3.0.43 firmware cycle; see
+[its operator and acceptance record](../docs/testing/package-g-ownership.md).
 
 See [contribution/review instructions](../CONTRIBUTING.md), the
 [complete module/runner inventory](inventory.md), the machine-readable
@@ -121,7 +122,8 @@ EALREADY. Firmware error policy/retry behavior is not changed by these tests.
 production layout/pagination/callbacks plus installed LVGL, 3 base panel sizes,
 4 rotations, Classic/Modern routes, real font bounds, first/last reachability,
 scroll-release behavior, wallpaper coverage, pagination refresh/selection, and
-ATK callback routing. It reports 1673 checks on the reference inputs. SDK/radio/
+ATK callback routing. The combined candidate reports 1961 checks on the reference inputs, including
+HAT topbar state text/click/deletion bounds. SDK/radio/
 unrelated endpoints are stubbed. The native gate also compiles/runs an in-memory
 fixed 280x250 Clock-card mutation and requires semantic bounds failures (not a
 compile error) before reporting the mutation killed. Host allocation/timing printouts are diagnostic,
@@ -148,3 +150,43 @@ No fictitious port is configured. Remote Pi/Bit-Pirate access remains separate
 owner planning, not part of this integration. Inhibited TX lifecycle behavior
 cannot prove actual RF emission or silence; each promoted board needs scoped real
 hardware evidence and owner approval under the qualification policy.
+
+## Package G PN532 ownership regression
+
+Co-developer @birolt29 supplied the bounded handle-retention patch and original
+native harness. The maintained harness extends it to distinguish ready from
+cleanup-pending ownership and rejects the original patch's partial-deinit false
+ready state. Integration corrections, manager/shared-pin callers and installed
+SDK scaffolding are separately attributed in the operator record.
+
+- `pn532_ownership` (portable): verbatim lifecycle/public guard extraction,
+  failed new bus/add/remove/delete combinations, cached-ready control,
+  re-init during both device+bus and bus-only retained ownership, repeated
+  refusal/recovery, no command/field-off I/O after cleanup starts, unsupported
+  WS-S3-5B before GPIO reset; ASan/UBSan. Four semantic mutations must fail on
+  assertions (not compilation or sanitizer startup). Six scenario groups are
+  not six exhaustive hardware tests; assertion count is not reported.
+- `pn532_manager` (portable): production teardown extraction, active poll and
+  emulation, repeated release errors, failed-init ownership, eventual retry,
+  card-buffer retention and repeated cleanup. RTOS/driver boundaries mocked.
+- `pn532_claims` (portable): six actual production claim/raw-GPIO entry functions,
+  retained-ownership refusal and recovered normal entry; all GPIO/radio endpoints
+  mocked, not a physical test or real LVGL gesture test.
+- `pn532_idf_contract` (sdk-native, `IDF_PATH`, `cc`): installed I2C
+  remove/delete/destroy bodies extracted verbatim, busy-state/nonempty-list/pin
+  deinit errors and eventual success. Hardware, RTOS and allocator boundaries
+  are scaffolded. Creation/add-device semantics are source-audited, not executed
+  from the installed SDK by this test. Record actual source hashes in provenance.
+
+```sh
+export IDF_PATH="$HOME/esp/esp-idf"
+python3 -B tests/run_regression.py --suite portable --suite sdk-native   --only pn532_ownership --only pn532_manager --only pn532_claims   --only pn532_idf_contract --output /path/to/new/task-owned-output
+```
+
+Output isolation requires `CYM_TEST_OUT` for direct standalone commands; use the
+manifest runner to set this and `TMPDIR` safely. No physical card detection,
+I2C fault reproduction, RF silence or stop-latency qualification is implied.
+
+## Package C HAT TX regression
+
+`hat_tx`, `hat_emitters`, and `hat_runtime` are maintained portable production-extracted ASAN/UBSAN gates. They cover synchronized admission/cancellation and stale tickets, the real four-emitter SDK/GPIO request boundaries, raw diagnostic and timer ownership, checked stop errors and retained resources/retry, copied-signal/mailbox lifetime, stale UI epochs and aggregate state/no restart. Seven semantic mutants require assertion failures, not compiler failures. `display_layout` additionally uses installed LVGL and exact production topbar geometry for both layouts/all rotations. See [operator and physical limits](../docs/testing/package-c-hat-tx.md); no physical RF/optical or timing qualification is implied.

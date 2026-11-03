@@ -1,4 +1,5 @@
 #include "rf433_hat.h"
+#include "hat_tx.h"
 #include "rf_hat_config.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -31,15 +32,18 @@ static bool              s_jamming      = false;
 static esp_timer_handle_t s_jam_tmr = NULL;
 static volatile bool      s_jam_gpio_state = false;
 
+static hat_tx_ticket_t s_jam_ticket;
 static portMUX_TYPE s_jam_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void s_jam_timer_cb(void *arg)
 {
     (void)arg;
     portENTER_CRITICAL(&s_jam_mux);
-    if (s_jamming) {
+    if (s_jamming && hat_tx_enter(s_jam_ticket)) {
         s_jam_gpio_state = !s_jam_gpio_state;
-        gpio_set_level(RF_HAT_RF433_TX_GPIO, s_jam_gpio_state ? 1 : 0);
+        esp_err_t e=gpio_set_level(RF_HAT_RF433_TX_GPIO,s_jam_gpio_state?1:0);
+        hat_tx_leave(s_jam_ticket);
+        if(e!=ESP_OK){s_jamming=false;hat_tx_cancel(HAT_TX_RF433);hat_tx_finish(s_jam_ticket,false);}
     }
     portEXIT_CRITICAL(&s_jam_mux);
 }
@@ -265,6 +269,7 @@ fail:
 
 void rf433_hat_deinit(void)
 {
+    if (hat_tx_owned(HAT_TX_RF433)) return;
     if (!rf433_hat_quiesce()) return;
     rf433_hat_jam_stop();
     s_capturing = false;
@@ -317,23 +322,44 @@ void rf433_hat_capture_cancel(void)
 
 // ── Public API — Replay ───────────────────────────────────────────────────────
 
-rf433_hat_err_t rf433_hat_replay(const rf433_signal_t *sig, uint8_t repeat)
+rf433_hat_err_t rf433_hat_replay_owned(const rf433_signal_t *sig, uint8_t repeat, hat_tx_ticket_t ticket)
 {
-    if (!s_init)  return RF433_HAT_ERR_NOT_INIT;
-    if (!sig || sig->count == 0) return RF433_HAT_ERR_HW;
-    if (repeat == 0) repeat = 1;
-
-    for (uint8_t r = 0; r < repeat; r++) {
-        for (uint32_t i = 0; i < sig->count; i++) {
-            int level = (i % 2 == 0) ? 1 : 0;
-            gpio_set_level(RF_HAT_RF433_TX_GPIO, level);
-            int64_t end = esp_timer_get_time() + sig->pulses_us[i];
-            while (esp_timer_get_time() < end) {}
-        }
-        gpio_set_level(RF_HAT_RF433_TX_GPIO, 0);
-        if (r < repeat - 1) vTaskDelay(pdMS_TO_TICKS(10));
+    if (!s_init) return RF433_HAT_ERR_NOT_INIT;
+    if (!sig || !sig->count || sig->count > RF433_HAT_MAX_PULSES) return RF433_HAT_ERR_HW;
+    // Successful pulses unchanged. Cancel at next edge, not an admitted frame drain.
+    uint64_t total=0;
+    for (uint32_t i=0;i<sig->count;i++) {
+        if (!sig->pulses_us[i] || sig->pulses_us[i]>30000) return RF433_HAT_ERR_HW;
+        total+=sig->pulses_us[i];
     }
-    return RF433_HAT_OK;
+    if (total>2000000 || repeat>20) return RF433_HAT_ERR_HW;
+    if (!repeat) repeat=1;
+    if (!hat_tx_valid(ticket)) return RF433_HAT_ERR_BUSY;
+    rf433_hat_err_t result=RF433_HAT_OK;
+    for (uint8_t r=0;r<repeat && result==RF433_HAT_OK;r++) {
+        for (uint32_t i=0;i<sig->count;i++) {
+            if (!hat_tx_valid(ticket)) { result=RF433_HAT_ERR_BUSY; break; }
+            if (gpio_set_level(RF_HAT_RF433_TX_GPIO,(i%2)==0)!=ESP_OK) { result=RF433_HAT_ERR_HW; break; }
+            int64_t end=esp_timer_get_time()+sig->pulses_us[i];
+            while (esp_timer_get_time()<end) {}
+        }
+        if (gpio_set_level(RF_HAT_RF433_TX_GPIO,0)!=ESP_OK) result=RF433_HAT_ERR_HW;
+        if (r<repeat-1 && result==RF433_HAT_OK) vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    bool stopped=gpio_set_level(RF_HAT_RF433_TX_GPIO,0)==ESP_OK;
+    if (!stopped) hat_tx_cancel(HAT_TX_RF433);
+    return stopped?result:RF433_HAT_ERR_HW;
+}
+
+rf433_hat_err_t rf433_hat_replay(const rf433_signal_t *sig,uint8_t repeat)
+{
+    hat_tx_ticket_t t;
+    if (!hat_tx_begin(HAT_TX_RF433,&t)) return RF433_HAT_ERR_BUSY;
+    if (!hat_tx_enter(t)) {hat_tx_finish(t,true);return RF433_HAT_ERR_BUSY;}
+    rf433_hat_err_t e=rf433_hat_replay_owned(sig,repeat,t);
+    bool stopped=gpio_set_level(RF_HAT_RF433_TX_GPIO,0)==ESP_OK;
+    hat_tx_leave(t);hat_tx_finish(t,stopped);
+    return stopped?e:RF433_HAT_ERR_HW;
 }
 
 // ── Public API — Storage (Flipper-compatible) ─────────────────────────────────
@@ -517,36 +543,37 @@ rf433_hat_err_t rf433_hat_delete_signal(const char *remote_name, int index)
 
 // ── Public API — Jammer ───────────────────────────────────────────────────────
 
-void rf433_hat_jam_start(void)
+rf433_hat_err_t rf433_hat_jam_start(void)
 {
-    if (s_jamming) return;
-    if (!rf433_hat_quiesce()) return;
+    // Request capture cancellation without joining its worker on the UI task.
+    __atomic_store_n(&s_cap_cancel,true,__ATOMIC_RELEASE);
+    if (__atomic_load_n(&s_cap_task,__ATOMIC_ACQUIRE)) return RF433_HAT_ERR_BUSY;
+    if (s_jamming || !hat_tx_begin(HAT_TX_RF433,&s_jam_ticket)) return RF433_HAT_ERR_BUSY;
+    if (!hat_tx_enter(s_jam_ticket)) {hat_tx_finish(s_jam_ticket,true);return RF433_HAT_ERR_BUSY;}
     s_setup_tx();
-
+    esp_err_t e=ESP_OK;
     if (!s_jam_tmr) {
-        esp_timer_create_args_t a = { .callback = s_jam_timer_cb, .name = "rf433_jam" };
-        esp_timer_create(&a, &s_jam_tmr);
+        esp_timer_create_args_t a={.callback=s_jam_timer_cb,.name="rf433_jam"};
+        e=esp_timer_create(&a,&s_jam_tmr);
     }
-    // 500 µs half-period = 1 kHz toggle = 2 kHz OOK sidebands around 433.92 MHz
-    s_jam_gpio_state = true;
-    gpio_set_level(RF_HAT_RF433_TX_GPIO, 1);
-    esp_timer_start_periodic(s_jam_tmr, 500);
-    s_jamming = true;
-    ESP_LOGI(TAG, "RF433 jam start (modulated, 1 kHz toggle)");
+    if (e==ESP_OK && hat_tx_valid(s_jam_ticket)) {
+        portENTER_CRITICAL(&s_jam_mux);s_jamming=true;s_jam_gpio_state=true;portEXIT_CRITICAL(&s_jam_mux);
+        e=gpio_set_level(RF_HAT_RF433_TX_GPIO,1);
+        if (e==ESP_OK)e=esp_timer_start_periodic(s_jam_tmr,500);
+    } else if(e==ESP_OK)e=ESP_ERR_INVALID_STATE;
+    hat_tx_leave(s_jam_ticket);
+    if(e!=ESP_OK){hat_tx_cancel(HAT_TX_RF433);return RF433_HAT_ERR_HW;}
+    return RF433_HAT_OK;
 }
 
-void rf433_hat_jam_stop(void)
+esp_err_t rf433_hat_tx_stop_checked(void)
 {
-    // Join any callback already touching the pad; a delayed timer callback sees
-    // false under this same mux and cannot drive a later receiver session.
-    portENTER_CRITICAL(&s_jam_mux);
-    bool was_jamming = s_jamming;
-    s_jamming = false;
-    portEXIT_CRITICAL(&s_jam_mux);
-    if (!was_jamming) return;
-    if (s_jam_tmr) esp_timer_stop(s_jam_tmr);
-    gpio_set_level(RF_HAT_RF433_TX_GPIO, 0);
-    ESP_LOGI(TAG, "RF433 jam stop");
+    // No self join. Caller is independent control owner; mux excludes GPIO callbacks.
+    portENTER_CRITICAL(&s_jam_mux);s_jamming=false;portEXIT_CRITICAL(&s_jam_mux);
+    if(s_jam_tmr && esp_timer_is_active(s_jam_tmr)) {
+        esp_err_t e=esp_timer_stop(s_jam_tmr);if(e!=ESP_OK)return e;
+    }
+    return gpio_set_level(RF_HAT_RF433_TX_GPIO,0);
 }
-
-bool rf433_hat_is_jamming(void) { return s_jamming; }
+void rf433_hat_jam_stop(void) { hat_tx_cancel(HAT_TX_RF433); }
+bool rf433_hat_is_jamming(void) {return s_jamming;}

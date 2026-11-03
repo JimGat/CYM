@@ -17,7 +17,7 @@ class RFHatOwnership(unittest.TestCase):
    c=subprocess.run(['cc','-std=c11','-O1','-Wall','-Wextra','-Werror=implicit-function-declaration','-fsanitize=undefined','-fno-sanitize-recover=all',str(p),'-o',str(exe)],capture_output=True,text=True)
    self.assertEqual(c.returncode,0,c.stdout+c.stderr)
    c=subprocess.run([str(exe)],capture_output=True,text=True,timeout=10);self.assertEqual(c.returncode,0,c.stdout+c.stderr)
- def test_quiesce_all_five_owners_and_timeout(self):
+ def test_nonblocking_cancel_all_five_owners_and_poll(self):
   pre='''#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -35,7 +35,7 @@ static void vTaskDelay(TickType_t n){assert(n>0);now+=n;delays++;if(release_at&&
   post='''static void reset(void){a=(ctx_t){.active=true};b=a;c=a;s_n24_jam_active=s_blaster_nrf_active=true;s_n24_jam_task=s_blaster_nrf_task=NULL;now=delays=release_at=0;}
 static void cancelled(void){assert(!a.active&&a.cancel&&!b.active&&b.cancel&&!c.active&&c.cancel);assert(!s_n24_jam_active&&!s_blaster_nrf_active);}
 int main(void){reset();assert(nrf24_hat_quiesce());assert(delays==0);cancelled();TaskHandle_t *owners[]={&a.task,&b.task,&c.task,&s_n24_jam_task,&s_blaster_nrf_task};
-for(unsigned i=0;i<5;i++){reset();owner=owners[i];*owner=(void*)1;release_at=3;assert(nrf24_hat_quiesce());assert(delays==3);cancelled();reset();owner=owners[i];*owner=(void*)1;assert(!nrf24_hat_quiesce());assert(*owner==(void*)1);assert(now>=pdMS_TO_TICKS(1500));assert(now<=pdMS_TO_TICKS(1510));cancelled();*owner=NULL;assert(nrf24_hat_quiesce());}reset();s_ncs=s_nsniff=s_nfut=NULL;assert(nrf24_hat_quiesce());return 0;}
+for(unsigned i=0;i<5;i++){reset();owner=owners[i];*owner=(void*)1;release_at=3;assert(!nrf24_hat_quiesce());assert(delays==0&&*owner);cancelled();*owner=NULL;assert(nrf24_hat_quiesce());reset();owner=owners[i];*owner=(void*)1;assert(!nrf24_hat_quiesce());assert(*owner==(void*)1);assert(now==0&&delays==0);cancelled();*owner=NULL;assert(nrf24_hat_quiesce());}reset();s_ncs=s_nsniff=s_nfut=NULL;assert(nrf24_hat_quiesce());return 0;}
 '''
   self.native(pre+function(self.main,'nrf24_hat_quiesce')+post)
  def test_claims_gate_before_teardown(self):

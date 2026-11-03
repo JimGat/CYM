@@ -21,6 +21,10 @@
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 rfid_err_t pn532_driver_init(void);
+// Lifecycle calls require the manager/UI owner to have quiesced all users.
+// false retains handles for retry; is_init (ready) is independent of ownership.
+bool       pn532_driver_release(void);
+bool       pn532_driver_is_owned(void);
 void       pn532_driver_deinit(void);
 bool       pn532_driver_is_init(void);
 

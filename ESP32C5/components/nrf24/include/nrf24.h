@@ -139,3 +139,8 @@ typedef struct {
 esp_err_t nrf24_capture_save(const nrf24_capture_t *cap, const char *path);
 esp_err_t nrf24_capture_load(const char *path, nrf24_capture_t *out);
 void      nrf24_capture_free(nrf24_capture_t *cap);
+
+esp_err_t nrf24_tx_stop_checked(void);
+
+#include "hat_tx.h"
+void nrf24_jam_sweep_owned(volatile bool *active,nrf24_jam_mode_t mode,hat_tx_ticket_t ticket);

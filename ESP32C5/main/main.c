@@ -253,6 +253,7 @@ static uint8_t s_game_prior_orientation;
 #include "cc1101.h"
 #include "cc1101_regs.h"
 #include "nrf24.h"
+#include "hat_tx_runtime.inc"
 #if CONFIG_IEEE802154_ENABLED
 #include "esp_ieee802154.h"
 #endif
@@ -408,6 +409,7 @@ static lv_obj_t       *s_blaster_layers_lbl = NULL;
 static lv_obj_t       *s_blaster_count_lbl  = NULL;
 static lv_timer_t     *s_blaster_tmr        = NULL;
 static TaskHandle_t    s_blaster_nrf_task   = NULL;
+static hat_tx_ticket_t s_blaster_ticket,s_n24_ticket,s_cc1101_rep_ticket,s_tvbg_ticket,s_lbk_ticket;
 static bool nrf24_hat_ready(void);
 static volatile int    s_blaster_pkt_count  = 0;
 
@@ -3487,7 +3489,8 @@ static void screenshot_save_task(void *arg);
 // g_screen_stop_fn; run_screen_stop_fn() clears-then-calls so it runs exactly once.
 static void (*g_screen_stop_fn)(void) = NULL;
 static void run_screen_stop_fn(void) {
-    cym_fsd_input_epoch(); // invalidate only pending synthetic samples; no tree scan
+    cym_fsd_input_epoch();
+    hat_ui_depart(); // nonblocking cancellation, stale UI completion invalidation // invalidate only pending synthetic samples; no tree scan
     void (*fn)(void) = g_screen_stop_fn;
     g_screen_stop_fn = NULL;
     if (fn) fn();
@@ -17890,7 +17893,11 @@ static void create_function_page_base(const char *name)
     lv_label_set_long_mode(page_title_label, LV_LABEL_LONG_DOT);
 
     lv_obj_add_flag(page_title_label, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(page_title_label, screenshot_btn_event_cb, LV_EVENT_CLICKED, NULL);
+    s_hat_page_title=page_title_label;
+    bool hat_page=name && (strstr(name,"CC1101") || strstr(name,"nRF24") || strstr(name,"RF433") ||
+        strstr(name,"Infrared") || strstr(name,"IR ") || strstr(name,"LED Remote") || strstr(name,"NM-RF-HAT") || strstr(name,"RF-HAT Defense") || strstr(name,"LED Strip") || strstr(name,"Universal") || strstr(name,"TV-B-Gone") || strstr(name,"Radio"));
+    if(hat_page)hat_control_attach(page_title_label);
+    else lv_obj_add_event_cb(page_title_label,screenshot_btn_event_cb,LV_EVENT_CLICKED,NULL);
 
     battery_label = lv_label_create(page_title_bar);
     lv_obj_add_event_cb(battery_label, battery_label_delete_cb, LV_EVENT_DELETE, NULL);
@@ -41100,7 +41107,8 @@ static void s_blaster_nrf_task_fn(void *arg)
     // BLE_ADV mode: 9 channels focused on the 3 BLE advertising frequencies
     // (±1 MHz guard around nRF24 ch2/ch26/ch80 = BLE adv ch37/38/39).
     // Matches exactly what the ESP32 BLE flood is targeting above.
-    nrf24_jam_sweep(&s_blaster_nrf_active, NRF24_JAM_BLE_ADV);
+    nrf24_jam_sweep_owned(&s_blaster_nrf_active,NRF24_JAM_BLE_ADV,s_blaster_ticket);
+    bool checked_stop=nrf24_tx_stop_checked()==ESP_OK;hat_tx_leave(s_blaster_ticket);hat_tx_finish(s_blaster_ticket,checked_stop);
     __atomic_store_n(&s_blaster_nrf_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
@@ -41173,9 +41181,10 @@ static void s_blaster_start_cb(lv_event_t *e)
     for (int i = 0; i < BLE_BLASTER_NUM_INST; i++)
         s_blaster_arm_inst(i);
     bool has_nrf = nrf24_is_init();
-    if (has_nrf && !s_blaster_nrf_task) {
+    if (has_nrf && !s_blaster_nrf_task && hat_runtime_ready() && hat_tx_begin(HAT_TX_NRF24,&s_blaster_ticket)) {
+        if(!hat_tx_enter(s_blaster_ticket)){hat_tx_finish(s_blaster_ticket,true);return;}
         s_blaster_nrf_active = true;
-        xTaskCreate(s_blaster_nrf_task_fn, "blstr_nrf", 3072, NULL, 2, &s_blaster_nrf_task);
+        if(xTaskCreate(s_blaster_nrf_task_fn,"blstr_nrf",3072,NULL,2,&s_blaster_nrf_task)!=pdPASS){s_blaster_nrf_active=false;hat_tx_leave(s_blaster_ticket);hat_tx_finish(s_blaster_ticket,true);}
     }
     if (s_blaster_layers_lbl)
         lv_label_set_text(s_blaster_layers_lbl,
@@ -53870,22 +53879,19 @@ static bool nrf24_hat_quiesce(void)
     if (s_nfut)   { s_nfut->active = false;   s_nfut->cancel = true; }
     s_n24_jam_active = false;
     s_blaster_nrf_active = false;
-    const TickType_t start = xTaskGetTickCount();
-    const TickType_t interval = pdMS_TO_TICKS(10) ? pdMS_TO_TICKS(10) : 1;
-    while ((s_ncs && __atomic_load_n(&s_ncs->task, __ATOMIC_ACQUIRE)) ||
-           (s_nsniff && __atomic_load_n(&s_nsniff->task, __ATOMIC_ACQUIRE)) ||
-           (s_nfut && __atomic_load_n(&s_nfut->task, __ATOMIC_ACQUIRE)) ||
-           __atomic_load_n(&s_n24_jam_task, __ATOMIC_ACQUIRE) ||
-           __atomic_load_n(&s_blaster_nrf_task, __ATOMIC_ACQUIRE)) {
-        if ((TickType_t)(xTaskGetTickCount() - start) >= pdMS_TO_TICKS(1500))
-            return false;  // no deinit, free, re-probe or competing GPIO takeover
-        vTaskDelay(interval);
-    }
-    return true;
+    return !((s_ncs && __atomic_load_n(&s_ncs->task,__ATOMIC_ACQUIRE)) ||
+        (s_nsniff && __atomic_load_n(&s_nsniff->task,__ATOMIC_ACQUIRE)) ||
+        (s_nfut && __atomic_load_n(&s_nfut->task,__ATOMIC_ACQUIRE)) ||
+        __atomic_load_n(&s_n24_jam_task,__ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_blaster_nrf_task,__ATOMIC_ACQUIRE));
 }
 
 static bool nrf24_hat_ready(void)
 {
+    if (!hat_runtime_ready()) return false;
+    bool owned=false;
+    for(int id=0;id<HAT_TX_COUNT;id++)owned|=hat_tx_owned((hat_tx_id_t)id);
+    if(owned){hat_cancel_all();return false;}
     if (nrf24_hat_quiesce()) return true;
     ESP_LOGW("RFHAT", "nRF24 worker still stopping; shared pins retained");
     static const char *buttons[] = { "" };
@@ -53898,27 +53904,35 @@ static bool nrf24_hat_ready(void)
 
 static bool ir_hat_claim(void)
 {
+    for(int id=0;id<HAT_TX_COUNT;id++) if(hat_tx_owned((hat_tx_id_t)id)){hat_cancel_all();return false;}
+    if (!rfid_manager_release()) {
+        ESP_LOGW("RFHAT", "PN532 cleanup pending; shared pins retained");
+        return false;
+    }
     if (!nrf24_hat_ready()) return false;
     if (cc1101_is_init())        cc1101_deinit();
-    if (rfid_manager_is_init()) rfid_manager_deinit();
     if (rf433_hat_is_init())    rf433_hat_deinit();
     // Also tear down a stale nRF24: it shares GPIO8/9, and if left initialised (e.g. the user
     // opened an nRF24 screen first) it keeps GPIO9 driven as CSN output -> the IR RX (IR_DR on
     // the same pin) reads the driven pad, not the IRM-3638T receiver, so Capture returns "No
     // signal" even though RX hardware + pins are correct. Same shared-GPIO8/9 root as GH #28.
     if (nrf24_is_init())        nrf24_deinit();
-    if (!ir_hat_is_init())      ir_hat_init();
+    if (!ir_hat_is_init()) return ir_hat_init()==IR_HAT_OK;
     return true;
 }
 
 static bool rf433_hat_claim(void)
 {
+    for(int id=0;id<HAT_TX_COUNT;id++) if(hat_tx_owned((hat_tx_id_t)id)){hat_cancel_all();return false;}
+    if (!rfid_manager_release()) {
+        ESP_LOGW("RFHAT", "PN532 cleanup pending; shared pins retained");
+        return false;
+    }
     if (!nrf24_hat_ready()) return false;
     if (cc1101_is_init())        cc1101_deinit();
-    if (rfid_manager_is_init()) rfid_manager_deinit();
-    if (ir_hat_is_init())       ir_hat_deinit();
+    if (!ir_hat_release()) return false;
     if (nrf24_is_init())        nrf24_deinit();   // shares HAT control pins - see ir_hat_claim (GH #28)
-    if (!rf433_hat_is_init())   rf433_hat_init();
+    if (!rf433_hat_is_init()) return rf433_hat_init()==RF433_HAT_OK;
     return true;
 }
 
@@ -53929,9 +53943,13 @@ static rfid_card_t *s_rfid_kt_card   = NULL;
 
 static bool rfid_hat_claim(void)
 {
+    for(int id=0;id<HAT_TX_COUNT;id++) if(hat_tx_owned((hat_tx_id_t)id)){hat_cancel_all();return false;}
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    return false; // no PN532 route; preserve native touch GPIOs
+#endif
     if (!nrf24_hat_ready()) return false;
     if (cc1101_is_init())    cc1101_deinit();
-    if (ir_hat_is_init())    ir_hat_deinit();
+    if (!ir_hat_release()) return false;
     if (rf433_hat_is_init()) rf433_hat_deinit();
     if (nrf24_is_init())     nrf24_deinit();   // shares HAT control pins - see ir_hat_claim (GH #28)
     if (!s_rfid_last_card)
@@ -53944,9 +53962,13 @@ static bool rfid_hat_claim(void)
 
 static bool cc1101_hat_claim(void)
 {
+    for(int id=0;id<HAT_TX_COUNT;id++) if(hat_tx_owned((hat_tx_id_t)id)){hat_cancel_all();return false;}
+    if (!rfid_manager_release()) {
+        ESP_LOGW("RFHAT", "PN532 cleanup pending; shared pins retained");
+        return false;
+    }
     if (!nrf24_hat_ready()) return false;
-    if (rfid_manager_is_init()) rfid_manager_deinit();
-    if (ir_hat_is_init())       ir_hat_deinit();
+    if (!ir_hat_release()) return false;
     if (rf433_hat_is_init())    rf433_hat_deinit();
     if (nrf24_is_init())        nrf24_deinit();   // shares HAT control pins - see ir_hat_claim (GH #28)
     // cc1101_init() is called lazily from the HW test screen so the UI can
@@ -54110,9 +54132,7 @@ static void s_led_rmt_btn_cb(lv_event_t *e)
     const led_rmt_btn_def_t *def = (const led_rmt_btn_def_t *)lv_event_get_user_data(e);
     if (!def) return;
     s_build_nec(&s_led_nec_sig, LED_RMT_ADDR, def->cmd);
-    ir_hat_replay(&s_led_nec_sig);
-    if (s_led_status_lbl)
-        lv_label_set_text_fmt(s_led_status_lbl, "Sent: %s  (0x%02X)", def->label, def->cmd);
+    (void)hat_submit(HAT_TX_IR,&s_led_nec_sig,sizeof(s_led_nec_sig),s_led_status_lbl,NULL);
 }
 
 /* Rebuild the 7×4 button grid inside s_led_grid_cont for the active library. */
@@ -55305,11 +55325,7 @@ static void ir_do_replay_cb(lv_event_t *e)
     ir_hat_err_t r = ir_hat_load_signal_by_index(s_ir_cur_remote,
                                                   s_ir_sel_signal, &s_ir_replay_sig);
     if (r == IR_HAT_OK) {
-        ir_hat_replay(&s_ir_replay_sig);
-        if (s_ir_sig_status) {
-            lv_label_set_text(s_ir_sig_status, "Sent!");
-            lv_obj_set_style_text_color(s_ir_sig_status, COLOR_MATERIAL_GREEN, 0);
-        }
+        (void)hat_submit(HAT_TX_IR,&s_ir_replay_sig,sizeof(s_ir_replay_sig),s_ir_sig_status,NULL);
     } else {
         if (s_ir_sig_status) {
             lv_label_set_text(s_ir_sig_status, "Load error");
@@ -55321,6 +55337,7 @@ static void ir_do_replay_cb(lv_event_t *e)
 static void show_ir_signal_list_screen(void)
 {
     create_function_page_base(s_ir_cur_remote);
+    hat_control_attach(s_hat_page_title);
     apply_menu_bg();
 
     s_ir_signal_count = ir_hat_list_signals(s_ir_cur_remote,
@@ -55375,11 +55392,12 @@ static lv_obj_t *s_tvbg_start_lbl  = NULL;
 static bool      s_tvbg_running    = false;
 static bool      s_tvbg_user_stop  = false;
 
-typedef struct { int idx; int total; } tvbg_prog_t;
+typedef struct { int idx; int total; uint32_t epoch; } tvbg_prog_t;
 
 static void s_tvbg_prog_lvgl_cb(void *arg)
 {
     tvbg_prog_t *p = (tvbg_prog_t *)arg;
+    if(p->epoch!=s_hat_ui_epoch){free(p);return;}
     if (s_tvbg_bar)    lv_bar_set_value(s_tvbg_bar, p->idx * 100 / p->total, LV_ANIM_ON);
     if (s_tvbg_status) {
         char buf[32];
@@ -55391,6 +55409,7 @@ static void s_tvbg_prog_lvgl_cb(void *arg)
 
 static void s_tvbg_done_lvgl_cb(void *arg)
 {
+    if((uint32_t)(uintptr_t)arg!=s_hat_ui_epoch)return;
     (void)arg;
     s_tvbg_running = false;
     if (s_tvbg_status)    lv_label_set_text(s_tvbg_status, "Done - all codes sent");
@@ -55404,6 +55423,7 @@ static void s_tvbg_done_lvgl_cb(void *arg)
 
 static void s_tvbg_stopped_lvgl_cb(void *arg)
 {
+    if((uint32_t)(uintptr_t)arg!=s_hat_ui_epoch)return;
     (void)arg;
     s_tvbg_running = false;
     if (s_tvbg_status)    lv_label_set_text(s_tvbg_status, "Stopped");
@@ -55418,23 +55438,27 @@ static void s_tvbg_progress(int idx, int total, void *ctx)
 {
     (void)ctx;
     tvbg_prog_t *p = malloc(sizeof(tvbg_prog_t));
-    if (p) { p->idx = idx; p->total = total; lv_async_call(s_tvbg_prog_lvgl_cb, p); }
+    if (p) { p->idx=idx;p->total=total;p->epoch=(uint32_t)(uintptr_t)ctx; if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(200))==pdTRUE){lv_async_call(s_tvbg_prog_lvgl_cb,p);xSemaphoreGive(lvgl_mutex);}else free(p); }
 }
 
 static void s_tvbg_failed_lvgl_cb(void *arg)
 {
+    if((uint32_t)(uintptr_t)arg!=s_hat_ui_epoch)return;
     (void)arg;
-    s_tvbg_stopped_lvgl_cb(NULL);
-    if (s_tvbg_status) lv_label_set_text(s_tvbg_status, "Failed: no memory; retry");
+    s_tvbg_stopped_lvgl_cb(arg);
+    if (s_tvbg_status) lv_label_set_text(s_tvbg_status, "TX failed/cancelled; check HAT TX");
 }
 
 static void s_tvbg_task(void *arg)
 {
     (void)arg;
-    s_tvbg_user_stop = false;
-    esp_err_t rc = ir_hat_tvbgone(s_tvbg_progress, NULL);
-    lv_async_call(rc != ESP_OK ? s_tvbg_failed_lvgl_cb :
-                  s_tvbg_user_stop ? s_tvbg_stopped_lvgl_cb : s_tvbg_done_lvgl_cb, NULL);
+    uint32_t epoch=(uint32_t)(uintptr_t)arg;
+    esp_err_t rc=ir_hat_tvbgone_owned(s_tvbg_progress,(void*)(uintptr_t)epoch,s_tvbg_ticket);
+    bool checked_stop=ir_hat_tx_stop_checked()==ESP_OK;hat_tx_leave(s_tvbg_ticket);hat_tx_finish(s_tvbg_ticket,checked_stop);
+    if(xSemaphoreTake(lvgl_mutex,pdMS_TO_TICKS(200))==pdTRUE){
+        lv_async_call(rc!=ESP_OK?s_tvbg_failed_lvgl_cb:s_tvbg_user_stop?s_tvbg_stopped_lvgl_cb:s_tvbg_done_lvgl_cb,(void*)(uintptr_t)epoch);
+        xSemaphoreGive(lvgl_mutex);
+    }
     vTaskDelete(NULL);
 }
 
@@ -55449,13 +55473,16 @@ static void tvbg_start_cb(lv_event_t *e)
         return;
     }
     if (!ir_hat_claim()) return;
+    if(!hat_tx_begin(HAT_TX_IR,&s_tvbg_ticket))return;
+    if(!hat_tx_enter(s_tvbg_ticket)){hat_tx_finish(s_tvbg_ticket,true);return;}
+    s_tvbg_user_stop=false;
     s_tvbg_running = true;
     if (s_tvbg_status)    lv_label_set_text(s_tvbg_status, "Transmitting...");
     if (s_tvbg_bar)       lv_bar_set_value(s_tvbg_bar, 0, LV_ANIM_OFF);
     if (s_tvbg_start_btn)
         lv_obj_set_style_bg_color(s_tvbg_start_btn, lv_color_hex(0xB71C1C), LV_STATE_DEFAULT);
     if (s_tvbg_start_lbl) lv_label_set_text(s_tvbg_start_lbl, LV_SYMBOL_STOP "  Stop");
-    xTaskCreate(s_tvbg_task, "tvbgone", 6144, NULL, tskIDLE_PRIORITY + 2, NULL);
+    if(xTaskCreate(s_tvbg_task,"tvbgone",6144,(void*)(uintptr_t)s_hat_ui_epoch,tskIDLE_PRIORITY+2,NULL)!=pdPASS){hat_tx_leave(s_tvbg_ticket);hat_tx_finish(s_tvbg_ticket,true);s_tvbg_running=false;if(s_tvbg_status)lv_label_set_text(s_tvbg_status,"Task allocation failed");}
 }
 
 static void show_ir_tvbgone_screen(void)
@@ -55517,8 +55544,8 @@ static void ir_jam_toggle_cb(lv_event_t *e)
 {
     (void)e;
     if (ir_hat_is_jamming()) {
-        ir_hat_jam_stop();
-        if (s_ir_jam_status) lv_label_set_text(s_ir_jam_status, "Jammer OFF");
+        ir_hat_jam_stop();hat_wake();
+        if (s_ir_jam_status) lv_label_set_text(s_ir_jam_status, "Stopping; see HAT TX");
         if (s_ir_jam_status) lv_obj_set_style_text_color(s_ir_jam_status, ui_text_color(), 0);
         if (s_ir_jam_btn) {
             lv_obj_set_style_bg_color(s_ir_jam_btn, lv_color_hex(0xB71C1C), LV_STATE_DEFAULT);
@@ -55527,7 +55554,8 @@ static void ir_jam_toggle_cb(lv_event_t *e)
         }
     } else {
         if (!ir_hat_claim()) return;
-        ir_hat_jam_start(0);
+        if(ir_hat_jam_start(0)!=IR_HAT_OK){if(s_ir_jam_status)lv_label_set_text(s_ir_jam_status,"HAT TX blocked/error");return;}
+        hat_watch(HAT_TX_IR,s_ir_jam_status);
         if (s_ir_jam_status) lv_label_set_text(s_ir_jam_status, "JAMMING - 38kHz active");
         if (s_ir_jam_status) lv_obj_set_style_text_color(s_ir_jam_status, lv_color_hex(0xFF5722), 0);
         if (s_ir_jam_btn) {
@@ -55569,7 +55597,7 @@ static void show_ir_jammer_screen(void)
     bool ir_ls = (screen_orientation == 1 || screen_orientation == 3);
 
     s_ir_jam_status = lv_label_create(function_page);
-    lv_label_set_text(s_ir_jam_status, "Jammer OFF");
+    lv_label_set_text(s_ir_jam_status, "Stopping; see HAT TX");
     lv_obj_set_style_text_font(s_ir_jam_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_ir_jam_status, ui_text_color(), 0);
     lv_obj_set_style_text_align(s_ir_jam_status, LV_TEXT_ALIGN_CENTER, 0);
@@ -55648,12 +55676,15 @@ static ir_hat_err_t ur_try_signal(const char *remote, const char *sig_name)
     PSRAM_ATTR static ir_signal_t s_ur_sig;
     if (!ir_hat_claim()) return IR_HAT_ERR_BUSY;
     ir_hat_err_t r = ir_hat_load_signal(remote, sig_name, &s_ur_sig);
-    if (r == IR_HAT_OK) ir_hat_replay(&s_ur_sig);
+    if (r == IR_HAT_OK) return hat_submit(HAT_TX_IR,&s_ur_sig,sizeof(s_ur_sig),s_ur_status_lbl,NULL)?IR_HAT_PENDING:IR_HAT_ERR_BUSY;
     return r;
 }
 
+static uint32_t s_ur_search_epoch;
 static void ur_search_close(void)
 {
+    s_ur_search_epoch++;
+    s_hat_job_completed=NULL;s_hat_job_status=NULL;hat_tx_cancel(HAT_TX_IR);hat_wake();
     if (s_ur_search_popup && lv_obj_is_valid(s_ur_search_popup))
         lv_obj_del(s_ur_search_popup);
     s_ur_search_popup   = NULL;
@@ -55663,6 +55694,12 @@ static void ur_search_close(void)
     s_ur_search_skip_btn  = NULL;
 }
 
+static void ur_search_tx_done(bool ok)
+{
+    if(s_ur_search_q_lbl)lv_label_set_text(s_ur_search_q_lbl,ok?"Did it work?":"TX failed/cancelled");
+    if(ok && s_ur_search_yes_btn)lv_obj_clear_flag(s_ur_search_yes_btn,LV_OBJ_FLAG_HIDDEN);
+    if(s_ur_search_skip_btn)lv_obj_clear_flag(s_ur_search_skip_btn,LV_OBJ_FLAG_HIDDEN);
+}
 static void ur_search_do_step(void *arg);  // forward
 
 static void ur_search_advance(void)
@@ -55683,25 +55720,26 @@ static void ur_search_advance(void)
         lv_obj_add_flag(s_ur_search_yes_btn, LV_OBJ_FLAG_HIDDEN);
     if (s_ur_search_skip_btn && lv_obj_is_valid(s_ur_search_skip_btn))
         lv_obj_add_flag(s_ur_search_skip_btn, LV_OBJ_FLAG_HIDDEN);
-    lv_async_call(ur_search_do_step, NULL);
+    lv_async_call(ur_search_do_step,(void*)(uintptr_t)s_ur_search_epoch);
 }
 
 static void ur_search_do_step(void *arg)
 {
-    (void)arg;
+    if((uint32_t)(uintptr_t)arg!=s_ur_search_epoch)return;
     if (!s_ur_search_popup || !lv_obj_is_valid(s_ur_search_popup)) return;
     if (s_ur_search_idx >= s_ur_search_count) return;
     const char *brand = s_ur_search_remotes[s_ur_search_idx];
-    ur_try_signal(brand, "Power");
+    ir_hat_err_t tx_result=ur_try_signal(brand,"Power");
+    if(tx_result==IR_HAT_PENDING){s_hat_job_completed=ur_search_tx_done;s_hat_job_status=s_ur_search_q_lbl;}
     if (s_ur_search_info_lbl && lv_obj_is_valid(s_ur_search_info_lbl))
         lv_label_set_text_fmt(s_ur_search_info_lbl, "%d/%d: %s",
             s_ur_search_idx + 1, s_ur_search_count, brand);
     if (s_ur_search_q_lbl && lv_obj_is_valid(s_ur_search_q_lbl))
-        lv_label_set_text(s_ur_search_q_lbl, "Did it work?");
+        lv_label_set_text(s_ur_search_q_lbl,tx_result==IR_HAT_PENDING?"Transmitting...":"TX not started");
     if (s_ur_search_yes_btn && lv_obj_is_valid(s_ur_search_yes_btn))
-        lv_obj_clear_flag(s_ur_search_yes_btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_ur_search_yes_btn, LV_OBJ_FLAG_HIDDEN);
     if (s_ur_search_skip_btn && lv_obj_is_valid(s_ur_search_skip_btn))
-        lv_obj_clear_flag(s_ur_search_skip_btn, LV_OBJ_FLAG_HIDDEN);
+        if(tx_result!=IR_HAT_PENDING)lv_obj_clear_flag(s_ur_search_skip_btn, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void ur_search_yes_cb(lv_event_t *e)
@@ -55827,10 +55865,7 @@ static void ur_func_btn_cb(lv_event_t *e)
     }
     ir_hat_err_t r = ur_try_signal(s_ur_brand, sig_name);
     if (s_ur_status_lbl && lv_obj_is_valid(s_ur_status_lbl)) {
-        if (r == IR_HAT_OK)
-            lv_label_set_text_fmt(s_ur_status_lbl, "Sent: %s", sig_name);
-        else
-            lv_label_set_text_fmt(s_ur_status_lbl, "Not found: %s", sig_name);
+        lv_label_set_text(s_ur_status_lbl,r==IR_HAT_PENDING?"Transmitting...":r==IR_HAT_ERR_NOT_FOUND?"Signal not found":"HAT TX blocked/load error");
     }
 }
 
@@ -55960,11 +55995,22 @@ static lv_obj_t *s_lbk_status_lbl = NULL;
 static lv_obj_t *s_lbk_result_lbl = NULL;
 static lv_obj_t *s_lbk_retry_btn  = NULL;
 
+static TaskHandle_t s_lbk_task;
+static bool s_lbk_isr_owned;
+static esp_err_t hat_rf433_diag_stop_checked(void)
+{
+    if(!s_lbk_isr_owned)return ESP_OK;
+    esp_err_t e=gpio_isr_handler_remove(RF_HAT_RF433_RX_GPIO);
+    if(e==ESP_OK)s_lbk_isr_owned=false;
+    return e;
+}
 static volatile int s_lbk_edges = 0;
 IRAM_ATTR static void s_lbk_edge_isr(void *arg) { s_lbk_edges++; }
 
 static void rf433_lbk_task(void *arg)
 {
+    uint32_t epoch=(uint32_t)(uintptr_t)arg;
+    if(!hat_tx_valid(s_lbk_ticket)){hat_tx_leave(s_lbk_ticket);hat_tx_finish(s_lbk_ticket,true);s_lbk_task=NULL;vTaskDelete(NULL);return;}
     int tx_pin = RF_HAT_RF433_TX_GPIO;  // GPIO8
     int rx_pin = RF_HAT_RF433_RX_GPIO;  // GPIO9
 
@@ -55976,8 +56022,8 @@ static void rf433_lbk_task(void *arg)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_DISABLE,
     };
-    gpio_config(&ocfg);
-    gpio_set_level(tx_pin, 0);
+    esp_err_t setup=gpio_config(&ocfg);
+    if(gpio_set_level(tx_pin,0)!=ESP_OK)setup=ESP_FAIL;
 
     // RX path: configure GPIO9 as input with ISR edge counter
     gpio_config_t icfg = {
@@ -55987,13 +56033,13 @@ static void rf433_lbk_task(void *arg)
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type    = GPIO_INTR_ANYEDGE,
     };
-    gpio_config(&icfg);
+    if(gpio_config(&icfg)!=ESP_OK)setup=ESP_FAIL;
     gpio_install_isr_service(0);  // no-op if already installed; required on first-ever run
     s_lbk_edges = 0;
-    gpio_isr_handler_add(rx_pin, s_lbk_edge_isr, NULL);
+    if(gpio_isr_handler_add(rx_pin,s_lbk_edge_isr,NULL)==ESP_OK)s_lbk_isr_owned=true;else setup=ESP_FAIL;
 
     if (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-        if (lv_obj_is_valid(s_lbk_status_lbl))
+        if (epoch==s_hat_ui_epoch && lv_obj_is_valid(s_lbk_status_lbl))
             lv_label_set_text(s_lbk_status_lbl,
                 "Listening for 433 MHz... (3s)\n"
                 "TX GPIO8 active, RX GPIO9 ISR");
@@ -56001,17 +56047,17 @@ static void rf433_lbk_task(void *arg)
     }
 
     // Phase 1: ambient baseline, TX off (2s)
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(2000));
     int ambient = s_lbk_edges;
     s_lbk_edges = 0;
 
     // Phase 2: TX on — does the T2-433M signal reach the R4A_433? (2s)
-    gpio_set_level(tx_pin, 1);
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    bool emitted=setup==ESP_OK && hat_tx_valid(s_lbk_ticket) && gpio_set_level(tx_pin,1)==ESP_OK;
+    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(2000));
     int tx_edges = s_lbk_edges;
-    gpio_set_level(tx_pin, 0);
+    bool stopped=gpio_set_level(tx_pin,0)==ESP_OK;
 
-    gpio_isr_handler_remove(rx_pin);
+    if(hat_rf433_diag_stop_checked()!=ESP_OK)stopped=false;
 
     int total = ambient + tx_edges;
     // RF loopback confirmed only if TX-on edges significantly exceed ambient
@@ -56022,11 +56068,12 @@ static void rf433_lbk_task(void *arg)
              ambient, tx_edges, loopback ? "YES" : "NO", rx_ok ? "OK" : "SILENT");
 
     // Restore RF433 driver
-    rf433_hat_init();
+    if(stopped && hat_tx_valid(s_lbk_ticket))rf433_hat_init();
 
     // Build result — LVGL recolor syntax
     char result[256];
-    if (loopback) {
+    if(!emitted || !stopped || !hat_tx_valid(s_lbk_ticket)) {snprintf(result,sizeof(result),"TX cancelled/failed; check HAT TX");}
+    else if (loopback) {
         snprintf(result, sizeof(result),
             "#00C853 PASS# - RF loopback confirmed\n"
             "TX=GPIO%d  RX=GPIO%d\n"
@@ -56049,35 +56096,44 @@ static void rf433_lbk_task(void *arg)
     }
 
     if (xSemaphoreTake(lvgl_mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
-        if (lv_obj_is_valid(s_lbk_status_lbl))
-            lv_label_set_text(s_lbk_status_lbl, "Complete.");
-        if (lv_obj_is_valid(s_lbk_result_lbl)) {
+        if (epoch==s_hat_ui_epoch && lv_obj_is_valid(s_lbk_status_lbl))
+            lv_label_set_text(s_lbk_status_lbl,emitted && stopped && hat_tx_valid(s_lbk_ticket)?"Complete":"TX cancelled/failed");
+        if (epoch==s_hat_ui_epoch && lv_obj_is_valid(s_lbk_result_lbl)) {
             lv_label_set_recolor(s_lbk_result_lbl, true);
             lv_label_set_text(s_lbk_result_lbl, result);
         }
-        if (lv_obj_is_valid(s_lbk_retry_btn))
+        if (epoch==s_hat_ui_epoch && lv_obj_is_valid(s_lbk_retry_btn))
             lv_obj_clear_flag(s_lbk_retry_btn, LV_OBJ_FLAG_HIDDEN);
         xSemaphoreGive(lvgl_mutex);
     }
+    hat_tx_leave(s_lbk_ticket);hat_tx_finish(s_lbk_ticket,stopped);
+    __atomic_store_n(&s_lbk_task,NULL,__ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
 
 static void rf433_lbk_run(void)
 {
+    if(s_lbk_task)return;
+    for(int id=0;id<HAT_TX_COUNT;id++)if(hat_tx_owned((hat_tx_id_t)id)){hat_cancel_all();return;}
+    if (!rfid_manager_release()) {
+        ESP_LOGW("RFHAT", "PN532 cleanup pending; shared pins retained");
+        return;
+    }
     if (!nrf24_hat_ready()) return;
     // Claim exclusive GPIO8/9 ownership before raw GPIO loopback.
     // Every peripheral that can mux onto these shared lines must be torn down.
     if (cc1101_is_init())       cc1101_deinit();
     if (nrf24_is_init())        nrf24_deinit();
-    if (rfid_manager_is_init()) rfid_manager_deinit();
-    if (ir_hat_is_jamming() || ir_hat_is_init()) ir_hat_deinit();
-    rf433_hat_capture_cancel();
+    if(!ir_hat_release())return;
+    if(!rf433_hat_quiesce())return;
     if (rf433_hat_is_jamming()) rf433_hat_jam_stop();  // stop esp_timer before taking GPIO8
     rf433_hat_deinit();
     if (lv_obj_is_valid(s_lbk_result_lbl)) lv_label_set_text(s_lbk_result_lbl, "");
     if (lv_obj_is_valid(s_lbk_retry_btn))  lv_obj_add_flag(s_lbk_retry_btn, LV_OBJ_FLAG_HIDDEN);
     if (lv_obj_is_valid(s_lbk_status_lbl)) lv_label_set_text(s_lbk_status_lbl, "Initializing...");
-    xTaskCreate(rf433_lbk_task, "rf433_lbk", 3072, NULL, tskIDLE_PRIORITY + 2, NULL);
+    if(!hat_tx_begin(HAT_TX_RF433,&s_lbk_ticket))return;
+    if(!hat_tx_enter(s_lbk_ticket)){hat_tx_finish(s_lbk_ticket,true);return;}
+    if(xTaskCreate(rf433_lbk_task,"rf433_lbk",3072,(void*)(uintptr_t)s_hat_ui_epoch,tskIDLE_PRIORITY+2,&s_lbk_task)!=pdPASS){hat_tx_leave(s_lbk_ticket);hat_tx_finish(s_lbk_ticket,true);}
 }
 
 static void rf433_lbk_retry_cb(lv_event_t *e) { rf433_lbk_run(); }
@@ -56763,7 +56819,7 @@ static void s_cal_tx_stop(void)
 {
     s_cc1101_cal_tx_active = false;
     if (s_cc1101_cal_tx_tmr) { lv_timer_del(s_cc1101_cal_tx_tmr); s_cc1101_cal_tx_tmr = NULL; }
-    if (cc1101_is_init()) cc1101_idle();
+    hat_tx_cancel(HAT_TX_CC1101);hat_wake();
     if (s_cc1101_ht_cal_btn) {
         lv_obj_t *l = lv_obj_get_child(s_cc1101_ht_cal_btn, 0);
         if (l) lv_label_set_text(l, LV_SYMBOL_PLAY " CAL TX 433");
@@ -56778,11 +56834,12 @@ static void s_cal_tx_restrobe_cb(lv_timer_t *t)
 {
     (void)t;
     if (!s_cc1101_cal_tx_active || !cc1101_is_init()) return;
-    cc1101_tx();  // flush TX FIFO + re-strobe STX (identical to jammer approach)
+    if(cc1101_tx_checked()!=ESP_OK){s_cal_tx_stop();return;}
 }
 
 static void s_cal_tx_toggle_cb(lv_event_t *e)
 {
+    if(!hat_runtime_ready() || hat_tx_snapshot().inhibit)return;
     (void)e;
     if (s_cc1101_cal_tx_active) { s_cal_tx_stop(); return; }
     if (!cc1101_is_init() && cc1101_init() != ESP_OK) return;
@@ -56794,7 +56851,7 @@ static void s_cal_tx_toggle_cb(lv_event_t *e)
     // OOK mode routes '1' bits through PATABLE[1] (FREND0=0x11). Without this
     // call PATABLE[1]=0x00 → no RF output despite TX being active.
     cc1101_set_output_power_dbm(10);
-    cc1101_tx();  // flush TX FIFO + STX (same as jammer)
+    if(cc1101_tx_checked()!=ESP_OK){hat_tx_cancel(HAT_TX_CC1101);hat_wake();return;}
 
     s_cc1101_cal_tx_active = true;
     s_cc1101_cal_tx_tmr = lv_timer_create(s_cal_tx_restrobe_cb, 100, NULL);
@@ -57442,13 +57499,14 @@ static void s_cc1101_rep_timer_cb(lv_timer_t *tmr)
 static void s_cc1101_rep_task_fn(void *arg)
 {
     int repeats = (int)(intptr_t)arg;
-    if (!cc1101_is_init()) cc1101_init();
+    if (hat_tx_valid(s_cc1101_rep_ticket) && !cc1101_is_init()) cc1101_init();
     esp_err_t err = ESP_FAIL;
-    if (cc1101_is_init()) {
+    if (cc1101_is_init() && hat_tx_valid(s_cc1101_rep_ticket)) {
         cc1101_apply_preset(CC1101_PRESET_OOK_4K8_433MHZ);  // ensures PATABLE correct for OOK TX
         cc1101_set_freq_mhz(cc1101_freq_cal(s_cc1101_cap_raw.freq_mhz));
-        err = cc1101_raw_replay(&s_cc1101_cap_raw, repeats);
+        err = cc1101_raw_replay_owned(&s_cc1101_cap_raw,repeats,s_cc1101_rep_ticket);
     }
+    bool checked_stop=cc1101_tx_stop_checked()==ESP_OK;hat_tx_leave(s_cc1101_rep_ticket);hat_tx_finish(s_cc1101_rep_ticket,checked_stop);
     s_cc1101_rep_state = (err == ESP_OK) ? CC1101_REP_DONE : CC1101_REP_FAIL;
     s_cc1101_rep_task  = NULL;
     vTaskDelete(NULL);
@@ -57459,6 +57517,8 @@ static void s_cc1101_rep_btn_cb(lv_event_t *e)
     if (s_cc1101_rep_state == CC1101_REP_RUNNING) return;
     if (s_cc1101_cap_raw.count == 0) return;
     int repeats = (int)(intptr_t)lv_event_get_user_data(e);
+    if(s_cc1101_rep_task || !hat_runtime_ready() || !hat_tx_begin(HAT_TX_CC1101,&s_cc1101_rep_ticket))return;
+    if(!hat_tx_enter(s_cc1101_rep_ticket)){hat_tx_finish(s_cc1101_rep_ticket,true);return;}
     s_cc1101_rep_state = CC1101_REP_RUNNING;
     if (s_cc1101_rep_status) {
         lv_label_set_text(s_cc1101_rep_status, "Replaying...");
@@ -57466,8 +57526,8 @@ static void s_cc1101_rep_btn_cb(lv_event_t *e)
     }
     if (s_cc1101_rep_tmr) { lv_timer_del(s_cc1101_rep_tmr); s_cc1101_rep_tmr = NULL; }
     s_cc1101_rep_tmr = lv_timer_create(s_cc1101_rep_timer_cb, 250, NULL);
-    xTaskCreate(s_cc1101_rep_task_fn, "cc1101_rep", 4096,
-                (void*)(intptr_t)repeats, 2, &s_cc1101_rep_task);
+    if(xTaskCreate(s_cc1101_rep_task_fn, "cc1101_rep", 4096,
+                (void*)(intptr_t)repeats, 2, &s_cc1101_rep_task)!=pdPASS){hat_tx_leave(s_cc1101_rep_ticket);hat_tx_finish(s_cc1101_rep_ticket,true);s_cc1101_rep_state=CC1101_REP_FAIL;}
 }
 
 // Stop hook for CC1101 Replay screen — same timer-dangling risk as Capture.
@@ -57572,16 +57632,17 @@ static void s_cc1101_saved_rep_task_fn(void *arg)
     cc1101_raw_t raw = {0};
     esp_err_t err = cc1101_sub_load(s_cc1101_saved_sel_path, &raw);
     if (err == ESP_OK) {
-        if (!cc1101_is_init()) cc1101_init();
-        if (cc1101_is_init()) {
+        if (hat_tx_valid(s_cc1101_rep_ticket) && !cc1101_is_init()) cc1101_init();
+        if (cc1101_is_init() && hat_tx_valid(s_cc1101_rep_ticket)) {
             cc1101_apply_preset(CC1101_PRESET_OOK_4K8_433MHZ);  // ensures PATABLE correct for OOK TX
             cc1101_set_freq_mhz(cc1101_freq_cal(raw.freq_mhz));
-            err = cc1101_raw_replay(&raw, repeats);
+            err = cc1101_raw_replay_owned(&raw,repeats,s_cc1101_rep_ticket);
         } else {
             err = ESP_FAIL;
         }
         cc1101_raw_free(&raw);
     }
+    bool checked_stop=cc1101_tx_stop_checked()==ESP_OK;hat_tx_leave(s_cc1101_rep_ticket);hat_tx_finish(s_cc1101_rep_ticket,checked_stop);
     s_cc1101_rep_state = (err == ESP_OK) ? CC1101_REP_DONE : CC1101_REP_FAIL;
     s_cc1101_rep_task  = NULL;
     vTaskDelete(NULL);
@@ -57593,6 +57654,8 @@ static void s_cc1101_saved_play_cb(lv_event_t *e)
     int idx = (int)(intptr_t)lv_event_get_user_data(e);
     if (idx < 0 || idx >= s_cc1101_sub_count) return;
     strncpy(s_cc1101_saved_sel_path, s_cc1101_sub_paths[idx], 79);
+    if(s_cc1101_rep_task || !hat_runtime_ready() || !hat_tx_begin(HAT_TX_CC1101,&s_cc1101_rep_ticket))return;
+    if(!hat_tx_enter(s_cc1101_rep_ticket)){hat_tx_finish(s_cc1101_rep_ticket,true);return;}
     s_cc1101_rep_state = CC1101_REP_RUNNING;
     if (s_cc1101_rep_status) {
         lv_label_set_text(s_cc1101_rep_status, "Loading + Replaying...");
@@ -57600,8 +57663,8 @@ static void s_cc1101_saved_play_cb(lv_event_t *e)
     }
     if (s_cc1101_rep_tmr) { lv_timer_del(s_cc1101_rep_tmr); s_cc1101_rep_tmr = NULL; }
     s_cc1101_rep_tmr = lv_timer_create(s_cc1101_rep_timer_cb, 250, NULL);
-    xTaskCreate(s_cc1101_saved_rep_task_fn, "cc1101_srep", 4096,
-                (void*)(intptr_t)1, 2, &s_cc1101_rep_task);
+    if(xTaskCreate(s_cc1101_saved_rep_task_fn, "cc1101_srep", 4096,
+                (void*)(intptr_t)1, 2, &s_cc1101_rep_task)!=pdPASS){hat_tx_leave(s_cc1101_rep_ticket);hat_tx_finish(s_cc1101_rep_ticket,true);s_cc1101_rep_state=CC1101_REP_FAIL;}
 }
 
 static void s_cc1101_saved_del_cb(lv_event_t *e)
@@ -58400,10 +58463,13 @@ static esp_err_t rf433_rx_prepare(void)
     if (!nrf24_hat_ready()) return ESP_ERR_INVALID_STATE;
     if (!rf433_ook_quiesce() || !rf433_rx_owners_ready() ||
         !ir_hat_quiesce() || !rf433_hat_quiesce()) return ESP_ERR_INVALID_STATE;
+    if (!rfid_manager_release()) {
+        ESP_LOGW("RFHAT", "PN532 cleanup pending; shared pins retained");
+        return ESP_ERR_INVALID_STATE;
+    }
     if (!ir_hat_release()) return ESP_ERR_INVALID_STATE;
     if (cc1101_is_init())       cc1101_deinit();
     if (nrf24_is_init())        nrf24_deinit();
-    if (rfid_manager_is_init()) rfid_manager_deinit();
     rf433_hat_deinit();
     gpio_config_t tx_cfg = {
         .pin_bit_mask = 1ULL << RF_HAT_RF433_TX_GPIO,
@@ -59228,10 +59294,10 @@ static void s_jam_band_cb(lv_event_t *e)
 static void s_cc1101_jam_stop(void)
 {
     s_cc1101_jamming = false;
-    if (cc1101_is_init()) cc1101_idle();
+    hat_tx_cancel(HAT_TX_CC1101);hat_wake();
     if (s_cc1101_jam_tmr) { lv_timer_del(s_cc1101_jam_tmr); s_cc1101_jam_tmr = NULL; }
     if (s_cc1101_jam_status) {
-        lv_label_set_text(s_cc1101_jam_status, "Stopped");
+        lv_label_set_text(s_cc1101_jam_status, "Stopping; see HAT TX");
         lv_obj_set_style_text_color(s_cc1101_jam_status, lv_color_hex(0xFFC107), 0);
     }
     if (s_cc1101_jam_freq_lbl) {
@@ -59248,7 +59314,7 @@ static void s_jam_fill_and_tx(float freq_mhz)
     // SIDLE → change freq → STX; chip transmits continuously until next SIDLE.
     cc1101_idle();
     cc1101_set_freq_mhz(cc1101_freq_cal(freq_mhz));
-    cc1101_strobe(CC1101_STX);
+    if(cc1101_strobe(CC1101_STX)==0xFF){s_cc1101_jamming=false;hat_tx_cancel(HAT_TX_CC1101);hat_wake();}
 }
 
 static void s_cc1101_jam_timer_cb(lv_timer_t *tmr)
@@ -59267,6 +59333,7 @@ static void s_cc1101_jam_timer_cb(lv_timer_t *tmr)
 
 static void s_cc1101_jam_start_cb(lv_event_t *e)
 {
+    if(!hat_runtime_ready() || hat_tx_snapshot().inhibit)return;
     if (!cc1101_is_init()) {
         if (cc1101_init() != ESP_OK) return;
     }
@@ -59294,6 +59361,7 @@ static void s_cc1101_jam_start_cb(lv_event_t *e)
     cc1101_write_reg(CC1101_MDMCFG2,  0x00);  // 2-FSK, no sync, no Manchester
     cc1101_write_reg(CC1101_DEVIATN,   0x77);  // max deviation ≈±381 kHz
     cc1101_write_reg(CC1101_FREND0,    0x10);  // FSK single-level PA
+    hat_watch(HAT_TX_CC1101,s_cc1101_jam_status);
     s_cc1101_jamming = true;
     s_jam_freq_idx = 0;
     s_jam_fill_and_tx(s_jam_table[0]);
@@ -59324,7 +59392,7 @@ static void s_cc1101_jammer_dismiss_cb(lv_event_t *e)
 static void cc1101_jam_screen_stop(void)
 {
     s_cc1101_jamming = false;
-    if (cc1101_is_init()) cc1101_idle();
+    hat_tx_cancel(HAT_TX_CC1101);hat_wake();
     if (s_cc1101_jam_tmr) { lv_timer_del(s_cc1101_jam_tmr); s_cc1101_jam_tmr = NULL; }
     s_cc1101_jam_status   = NULL;
     s_cc1101_jam_freq_lbl = NULL;
@@ -60293,9 +60361,13 @@ static void show_cc1101_zwave_screen(void)
 
 static bool nrf24_hat_claim(void)
 {
+    for(int id=0;id<HAT_TX_COUNT;id++) if(hat_tx_owned((hat_tx_id_t)id)){hat_cancel_all();return false;}
+    if (!rfid_manager_release()) {
+        ESP_LOGW("RFHAT", "PN532 cleanup pending; shared pins retained");
+        return false;
+    }
     if (!nrf24_hat_ready()) return false;
-    if (rfid_manager_is_init()) rfid_manager_deinit();
-    if (ir_hat_is_init())       ir_hat_deinit();
+    if (!ir_hat_release()) return false;
     if (rf433_hat_is_init())    rf433_hat_deinit();
     if (cc1101_is_init())       cc1101_deinit();   // frees GPIO8 + GPIO9
     return true;
@@ -61341,7 +61413,8 @@ static void show_nrf24_file_detail_screen(const char *path)
 static void s_n24_jam_task_fn(void *arg)
 {
     (void)arg;
-    nrf24_jam_sweep(&s_n24_jam_active, s_n24_jam_mode);
+    nrf24_jam_sweep_owned(&s_n24_jam_active,s_n24_jam_mode,s_n24_ticket);
+    bool checked_stop=nrf24_tx_stop_checked()==ESP_OK;hat_tx_leave(s_n24_ticket);hat_tx_finish(s_n24_ticket,checked_stop);
     __atomic_store_n(&s_n24_jam_task, NULL, __ATOMIC_RELEASE);
     vTaskDelete(NULL);
 }
@@ -61371,17 +61444,19 @@ static void s_n24_jam_timer_cb(lv_timer_t *t)
 static void s_n24_jam_start_cb(lv_event_t *e)
 {
     (void)e;
-    if (!nrf24_is_init()) return;
+    if (!nrf24_is_init() || s_n24_jam_task || !hat_runtime_ready() || !hat_tx_begin(HAT_TX_NRF24,&s_n24_ticket)) return;
+    if(!hat_tx_enter(s_n24_ticket)){hat_tx_finish(s_n24_ticket,true);return;}
+    hat_watch(HAT_TX_NRF24,s_n24_jam_status);
     s_n24_jam_active = true;
     if (!s_n24_jam_task)
-        xTaskCreate(s_n24_jam_task_fn, "nrf24_jam", 3072, NULL, 2, &s_n24_jam_task);
+        if(xTaskCreate(s_n24_jam_task_fn,"nrf24_jam",3072,NULL,2,&s_n24_jam_task)!=pdPASS){s_n24_jam_active=false;hat_tx_leave(s_n24_ticket);hat_tx_finish(s_n24_ticket,true);}
 }
 
 static void s_n24_jam_stop_cb(lv_event_t *e)
 {
     (void)e;
     s_n24_jam_active = false;
-    nrf24_standby();
+    hat_tx_cancel(HAT_TX_NRF24);hat_wake();
 }
 
 static void s_n24_jam_dismiss_cb(lv_event_t *e)
@@ -69153,8 +69228,8 @@ static void rf433_jam_toggle_cb(lv_event_t *e)
 {
     (void)e;
     if (rf433_hat_is_jamming()) {
-        rf433_hat_jam_stop();
-        if (s_rf433_jam_status) lv_label_set_text(s_rf433_jam_status, "Jammer OFF");
+        rf433_hat_jam_stop();hat_wake();
+        if (s_rf433_jam_status) lv_label_set_text(s_rf433_jam_status, "Stopping; see HAT TX");
         if (s_rf433_jam_status) lv_obj_set_style_text_color(s_rf433_jam_status, ui_text_color(), 0);
         if (s_rf433_jam_btn) {
             lv_obj_set_style_bg_color(s_rf433_jam_btn, lv_color_hex(0xB71C1C), LV_STATE_DEFAULT);
@@ -69162,7 +69237,8 @@ static void rf433_jam_toggle_cb(lv_event_t *e)
             if (lbl) lv_label_set_text(lbl, LV_SYMBOL_WARNING "  START JAM");
         }
     } else {
-        rf433_hat_jam_start();
+        if(!rf433_hat_claim() || rf433_hat_jam_start()!=RF433_HAT_OK){if(s_rf433_jam_status)lv_label_set_text(s_rf433_jam_status,"HAT TX blocked/error");return;}
+        hat_watch(HAT_TX_RF433,s_rf433_jam_status);
         if (s_rf433_jam_status) lv_label_set_text(s_rf433_jam_status, "JAMMING - 433MHz active");
         if (s_rf433_jam_status) lv_obj_set_style_text_color(s_rf433_jam_status, lv_color_hex(0xFF5722), 0);
         if (s_rf433_jam_btn) {
@@ -69204,7 +69280,7 @@ static void show_rf433_jammer_screen(void)
     bool rf_ls = (screen_orientation == 1 || screen_orientation == 3);
 
     s_rf433_jam_status = lv_label_create(function_page);
-    lv_label_set_text(s_rf433_jam_status, "Jammer OFF");
+    lv_label_set_text(s_rf433_jam_status, "Stopping; see HAT TX");
     lv_obj_set_style_text_font(s_rf433_jam_status, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(s_rf433_jam_status, ui_text_color(), 0);
     lv_obj_set_style_text_align(s_rf433_jam_status, LV_TEXT_ALIGN_CENTER, 0);
@@ -69532,8 +69608,7 @@ static void rf433_do_replay_cb(lv_event_t *e)
                                                         s_rf433_sel_signal,
                                                         &s_rf433_replay_sig);
     if (r == RF433_HAT_OK) {
-        rf433_hat_replay(&s_rf433_replay_sig, 3);
-        if (s_rf433_sig_status) lv_label_set_text(s_rf433_sig_status, "Sent x3!");
+        (void)hat_submit(HAT_TX_RF433,&s_rf433_replay_sig,sizeof(s_rf433_replay_sig),s_rf433_sig_status,NULL);
     } else {
         if (s_rf433_sig_status) {
             lv_label_set_text(s_rf433_sig_status, "Load error");
@@ -69545,6 +69620,7 @@ static void rf433_do_replay_cb(lv_event_t *e)
 static void show_rf433_signal_list_screen(void)
 {
     create_function_page_base(s_rf433_cur_remote);
+    hat_control_attach(s_hat_page_title);
     apply_menu_bg();
 
     s_rf433_signal_count = rf433_hat_list_signals(s_rf433_cur_remote,
@@ -74241,3 +74317,11 @@ static void doom_prototype_home(void)
 }
 
 #endif
+
+static void hat_cancel_producers(void)
+{
+    s_cal_tx_stop();s_cc1101_jam_stop();
+    if(s_lbk_task)xTaskNotifyGive(s_lbk_task);
+    s_n24_jam_active=false;s_blaster_nrf_active=false;
+    ir_hat_tvbgone_stop();
+}

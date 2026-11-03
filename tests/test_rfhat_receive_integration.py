@@ -11,7 +11,7 @@ def fn(s,n):
  if n in ['rf433_rx_prepare','rf433_ook_rx_begin'] and 'static void '+n in f:
   f=f.replace(n+'(',n+'_legacy(',1)+'\nstatic int '+n+'(void){'+n+'_legacy();return 0;}'
  return f
-PRE='#include <assert.h>\n#include <stdbool.h>\n#include <stdint.h>\n#include <stddef.h>\n#include <string.h>\n#include <limits.h>\n#include <stdio.h>\n'
+PRE='#include <stdlib.h>\n#include <assert.h>\n#include <stdbool.h>\n#include <stdint.h>\n#include <stddef.h>\n#include <string.h>\n#include <limits.h>\n#include <stdio.h>\n'
 class ReceiveIntegration(unittest.TestCase):
  def setUp(self):
   self.m=(R/'ESP32C5/main/main.c').read_text();self.ir=(R/'ESP32C5/components/rf_hat/src/ir_hat.c').read_text()
@@ -22,7 +22,7 @@ class ReceiveIntegration(unittest.TestCase):
    s=s.replace("rf433_ook_snapshot(out,&n)","rf433_ook_snapshot(out,256,&n)")
   out=Path(os.environ['CYM_TEST_OUT'])/'rfhat-receive';out.mkdir(parents=True,exist_ok=True)
   p=out/(name+'.c');p.write_text(PRE+s);exe=p.with_suffix('')
-  c=subprocess.run(['cc','-std=gnu11','-O1','-g','-Wall','-Wextra','-Werror=implicit-function-declaration','-fsanitize=undefined','-fno-sanitize-recover=all',str(p),'-o',str(exe)],capture_output=True,text=True)
+  c=subprocess.run(['cc','-std=gnu11','-O1','-g','-Wall','-Wextra','-Werror=implicit-function-declaration','-fsanitize=undefined','-fno-sanitize-recover=all','-DHAT_TX_HOST','-pthread','-I'+str(R/'ESP32C5/components/rf_hat/include'),str(R/'ESP32C5/components/rf_hat/src/hat_tx.c'),str(p),'-o',str(exe)],capture_output=True,text=True)
   self.assertEqual(c.returncode,0,c.stdout+c.stderr)
   c=subprocess.run([str(exe)],capture_output=True,text=True,timeout=15);self.assertEqual(c.returncode,0,c.stdout+c.stderr)
  def test_decoder_and_both_consumers(self):
@@ -52,8 +52,13 @@ for(int i=0;i<160;i++)p[i]=(i&1)?300:-300;assert(!decode(p,160,&a,&d));}
 '''.replace('CALL',call))
  def test_preparation_refuses_before_teardown(self):
   self.native('prepare',r'''
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define ESP_ERR_INVALID_STATE 1
+#define HAT_TX_IR 2
+#define HAT_TX_COUNT 4
+typedef int hat_tx_id_t;static bool hat_tx_owned(hat_tx_id_t id){return false;}
+static void hat_cancel_all(void){}
 #define RF_HAT_RF433_TX_GPIO 8
 #define GPIO_MODE_OUTPUT 1
 #define GPIO_PULLUP_DISABLE 0
@@ -69,16 +74,17 @@ static bool ir_hat_quiesce(void){return refuse!=4;}
 static bool rf433_hat_quiesce(void){return refuse!=5;}
 static bool cc1101_is_init(void){return true;}static bool nrf24_is_init(void){return true;}static bool rfid_manager_is_init(void){return true;}
 static bool ir_hat_is_init(void){return false;}static bool ir_hat_is_jamming(void){return jam;}
-static void cc1101_deinit(void){changes++;}static void nrf24_deinit(void){changes++;}static void rfid_manager_deinit(void){changes++;}
+static void cc1101_deinit(void){changes++;}static void nrf24_deinit(void){changes++;}static void rfid_manager_deinit(void){changes++;}static bool rfid_manager_release(void){changes++;return refuse!=9;}
 static bool ir_hat_release(void){changes++;jam=false;return refuse!=8;}static void rf433_hat_deinit(void){changes++;}
 static int gpio_config(const gpio_config_t*p){(void)p;changes++;return refuse==6?6:0;}
 static int gpio_set_level(int p,int v){(void)p;assert(!v);changes++;return refuse==7?7:0;}
 '''+fn(self.m,'rf433_rx_prepare')+r'''
-int main(void){for(refuse=1;refuse<=5;refuse++){changes=0;assert(rf433_rx_prepare()!=ESP_OK);assert(!changes&&jam);}refuse=0;assert(rf433_rx_prepare()==0&&!jam&&changes==7);refuse=8;changes=0;assert(rf433_rx_prepare()!=ESP_OK&&changes==1);refuse=6;assert(rf433_rx_prepare()==6);refuse=7;assert(rf433_rx_prepare()==7);}
+int main(void){for(refuse=1;refuse<=5;refuse++){changes=0;assert(rf433_rx_prepare()!=ESP_OK);assert(!changes&&jam);}refuse=0;assert(rf433_rx_prepare()==0&&!jam&&changes==7);/* G checked PN532 release precedes IR release; both calls are counted. */refuse=8;changes=0;assert(rf433_rx_prepare()!=ESP_OK&&changes==2);refuse=9;changes=0;jam=true;assert(rf433_rx_prepare()!=ESP_OK&&changes==1&&jam);refuse=6;assert(rf433_rx_prepare()==6);refuse=7;assert(rf433_rx_prepare()==7);}
 ''')
  def test_session_snapshot_stop(self):
   self.native('session',r'''
 #define IRAM_ATTR
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define ESP_ERR_INVALID_STATE 1
 #define RF_HAT_RF433_RX_GPIO 9
@@ -115,6 +121,7 @@ interrupt_copy=false;assert(rf433_ook_rx_begin()==0);rf433_ook_rx_end();rf433_oo
 ''')
  def test_ir_rearm_drains_after_disable(self):
   self.native('ir-rearm',r'''
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define ESP_FAIL 8
 #define ESP_LOGE(...) ((void)0)
@@ -131,6 +138,7 @@ int main(void){assert(s_rx_rearm()==0&&state==1&&s_rx_healthy&&!queued);assert(s
  def test_ir_capture_sequences(self):
   helper=fn(self.ir,'s_rx_rearm') if 'static esp_err_t s_rx_rearm' in self.ir else ''
   self.native('ir-capture',r'''
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define ESP_FAIL 8
 #define IR_HAT_OK 0
@@ -202,6 +210,7 @@ int main(void){assert(rf433_rx_owners_ready());bool*flags[]={&poll,&emulate,&s_c
  def test_task_create_failure_unwinds_real_startup(self):
   f=fn(self.m,'show_rf433_ook_scan_screen');a=f.index('    esp_err_t err = rf433_ook_rx_begin();');tail=f[a:]
   self.native('task-startup',r'''
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define pdPASS 1
 #define tskIDLE_PRIORITY 0
@@ -221,6 +230,7 @@ int main(void){fail=1;start();assert(!handler&&!s_rf433_scan_task&&s_rf433_scan_
  def test_fox_refusal_restores_current_vibration(self):
   f=fn(self.m,'show_rf433_foxhunt_screen');prefix=f[:f.index('    gpio_config_t io_cfg')]
   self.native('fox-refusal',r'''
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define RF_HAT_RF433_RX_GPIO 9
 typedef int esp_err_t;static void*s_rf433_fox_tmr,*s_rf433_fox_bar,*s_rf433_fox_lbl,*s_rf433_fox_hbtn,*s_rf433_fox_status;
@@ -239,12 +249,17 @@ int main(void){show_rf433_foxhunt_screen();assert(g_vibtest_strength_pct==17&&"f
   # Compile actual production teardown + prepare together, not a status-only stub.
   release = fn(self.ir,'ir_hat_release') if 'bool ir_hat_release(void)' in self.ir else ''
   self.native('ir-release-prepare',r'''
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define ESP_FAIL 8
 #define ESP_ERR_INVALID_STATE 1
 #define ESP_LOGE(...) ((void)0)
 #define RF_HAT_IR_TX_GPIO 8
 #define RF_HAT_IR_RX_GPIO 9
+#define HAT_TX_IR 2
+#define HAT_TX_COUNT 4
+typedef int hat_tx_id_t;static bool hat_tx_owned(hat_tx_id_t id){return false;}
+static void hat_cancel_all(void){}
 #define RF_HAT_RF433_TX_GPIO 8
 #define GPIO_MODE_OUTPUT 1
 #define GPIO_PULLUP_DISABLE 0
@@ -264,7 +279,7 @@ static void vTaskDelay(unsigned n){now+=n;if(release_at&&now>=release_at)s_cap_t
 static bool nrf24_hat_ready(void){return true;}static bool rf433_ook_quiesce(void){return true;}
 static bool rf433_rx_owners_ready(void){return true;}static bool rf433_hat_quiesce(void){return true;}
 static bool cc1101_is_init(void){return false;}static bool nrf24_is_init(void){return false;}static bool rfid_manager_is_init(void){return false;}
-static void cc1101_deinit(void){}static void nrf24_deinit(void){}static void rfid_manager_deinit(void){}static void rf433_hat_deinit(void){}
+static void cc1101_deinit(void){}static void nrf24_deinit(void){}static void rfid_manager_deinit(void){}static bool rfid_manager_release(void){return true;}static void rf433_hat_deinit(void){}
 static bool ir_hat_is_init(void){return s_init;}static bool ir_hat_is_jamming(void){return s_jamming;}
 static int ledc_stop(int m,int c,int v){(void)m;(void)c;(void)v;return fail==1?8:0;}
 static int rmt_disable(void*p){int *state=p==(void*)1?&tx_state:&rx_state;if(p==(void*)1)tx_disables++;else rx_disables++;if(fail==(p==(void*)1?2:5))return 8;assert(*state==1||*state==2);*state=0;return 0;}
@@ -295,6 +310,11 @@ setup(false);fail=0;assert(rf433_rx_prepare()==0&&queue_deletes==1&&encoder_dele
 
  def test_ir_init_jammer_partial_cleanup_reentry(self):
   self.native('ir-init-jammer',r'''
+#include "hat_tx.h"
+static hat_tx_ticket_t s_jam_ticket;
+static int*s_tx_payload;
+static int rmt_tx_wait_all_done(void*c,int timeout){return 0;}
+#define ESP_LOGW(...) ((void)0)
 #define ESP_OK 0
 #define ESP_FAIL 8
 #define IR_HAT_OK 0
@@ -349,7 +369,8 @@ static int ledc_stop(int m,int c,int v){(void)m;(void)c;(void)v;if(release_fail=
 static bool ir_hat_release(void);
 static void ir_hat_deinit(void);
 static ir_hat_err_t ir_hat_init(void);
-''' + '\n'.join(fn(self.ir,n) for n in ['ir_hat_quiesce','ir_hat_release','ir_hat_deinit','ir_hat_init','ir_hat_jam_start','ir_hat_jam_stop']) + r'''
+''' + '\n'.join(fn(self.ir,n) for n in ['ir_hat_quiesce','ir_hat_release','ir_hat_deinit','ir_hat_init','ir_hat_tx_stop_checked','ir_hat_jam_start','ir_hat_jam_stop']) + r'''
+static int checked_stop(void){hat_tx_ticket_t t;hat_tx_cancel(HAT_TX_IR);if(!hat_tx_claim_stop(HAT_TX_IR,&t))return 8;int e=ir_hat_tx_stop_checked();hat_tx_finish(t,e==0);return e;}
 static void empty(void){assert(!s_tx_chan&&!s_rx_chan&&!s_tx_enc&&!s_rx_queue&&!queues&&!encoders&&tx_state==-1&&rx_state==-1&&!s_jamming&&!ledc_active);}
 int main(void){
 /* Every allocation/config/enable failure unwinds, and a fresh init succeeds. */
@@ -357,10 +378,10 @@ for(int f=1;f<=8;f++){fail=f;assert(ir_hat_init()==IR_HAT_ERR_HW);empty();fail=0
 /* Retained partial-init handles cannot be overwritten on reentry. */
 fail=6;release_fail=1;assert(ir_hat_init()!=0&&!s_init&&s_tx_chan&&s_rx_queue);int before=allocs;fail=0;assert(ir_hat_init()!=0&&allocs==before);release_fail=0;assert(ir_hat_init()==0&&s_init);assert(ir_hat_release());empty();
 /* Jammer entry refusal and retries after partial cleanup; no status-flag bypass. */
-for(int f=1;f<=3;f++){fail=0;assert(ir_hat_init()==0);release_fail=f;assert(ir_hat_jam_start(0)!=0&&!s_init&&!s_jamming);before=allocs;assert(ir_hat_init()!=0&&allocs==before);release_fail=0;assert(ir_hat_jam_start(0)==0&&s_jamming&&!s_init);assert(ir_hat_init()==IR_HAT_ERR_BUSY);ir_hat_jam_stop();assert(s_init&&!s_jamming);assert(ir_hat_release());empty();}
+for(int f=1;f<=3;f++){fail=0;assert(ir_hat_init()==0);release_fail=f;assert(ir_hat_jam_start(0)!=0&&!s_init&&!s_jamming);before=allocs;assert(ir_hat_init()!=0&&allocs==before);release_fail=0;assert(ir_hat_jam_start(0)==0&&s_jamming&&!s_init);assert(ir_hat_init()==IR_HAT_ERR_BUSY);ir_hat_jam_stop();assert(hat_tx_owned(HAT_TX_IR)&&s_jamming);assert(checked_stop()==0&&!s_jamming&&!s_init);assert(ir_hat_init()==0&&s_init);assert(ir_hat_release());empty();}
 /* Channel config can fail after enabling LEDC. Failed stop retains ownership. */
-fail=10;release_fail=4;assert(ir_hat_jam_start(0)!=0&&s_jamming&&ledc_active);assert(!ir_hat_release()&&s_jamming);assert(ir_hat_jam_start(0)!=0&&"failed configuration must not become successful repeat start");release_fail=0;assert(ir_hat_release());empty();
-fail=9;assert(ir_hat_jam_start(0)!=0);empty();fail=0;assert(ir_hat_jam_start(0)==0);release_fail=4;ir_hat_jam_stop();assert(s_jamming&&ledc_active&&!s_init);release_fail=0;ir_hat_jam_stop();assert(s_init&&!s_jamming);ir_hat_deinit();empty();
+fail=10;release_fail=4;assert(ir_hat_jam_start(0)!=0&&s_jamming&&ledc_active);assert(!ir_hat_release()&&s_jamming);assert(ir_hat_jam_start(0)!=0&&"failed configuration must not become successful repeat start");release_fail=0;assert(checked_stop()==0);assert(ir_hat_release());empty();
+fail=9;assert(ir_hat_jam_start(0)!=0);empty();fail=0;assert(ir_hat_jam_start(0)==0);release_fail=4;ir_hat_jam_stop();assert(checked_stop()!=0);assert(s_jamming&&ledc_active&&!s_init);release_fail=0;ir_hat_jam_stop();assert(hat_tx_owned(HAT_TX_IR)&&s_jamming);assert(checked_stop()==0&&!s_jamming&&!s_init);assert(ir_hat_init()==0&&s_init);ir_hat_deinit();empty();
 }
 ''')
 

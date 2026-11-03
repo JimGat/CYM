@@ -115,7 +115,12 @@ static rfid_err_t s_read_ack(void)
 
 rfid_err_t pn532_driver_init(void)
 {
-    if (s_init) return RFID_OK;
+#if defined(CONFIG_BOARD_WS_S3_5B)
+    // This profile has no admitted PN532 route. Refuse before GPIO reset can
+    // disturb its native touch bus; controller selection is a separate change.
+    return RFID_ERR_NOT_SUPPORTED;
+#endif
+    if (s_init && s_bus && s_dev) return RFID_OK;
 
     // A prior init/deinit may have failed to release the bus or device (the release
     // call itself errored), leaving those handles still owned. Retry the cleanup
@@ -186,12 +191,15 @@ rfid_err_t pn532_driver_init(void)
     return RFID_OK;
 }
 
-void pn532_driver_deinit(void)
+bool pn532_driver_release(void)
 {
     // Run even when s_init is false, as long as handles are still owned, so a
     // partial/failed cleanup can be retried instead of leaking.
-    if (!s_init && !s_dev && !s_bus) return;
-    if (s_init) pn532_rf_field_off();
+    if (!s_init && !s_dev && !s_bus) return true;
+    if (s_init && s_bus && s_dev) pn532_rf_field_off();
+    // Readiness ends at the first cleanup attempt, not at the last free. In
+    // particular bus-only ownership must never authorize chip I/O or init OK.
+    s_init = false;
     if (s_dev) {
         esp_err_t e = i2c_master_bus_rm_device(s_dev);
         if (e == ESP_OK) s_dev = NULL;
@@ -203,16 +211,22 @@ void pn532_driver_deinit(void)
         if (e == ESP_OK) s_bus = NULL;
         else ESP_LOGE(TAG, "i2c_del_master_bus failed: %s (bus retained)", esp_err_to_name(e));
     }
-    // "uninitialised" only when every handle is truly released.
-    if (!s_dev && !s_bus) s_init = false;
-    ESP_LOGI(TAG, "deinit");
+    ESP_LOGI(TAG, "deinit%s", (s_dev || s_bus) ? " pending" : "");
+    return !s_dev && !s_bus;
 }
 
-bool pn532_driver_is_init(void) { return s_init; }
+void pn532_driver_deinit(void)
+{
+    (void)pn532_driver_release();
+}
+
+bool pn532_driver_is_owned(void) { return s_bus || s_dev; }
+
+bool pn532_driver_is_init(void) { return s_init && s_bus && s_dev; }
 
 rfid_err_t pn532_send_command(const uint8_t *cmd, uint8_t cmd_len)
 {
-    if (!s_init) return RFID_ERR_NOT_INIT;
+    if (!s_init || !s_bus || !s_dev) return RFID_ERR_NOT_INIT;
     rfid_err_t r = s_write_frame(cmd, cmd_len);
     if (r != RFID_OK) return r;
     return s_read_ack();
@@ -221,7 +235,7 @@ rfid_err_t pn532_send_command(const uint8_t *cmd, uint8_t cmd_len)
 rfid_err_t pn532_read_response(uint8_t expected_cmd, uint8_t *buf, uint8_t *buf_len,
                                 uint8_t buf_max, uint32_t timeout_ms)
 {
-    if (!s_init) return RFID_ERR_NOT_INIT;
+    if (!s_init || !s_bus || !s_dev) return RFID_ERR_NOT_INIT;
 
     rfid_err_t r = s_wait_ready(timeout_ms);
     if (r != RFID_OK) return r;
@@ -294,7 +308,7 @@ rfid_err_t pn532_rf_field_on(void)
 
 rfid_err_t pn532_rf_field_off(void)
 {
-    if (!s_init) return RFID_OK;
+    if (!s_init || !s_bus || !s_dev) return RFID_ERR_NOT_INIT;
     uint8_t cmd[] = { PN532_CMD_RF_CONFIGURATION, 0x01, 0x00 };
     rfid_err_t r = pn532_send_command(cmd, sizeof(cmd));
     if (r != RFID_OK) return r;
@@ -356,7 +370,7 @@ rfid_err_t pn532_recover(void)
     // Attempt to recover from PN532 lockup (I2C NACK after extended idle scan).
     // Sequence: bus reset → probe → SAM configure → sensitivity config.
     ESP_LOGW(TAG, "[RECOVER] PN532 I2C lockup detected — attempting recovery");
-    if (!s_bus) return RFID_ERR_NOT_INIT;
+    if (!s_init || !s_bus || !s_dev) return RFID_ERR_NOT_INIT;
 
     i2c_master_bus_reset(s_bus);
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -381,7 +395,7 @@ rfid_err_t pn532_recover(void)
 
 rfid_err_t pn532_get_firmware_version(pn532_fw_version_t *out)
 {
-    if (!s_init) return RFID_ERR_NOT_INIT;
+    if (!s_init || !s_bus || !s_dev) return RFID_ERR_NOT_INIT;
     uint8_t cmd[] = { PN532_CMD_GET_FW_VERSION };
     rfid_err_t r = pn532_send_command(cmd, sizeof(cmd));
     if (r != RFID_OK) return r;
@@ -404,7 +418,7 @@ rfid_err_t pn532_get_firmware_version(pn532_fw_version_t *out)
 
 rfid_err_t pn532_probe_device(void)
 {
-    if (!s_init || !s_bus) return RFID_ERR_NOT_INIT;
+    if (!s_init || !s_bus || !s_dev) return RFID_ERR_NOT_INIT;
     // Raw address probe — does not send a command frame, just checks if the
     // device ACKs the 7-bit address. Takes at most 50 ms.
     esp_err_t e = i2c_master_probe(s_bus, PN532_I2C_ADDR, 50);
@@ -419,7 +433,7 @@ rfid_err_t pn532_probe_device(void)
 
 int pn532_i2c_scan(uint8_t *addrs_out, int max_addrs)
 {
-    if (!s_init || !s_bus) return -1;
+    if (!s_init || !s_bus || !s_dev) return -1;
     int found = 0;
     // Full scan 0x03-0x77 with WDT resets every 16 addresses.
     // Reset bus first — prior timeouts (wakeup, RDY polls) may leave it stuck.

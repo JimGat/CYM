@@ -3,10 +3,10 @@
 from pathlib import Path
 import os,re,subprocess,json
 R=Path(__file__).resolve().parents[1];M=(R/'ESP32C5/components/rf_hat/src/ir_hat.c').read_text();D=Path(os.environ['CYM_TEST_OUT'])/'ir-task-lifetime';D.mkdir(parents=True,exist_ok=True)
-m=re.search(r'(void|esp_err_t) ir_hat_tvbgone\([^;]*?\)\s*\{',M);assert m
+m=re.search(r'(void|esp_err_t) ir_hat_tvbgone_owned\([^;]*?\)\s*\{',M);assert m
 i=m.end();d=1
 while d:d+=(M[i]=='{')-(M[i]=='}');i+=1
-fn=M[m.start():i];call='ir_hat_tvbgone(NULL,NULL)' if m.group(1)=='esp_err_t' else '(ir_hat_tvbgone(NULL,NULL),0)'
+fn=M[m.start():i];call='ir_hat_tvbgone_owned(NULL,NULL,(hat_tx_ticket_t){0})'
 pre=r"""
 #include <assert.h>
 #include <stdlib.h>
@@ -16,6 +16,11 @@ pre=r"""
 #include <stdio.h>
 typedef int esp_err_t;
 #define ESP_OK 0
+#define ESP_FAIL 8
+#define ESP_ERR_INVALID_STATE 9
+#define IR_HAT_OK 0
+typedef int hat_tx_ticket_t;
+static bool hat_tx_valid(hat_tx_ticket_t t){return true;}
 #define ESP_ERR_NO_MEM 7
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
@@ -35,7 +40,7 @@ static const tvbg_code_t TVBG_CODES[3]={{38000,2,{10,20}},{38000,2,{10,20}},{380
 static bool s_tvbg_stop,fail,stop;static int allocs,frees,replays;
 static void *heap_caps_malloc(size_t n,int caps){allocs++;assert(n==sizeof(ir_signal_t));assert(caps==(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT));return fail?NULL:malloc(n);}
 static void heap_caps_free(void*p){assert(p);frees++;free(p);}
-static void ir_hat_replay(ir_signal_t*p){assert(p->freq_hz==38000&&p->count==2&&p->times_us[1]==20);replays++;if(stop)s_tvbg_stop=true;}
+static int ir_hat_replay_owned(ir_signal_t*p,hat_tx_ticket_t t){assert(p->freq_hz==38000&&p->count==2&&p->times_us[1]==20);replays++;if(stop)s_tvbg_stop=true;return IR_HAT_OK;}
 static void vTaskDelay(int ms){(void)ms;}
 """
 post=r"""
@@ -45,7 +50,7 @@ int main(void){assert(CALL==ESP_OK);assert(replays==6);
 #else
  assert(allocs==1&&frees==1);fail=true;assert(CALL==ESP_ERR_NO_MEM&&replays==6&&allocs==2&&frees==1);fail=false;
 #endif
- stop=true;replays=0;assert(CALL==ESP_OK);assert(replays==2);
+ stop=true;replays=0;assert(CALL!=ESP_OK);assert(replays==1);
 #if !CONFIG_BOARD_HAS_PSRAM
  assert(allocs==3&&frees==2);
 #endif

@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/rf_hat_config.c"
+        "src/hat_tx.c"
         "src/ir_hat.c"
         "src/rf433_hat.c"
         "src/radio_hat.c"

@@ -40,6 +40,7 @@ static int wifi_scanner_start_scan(void){starts++;return start_rc;}
 static unsigned wifi_scanner_scan_generation(void){return 7;}
 #define ESP_OK 0
 static void (*g_screen_stop_fn)(void);
+static void hat_ui_depart(void){}
 static void run_screen_stop_fn(void);
 static void reset_function_page_children(void){run_screen_stop_fn();scan_status_label=NULL;}
 static void lv_obj_del(void*p){(void)p;}
