@@ -117,6 +117,17 @@ rfid_err_t pn532_driver_init(void)
 {
     if (s_init) return RFID_OK;
 
+    // A prior init/deinit may have failed to release the bus or device (the release
+    // call itself errored), leaving those handles still owned. Retry the cleanup
+    // first, and refuse rather than reacquire a new bus over a still-live resource.
+    if (s_bus || s_dev) {
+        pn532_driver_deinit();
+        if (s_bus || s_dev) {
+            ESP_LOGE(TAG, "init refused: previous I2C handles still owned (cleanup pending)");
+            return RFID_ERR_HW;
+        }
+    }
+
     // Clear any GPIO matrix routing from prior peripheral use (RMT/IR/RF433).
     // Do NOT configure direction or drive the pins here — the I2C driver owns them.
     gpio_reset_pin((gpio_num_t)RF_HAT_PN532_SCL_GPIO);
@@ -144,8 +155,16 @@ rfid_err_t pn532_driver_init(void)
     e = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
     if (e != ESP_OK) {
         ESP_LOGE(TAG, "i2c_master_bus_add_device failed: %s", esp_err_to_name(e));
-        i2c_del_master_bus(s_bus);
-        s_bus = NULL;
+        s_dev = NULL;                         // add_device failed: no valid device handle
+        esp_err_t de = i2c_del_master_bus(s_bus);
+        if (de == ESP_OK) {
+            s_bus = NULL;
+        } else {
+            // Bus delete failed: the bus is still owned. Retain the handle (do NOT
+            // null it) so a later init/deinit retries the delete instead of leaking.
+            ESP_LOGE(TAG, "i2c_del_master_bus failed after add-device error: %s (bus retained)",
+                     esp_err_to_name(de));
+        }
         return RFID_ERR_HW;
     }
 
@@ -169,11 +188,23 @@ rfid_err_t pn532_driver_init(void)
 
 void pn532_driver_deinit(void)
 {
-    if (!s_init) return;
-    pn532_rf_field_off();
-    if (s_dev) { i2c_master_bus_rm_device(s_dev); s_dev = NULL; }
-    if (s_bus) { i2c_del_master_bus(s_bus);        s_bus = NULL; }
-    s_init = false;
+    // Run even when s_init is false, as long as handles are still owned, so a
+    // partial/failed cleanup can be retried instead of leaking.
+    if (!s_init && !s_dev && !s_bus) return;
+    if (s_init) pn532_rf_field_off();
+    if (s_dev) {
+        esp_err_t e = i2c_master_bus_rm_device(s_dev);
+        if (e == ESP_OK) s_dev = NULL;
+        else ESP_LOGE(TAG, "i2c_master_bus_rm_device failed: %s (device retained)", esp_err_to_name(e));
+    }
+    // Only delete the bus once the device handle is actually gone.
+    if (!s_dev && s_bus) {
+        esp_err_t e = i2c_del_master_bus(s_bus);
+        if (e == ESP_OK) s_bus = NULL;
+        else ESP_LOGE(TAG, "i2c_del_master_bus failed: %s (bus retained)", esp_err_to_name(e));
+    }
+    // "uninitialised" only when every handle is truly released.
+    if (!s_dev && !s_bus) s_init = false;
     ESP_LOGI(TAG, "deinit");
 }
 
