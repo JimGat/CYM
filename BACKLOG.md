@@ -18,6 +18,18 @@ Last updated: 2026-09-23.
   backlog item to revisit at Jim's request. Root cause remains unproven; collect
   targeted evidence before choosing a fix. No PN532 implementation in v3.0.41.
 
+## Historical FSD findings requiring current-artifact retest
+
+- **OPEN — historical report reconciliation, not current reproduced defects.**
+  Co-developer @birolt29 reports two crashes in the 2026-10-28 FSD runs (NM-CYD-C5
+  landscape and Hosyond S3-35), Bluetooth/Infrared NOK rows, thirteen Hosyond
+  INCOMPLETE rows, Blackout missing-warning findings, and a failed NFC/RFID Home
+  check. No v3.0.44 rerun is supplied. Inspect original evidence and safely retest;
+  do not assume a NOK row caused its report's crash. Wardrive TX-warning rows were
+  tool false findings, and the cited Clock image depicts Settings, not Mode.
+  [Evidence corrections and exclusions](docs/testing/evidence-corrections.md).
+  This does not displace Jim's PN532-first deferred-investigation priority.
+
 ## Features (firmware)
 
 - **Audio RTA (WS-C5-35 first)** — PLANNED; owner-approved direction, design only.
