@@ -17687,7 +17687,7 @@ static void nav_stack_reset(void) { nav_stack_depth = 0; }
 
 // Layout-aware "go Home": route to the Modern 4-category home or the Classic tile home per the
 // user's choice (g_home_layout_4cat, Jim's v2.15.24 Home Layout). Use this for EVERY return-to-home
-// after an action/exit; a bare show_main_tiles() lands Modern users on the Classic home (Birol HW-QA
+// after an action/exit; a bare show_main_tiles() lands Modern users on the Classic home (@birolt29 HW-QA
 // 2026-10-01: NM-RF-HAT toggle dropped to Classic home in Modern mode). Both builders reset the
 // nav path stack, so this is nav-safe. (The home dispatch itself still inlines the same choice.)
 static void go_home(void)
@@ -22419,7 +22419,7 @@ static void show_wifi_pcap_screen(void)
 
         int visible = (count > 32) ? 32 : (int)count;
         // Sort by RSSI (strongest first) via an index array — never reorder the shared
-        // scanner buffer; the tap cb still receives each AP's ORIGINAL index. Birol 2026-09-27.
+        // scanner buffer; the tap cb still receives each AP's ORIGINAL index. @birolt29 2026-09-27.
         int order[32];
         for (int a = 0; a < visible; a++) order[a] = a;
         for (int a = 1; a < visible; a++) {
@@ -33139,7 +33139,7 @@ static void show_lookout_editor_screen(void)
 
     /* Scrollable list — height DERIVED from screen so the bottom button row never
        overlaps the last device (portrait AND landscape). Was a fixed 220 that overran
-       landscape's 240px and hid the last row under the buttons. Birol 2026-09-27. */
+       landscape's 240px and hid the last row under the buttons. @birolt29 2026-09-27. */
     lv_obj_t *scroll = lv_obj_create(function_page);
     lv_obj_set_size(scroll, 228, lv_disp_get_ver_res(NULL) - 36 - 48);
     lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, 36);
@@ -33238,7 +33238,7 @@ static void show_lookout_editor_screen(void)
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
     /* (Bottom "‹ Back" button removed — the top-bar ‹ Back returns to Bluetooth Lookout.
-       Birol 2026-09-28.) */
+       @birolt29 2026-09-28.) */
 
     /* Add OUI button */
     lv_obj_t *add_oui_btn = lv_btn_create(btn_row);
@@ -33414,7 +33414,7 @@ static void show_add_oui_entry_screen(void)
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
 
     /* (Bottom "‹ Back" button removed — top-bar ‹ Back returns to Edit Watchlist.
-       Birol 2026-09-28.) */
+       @birolt29 2026-09-28.) */
     lv_obj_t *add_btn = lv_btn_create(btn_row);
     lv_obj_set_size(add_btn, 104, ls ? 26 : 34);
     lv_obj_set_style_bg_color(add_btn, lv_color_make(30, 100, 180), LV_STATE_DEFAULT);
@@ -33509,7 +33509,7 @@ static void show_oui_groups_screen(void)
     create_function_page_base("OUI Groups");
 
     /* Scrollable group list — full width + height derived to fill down to near the
-       bottom (was 228 wide with a ~48px dead band below). Birol 2026-09-28. */
+       bottom (was 228 wide with a ~48px dead band below). @birolt29 2026-09-28. */
     lv_obj_t *scroll = lv_obj_create(function_page);
     lv_obj_set_size(scroll, lv_pct(100), lv_disp_get_ver_res(NULL) - 32 - 6);
     lv_obj_align(scroll, LV_ALIGN_TOP_MID, 0, 32);
@@ -33804,7 +33804,7 @@ static void ble_targ_timer_cb(lv_timer_t *tmr)
 
     // While scanning: append only NEW devices (preserves scroll, no full rebuild).
     // When the scan ends: sort s_targ_devs[] by RSSI (strongest/nearest first) ONCE
-    // and rebuild the list so the closest target is at the top. Birol 2026-09-27.
+    // and rebuild the list so the closest target is at the top. @birolt29 2026-09-27.
     int n = s_targ_count;
     if (s_targ_scanning) {
         for (int i = s_targ_displayed; i < n && s_targ_list_cont; i++)
@@ -41451,7 +41451,7 @@ static void show_evil_twin_page(void)
     lv_obj_set_style_bg_opa(evil_twin_content, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(evil_twin_content, 0, 0);
     // Landscape (210px content) can't fit the 6 stacked items with 10px pad+gaps -> a
-    // scrollbar appears. Tighten pad/gap so it all fits on one page (Birol R9). Portrait
+    // scrollbar appears. Tighten pad/gap so it all fits on one page (@birolt29 R9). Portrait
     // keeps 10/10 (byte-identical).
     bool et_ls = lv_disp_get_hor_res(NULL) > lv_disp_get_ver_res(NULL);
     lv_obj_set_style_pad_all(evil_twin_content, et_ls ? 6 : 10, 0);
@@ -46699,7 +46699,7 @@ static lv_obj_t *cat_sub_tiles(void)
     // NO bottom bar, so the old -48 reserve wasted ~46px at the bottom while leaving the grid frame
     // a hair too short: Recon & Scan's 9 tiles are 3 cols x 3 rows (portrait 74px tiles, landscape
     // 58px), so 3*74 + 2*4 gap + 2*4 pad = 238px vs the old ~242px frame -> the 3rd row (Zigbee)
-    // clipped at the bottom AND a spurious scrollbar showed on that thin margin (Birol HW-QA
+    // clipped at the bottom AND a spurious scrollbar showed on that thin margin (@birolt29 HW-QA
     // 2026-10-01). Reclaiming the free bottom space lets 3 rows fit cleanly in BOTH orientations
     // (portrait inner ~270 >= 230; landscape inner ~190 >= 182). Scrollbar AUTO stays as the safety net.
     lv_obj_set_size(tiles, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 12);
@@ -51898,7 +51898,7 @@ static void show_wana_select_screen(void) {
     }
 
     // Button row — bottom-anchored in BOTH orientations (ph-30), so the list can grow
-    // to meet it and no empty band is left below (portrait fix). Birol 2026-09-28.
+    // to meet it and no empty band is left below (portrait fix). @birolt29 2026-09-28.
     lv_obj_t *btns = lv_obj_create(wana_panel);
     lv_obj_set_size(btns, ls ? pw : 240, 30);
     lv_obj_set_pos(btns, 0, ph - 30);
@@ -51934,7 +51934,7 @@ static void show_wana_select_screen(void) {
     lv_obj_set_style_text_font(sl, &lv_font_montserrat_12, 0);
     lv_obj_center(sl);
     // (Removed the redundant bottom-right exit button — it used a WiFi glyph, which read
-    //  as a WiFi toggle; the top-bar ‹ Back already exits the analyzer. Birol 2026-09-27.)
+    //  as a WiFi toggle; the top-bar ‹ Back already exits the analyzer. @birolt29 2026-09-27.)
 }
 
 // ── Chart view ────────────────────────────────────────────────────────────────
@@ -52110,7 +52110,7 @@ static void show_wana_chart_screen(void) {
     // Chart view: top-bar ‹ Back returns to the Chanalizer list (re-enters the screen)
     // instead of exiting to the WiFi menu. Full re-entry is the safe path — the stop hook
     // frees wana_buf before the deferred back-fn runs, so a panel-swap back to the list
-    // would leave wana_buf NULL and crash the next Show Chart. Birol 2026-09-27.
+    // would leave wana_buf NULL and crash the next Show Chart. @birolt29 2026-09-27.
     g_screen_back_fn = show_wifi_analyzer_screen;
     wana_redraw();
 }
