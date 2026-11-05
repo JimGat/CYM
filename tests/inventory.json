@@ -2770,6 +2770,36 @@
         "cc",
         "lvgl"
       ]
+    },
+    {
+      "path": "tests/run_ap_owner_lifecycle_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package B production-extracted ASAN/UBSAN softAP suspend/resume ownership (snapshot validation/overlap-safe copy, held/live-uncertain/error, stale-drop) and semantic mutants; no hardware proof"
+    },
+    {
+      "path": "tests/run_ap_owner_queue_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package B production-extracted ASAN/UBSAN bounded request queue + generation-honouring dispatch (off-UI hand-off, stale/replacement reconcile) and semantic mutants; no hardware proof"
+    },
+    {
+      "path": "tests/run_ap_admit_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package B production-extracted ASAN/UBSAN utility-AP admission (refuse attack AP bring-up while a utility AP owns the interface) and semantic mutant; no hardware proof"
     }
   ],
   "support_files": [

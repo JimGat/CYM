@@ -3722,6 +3722,8 @@ static void reset_function_page_children(void) {
 static void create_function_page_base(const char *name);
 void show_function_page(const char *name);
 static void show_evil_twin_page(void);
+static lv_obj_t *ap_add_suspend_control(lv_obj_t *parent);  // Package B softAP suspend/resume control
+static bool cym_utility_ap_active(void);                    // Package B (#3) utility-AP-owned query
 static void evil_twin_start_btn_cb(lv_event_t *e);
 static esp_err_t evil_twin_enable_log_capture(void);
 static void evil_twin_ui_event_callback(evil_twin_event_data_t *data);
@@ -7852,6 +7854,10 @@ void app_main(void)
 {
     // Log active board identity so crash logs are unambiguous about which board built the binary.
     board_hal_log_info();
+
+    // Package B (#3): let wifi_attacks refuse an attack AP bring-up while a utility
+    // softAP (NTP clock / file server) owns the shared AP interface.
+    wifi_attacks_set_utility_ap_cb(cym_utility_ap_active);
 
     // Initialize NVS (required for settings, touch calibration, etc)
     // MUST come before the GPS init below: init_gps_uart() reads the saved GPS baud
@@ -17274,6 +17280,11 @@ static void portal_start_btn_cb(lv_event_t *e)
     lv_obj_set_style_border_width(portal_log_ta, 1, 0);
     lv_obj_set_style_text_font(portal_log_ta, &lv_font_montserrat_12, 0);
 
+    // Package B: Suspend/Resume control for the attack-owned AP, in the reserved
+    // bottom band (70px) left by the content container above (landscape-safe).
+    lv_obj_t *ap_ctrl = ap_add_suspend_control(function_page);
+    lv_obj_align(ap_ctrl, LV_ALIGN_BOTTOM_MID, 0, -12);
+
     // Top ‹ Back / Home stop the portal via the screen stop-hook
     // (run_screen_stop_fn → portal_stop). Redundant bottom "Stop" removed.
     g_screen_stop_fn = portal_stop;
@@ -17311,6 +17322,67 @@ static void portal_start_btn_cb(lv_event_t *e)
     ESP_LOGI(TAG, "Portal started successfully");
 }
 
+// ── Package B: shared Suspend/Resume control for the attack-owned softAP ──────
+// Schedules a suspend/resume of the current AP owner (the real stop/start runs on
+// the wifi_attacks worker, off this LVGL task). State codes per wifi_attacks.h:
+// 0 IDLE,1 ACTIVE,2 SUSPENDING,3 HELD,4 RESUMING,5 LIVE_UNCERTAIN,6 ERROR.
+static lv_obj_t *s_ap_ctrl_btn_lbl = NULL;
+static lv_timer_t *s_ap_ctrl_timer = NULL;   // settles the label after the async worker finishes
+
+static void ap_ctrl_refresh_label(void)
+{
+    if (!s_ap_ctrl_btn_lbl) return;
+    const char *t;
+    switch (wifi_attacks_ap_owner_state()) {
+        case 2:  t = "Suspending..."; break;
+        case 3:  t = "Resume AP"; break;
+        case 4:  t = "Resuming..."; break;
+        case 5:  t = "AP uncertain - retry stop"; break;
+        case 6:  t = "Resume failed - retry"; break;
+        default: t = "Suspend AP"; break;
+    }
+    lv_label_set_text(s_ap_ctrl_btn_lbl, t);
+}
+
+static void ap_ctrl_btn_cb(lv_event_t *e)
+{
+    (void)e;
+    int st = wifi_attacks_ap_owner_state();
+    if (st == 1 || st == 5)      wifi_attacks_ap_suspend();  // ACTIVE / LIVE_UNCERTAIN -> (re)stop
+    else if (st == 3 || st == 6) wifi_attacks_ap_resume();   // HELD / ERROR -> (re)start
+    // IDLE / SUSPENDING / RESUMING: ignore the tap (no owner, or an op already in flight)
+    ap_ctrl_refresh_label();
+}
+
+static void ap_ctrl_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    ap_ctrl_refresh_label();   // poll the owner state so the label settles after the worker finishes
+}
+
+static lv_obj_t *ap_add_suspend_control(lv_obj_t *parent)
+{
+    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, lv_pct(90), 44);
+    lv_obj_t *l = lv_label_create(btn);
+    lv_obj_center(l);
+    s_ap_ctrl_btn_lbl = l;
+    lv_obj_add_event_cb(btn, ap_ctrl_btn_cb, LV_EVENT_CLICKED, NULL);
+    if (s_ap_ctrl_timer) { lv_timer_del(s_ap_ctrl_timer); s_ap_ctrl_timer = NULL; }
+    s_ap_ctrl_timer = lv_timer_create(ap_ctrl_timer_cb, 400, NULL);
+    ap_ctrl_refresh_label();
+    return btn;
+}
+
+// Stop-hook cleanup: delete the refresh timer and drop the label pointer before
+// the screen (and its button) are freed. MUST run from every stop hook that used
+// ap_add_suspend_control() (cym-screen-stop-hooks).
+static void ap_suspend_control_cleanup(void)
+{
+    if (s_ap_ctrl_timer) { lv_timer_del(s_ap_ctrl_timer); s_ap_ctrl_timer = NULL; }
+    s_ap_ctrl_btn_lbl = NULL;
+}
+
 // Screen-exit teardown for Captive Portal — runs via g_screen_stop_fn on ANY exit
 // (top ‹ Back, Home). Navigation itself is handled by the nav stack.
 static void portal_stop(void)
@@ -17331,6 +17403,7 @@ static void portal_stop(void)
     portal_stop_btn = NULL;
     portal_info_ssid_label = NULL;
     portal_info_filename_label = NULL;
+    ap_suspend_control_cleanup();   // Package B: del refresh timer + drop label (page being torn down)
     portal_ui_active = false;
 
     // Full radio reset to STA-idle (matches Home). wifi_attacks_stop_portal leaves
@@ -18005,6 +18078,8 @@ static void radio_reset_to_idle(void)
     // ---- 1. Component-level attacks (wifi_attacks module) ----
     wifi_attacks_stop_all();
     wifi_attacks_stop_evil_twin();
+    // Package B: Back/Home/radio-reset destroys any held AP owner's resume eligibility.
+    wifi_attacks_ap_invalidate();
 
     // ---- 2. main.c-level attacks not covered by stop_all ----
 
@@ -20943,6 +21018,7 @@ static void rogue_ap_stop(void)
     wifi_attacks_stop_portal();
     wifi_attacks_set_evil_twin_event_cb(NULL);
     rogue_ap_status_list = NULL;
+    ap_suspend_control_cleanup();   // Package B: del refresh timer + drop label
     // Full radio reset to STA-idle (matches Home). wifi_attacks_stop_portal leaves
     // the driver in APSTA (a residual AP keeps broadcasting); radio_reset_to_idle
     // switches to STA-only so the service is truly down after ‹ Back.
@@ -20966,10 +21042,13 @@ static void rogue_ap_start_btn_cb(lv_event_t *e)
     
     // Create running page
     create_function_page_base("Rogue AP Active");
-    
+
     lv_obj_t *content = lv_obj_create(function_page);
-    lv_obj_set_size(content, lv_pct(100), lv_disp_get_ver_res(NULL) - 30);
-    lv_obj_align(content, LV_ALIGN_BOTTOM_MID, 0, 0);
+    // Package B: reserve a 60px bottom band for the Suspend/Resume control; place
+    // content just below the title bar (was BOTTOM_MID full height). Landscape-safe:
+    // ver=240 -> content 150 (y30..180), band y180..240; portrait ver=320 -> content 230.
+    lv_obj_set_size(content, lv_pct(100), lv_disp_get_ver_res(NULL) - 30 - 60);
+    lv_obj_align(content, LV_ALIGN_TOP_MID, 0, 30);
     lv_obj_set_style_bg_color(content, ui_bg_color(), 0);
     lv_obj_set_style_border_width(content, 0, 0);
     lv_obj_set_style_radius(content, 0, 0);
@@ -20995,6 +21074,10 @@ static void rogue_ap_start_btn_cb(lv_event_t *e)
     lv_obj_set_style_radius(rogue_ap_status_list, 8, 0);
     lv_obj_set_style_pad_all(rogue_ap_status_list, 4, 0);
     
+    // Package B: Suspend/Resume control for the attack-owned AP (reserved bottom band).
+    lv_obj_t *rogue_ap_ctrl = ap_add_suspend_control(function_page);
+    lv_obj_align(rogue_ap_ctrl, LV_ALIGN_BOTTOM_MID, 0, -8);
+
     // Top ‹ Back / Home stop the portal via the screen stop-hook
     // (run_screen_stop_fn → rogue_ap_stop). Redundant bottom "Stop & Exit" removed.
     g_screen_stop_fn = rogue_ap_stop;
@@ -23021,6 +23104,23 @@ static void show_gatt_timeout_popup(void)
 // ============================================================================
 
 static httpd_handle_t s_fileserv_httpd  = NULL;
+
+// Package B (#3): report whether a utility softAP (NTP clock AP / file server AP)
+// currently owns the shared AP interface, so an attack AP bring-up is refused
+// rather than silently clobbering it. Conservative — true only when a utility AP
+// is genuinely up: NTP in AP-NTP mode, or the file server HTTP running with the AP
+// interface active. A file server in STA mode, or attack residue (APSTA with no
+// file-server httpd), reads false, so normal attack starts are never refused.
+static bool cym_utility_ap_active(void)
+{
+    if (s_ntp_clock_active && s_clock_mode == CLOCK_MODE_AP_NTP) return true;
+    if (s_fileserv_httpd != NULL) {
+        wifi_mode_t m;
+        if (esp_wifi_get_mode(&m) == ESP_OK && (m == WIFI_MODE_AP || m == WIFI_MODE_APSTA))
+            return true;
+    }
+    return false;
+}
 static bool           s_fileserv_active = false;
 static lv_obj_t      *s_fileserv_ip_lbl = NULL;
 static lv_obj_t      *s_fileserv_status_lbl = NULL;

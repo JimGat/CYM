@@ -663,6 +663,36 @@
         "cc",
         "lvgl"
       ]
+    },
+    {
+      "id": "ap_owner_lifecycle",
+      "path": "tests/run_ap_owner_lifecycle_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ap_owner_queue",
+      "path": "tests/run_ap_owner_queue_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "ap_admit",
+      "path": "tests/run_ap_admit_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
     }
   ]
 }

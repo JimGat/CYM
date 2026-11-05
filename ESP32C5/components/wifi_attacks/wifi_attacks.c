@@ -14,6 +14,7 @@
 #include "lwip/netdb.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,6 +148,318 @@ static void verify_password(const char* password);
 static void save_evil_twin_password(const char* ssid, const char* password);
 static void save_portal_data(const char* ssid, const char* form_data);
 static void save_karma_data(const char* ssid, const char* form_data);
+
+/* ============================================================================
+ * Package B (base v3.0.44): softAP attack-owner request/result ownership core.
+ *
+ * Pure, side-effect-free lifecycle logic for suspend/resume of the attack-owned
+ * softAP (Evil Twin / Portal / Rogue). NO esp_wifi / RTOS calls live here on
+ * purpose: this layer only decides state, so it is host-extractable and
+ * ASan/UBSan-testable (tests/run_ap_owner_lifecycle_host.py). The functions are
+ * not yet wired into the start/stop paths (that is Package B slice 2), so they
+ * carry __attribute__((unused)); adding them changes no existing behaviour.
+ *
+ * Invariants enforced here (from the Package B design review):
+ *   - One IMMUTABLE request snapshot, built overlap-safe (resume may feed a
+ *     saved buffer straight back as the input) and bounds/null-checked.
+ *   - A failed STOP leaves the AP live/uncertain (AP_OWN_LIVE_UNCERTAIN), never
+ *     "held".
+ *   - A failed RESUME stays failed (AP_OWN_ERROR) with the request retained,
+ *     never reported as broadcasting.
+ *   - Back/Home/radio-reset/replacement bump the generation and drop any
+ *     in-flight result scheduled under the old generation (no resurrection).
+ * ========================================================================== */
+/* >>> CYM_AP_OWNER_TYPES_BEGIN (extracted verbatim by tests/run_ap_owner_lifecycle_host.py) */
+typedef enum { AP_REQ_NONE = 0, AP_REQ_EVIL_TWIN, AP_REQ_PORTAL, AP_REQ_ROGUE } ap_req_kind_t;
+typedef enum {
+    AP_OWN_IDLE = 0,        /* no attack-owned AP */
+    AP_OWN_ACTIVE,          /* owner live, broadcasting */
+    AP_OWN_SUSPENDING,      /* suspend scheduled, result pending */
+    AP_OWN_HELD,            /* confirmed stopped, request retained for resume */
+    AP_OWN_RESUMING,        /* resume scheduled, result pending */
+    AP_OWN_LIVE_UNCERTAIN,  /* stop did NOT confirm: possibly still live (not held) */
+    AP_OWN_ERROR            /* resume failed / partial resources; request retained */
+} ap_own_state_t;
+enum { AP_SNAP_OK = 0, AP_SNAP_ENULL = -1, AP_SNAP_ESSID = -2, AP_SNAP_EPASS = -3, AP_SNAP_ECHAN = -4 };
+typedef struct {
+    ap_req_kind_t kind;
+    char ssid[33];
+    char pass[64];
+    uint8_t bssid[6];
+    uint8_t channel;
+    bool has_target;
+    uint32_t generation;
+} ap_req_snapshot_t;
+typedef struct {
+    ap_own_state_t state;
+    ap_req_snapshot_t req;
+    uint32_t generation;
+} ap_owner_t;
+/* <<< CYM_AP_OWNER_TYPES_END */
+
+/* Build an immutable request snapshot. Overlap-safe: ssid/pass may alias *out
+ * (a resume can pass the saved snapshot's own buffers back in). Validates null,
+ * byte length and (for Rogue) a non-empty password and a legal channel. */
+static __attribute__((unused)) int ap_snapshot_build(ap_req_snapshot_t *out, int kind,
+                                                      const char *ssid, const char *pass,
+                                                      const uint8_t *bssid, int channel,
+                                                      int has_target, uint32_t generation) {
+    if (!out) return AP_SNAP_ENULL;
+    if ((kind == AP_REQ_EVIL_TWIN || kind == AP_REQ_ROGUE) && !ssid) return AP_SNAP_ENULL;
+    if (kind == AP_REQ_ROGUE && (!pass || pass[0] == '\0')) return AP_SNAP_EPASS;
+    if (channel < 0 || channel > 177) return AP_SNAP_ECHAN;  /* 2.4GHz 1-14 + 5GHz up to 177 (C5) */
+
+    char tssid[33];
+    char tpass[64];
+    size_t sn = ssid ? strnlen(ssid, sizeof(tssid)) : 0;
+    if (sn >= sizeof(tssid)) return AP_SNAP_ESSID;      /* 33+ bytes: no room for NUL */
+    size_t pn = pass ? strnlen(pass, sizeof(tpass)) : 0;
+    if (pn >= sizeof(tpass)) return AP_SNAP_EPASS;       /* 64+ bytes */
+
+    /* Copy inputs into stack temporaries BEFORE touching *out, so an input that
+     * aliases *out is read before it is overwritten. */
+    if (sn) memcpy(tssid, ssid, sn);
+    tssid[sn] = '\0';
+    if (pn) memcpy(tpass, pass, pn);
+    tpass[pn] = '\0';
+    uint8_t tb[6] = {0};
+    if (bssid && has_target) memcpy(tb, bssid, 6);
+
+    memset(out, 0, sizeof(*out));
+    out->kind = (ap_req_kind_t)kind;
+    memcpy(out->ssid, tssid, sn + 1);
+    memcpy(out->pass, tpass, pn + 1);
+    memcpy(out->bssid, tb, 6);
+    out->channel = (uint8_t)channel;
+    out->has_target = has_target ? true : false;
+    out->generation = generation;
+    return AP_SNAP_OK;
+}
+
+/* A new owner takes the AP: bump the generation and store the snapshot. */
+static __attribute__((unused)) ap_own_state_t ap_owner_begin(ap_owner_t *o, const ap_req_snapshot_t *snap) {
+    o->generation++;
+    o->req = *snap;
+    o->state = AP_OWN_ACTIVE;
+    return o->state;
+}
+
+/* Suspend completion. stop_ok = the stop primitive CONFIRMED the AP stopped.
+ * A result carrying a stale generation is dropped (no change). */
+static __attribute__((unused)) ap_own_state_t ap_owner_suspend_result(ap_owner_t *o, uint32_t captured_gen, int stop_ok) {
+    if (captured_gen != o->generation) return o->state;   /* stale suspend: drop */
+    if (o->state != AP_OWN_ACTIVE && o->state != AP_OWN_SUSPENDING) return o->state;
+    o->state = stop_ok ? AP_OWN_HELD : AP_OWN_LIVE_UNCERTAIN;
+    return o->state;                                       /* request retained either way */
+}
+
+/* Resume completion. start_ok = the start primitive CONFIRMED broadcasting.
+ * A result carrying a stale generation is dropped (no change). */
+static __attribute__((unused)) ap_own_state_t ap_owner_resume_result(ap_owner_t *o, uint32_t captured_gen, int start_ok) {
+    if (captured_gen != o->generation) return o->state;   /* stale completion: drop */
+    if (o->state != AP_OWN_HELD && o->state != AP_OWN_RESUMING) return o->state;
+    o->state = start_ok ? AP_OWN_ACTIVE : AP_OWN_ERROR;
+    return o->state;                                       /* request retained on ERROR */
+}
+
+/* Back/Home/radio-reset/replacement: destroy resume eligibility. */
+static __attribute__((unused)) uint32_t ap_owner_invalidate(ap_owner_t *o) {
+    o->generation++;
+    o->state = AP_OWN_IDLE;
+    o->req.kind = AP_REQ_NONE;
+    return o->generation;
+}
+
+static __attribute__((unused)) int ap_owner_can_resume(const ap_owner_t *o, uint32_t captured_gen) {
+    return o->state == AP_OWN_HELD && captured_gen == o->generation && o->req.kind != AP_REQ_NONE;
+}
+
+/* ---- Package B slice 2: bounded request queue + off-UI dispatch ----------
+ * The UI task never runs the (multi-second, blocking) AP stop/start work. It
+ * SCHEDULES an op (capturing the generation) and enqueues it; a single worker
+ * (slice 3) pops one op at a time, runs the checked radio primitive, and feeds
+ * the outcome back through ap_owner_dispatch(), which honours the generation
+ * captured at enqueue time — so a completion that lands after Back/Home/reset
+ * (invalidate) is reconciled away instead of resurrecting a departed owner.
+ * These remain pure and __attribute__((unused)) until slice 3 wires the task. */
+/* >>> CYM_AP_QUEUE_TYPES_BEGIN (extracted verbatim by tests/run_ap_owner_queue_host.py) */
+#define AP_REQQ_CAP 4
+typedef enum { AP_OP_NONE = 0, AP_OP_SUSPEND, AP_OP_RESUME } ap_owner_op_t;
+typedef struct { ap_owner_op_t op; uint32_t generation; } ap_req_t;
+typedef struct { ap_req_t slots[AP_REQQ_CAP]; uint8_t head; uint8_t tail; uint8_t count; } ap_reqq_t;
+/* <<< CYM_AP_QUEUE_TYPES_END */
+
+/* Enqueue one op. Rejects (returns 0) when full: no overwrite, no fabricated
+ * success, no unbounded growth. */
+static __attribute__((unused)) int ap_reqq_push(ap_reqq_t *q, ap_owner_op_t op, uint32_t generation) {
+    if (q->count >= AP_REQQ_CAP) return 0;
+    q->slots[q->tail].op = op;
+    q->slots[q->tail].generation = generation;
+    q->tail = (uint8_t)((q->tail + 1) % AP_REQQ_CAP);
+    q->count++;
+    return 1;
+}
+
+static __attribute__((unused)) int ap_reqq_pop(ap_reqq_t *q, ap_req_t *out) {
+    if (q->count == 0) return 0;
+    *out = q->slots[q->head];
+    q->head = (uint8_t)((q->head + 1) % AP_REQQ_CAP);
+    q->count--;
+    return 1;
+}
+
+/* Mark the owner as having an op in flight and capture the generation the op is
+ * scheduled under. The captured value travels with the request to dispatch. */
+static __attribute__((unused)) uint32_t ap_owner_schedule(ap_owner_t *o, ap_owner_op_t op) {
+    if (op == AP_OP_SUSPEND && o->state == AP_OWN_ACTIVE) o->state = AP_OWN_SUSPENDING;
+    else if (op == AP_OP_RESUME && o->state == AP_OWN_HELD) o->state = AP_OWN_RESUMING;
+    return o->generation;
+}
+
+/* Reconcile a completed primitive into the owner, using the generation captured
+ * when the op was enqueued (NOT the current one). */
+static __attribute__((unused)) ap_own_state_t ap_owner_dispatch(ap_owner_t *o, const ap_req_t *r, int primitive_ok) {
+    if (r->op == AP_OP_SUSPEND) return ap_owner_suspend_result(o, r->generation, primitive_ok);
+    if (r->op == AP_OP_RESUME)  return ap_owner_resume_result(o, r->generation, primitive_ok);
+    return o->state;
+}
+/* ===================== end Package B ownership core ====================== */
+
+/* ---- Package B slice 3b-1: checked radio primitives + off-UI worker --------
+ * The single attack-owned-AP state, its request queue and a worker task that
+ * runs the (multi-second, blocking) stop/start work OFF the LVGL task. The UI
+ * only SCHEDULES suspend/resume (wifi_attacks_ap_suspend/_resume), which enqueue
+ * under the mutex and wake the worker; the worker runs the primitive outside the
+ * mutex and dispatches the generation-checked result back in. Nothing here is
+ * called yet by the start paths or the UI (slice 3b-2 wires those and is the
+ * first behaviour change -> on-device RF verification), so the worker is created
+ * lazily and never spawns until a request arrives: adding this is zero-regression. */
+// Heap-allocated lazily so the classic ESP32 (tight DRAM) keeps only a pointer in
+// .bss (the static owner+queue overflowed classic-ESP32 dram0 by 72 bytes).
+typedef struct { ap_owner_t own; ap_reqq_t q; } ap_ctx_t;
+static ap_ctx_t        *s_apctx = NULL;
+static SemaphoreHandle_t s_ap_mtx  = NULL;
+static SemaphoreHandle_t s_ap_wake = NULL;
+static TaskHandle_t      s_ap_task = NULL;
+
+/* Really drop the attack-owned AP: stop its services, then go STA-only (the
+ * same "truly down" transition radio_reset_to_idle() performs for the portal),
+ * and confirm. Returns ESP_OK only when the AP is confirmed down. */
+static esp_err_t ap_suspend_primitive(ap_req_kind_t kind) {
+    if (kind == AP_REQ_EVIL_TWIN) wifi_attacks_stop_evil_twin();
+    else                          wifi_attacks_stop_portal();   /* portal + rogue */
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    wifi_mode_t m;
+    if (esp_wifi_get_mode(&m) != ESP_OK) return ESP_FAIL;
+    return (m == WIFI_MODE_STA && !portal_active) ? ESP_OK : ESP_FAIL;
+}
+
+/* Resume from the immutable snapshot. Copy into locals first: the start_*
+ * entries strncpy into their own globals, so we never pass a buffer they write. */
+static esp_err_t ap_resume_primitive(const ap_req_snapshot_t *s) {
+    char ssid[33];
+    char pass[64];
+    memcpy(ssid, s->ssid, sizeof(ssid));
+    memcpy(pass, s->pass, sizeof(pass));
+    switch (s->kind) {
+        case AP_REQ_EVIL_TWIN: return wifi_attacks_start_evil_twin(ssid, pass[0] ? pass : NULL);
+        case AP_REQ_PORTAL:    return wifi_attacks_start_portal(ssid);
+        case AP_REQ_ROGUE:     return wifi_attacks_start_rogue_ap(ssid, pass,
+                                       s->has_target ? s->bssid : NULL, s->channel);
+        default:               return ESP_FAIL;
+    }
+}
+
+static void ap_owner_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        xSemaphoreTake(s_ap_wake, portMAX_DELAY);
+        for (;;) {
+            ap_req_t req;
+            ap_req_kind_t kind;
+            int have;
+            xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+            have = ap_reqq_pop(&s_apctx->q, &req);
+            kind = s_apctx->own.req.kind;
+            xSemaphoreGive(s_ap_mtx);
+            if (!have) break;
+
+            int ok = 0;
+            if (req.op == AP_OP_SUSPEND) {
+                ok = (ap_suspend_primitive(kind) == ESP_OK);
+            } else if (req.op == AP_OP_RESUME) {
+                ap_req_snapshot_t snap;
+                xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+                snap = s_apctx->own.req;          /* immutable copy under the lock */
+                xSemaphoreGive(s_ap_mtx);
+                ok = (ap_resume_primitive(&snap) == ESP_OK);
+            }
+
+            xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+            ap_own_state_t st = ap_owner_dispatch(&s_apctx->own, &req, ok);
+            xSemaphoreGive(s_ap_mtx);
+            ESP_LOGI(TAG, "AP owner: op=%d ok=%d -> state=%d", (int)req.op, ok, (int)st);
+        }
+    }
+}
+
+static int ap_ensure_worker(void) {
+    if (!s_apctx)   { s_apctx = calloc(1, sizeof(*s_apctx)); if (!s_apctx) return 0; }
+    if (!s_ap_mtx)  s_ap_mtx  = xSemaphoreCreateMutex();
+    if (!s_ap_wake) s_ap_wake = xSemaphoreCreateBinary();
+    if (!s_ap_mtx || !s_ap_wake) return 0;
+    if (!s_ap_task) {
+        if (xTaskCreate(ap_owner_worker, "ap_owner", 4096, NULL, 5, &s_ap_task) != pdPASS) {
+            s_ap_task = NULL;
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static esp_err_t ap_enqueue(ap_owner_op_t op) {
+    if (!ap_ensure_worker()) return ESP_FAIL;
+    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+    uint32_t g = ap_owner_schedule(&s_apctx->own, op);
+    int pushed = ap_reqq_push(&s_apctx->q, op, g);
+    xSemaphoreGive(s_ap_mtx);
+    if (!pushed) return ESP_ERR_NO_MEM;     /* queue full: rejected, not fabricated */
+    xSemaphoreGive(s_ap_wake);
+    return ESP_OK;
+}
+
+esp_err_t wifi_attacks_ap_suspend(void) { return ap_enqueue(AP_OP_SUSPEND); }
+esp_err_t wifi_attacks_ap_resume(void)  { return ap_enqueue(AP_OP_RESUME); }
+
+/* Called by the attack start paths (slice 3b-2) to register the current owner
+ * with an immutable snapshot. Validates/copies; a bad request leaves no owner. */
+void wifi_attacks_ap_record_owner(int kind, const char *ssid, const char *pass,
+                                  const uint8_t *bssid, int channel, int has_target) {
+    if (!ap_ensure_worker()) return;
+    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+    ap_req_snapshot_t snap;
+    if (ap_snapshot_build(&snap, kind, ssid, pass, bssid, channel, has_target, 0) == AP_SNAP_OK) {
+        ap_owner_begin(&s_apctx->own, &snap);
+    }
+    xSemaphoreGive(s_ap_mtx);
+}
+
+/* Back/Home/radio-reset/replacement: destroy resume eligibility of any owner. */
+void wifi_attacks_ap_invalidate(void) {
+    if (!s_ap_mtx) return;
+    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+    ap_owner_invalidate(&s_apctx->own);
+    xSemaphoreGive(s_ap_mtx);
+}
+
+int wifi_attacks_ap_owner_state(void) {
+    if (!s_ap_mtx) return (int)AP_OWN_IDLE;
+    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
+    int st = (int)s_apctx->own.state;
+    xSemaphoreGive(s_ap_mtx);
+    return st;
+}
+/* ================= end Package B slice 3b-1 mechanism ==================== */
 static void url_decode(const char* src, char* dst, size_t dst_size);
 static void deauth_attack_task(void *pvParameters);
 
@@ -552,10 +865,30 @@ static void evil_twin_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+/* Package B (#3): utility-AP admission. The host app registers a query that
+ * reports whether a utility softAP (NTP / file server) currently owns the shared
+ * AP interface; an attack AP bring-up is refused while one does, so an attack
+ * never silently clobbers a utility service. No query registered => never refuse. */
+/* >>> CYM_AP_ADMIT_TYPES_BEGIN (extracted verbatim by tests/run_ap_admit_host.py) */
+typedef enum { AP_ADMIT_OK = 0, AP_ADMIT_REFUSE_UTILITY } ap_admit_t;
+/* <<< CYM_AP_ADMIT_TYPES_END */
+static bool (*s_utility_ap_cb)(void) = NULL;
+void wifi_attacks_set_utility_ap_cb(bool (*cb)(void)) { s_utility_ap_cb = cb; }
+
+static ap_admit_t ap_admit(int brings_up_ap, int utility_ap_owned, int handoff) {
+    if (brings_up_ap && utility_ap_owned && !handoff) return AP_ADMIT_REFUSE_UTILITY;
+    return AP_ADMIT_OK;
+}
+static int ap_utility_owned(void) { return s_utility_ap_cb ? (s_utility_ap_cb() ? 1 : 0) : 0; }
+
 esp_err_t wifi_attacks_start_evil_twin(const char *ssid, const char *password) {
     if (strlen(ssid) == 0) {
         ESP_LOGE(TAG, "SSID cannot be empty");
         return ESP_ERR_INVALID_ARG;
+    }
+    if (ap_admit(1, ap_utility_owned(), 0) != AP_ADMIT_OK) {
+        ESP_LOGW(TAG, "Evil Twin refused: a utility AP (NTP/file server) owns the interface");
+        return ESP_ERR_INVALID_STATE;
     }
     
     // Only set karma_mode to false if not already in Karma mode
@@ -680,10 +1013,12 @@ esp_err_t wifi_attacks_start_evil_twin(const char *ssid, const char *password) {
     
     wifi_scanner_save_target_bssids();
     wifi_attacks_start_deauth();
-    
+
     // Emit deauth started event
     emit_evil_twin_event(EVIL_TWIN_EVENT_DEAUTH_STARTED, evilTwinSSID, NULL);
-    
+
+    // Package B: register this attack-owned AP so it can be suspended/resumed.
+    wifi_attacks_ap_record_owner(AP_REQ_EVIL_TWIN, evilTwinSSID, evilTwinPassword, NULL, 0, 0);
     return ESP_OK;
 }
 
@@ -1724,20 +2059,27 @@ static esp_err_t start_portal_services(void)
 static void stop_portal_services(void)
 {
     if (!portal_active) return;
-    if (dns_server_socket >= 0) {
-        close(dns_server_socket);
-        dns_server_socket = -1;
-    }
+    // Package B (#6) DNS socket ownership: signal the DNS task to exit via the flag
+    // and let it close its OWN socket (single owner) instead of closing the socket
+    // here first. The task's recvfrom has a 1s SO_RCVTIMEO, so it observes the flag
+    // and exits within ~1s; this removes the stop-path-vs-task double-close of a
+    // descriptor that could have been reused.
+    portal_active = false;
     int wait_count = 0;
     while (dns_server_task_handle != NULL && wait_count < 50) {
         vTaskDelay(pdMS_TO_TICKS(100));
         wait_count++;
     }
+    // Safety net only: if the task never ran/closed it (e.g. task-create failed),
+    // close the still-open descriptor here. Normal exit leaves it already -1.
+    if (dns_server_socket >= 0) {
+        close(dns_server_socket);
+        dns_server_socket = -1;
+    }
     if (portal_server) {
         httpd_stop(portal_server);
         portal_server = NULL;
     }
-    portal_active = false;
 }
 
 static void dns_server_task(void *pvParameters) {
@@ -1883,6 +2225,10 @@ static void dns_server_task(void *pvParameters) {
 esp_err_t wifi_attacks_start_portal(const char *ssid) {
     const char *portal_ssid = ssid ? ssid : "Free WiFi";
     ESP_LOGI(TAG, "Starting captive portal: %s", portal_ssid);
+    if (ap_admit(1, ap_utility_owned(), 0) != AP_ADMIT_OK) {
+        ESP_LOGW(TAG, "Portal refused: a utility AP (NTP/file server) owns the interface");
+        return ESP_ERR_INVALID_STATE;
+    }
     
     // Store SSID for logging purposes
     strncpy(evilTwinSSID, portal_ssid, 32);
@@ -1972,7 +2318,9 @@ esp_err_t wifi_attacks_start_portal(const char *ssid) {
     
     // Emit portal deployed event
     emit_evil_twin_event(EVIL_TWIN_EVENT_PORTAL_DEPLOYED, evilTwinSSID, NULL);
-    
+
+    // Package B: register this attack-owned AP so it can be suspended/resumed.
+    wifi_attacks_ap_record_owner(AP_REQ_PORTAL, portal_ssid, NULL, NULL, 0, 0);
     return ESP_OK;
 }
 
@@ -1982,7 +2330,11 @@ esp_err_t wifi_attacks_start_rogue_ap(const char *ssid, const char *password,
         ESP_LOGE(TAG, "Rogue AP requires both SSID and password");
         return ESP_ERR_INVALID_ARG;
     }
-    
+    if (ap_admit(1, ap_utility_owned(), 0) != AP_ADMIT_OK) {
+        ESP_LOGW(TAG, "Rogue AP refused: a utility AP (NTP/file server) owns the interface");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     ESP_LOGI(TAG, "Starting Rogue AP: %s (ch %d)", ssid, channel);
     
     strncpy(evilTwinSSID, ssid, 32);
@@ -2074,7 +2426,10 @@ esp_err_t wifi_attacks_start_rogue_ap(const char *ssid, const char *password,
                  target_bssid[0], target_bssid[1], target_bssid[2],
                  target_bssid[3], target_bssid[4], target_bssid[5]);
     }
-    
+
+    // Package B: register this attack-owned AP so it can be suspended/resumed.
+    wifi_attacks_ap_record_owner(AP_REQ_ROGUE, ssid, password, target_bssid, channel,
+                                 target_bssid ? 1 : 0);
     return ESP_OK;
 }
 

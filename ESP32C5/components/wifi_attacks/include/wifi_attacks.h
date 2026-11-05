@@ -192,6 +192,36 @@ bool wifi_attacks_is_portal_active(void);
  */
 void wifi_attacks_set_karma_mode(bool enable);
 
+// ============================================================================
+// SOFTAP ATTACK-OWNER SUSPEND / RESUME (Package B)
+// ============================================================================
+// Suspend/resume of the attack-owned softAP (Evil Twin / Portal / Rogue) with an
+// immutable per-owner request snapshot and a worker that runs the stop/start work
+// off the UI task. wifi_attacks_ap_owner_state() returns an ap_own_state code:
+//   0 IDLE, 1 ACTIVE, 2 SUSPENDING, 3 HELD, 4 RESUMING, 5 LIVE_UNCERTAIN, 6 ERROR.
+
+/** @brief Record the current attack-owned AP owner (called from the start paths). */
+void wifi_attacks_ap_record_owner(int kind, const char *ssid, const char *pass,
+                                  const uint8_t *bssid, int channel, int has_target);
+
+/** @brief Schedule a suspend of the current owner (real stop runs on the worker). */
+esp_err_t wifi_attacks_ap_suspend(void);
+
+/** @brief Schedule a resume of a held owner from its snapshot. */
+esp_err_t wifi_attacks_ap_resume(void);
+
+/** @brief Destroy resume eligibility (Back/Home/radio-reset/replacement). */
+void wifi_attacks_ap_invalidate(void);
+
+/** @brief Current owner state code (see table above). */
+int wifi_attacks_ap_owner_state(void);
+
+/** @brief Register a query that reports whether a utility softAP (NTP / file
+ *  server) currently owns the shared AP interface. While it returns true, attack
+ *  AP bring-ups (Evil Twin / Portal / Rogue) are refused with ESP_ERR_INVALID_STATE.
+ *  Pass NULL to clear (then attacks are never refused on this basis). */
+void wifi_attacks_set_utility_ap_cb(bool (*cb)(void));
+
 /**
  * @brief Process pending karma data saves
  * Call this from main loop to avoid SPI conflicts with display
