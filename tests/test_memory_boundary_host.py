@@ -24,11 +24,12 @@ class MemoryBoundaryHost(unittest.TestCase):
     def test_clock_admission_precedes_radio_mutations(self):
         for name in ['ensure_wifi_mode','ensure_ble_mode','_ot_switch_to_wifi','_ot_switch_to_ble','_ot_switch_to_154','wdup_ensure_wifi']:
             self.assertRegex(self.main,r'static bool '+name+r'\([^;]*?\)\s*\{\s*if \(!clock_radio_admit\(\)\) return false;')
-        self.assertRegex(self.main,r'static void radio_reset_to_idle\(void\)\s*\{\s*if \(!clock_radio_reset_admit\(\)\) return;')
-        self.assertRegex(self.main,r'static void reset_function_page_children\(void\)\s*\{\s*clock_cancel_radio_navigation\(\);')
+        self.assertRegex(self.main,r'static void radio_reset_to_idle_impl\(void\)\s*\{\s*if \(!clock_radio_reset_admit\(\)\) return;')
+        self.assertRegex(self.main,r'static void reset_function_page_children\(void\)\s*\{\s*ap_suspend_control_cleanup\(\);\s*clock_cancel_radio_navigation\(\);')
         self.assertRegex(self.main,r'void show_menu\(void\)\s*\{\s*clock_cancel_radio_navigation\(\);')
         self.assertRegex(self.main,r'static void nav_back_cb\(lv_event_t \*e\)\s*\{\s*clock_cancel_radio_navigation\(\);')
         self.assertIn('show_menu(); // same Stop -> UI destruction',self.main)
         self.assertIn('if (clock_attack_route_uses_radio(name))',self.main)
         self.assertIn('clock_radio_handoff_poll();',self.main)
+        self.assertRegex(self.main,r'static void radio_reset_to_idle\(void\)\s*\{\s*wifi_attacks_ap_invalidate\(\);\s*if \(!wifi_attacks_radio_claim\(4\)\) return;\s*radio_reset_to_idle_impl\(\);\s*wifi_attacks_radio_release\(4\);')
         self.assertIn('if (!wifi_claimed) return;',self.main)

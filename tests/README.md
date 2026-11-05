@@ -215,3 +215,21 @@ See [cycle/operator evidence limits](../docs/testing/wardrive-gps-prompt-v3.0.44
 ```sh
 python3 -B tests/run_regression.py --suite portable --suite sdk-native --only wardrive_gps_prompt_nav --only wardrive_gps_prompt_lvgl --output /path/to/new/wardrive-proof
 ```
+
+## Package B AP lifecycle (Development v3.0.45)
+
+`run_ap_owner_lifecycle_host.py`, `run_ap_owner_queue_host.py` and
+`run_ap_admit_host.py` are portable pure decision-helper extractions only.
+`run_ap_worker_host.py` extracts the production admission, lazy allocation,
+queue/cancellation and worker step with scheduled SDK-boundary interleavings;
+requires installed IDF esp_err.h (IDF_PATH). `run_ap_services_host.py` extracts
+production HTTP/DNS start/stop/socket-owner exit, fault-injects every acquisition,
+and checks timeout retention; requires installed IDF esp_err/http_parser headers.
+`run_ap_controls_lvgl_host.py` compiles actual controls against installed LVGL8.4,
+checks callbacks, rejection/status, DELETE timer cleanup and scroll reachability
+in flex parents across five panel sizes/all rotations/both compositions. It does
+not instantiate complete running screens or prove physical input/legibility.
+All require CC; all generated output uses CYM_TEST_OUT and TMPDIR. Native tests
+use ASAN/UBSAN and strict semantic mutant classifications (86 + assertion or
+explicit RESULT failures), never compilation errors or random crashes. No SMP,
+real SDK operations, device stack/heap minima or RF proof is claimed.

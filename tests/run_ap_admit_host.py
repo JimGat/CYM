@@ -63,17 +63,17 @@ for name, f, mutant in variants:
     d.mkdir(exist_ok=True)
     (d / 'host.c').write_text(pre + types + '\n' + f + '\n' + post)
     cmd = [os.environ.get('CC', 'cc'), '-std=gnu11', '-g', '-O1', '-fsanitize=address,undefined',
-           '-fno-sanitize-recover=all', str(d / 'host.c'), '-o', str(d / 'host')]
+           '-fno-sanitize-recover=all', '-fno-pie', '-no-pie', str(d / 'host.c'), '-o', str(d / 'host')]
     b = subprocess.run(cmd, capture_output=True, text=True)
     (d / 'compile.log').write_text(b.stdout + b.stderr)
-    if mutant and b.returncode != 0:
-        print(name, 'PASS (rejected at compile)')
-        results.append(dict(name=name, compiled=False, ok=True, mutant=mutant))
-        continue
     assert b.returncode == 0, 'production must compile: ' + b.stderr
     run = subprocess.run([str(d / 'host')], capture_output=True, text=True)
     (d / 'run.log').write_text(run.stdout + run.stderr)
-    ok = (run.returncode != 0) if mutant else (run.returncode == 0 and 'PASS' in run.stdout)
+    assertion = 'Assertion' in run.stderr and 'failed' in run.stderr
+    intended_memory_finding = (name == 'unbounded-ssid' and
+        ('ERROR: AddressSanitizer: stack-buffer-overflow' in run.stderr or
+         'runtime error: index' in run.stderr))
+    ok = (assertion or intended_memory_finding) if mutant else (run.returncode == 0 and 'PASS' in run.stdout)
     print(name, 'PASS' if ok else 'FAIL', '| exit', run.returncode, '|', run.stdout.strip()[:60])
     results.append(dict(name=name, exit=run.returncode, ok=ok, mutant=mutant))
 

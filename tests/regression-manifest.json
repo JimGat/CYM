@@ -693,6 +693,41 @@
       "requires": [
         "cc"
       ]
+    },
+    {
+      "id": "ap_worker",
+      "path": "tests/run_ap_worker_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common"
+      ]
+    },
+    {
+      "id": "ap_services",
+      "path": "tests/run_ap_services_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common",
+        "idf-http-parser"
+      ]
+    },
+    {
+      "id": "ap_controls_lvgl",
+      "path": "tests/run_ap_controls_lvgl_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl",
+        "idf-common"
+      ]
     }
   ]
 }

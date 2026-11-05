@@ -1,9 +1,9 @@
-Development v3.0.44: co-developer @birolt29’s Patch24 fixes cached-GPS prompt/wait
-navigation orphans; JimGat integration hardens LVGL close ownership and cancels
-Clock-deferred starts on departure. No-data touch navigation is blocked and its
-orphan was not reproduced. [Release notes](docs/releases/v3.0.44-dev.md) ·
-[software/bench checklist](docs/testing/wardrive-gps-prompt-v3.0.44.txt).
-Final-artifact hardware acceptance remains pending; publication is parent-owned.
+Development v3.0.45 candidate: Package B AP suspend/resume by co-developer
+@birolt29, with JimGat lifecycle/admission/resource corrections. Portal and Rogue
+controls use asynchronous start/stop; the shared Evil Twin API is integrated, but
+there is no new Evil Twin running-view button. No physical/RF acceptance claimed.
+[Release notes](docs/releases/v3.0.45-dev.md) ·
+[operator checklist](docs/testing/ap-suspend-resume-v3.0.45.txt).
 
 <!-- v3.0.42 bounded contributor split: BLE correctness and compact Clock only. -->
 Development v3.0.42: narrow fixes from co-developer @birolt29; see [release notes](docs/releases/v3.0.42-dev.md) and [operator checks](docs/testing/patch22-23-split-operator-v3.0.42.txt). New global TX/AP/inhibit, power persistence, broad layout and HAT/PN532 routing changes are deferred; no new RF-silence or PN532 card-detection claim.
@@ -20,7 +20,7 @@ Existing board labels remain unchanged; host/CI success is not hardware acceptan
 <h1 align="center">Cheap Yellow Monster</h1>
 
 <p align="center">
-  <b>Stable v3.0.37 · Development v3.0.44</b>
+  <b>Stable v3.0.37 · Development v3.0.45</b>
 </p>
 
 <p align="center">

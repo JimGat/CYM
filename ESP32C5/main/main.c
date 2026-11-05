@@ -1109,6 +1109,9 @@ static atomic_bool s_clock_idle_reset_pending = false;
 static void (*s_clock_deferred_radio_fn)(void) = NULL;
 static bool clock_radio_admit(void);
 static bool clock_radio_reset_admit(void);
+static void ap_suspend_control_cleanup(void);
+static bool s_ap_clock_reserved;
+static bool s_ap_fileserv_reserved;
 static bool clock_defer_radio_navigation(void (*fn)(void));
 static void clock_radio_handoff_poll(void);
 static void clock_cancel_radio_navigation(void);
@@ -3505,6 +3508,7 @@ static void run_screen_stop_fn(void) {
 static void (*g_screen_back_fn)(void) = NULL;
 
 static void reset_function_page_children(void) {
+    ap_suspend_control_cleanup();
     clock_cancel_radio_navigation(); // offline navigation supersedes a queued radio tool
     run_screen_stop_fn();   // stop the OUTGOING screen's operation before tearing down its UI
     g_screen_back_fn = NULL;
@@ -3722,6 +3726,7 @@ static void reset_function_page_children(void) {
 static void create_function_page_base(const char *name);
 void show_function_page(const char *name);
 static void show_evil_twin_page(void);
+static void ap_suspend_control_cleanup(void);
 static lv_obj_t *ap_add_suspend_control(lv_obj_t *parent);  // Package B softAP suspend/resume control
 static bool cym_utility_ap_active(void);                    // Package B (#3) utility-AP-owned query
 static void evil_twin_start_btn_cb(lv_event_t *e);
@@ -17316,10 +17321,10 @@ static void portal_start_btn_cb(lv_event_t *e)
     }
 
     // Add initial "Portal Started" event
-    lv_textarea_add_text(portal_log_ta, "Portal Started\n");
+    lv_textarea_add_text(portal_log_ta, "Start queued - see AP state\n");
     lv_textarea_set_cursor_pos(portal_log_ta, LV_TEXTAREA_CURSOR_LAST);
 
-    ESP_LOGI(TAG, "Portal started successfully");
+    ESP_LOGI(TAG, "Portal start admitted");
 }
 
 // ── Package B: shared Suspend/Resume control for the attack-owned softAP ──────
@@ -17327,19 +17332,28 @@ static void portal_start_btn_cb(lv_event_t *e)
 // the wifi_attacks worker, off this LVGL task). State codes per wifi_attacks.h:
 // 0 IDLE,1 ACTIVE,2 SUSPENDING,3 HELD,4 RESUMING,5 LIVE_UNCERTAIN,6 ERROR.
 static lv_obj_t *s_ap_ctrl_btn_lbl = NULL;
+static bool s_ap_ctrl_rejected;
+static int s_ap_ctrl_rejected_state;
 static lv_timer_t *s_ap_ctrl_timer = NULL;   // settles the label after the async worker finishes
 
 static void ap_ctrl_refresh_label(void)
 {
     if (!s_ap_ctrl_btn_lbl) return;
     const char *t;
-    switch (wifi_attacks_ap_owner_state()) {
+    int state = wifi_attacks_ap_owner_state();
+    if (s_ap_ctrl_rejected && state == s_ap_ctrl_rejected_state) {
+        lv_label_set_text(s_ap_ctrl_btn_lbl, "Busy - retry"); return;
+    }
+    s_ap_ctrl_rejected = false;
+    switch (state) {
+        case 0: t = "AP idle"; break;
+        case 1: t = "Suspend AP"; break;
         case 2:  t = "Suspending..."; break;
         case 3:  t = "Resume AP"; break;
-        case 4:  t = "Resuming..."; break;
+        case 4:  t = "Starting AP..."; break;
         case 5:  t = "AP uncertain - retry stop"; break;
-        case 6:  t = "Resume failed - retry"; break;
-        default: t = "Suspend AP"; break;
+        case 6:  t = "Start failed - retry"; break;
+        default: t = "AP unavailable"; break;
     }
     lv_label_set_text(s_ap_ctrl_btn_lbl, t);
 }
@@ -17348,22 +17362,34 @@ static void ap_ctrl_btn_cb(lv_event_t *e)
 {
     (void)e;
     int st = wifi_attacks_ap_owner_state();
-    if (st == 1 || st == 5)      wifi_attacks_ap_suspend();  // ACTIVE / LIVE_UNCERTAIN -> (re)stop
-    else if (st == 3 || st == 6) wifi_attacks_ap_resume();   // HELD / ERROR -> (re)start
+    esp_err_t rc = ESP_OK;
+    if (st == 1 || st == 5) rc = wifi_attacks_ap_suspend();
+    else if (st == 3 || st == 6) rc = wifi_attacks_ap_resume();
+    s_ap_ctrl_rejected = rc != ESP_OK;
+    s_ap_ctrl_rejected_state = st;
     // IDLE / SUSPENDING / RESUMING: ignore the tap (no owner, or an op already in flight)
     ap_ctrl_refresh_label();
 }
 
 static void ap_ctrl_timer_cb(lv_timer_t *t)
 {
-    (void)t;
+    if (t != s_ap_ctrl_timer) return;
     ap_ctrl_refresh_label();   // poll the owner state so the label settles after the worker finishes
+}
+
+static void ap_ctrl_delete_cb(lv_event_t *e)
+{
+    if (s_ap_ctrl_btn_lbl && lv_obj_get_parent(s_ap_ctrl_btn_lbl) == lv_event_get_target(e))
+        ap_suspend_control_cleanup();
 }
 
 static lv_obj_t *ap_add_suspend_control(lv_obj_t *parent)
 {
+    ap_suspend_control_cleanup();
+    s_ap_ctrl_rejected = false;
     lv_obj_t *btn = lv_btn_create(parent);
     lv_obj_set_size(btn, lv_pct(90), 44);
+    lv_obj_add_event_cb(btn, ap_ctrl_delete_cb, LV_EVENT_DELETE, NULL);
     lv_obj_t *l = lv_label_create(btn);
     lv_obj_center(l);
     s_ap_ctrl_btn_lbl = l;
@@ -17381,6 +17407,7 @@ static void ap_suspend_control_cleanup(void)
 {
     if (s_ap_ctrl_timer) { lv_timer_del(s_ap_ctrl_timer); s_ap_ctrl_timer = NULL; }
     s_ap_ctrl_btn_lbl = NULL;
+    s_ap_ctrl_rejected = false;
 }
 
 // Screen-exit teardown for Captive Portal — runs via g_screen_stop_fn on ANY exit
@@ -17406,12 +17433,7 @@ static void portal_stop(void)
     ap_suspend_control_cleanup();   // Package B: del refresh timer + drop label (page being torn down)
     portal_ui_active = false;
 
-    // Full radio reset to STA-idle (matches Home). wifi_attacks_stop_portal leaves
-    // the driver in APSTA with the "Free WiFi" AP config still set, so it keeps
-    // broadcasting after ‹ Back; radio_reset_to_idle switches to STA-only so the
-    // portal AP is truly down (@birolt29: portal didn't close on ‹ Back, only on Home).
-    // Safe: the Portal running screen is terminal (Portal Data is a separate tile).
-    radio_reset_to_idle();
+    wifi_attacks_ap_invalidate();
 }
 
 // ── Go Dark confirmation dialog ───────────────────────────────────────────────
@@ -18056,7 +18078,16 @@ static void create_function_page_base(const char *name)
 // Radio Reset: full WiFi/BT cleanup on every return to main menu
 // ============================================================================
 
+static void radio_reset_to_idle_impl(void);
 static void radio_reset_to_idle(void)
+{
+    wifi_attacks_ap_invalidate();
+    if (!wifi_attacks_radio_claim(4)) return;
+    radio_reset_to_idle_impl();
+    wifi_attacks_radio_release(4);
+}
+
+static void radio_reset_to_idle_impl(void)
 {
     if (!clock_radio_reset_admit()) return;
     if (wscope_task_handle && !wscope_worker_stop()) return;
@@ -18078,8 +18109,6 @@ static void radio_reset_to_idle(void)
     // ---- 1. Component-level attacks (wifi_attacks module) ----
     wifi_attacks_stop_all();
     wifi_attacks_stop_evil_twin();
-    // Package B: Back/Home/radio-reset destroys any held AP owner's resume eligibility.
-    wifi_attacks_ap_invalidate();
 
     // ---- 2. main.c-level attacks not covered by stop_all ----
 
@@ -21019,10 +21048,7 @@ static void rogue_ap_stop(void)
     wifi_attacks_set_evil_twin_event_cb(NULL);
     rogue_ap_status_list = NULL;
     ap_suspend_control_cleanup();   // Package B: del refresh timer + drop label
-    // Full radio reset to STA-idle (matches Home). wifi_attacks_stop_portal leaves
-    // the driver in APSTA (a residual AP keeps broadcasting); radio_reset_to_idle
-    // switches to STA-only so the service is truly down after ‹ Back.
-    radio_reset_to_idle();
+    wifi_attacks_ap_invalidate();
 }
 
 static void rogue_ap_start_btn_cb(lv_event_t *e)
@@ -21041,7 +21067,7 @@ static void rogue_ap_start_btn_cb(lv_event_t *e)
     }
     
     // Create running page
-    create_function_page_base("Rogue AP Active");
+    create_function_page_base("Rogue AP");
 
     lv_obj_t *content = lv_obj_create(function_page);
     // Package B: reserve a 60px bottom band for the Suspend/Resume control; place
@@ -23113,13 +23139,11 @@ static httpd_handle_t s_fileserv_httpd  = NULL;
 // file-server httpd), reads false, so normal attack starts are never refused.
 static bool cym_utility_ap_active(void)
 {
-    if (s_ntp_clock_active && s_clock_mode == CLOCK_MODE_AP_NTP) return true;
-    if (s_fileserv_httpd != NULL) {
-        wifi_mode_t m;
-        if (esp_wifi_get_mode(&m) == ESP_OK && (m == WIFI_MODE_AP || m == WIFI_MODE_APSTA))
-            return true;
-    }
-    return false;
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_OK) return true;
+    wifi_ap_record_t sta;
+    esp_err_t rc = esp_wifi_sta_get_ap_info(&sta);
+    return rc != ESP_ERR_WIFI_NOT_CONNECT; /* associated or unknown => refuse */
 }
 static bool           s_fileserv_active = false;
 static lv_obj_t      *s_fileserv_ip_lbl = NULL;
@@ -23612,7 +23636,10 @@ static bool s_fileserv_httpd_start(void)
 
 static void s_fileserv_httpd_stop(void)
 {
-    if (s_fileserv_httpd) { httpd_stop(s_fileserv_httpd); s_fileserv_httpd = NULL; }
+    if (s_fileserv_httpd) {
+        if (httpd_stop(s_fileserv_httpd) != ESP_OK) return;
+        s_fileserv_httpd = NULL;
+    }
     s_fileserv_active = false;
 }
 
@@ -23716,9 +23743,21 @@ static void fileserv_stop(void)
     s_wcs_active_ta = NULL;
     s_wcs_conn_btn  = NULL;
     s_wcs_conn_lbl  = NULL;
-    if (s_wcs_connected) esp_wifi_disconnect();  /* ensure clean disconnect on Back */
+    if (s_ap_fileserv_reserved && s_wcs_connected) esp_wifi_disconnect();  /* ensure clean disconnect on Back */
     s_wcs_connected = false;
-    s_fileserv_httpd_stop();
+    if (s_ap_fileserv_reserved) {
+        s_fileserv_httpd_stop();
+        /* Keep reservation over a live/uncertain HTTP owner. AP teardown remains
+         * synchronous utility policy; no worker can acquire during this step. */
+        if (!s_fileserv_httpd) {
+            wifi_mode_t mode;
+            if (esp_wifi_get_mode(&mode) == ESP_OK &&
+                ((mode != WIFI_MODE_AP && mode != WIFI_MODE_APSTA) || esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK)) {
+                wifi_attacks_radio_release(3);
+                s_ap_fileserv_reserved = false;
+            }
+        }
+    }
     s_wdup_pending_after_wifi = false;    /* consumed on any exit */
     s_wpasec_pending_after_wifi = false;
     s_ntp_pending_after_wifi = false;
@@ -23789,6 +23828,12 @@ static void show_ap_file_server_screen(void)
     lv_obj_set_style_text_font(s_fileserv_status_lbl, &lv_font_montserrat_12, 0);
     lv_obj_align(s_fileserv_status_lbl, LV_ALIGN_TOP_MID, 0, 175);
 
+    /* Reserve shared AP/STA before even pending utility startup. */
+    if (!s_ap_fileserv_reserved && !wifi_attacks_radio_claim(3)) {
+        lv_label_set_text_static(s_fileserv_status_lbl, "Radio busy - reopen to retry");
+        return;
+    }
+    s_ap_fileserv_reserved = true;
     /* Start the AP and HTTP server */
     ensure_wifi_mode();
 
@@ -24042,8 +24087,13 @@ static void s_wcs_connect_cb(lv_event_t *e)
         return;
     }
 
-    /* ── Connect path ── */
+    /* Connect path: protect the STA interface as well as AP/HTTP startup. */
     if (!s_wcs_ssid_ta || !s_wcs_pass_ta) return;
+    if (!s_ap_fileserv_reserved && !wifi_attacks_radio_claim(3)) {
+        if (s_fileserv_status_lbl) lv_label_set_text_static(s_fileserv_status_lbl, "Radio busy - retry");
+        return;
+    }
+    s_ap_fileserv_reserved = true;
     const char *ssid = lv_textarea_get_text(s_wcs_ssid_ta);
     const char *pass = lv_textarea_get_text(s_wcs_pass_ta);
 
@@ -29465,13 +29515,17 @@ static void clock_network_release(clock_mode_t mode, bool wifi_claimed)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     s_ntp_udp_ok = false;
+    /* A parked worker is the reservation release acknowledgement. Do not park
+     * or let a new AP owner in while restoration is still uncertain. */
     if (mode == CLOCK_MODE_AP_NTP) {
-        esp_wifi_set_mode(WIFI_MODE_STA);
+        while (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) vTaskDelay(pdMS_TO_TICKS(100));
     } else if (mode == CLOCK_MODE_CLIENT_NTP) {
-        esp_wifi_disconnect();
+        esp_err_t rc;
+        while ((rc = esp_wifi_disconnect()) != ESP_OK && rc != ESP_ERR_WIFI_NOT_CONNECT)
+            vTaskDelay(pdMS_TO_TICKS(100));
     }
 #if CONFIG_BOARD_HAS_5GHZ
-    esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
+    while (esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO) != ESP_OK) vTaskDelay(pdMS_TO_TICKS(100));
 #endif
 }
 
@@ -29485,6 +29539,10 @@ static void clock_network_cleanup_poll(void)
         s_ntp_wifi_task = NULL;
         s_clock_radio_task = NULL;
         s_clock_radio_reserved = false; // no radio writes remain after worker suspension
+        if (s_ap_clock_reserved) {
+            wifi_attacks_radio_release(2);
+            s_ap_clock_reserved = false;
+        }
     }
     if (!s_ntp_stopping) return;
     s_ntp_wifi_connected = false;
@@ -29499,6 +29557,7 @@ static void clock_network_cleanup_poll(void)
 // every other radio claimant must retry until the old owner has parked/reaped.
 static bool clock_radio_admit(void)
 {
+    if (wifi_attacks_ap_owner_state() != 0) return false;
     if (!s_clock_radio_reserved && !s_clock_idle_reset_pending) return true;
     TaskHandle_t owner = s_clock_radio_task;
     return owner && owner == xTaskGetCurrentTaskHandle();
@@ -29515,6 +29574,13 @@ static bool clock_radio_reset_admit(void)
 // Home/Back/offline page creation clears it; ordinary input is never locked.
 static bool clock_defer_radio_navigation(void (*fn)(void))
 {
+    /* Reuse the existing bounded UI handoff: do not enter another radio tool
+     * until cancelled attack resources have actually retired. */
+    if (wifi_attacks_ap_owner_state() != 0) {
+        wifi_attacks_ap_invalidate();
+        s_clock_deferred_radio_fn = fn;
+        return true;
+    }
     if (s_ntp_clock_active) clock_stop();
     clock_network_cleanup_poll();
     if (s_clock_radio_reserved) {
@@ -29535,6 +29601,7 @@ static void clock_cancel_radio_navigation(void)
 
 static void clock_radio_handoff_poll(void)
 {
+    if (wifi_attacks_ap_owner_state() != 0) return;
     clock_network_cleanup_poll();
     if (s_clock_radio_reserved) return;
     if (s_clock_idle_reset_pending) {
@@ -30201,10 +30268,18 @@ static void show_clock_screen(void)
     s_ntp_wifi_failed = false;
     s_ntp_ip_str[0] = '\0';
     if (s_clock_mode != CLOCK_MODE_DISPLAY_ONLY) {
+        if (!wifi_attacks_radio_claim(2)) {
+            s_ntp_wifi_failed = true;
+            s_ntp_net_status = "Radio busy - retry Clock";
+            return;
+        }
+        s_ap_clock_reserved = true;
         s_clock_radio_task = NULL;
         s_clock_radio_reserved = true; // reserve before worker can run on another core
         BaseType_t rc = xTaskCreate(clock_wifi_task, "clock_wifi", 4096, (void *)(intptr_t)s_clock_mode, 5, &s_ntp_wifi_task);
         if (rc != pdPASS) {
+            wifi_attacks_radio_release(2);
+            s_ap_clock_reserved = false;
             s_clock_radio_reserved = false;
             s_ntp_wifi_failed = true;
             ESP_LOGE(TAG, "Clock WiFi task create rc=%d internal free=%u largest=%u",

@@ -56,21 +56,21 @@ int main(void) {
     assert(s.kind == AP_REQ_EVIL_TWIN && s.generation == 0);
     assert(ap_snapshot_build(&s, AP_REQ_ROGUE, "R", NULL, NULL, 6, 0, 0) == AP_SNAP_EPASS);   /* rogue needs pass */
     assert(ap_snapshot_build(&s, AP_REQ_EVIL_TWIN, NULL, "p", NULL, 0, 0, 0) == AP_SNAP_ENULL);
-    assert(ap_snapshot_build(&s, AP_REQ_EVIL_TWIN, "x", "p", NULL, 200, 0, 0) == AP_SNAP_ECHAN); /* >177 invalid */
+    assert(ap_snapshot_build(&s, AP_REQ_EVIL_TWIN, "x", "password", NULL, 200, 0, 0) == AP_SNAP_ECHAN); /* >177 invalid */
     char longssid[64]; memset(longssid, 'A', 63); longssid[63] = '\0';
     assert(ap_snapshot_build(&s, AP_REQ_EVIL_TWIN, longssid, "p", NULL, 0, 0, 0) == AP_SNAP_ESSID); /* 33+ rejected */
 
     /* ---- overlap-safe copy: input aliases *out (resume feeds its own buffers) ---- */
     memset(&s, 0, sizeof(s));
     strcpy(s.ssid, "AliasMe");
-    strcpy(s.pass, "pwpw");
+    strcpy(s.pass, "pwpwpwpw");
     assert(ap_snapshot_build(&s, AP_REQ_PORTAL, s.ssid, s.pass, NULL, 1, 0, 7) == AP_SNAP_OK);
-    assert(strcmp(s.ssid, "AliasMe") == 0 && strcmp(s.pass, "pwpw") == 0 && s.generation == 7);
+    assert(strcmp(s.ssid, "AliasMe") == 0 && strcmp(s.pass, "pwpwpwpw") == 0 && s.generation == 7);
 
     /* ---- rogue target copied by value ---- */
-    uint8_t bssid[6] = {1, 2, 3, 4, 5, 6};
+    uint8_t bssid[6] = {2, 2, 3, 4, 5, 6};
     assert(ap_snapshot_build(&s, AP_REQ_ROGUE, "RG", "rgpass12", bssid, 149, 1, 0) == AP_SNAP_OK); /* 5GHz ch accepted */
-    assert(s.has_target && s.bssid[0] == 1 && s.bssid[5] == 6 && s.channel == 149);
+    assert(s.has_target && s.bssid[0] == 2 && s.bssid[5] == 6 && s.channel == 149);
 
     /* ---- happy lifecycle: begin -> suspend ok -> held -> resume ok -> active ---- */
     ap_owner_t o; memset(&o, 0, sizeof(o));
@@ -121,7 +121,7 @@ variants = [
     # stale suspend applied instead of dropped
     ('ignore-stale-suspend', funcs.replace('if (captured_gen != o->generation) return o->state;   /* stale suspend: drop */', ''), True),
     # unbounded ssid copy (overlaps/overflows fixed buffer -> ASan)
-    ('unbounded-ssid', funcs.replace('size_t sn = ssid ? strnlen(ssid, sizeof(tssid)) : 0;\n    if (sn >= sizeof(tssid)) return AP_SNAP_ESSID;      /* 33+ bytes: no room for NUL */',
+    ('unbounded-ssid', funcs.replace('size_t sn = ssid ? strnlen(ssid, sizeof(tssid)) : 0;\n    if (sn == 0 || sn >= sizeof(tssid)) return AP_SNAP_ESSID;',
                                      'size_t sn = ssid ? strlen(ssid) : 0;'), True),
 ]
 
@@ -131,19 +131,17 @@ for name, f, mutant in variants:
     d.mkdir(exist_ok=True)
     (d / 'host.c').write_text(pre + types + '\n' + f + '\n' + post)
     cmd = [os.environ.get('CC', 'cc'), '-std=gnu11', '-g', '-O1', '-fsanitize=address,undefined',
-           '-fno-sanitize-recover=all', str(d / 'host.c'), '-o', str(d / 'host')]
+           '-fno-sanitize-recover=all', '-fno-pie', '-no-pie', str(d / 'host.c'), '-o', str(d / 'host')]
     b = subprocess.run(cmd, capture_output=True, text=True)
     (d / 'compile.log').write_text(b.stdout + b.stderr)
-    if mutant and b.returncode != 0:
-        # a mutant that fails to even compile is also "detected"
-        ok = True
-        print(name, 'PASS (rejected at compile)')
-        results.append(dict(name=name, compiled=False, ok=ok, mutant=mutant))
-        continue
     assert b.returncode == 0, 'production must compile: ' + b.stderr
     run = subprocess.run([str(d / 'host')], capture_output=True, text=True)
     (d / 'run.log').write_text(run.stdout + run.stderr)
-    ok = (run.returncode != 0) if mutant else (run.returncode == 0 and 'PASS' in run.stdout)
+    assertion = 'Assertion' in run.stderr and 'failed' in run.stderr
+    intended_memory_finding = (name == 'unbounded-ssid' and
+        ('ERROR: AddressSanitizer: stack-buffer-overflow' in run.stderr or
+         'runtime error: index' in run.stderr))
+    ok = (assertion or intended_memory_finding) if mutant else (run.returncode == 0 and 'PASS' in run.stdout)
     print(name, 'PASS' if ok else 'FAIL', '| exit', run.returncode, '|', run.stdout.strip()[:60])
     results.append(dict(name=name, exit=run.returncode, ok=ok, mutant=mutant))
 

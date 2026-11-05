@@ -200,9 +200,11 @@ void wifi_attacks_set_karma_mode(bool enable);
 // off the UI task. wifi_attacks_ap_owner_state() returns an ap_own_state code:
 //   0 IDLE, 1 ACTIVE, 2 SUSPENDING, 3 HELD, 4 RESUMING, 5 LIVE_UNCERTAIN, 6 ERROR.
 
-/** @brief Record the current attack-owned AP owner (called from the start paths). */
-void wifi_attacks_ap_record_owner(int kind, const char *ssid, const char *pass,
-                                  const uint8_t *bssid, int channel, int has_target);
+/* Shared radio lifetime reservations: 2 Clock, 3 file transfer, 4 reset.
+ * Nonblocking claim; release only after the owner's final radio write. */
+bool wifi_attacks_radio_claim(int owner);
+void wifi_attacks_radio_release(int owner);
+esp_err_t wifi_attacks_ap_last_error(void);
 
 /** @brief Schedule a suspend of the current owner (real stop runs on the worker). */
 esp_err_t wifi_attacks_ap_suspend(void);
@@ -219,7 +221,7 @@ int wifi_attacks_ap_owner_state(void);
 /** @brief Register a query that reports whether a utility softAP (NTP / file
  *  server) currently owns the shared AP interface. While it returns true, attack
  *  AP bring-ups (Evil Twin / Portal / Rogue) are refused with ESP_ERR_INVALID_STATE.
- *  Pass NULL to clear (then attacks are never refused on this basis). */
+ *  Pass NULL to close attack admission (fail closed). */
 void wifi_attacks_set_utility_ap_cb(bool (*cb)(void));
 
 /**

@@ -2779,7 +2779,7 @@
         "stdlib"
       ],
       "gate": "portable",
-      "note": "Package B production-extracted ASAN/UBSAN softAP suspend/resume ownership (snapshot validation/overlap-safe copy, held/live-uncertain/error, stale-drop) and semantic mutants; no hardware proof"
+      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
     },
     {
       "path": "tests/run_ap_owner_queue_host.py",
@@ -2789,7 +2789,7 @@
         "stdlib"
       ],
       "gate": "portable",
-      "note": "Package B production-extracted ASAN/UBSAN bounded request queue + generation-honouring dispatch (off-UI hand-off, stale/replacement reconcile) and semantic mutants; no hardware proof"
+      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
     },
     {
       "path": "tests/run_ap_admit_host.py",
@@ -2799,7 +2799,78 @@
         "stdlib"
       ],
       "gate": "portable",
-      "note": "Package B production-extracted ASAN/UBSAN utility-AP admission (refuse attack AP bring-up while a utility AP owns the interface) and semantic mutant; no hardware proof"
+      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
+    },
+    {
+      "path": "tests/run_ap_worker_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common"
+      ]
+    },
+    {
+      "path": "tests/run_ap_services_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common",
+        "idf-http-parser"
+      ]
+    },
+    {
+      "path": "tests/run_ap_controls_lvgl_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl",
+        "idf-common"
+      ]
     }
   ],
   "support_files": [

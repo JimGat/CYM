@@ -1,0 +1,36 @@
+Package B v3.0.45 — software operator and later authorized bench checklist
+
+Only on ESP32-Dev as dev:
+  cd /home/dev/projects/CYM-NM28C5-jarvis-ws35-docs
+  export PYTHONDONTWRITEBYTECODE=1 IDF_PATH=/home/dev/esp/esp-idf
+  export TMPDIR=/home/dev/projects/cym-package-b-045/tmp
+  export CYM_TEST_OUT=/home/dev/projects/cym-package-b-045/operator-new
+  mkdir -p "$CYM_TEST_OUT"
+  python3 -B tests/run_ap_owner_lifecycle_host.py
+  python3 -B tests/run_ap_owner_queue_host.py
+  python3 -B tests/run_ap_admit_host.py
+  python3 -B tests/run_ap_worker_host.py
+  python3 -B tests/run_ap_services_host.py
+  python3 -B tests/run_ap_controls_lvgl_host.py
+
+Expected: production assertions pass; mutants fail specific semantic assertions,
+not compilation/startup. Worker and services require installed IDF error/HTTP
+headers, controls additionally managed LVGL8.4. These commands do not flash or
+exercise RF. Pure helpers alone do not test worker or SDK concurrency.
+
+Package gate after nine final-source builds (read-only):
+  python3 -B scripts/verify-dev-packages.py --version v3.0.45 --output /home/dev/projects/cym-package-b-045/operator-packages
+Expected: nine unique profiles, 36 artifacts, correct descriptors and merged
+segments. Consult --help if requesting machine-readable evidence output.
+
+Later bench work requires separate authorization; none is executed by this cycle.
+On the exact approved profile/version: Portal or Rogue start reports queued then
+Suspend AP only after readiness. Suspend -> Suspending -> Resume AP only after
+confirmed teardown; uncertainty stays AP uncertain - retry stop. Explicit Resume
+restores original effective selection and AP identity. Home/Back destroys resume
+eligibility; a later utility AP must never be stopped by obsolete attack work.
+Check both layouts, all rotations, scrolled controls, fast toggles, failure/retry,
+Clock and file-server pending/active handoffs, repeated Home/reentry. There is no
+new ET button. Ask for raw version-bound device heap/stack/UI and timestamped
+RF captures before accepting physical behavior or latency. Do not erase NVS,
+change partitions, flash Stable, or treat cached scanner disappearance as timing.

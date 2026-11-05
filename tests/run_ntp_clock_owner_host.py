@@ -42,6 +42,7 @@ static bool wscope_worker_stop(void){return !wscope_task_handle;}
 #define ESP_ERR_INVALID_STATE 0x103
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 4
+#define ESP_ERR_WIFI_NOT_CONNECT 0x300f
 #define WIFI_MODE_STA 1
 #define WIFI_BAND_MODE_AUTO 0
 #define CLOCK_MODE_DISPLAY_ONLY 0
@@ -64,7 +65,12 @@ static TaskHandle_t current_task=(void *)9;
 static TaskHandle_t xTaskGetCurrentTaskHandle(void) { return current_task; }
 static bool clock_radio_admit(void),clock_radio_reset_admit(void);
 static void clock_stop(void),clock_network_cleanup_poll(void);
-static int resets,radio_writes,ble_inits,wifi_inits,new_calls;
+static int resets,radio_writes,ble_inits,wifi_inits,new_calls,shared_releases,cleanup_fails;
+static bool s_ap_clock_reserved;
+static int ap_state,ap_cancel;
+static int wifi_attacks_ap_owner_state(void){return ap_state;}
+static void wifi_attacks_ap_invalidate(void){ap_cancel++;}
+static void wifi_attacks_radio_release(int owner){assert(owner==2);shared_releases++;}
 static void radio_reset_to_idle(void) { if(clock_radio_reset_admit()){resets++;} }
 static void new_ble(void);
 static void new_wifi(void);
@@ -98,7 +104,7 @@ static int mdns_free_wait(void) { freed++;return ESP_OK; }
 static int cym_ntp_server_stop_wait(uint32_t ms) { assert(ms==0);wait_calls++;if(running)return ESP_ERR_TIMEOUT;stopped++;return ESP_OK; }
 static void vTaskDelay(unsigned ms) { assert(ms);now+=100000;running=0; }
 static int64_t esp_timer_get_time(void) { return now; }
-static int esp_wifi_set_mode(int mode) { (void)mode;assert(!running);radio_writes++;return 0; }
+static int esp_wifi_set_mode(int mode) { (void)mode;assert(!running);radio_writes++;return cleanup_fails-- > 0 ? ESP_FAIL : 0; }
 static int esp_wifi_disconnect(void) { assert(!running);radio_writes++;return 0; }
 static int esp_wifi_set_band_mode(int mode) { (void)mode;radio_writes++;return 0; }
 
@@ -155,13 +161,20 @@ __OWNER_CASES__
 }
 """
 owner=r"""
+    if(c==40) {
+        ap_state=1;assert(!clock_radio_admit());
+        assert(clock_defer_radio_navigation(new_wifi) && ap_cancel==1);
+        clock_radio_handoff_poll();assert(!new_calls && s_clock_deferred_radio_fn);
+        ap_state=5;clock_radio_handoff_poll();assert(!new_calls);
+        ap_state=0;clock_radio_handoff_poll();assert(new_calls==1 && !s_clock_deferred_radio_fn);
+    }
     if(c==30) {
-        s_ntp_stopping=true;s_ntp_wifi_task=(void *)1;phase=eRunning;
-        clock_network_cleanup_poll();assert(!deletes && s_ntp_wifi_task && s_ntp_stopping);
-        phase=eSuspended;clock_network_cleanup_poll();assert(deletes==1 && !s_ntp_wifi_task && !s_ntp_stopping);
+        s_ntp_stopping=true;s_ntp_wifi_task=(void *)1;phase=eRunning;s_ap_clock_reserved=true;
+        clock_network_cleanup_poll();assert(!deletes && s_ntp_wifi_task && s_ntp_stopping && !shared_releases);
+        phase=eSuspended;clock_network_cleanup_poll();assert(deletes==1 && !s_ntp_wifi_task && !s_ntp_stopping && shared_releases==1 && !s_ap_clock_reserved);
     }
     if(c==31) {
-        s_ntp_stopping=true;s_ntp_mdns_owned=true;running=1;
+        s_ntp_stopping=true;s_ntp_mdns_owned=true;running=1;cleanup_fails=2;
         clock_network_release(s_clock_mode,true);assert(freed==1 && stopped==1 && wait_calls>=2);
     }
     if(c==32) {
@@ -213,6 +226,6 @@ owner=r"""
 p=e/'ntp_clock_owner_generated.c';p.write_text(code.replace('__PRODUCTION__',prod).replace('__OWNER_CASES__',owner))
 b=e/'ntp_clock_owner_host'
 subprocess.run(['cc','-std=c11','-D_DEFAULT_SOURCE','-Wall','-Wextra','-Wno-unused-function','-Wno-unused-variable',str(p),'-o',str(b)],check=True)
-cases=[0,1,2,3,4,11,12,13,14,20]+([30,31,32,33,34,35,36,37,38,39] if len(names)>1 else [])
+cases=[0,1,2,3,4,11,12,13,14,20]+([30,31,32,33,34,35,36,37,38,39,40] if len(names)>1 else [])
 for c in cases: subprocess.run([str(b),str(c)],check=True)
 print(f'PASS {len(cases)} production Clock owner/startup cases')
