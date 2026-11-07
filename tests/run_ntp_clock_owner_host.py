@@ -25,6 +25,8 @@ prod='\n'.join(function(n) for n in names)
 code=r"""
 #include <assert.h>
 #include <stdbool.h>
+static unsigned char s_ble_applied_level;
+static bool s_ble_pwr_captured;
 static void *wscope_task_handle;
 static bool wscope_worker_stop(void){return !wscope_task_handle;}
 #include <stdint.h>
@@ -36,6 +38,8 @@ static bool wscope_worker_stop(void){return !wscope_task_handle;}
 #define BOARD_TIME_HAS_MDNS 1
 #define CONFIG_BOARD_HAS_5GHZ 1
 #define ESP_OK 0
+#define ESP_ERR_WIFI_NOT_STARTED 0x3002
+static void power_policy_notify(void){}
 #define ESP_FAIL -1
 #define ESP_ERR_TIMEOUT 0x107
 #define ESP_ERR_NO_MEM 0x101
@@ -132,9 +136,9 @@ static void bt_nimble_deinit(void) { radio_writes++; }
 static int bt_nimble_init(void) { assert(!s_clock_radio_reserved);ble_inits++;nimble_initialized=true;return 0; }
 static int wifi_cli_init(void) { wifi_inits++;radio_writes++;return 0; }
 static int esp_wifi_set_config(int i,void *p) { (void)i;(void)p;radio_writes++;return 0; }
-static int esp_wifi_start(void) { radio_writes++;return 0; }
-static int esp_wifi_stop(void) { radio_writes++;return 0; }
-static int esp_wifi_deinit(void) { radio_writes++;return 0; }
+static int cym_wifi_start(void) { radio_writes++;return 0; }
+static int cym_wifi_stop(void) { radio_writes++;return 0; }
+static int cym_wifi_deinit(void) { radio_writes++;return 0; }
 static int esp_wifi_set_country(void *p) { (void)p;radio_writes++;return 0; }
 static void esp_restart(void) { assert(0); }
 static void apply_wifi_power_settings(void) { }

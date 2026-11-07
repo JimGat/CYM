@@ -20,6 +20,11 @@ static void hat_ui_depart(void){}
 #include <assert.h>
 #define cym_fsd_input_epoch() ((void)0) /* unrelated FSD hook mocked */
 #include <stdbool.h>
+/* Power controller is an independent endpoint in this owner-arbitration suite. */
+static void power_policy_notify(void){}
+static void ble_power_retire(void){}
+static struct {unsigned char captured;} ble_power_stub,*s_ble_power=&ble_power_stub;
+static bool ble_power_state_init(void){return true;}
 static void *wscope_task_handle;
 static bool wscope_worker_stop(void){return !wscope_task_handle;}
 #include <stdint.h>
@@ -32,6 +37,7 @@ typedef void *TaskHandle_t;typedef int BaseType_t;typedef int esp_err_t;typedef 
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGE(...) ((void)0)
 #define ESP_OK 0
+#define ESP_ERR_WIFI_NOT_STARTED 0x3002
 #define TAG "host"
 #define pdPASS 1
 #define pdFAIL 0
@@ -122,8 +128,8 @@ static bool clock_radio_admit(void){return true;}
 static bool cym_debug_enabled(void){return debug;}
 static void heap_caps_print_heap_info(int x){}
 static void log_heap_stats(const char*x){}
-static int esp_wifi_stop(void){return 0;}
-static int esp_wifi_deinit(void){return 0;}
+static int cym_wifi_stop(void){return 0;}
+static int cym_wifi_deinit(void){return 0;}
 static bool nav_to_menu_flag,s_cham_nav_child;
 static void (*nav_deferred_show_fn)(void),(*g_screen_stop_fn)(void),(*g_screen_back_fn)(void);
 static int nav_stack_depth,nav_stack[4],parent_calls,home_calls,stop_calls;

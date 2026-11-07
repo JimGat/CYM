@@ -83,7 +83,7 @@ static esp_err_t init_wifi(void) {
     
     if (!sta_netif_handle) return cym_net_stage("sta-netif-create",ESP_ERR_NO_MEM);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    esp_err_t wifi_init_err = esp_wifi_init(&cfg);
+    esp_err_t wifi_init_err = cym_wifi_init(&cfg);
     if (wifi_init_err != ESP_OK) {
         return cym_net_stage("wifi-init",wifi_init_err);
     }
@@ -115,7 +115,7 @@ static esp_err_t init_wifi(void) {
     wifi_config_t wifi_config = {0};
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_ERROR_CHECK(cym_wifi_start());
     /* Pin world regulatory domain (channels 1-13, MANUAL) so the driver never
        updates it mid-association from an AP's Country IE.  nchan=13 covers EU
        (incl. Poland) and US (1-11 subset) equally.  ieee80211d disabled = MANUAL

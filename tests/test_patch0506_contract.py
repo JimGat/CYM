@@ -88,6 +88,8 @@ class Patch0506Contract(unittest.TestCase):
         # This verifies bounded state decisions, not controller/FreeRTOS timing.
         harness=r"""
 #include <stdbool.h>
+static void power_policy_notify(void){}
+static void ble_power_retire(void){}
 #include <assert.h>
 #include <stddef.h>
 #define bt_stage(s,r) ((void)0)

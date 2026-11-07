@@ -2881,6 +2881,87 @@
       ],
       "gate": "portable",
       "note": "Pure production-extracted NVS decode/migration + semantic mutants only; not NVS/SDK/concurrency/RF proof"
+    },
+    {
+      "path": "tests/run_power_paths_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "requires": [
+        "cc"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_storage_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "requires": [
+        "cc"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_worker_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "requires": [
+        "cc"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_ble_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "requires": [
+        "cc",
+        "idf-common"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_popup_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "requires": [
+        "cc",
+        "lvgl"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_mutations_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "requires": [
+        "cc",
+        "lvgl",
+        "idf-common"
+      ]
     }
   ],
   "support_files": [

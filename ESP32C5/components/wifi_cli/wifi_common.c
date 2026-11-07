@@ -3,6 +3,9 @@
 #include "esp_wifi.h"
 #include "esp_log.h"
 #include <string.h>
+#include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG_PWR = "power";
 
@@ -13,10 +16,119 @@ volatile bool g_operation_stop_requested = false;
 bool g_max_power_mode = false;  // default Normal; persisted in NVS by main.c
 uint8_t g_pwr_lvl = PWR_LVL_NORMAL;  // authoritative level; g_max_power_mode mirrors MAX
 
-// Boot-default Wi-Fi TX power, captured once before any override so Normal can
-// restore it (a getter read after Max has been applied cannot recover it).
-static bool   s_wifi_tx_captured = false;
-static int8_t s_wifi_tx_default  = 0;
+/* POWER_WIFI_STATE_BEGIN */
+/* One retained internal allocation, no stack/SDK/display placement changes. The
+ * operation gate is not a spinlock: only atomic admission uses it; driver owners
+ * may yield while an already-admitted SDK call drains. The UI request never waits.
+ * All maintained init/start/stop/deinit callers use the explicit adapters below. */
+typedef struct {
+    uint32_t generation;
+    unsigned char gate, lifecycle_pending;
+    bool active, captured;
+    int8_t normal;
+    uint8_t applied, status;
+} wifi_power_state_t;
+static wifi_power_state_t *s_wifi_power;
+static bool wifi_power_state_init(void)
+{
+    if (__atomic_load_n(&s_wifi_power, __ATOMIC_ACQUIRE)) return true;
+    wifi_power_state_t *created = heap_caps_calloc(1, sizeof(*created), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!created) return false;
+    wifi_power_state_t *expected = NULL;
+    if (!__atomic_compare_exchange_n(&s_wifi_power, &expected, created, false, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE))
+        heap_caps_free(created);
+    return true;
+}
+uint8_t wifi_power_applied_level(void)
+{
+    wifi_power_state_t *s = __atomic_load_n(&s_wifi_power, __ATOMIC_ACQUIRE);
+    return s ? __atomic_load_n(&s->applied, __ATOMIC_ACQUIRE) : 0;
+}
+uint8_t wifi_power_status(void)
+{
+    wifi_power_state_t *s = __atomic_load_n(&s_wifi_power, __ATOMIC_ACQUIRE);
+    return s ? __atomic_load_n(&s->status, __ATOMIC_ACQUIRE) : PWR_RADIO_OFF;
+}
+void wifi_power_new_generation(void)
+{
+    wifi_power_state_t *s = s_wifi_power;
+    if (!s) return;
+    __atomic_add_fetch(&s->generation, 1, __ATOMIC_ACQ_REL);
+    s->captured = false;
+    __atomic_store_n(&s->applied, 0, __ATOMIC_RELEASE);
+}
+/* Lifecycle owners retain the existing synchronous SDK contract. No additional
+ * task/queue, no UI power-callback wait, no SDK calls under a critical section.
+ * Pending owners close apply admission before waiting; unrelated utility/AP
+ * ownership and configuration are deliberately not changed. */
+static bool wifi_power_owner_enter(void)
+{
+    if (!wifi_power_state_init()) return false;
+    wifi_power_state_t *s = s_wifi_power;
+    __atomic_add_fetch(&s->lifecycle_pending, 1, __ATOMIC_ACQ_REL);
+    for (unsigned n = 0; n < 100; ++n) {
+        if (!__atomic_test_and_set(&s->gate, __ATOMIC_ACQUIRE)) return true;
+        vTaskDelay(1);
+    }
+    __atomic_sub_fetch(&s->lifecycle_pending, 1, __ATOMIC_RELEASE);
+    return false; /* no unsafe SDK fallback on an undrained operation */
+}
+static void wifi_power_owner_leave(void)
+{
+    __atomic_clear(&s_wifi_power->gate, __ATOMIC_RELEASE);
+    __atomic_sub_fetch(&s_wifi_power->lifecycle_pending, 1, __ATOMIC_RELEASE);
+    power_policy_notify();
+}
+esp_err_t cym_wifi_init(const wifi_init_config_t *config)
+{
+    if (!wifi_power_owner_enter()) return ESP_ERR_INVALID_STATE;
+    esp_err_t rc = esp_wifi_init(config);
+    if (rc == ESP_OK) {
+        wifi_power_new_generation();
+        __atomic_store_n(&s_wifi_power->active, false, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_wifi_power->status, PWR_RADIO_OFF, __ATOMIC_RELEASE);
+    }
+    wifi_power_owner_leave();
+    return rc;
+}
+esp_err_t cym_wifi_start(void)
+{
+    if (!wifi_power_owner_enter()) return ESP_ERR_INVALID_STATE;
+    esp_err_t rc = esp_wifi_start();
+    if (rc == ESP_OK) __atomic_store_n(&s_wifi_power->active, true, __ATOMIC_RELEASE);
+    wifi_power_owner_leave();
+    return rc;
+}
+esp_err_t cym_wifi_stop(void)
+{
+    if (!wifi_power_owner_enter()) return ESP_ERR_INVALID_STATE;
+    /* Invalidate BEFORE retirement. A plain stop retains the pre-Max baseline. */
+    __atomic_add_fetch(&s_wifi_power->generation, 1, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&s_wifi_power->active, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_wifi_power->applied, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_wifi_power->status, PWR_RADIO_OFF, __ATOMIC_RELEASE);
+    esp_err_t rc = esp_wifi_stop();
+    if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_INIT && rc != ESP_ERR_WIFI_NOT_STARTED)
+        __atomic_store_n(&s_wifi_power->status, PWR_RADIO_FAILED, __ATOMIC_RELEASE);
+    wifi_power_owner_leave();
+    return rc;
+}
+esp_err_t cym_wifi_deinit(void)
+{
+    if (!wifi_power_owner_enter()) return ESP_ERR_INVALID_STATE;
+    __atomic_store_n(&s_wifi_power->active, false, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&s_wifi_power->generation, 1, __ATOMIC_ACQ_REL);
+    __atomic_store_n(&s_wifi_power->applied, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_wifi_power->status, PWR_RADIO_OFF, __ATOMIC_RELEASE);
+    /* A failed deinit may retain an overridden driver. Preserve its baseline;
+     * only a successful fresh init may reset capture validity. */
+    esp_err_t rc = esp_wifi_deinit();
+    if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_INIT)
+        __atomic_store_n(&s_wifi_power->status, PWR_RADIO_FAILED, __ATOMIC_RELEASE);
+    wifi_power_owner_leave();
+    return rc;
+}
+/* POWER_WIFI_STATE_END */
 
 pwr_decode_t pwr_decode(pwr_key_rd_t lvl_rd, uint8_t lvl_raw,
                         pwr_key_rd_t leg_rd, uint8_t leg_raw, int ns_open_ok)
@@ -46,17 +158,23 @@ pwr_decode_t pwr_decode(pwr_key_rd_t lvl_rd, uint8_t lvl_raw,
     out.src = PWR_SRC_FRESH; return out;
 }
 
-esp_err_t apply_wifi_power_settings(void)
+static esp_err_t wifi_power_apply_level(uint8_t level)
 {
+    if (level != PWR_LVL_NORMAL && level != PWR_LVL_MAX) return ESP_ERR_INVALID_ARG;
     // Capture the driver's boot-default TX power ONCE, before this call can apply
     // any override, so Normal has a real value to restore to.
-    if (!s_wifi_tx_captured) {
+    uint32_t generation = __atomic_load_n(&s_wifi_power->generation, __ATOMIC_ACQUIRE);
+    if (!s_wifi_power->captured) {
         int8_t cur = 0;
-        if (esp_wifi_get_max_tx_power(&cur) == ESP_OK) { s_wifi_tx_default = cur; s_wifi_tx_captured = true; }
+        esp_err_t acquired = esp_wifi_get_max_tx_power(&cur);
+        if (acquired != ESP_OK) return acquired;
+        if (cur < 8 || cur > 84) return ESP_ERR_INVALID_STATE;
+        if (generation != __atomic_load_n(&s_wifi_power->generation, __ATOMIC_ACQUIRE)) return ESP_ERR_INVALID_STATE;
+        s_wifi_power->normal = cur; s_wifi_power->captured = true;
     }
     esp_err_t e1, e2;
-    if (g_pwr_lvl == PWR_LVL_MAX) {
-        // 82 is the highest TX power value accepted by the IDF API (~20.5 dBm nominal).
+    if (level == PWR_LVL_MAX) {
+        // Max retains the supported project request 82; this is not a target maximum claim.
         // Actual radiated EIRP is still bounded by PHY calibration, antenna design, and
         // country/regulatory settings loaded at runtime.
         e1 = esp_wifi_set_max_tx_power(82);
@@ -65,12 +183,40 @@ esp_err_t apply_wifi_power_settings(void)
     } else {
         // Normal (Low clamps to Normal in this build): actively restore the captured
         // boot-default TX power — leaving a prior Max 82 in place was the v3.0.44 bug.
-        e1 = s_wifi_tx_captured ? esp_wifi_set_max_tx_power(s_wifi_tx_default) : ESP_OK;
+        e1 = esp_wifi_set_max_tx_power(s_wifi_power->normal);
         e2 = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // restore default modem-sleep power save
         ESP_LOGI(TAG_PWR, "WiFi TX -> NORMAL: restore_tx(%d) rc=%d set_ps(MIN_MODEM) rc=%d",
-                 (int)s_wifi_tx_default, e1, e2);
+                 (int)s_wifi_power->normal, e1, e2);
     }
-    return (e1 == ESP_OK && e2 == ESP_OK) ? ESP_OK : ESP_FAIL;
+    int8_t readback = 0;
+    esp_err_t er = esp_wifi_get_max_tx_power(&readback);
+    // Quantization is advisory, but a failed/invalid readback is not success.
+    return (e1 == ESP_OK && e2 == ESP_OK && er == ESP_OK && readback >= 8 && readback <= 84) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t wifi_power_apply_requested(uint8_t level)
+{
+    wifi_power_state_t *s = __atomic_load_n(&s_wifi_power, __ATOMIC_ACQUIRE);
+    if (!s || !__atomic_load_n(&s->active, __ATOMIC_ACQUIRE)) return ESP_ERR_INVALID_STATE;
+    if (__atomic_load_n(&s->lifecycle_pending, __ATOMIC_ACQUIRE) ||
+        __atomic_test_and_set(&s->gate, __ATOMIC_ACQUIRE)) return ESP_ERR_TIMEOUT;
+    if (!__atomic_load_n(&s->active, __ATOMIC_ACQUIRE)) {
+        __atomic_clear(&s->gate, __ATOMIC_RELEASE);
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint32_t generation = __atomic_load_n(&s->generation, __ATOMIC_ACQUIRE);
+    esp_err_t rc = wifi_power_apply_level(level);
+    if (generation != __atomic_load_n(&s->generation, __ATOMIC_ACQUIRE)) rc = ESP_ERR_INVALID_STATE;
+    __atomic_store_n(&s->applied, rc == ESP_OK ? level : 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s->status, rc == ESP_OK ? PWR_RADIO_APPLIED : PWR_RADIO_FAILED, __ATOMIC_RELEASE);
+    __atomic_clear(&s->gate, __ATOMIC_RELEASE);
+    return rc == ESP_OK ? ESP_OK : ESP_FAIL;
+}
+esp_err_t apply_wifi_power_settings(void)
+{
+    /* Existing owner hooks now only signal the off-UI worker. */
+    power_policy_notify();
+    return ESP_ERR_TIMEOUT;
 }
 
 const char* authmode_to_string(wifi_auth_mode_t mode) {

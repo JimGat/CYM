@@ -126,7 +126,8 @@ for name, f, mutant in variants:
     run = subprocess.run([str(d / 'host')], capture_output=True, text=True)
     (d / 'run.log').write_text(run.stdout + run.stderr)
     assertion = 'Assertion' in run.stderr and 'failed' in run.stderr
-    ok = assertion if mutant else (run.returncode == 0 and 'PASS' in run.stdout)
+    semantic = {"migrate-legacy2-as-max": "r.level == PWR_LVL_NORMAL && r.src == PWR_SRC_ERROR", "badtype-as-fresh": "r.level == PWR_LVL_NORMAL && r.src == PWR_SRC_ERROR", "low-as-explicit": "r.level == PWR_LVL_NORMAL && r.src == PWR_SRC_ERROR", "nsfail-as-fresh": "r.level == PWR_LVL_NORMAL && r.src == PWR_SRC_ERROR"}
+    ok = (run.returncode != 0 and assertion and semantic[name] in run.stderr) if mutant else (run.returncode == 0 and 'PASS' in run.stdout)
     print(name, 'PASS' if ok else 'FAIL', '| exit', run.returncode, '|', run.stdout.strip()[:60])
     results.append(dict(name=name, exit=run.returncode, ok=ok, mutant=mutant))
 

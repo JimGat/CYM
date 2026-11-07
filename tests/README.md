@@ -233,3 +233,14 @@ All require CC; all generated output uses CYM_TEST_OUT and TMPDIR. Native tests
 use ASAN/UBSAN and strict semantic mutant classifications (86 + assertion or
 explicit RESULT failures), never compilation errors or random crashes. No SMP,
 real SDK operations, device stack/heap minima or RF proof is claimed.
+
+Package D: run_pwr_decode_host.py plus run_power_{paths,storage,worker,ble,popup}_host.py
+exercise extracted production logic. BLE uses installed per-target enums; popup uses
+real installed LVGL. Use CYM_TEST_OUT and TMPDIR on task-owned development-host space.
+Deterministic worker interleavings are not SMP/hardware timing proof; radio application
+in this candidate is owner-deferred, and active-radio reconciliation remains open.
+
+Package D live continuation exercises explicit production WiFi lifecycle adapters,
+BLE transition admission and generation-CAS publication, active Normal/Max reversal,
+retained-vs-new defaults, busy/off reconciliation, and nine semantic negative controls.
+Native interleavings are not real scheduler/SDK timing or physical RF qualification.

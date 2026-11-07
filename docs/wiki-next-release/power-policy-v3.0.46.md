@@ -1,0 +1,58 @@
+# Staged Wiki proposal - not published
+
+# Development v3.0.46 - Package D power policy candidate
+
+Co-developer @birolt29 supplied the power-level contribution and decoder harness.
+JimGat integration corrections are a separate delta. Original input remains immutable
+in the development-host evidence directory; no publication is authorized by this file.
+
+Normal and Max are supported persisted policies. Low is reserved and not exposed.
+Normal restores checked pre-override settings captured per radio initialization;
+Max retains the existing WiFi request 82 and BLE DEFAULT/ADV/SCAN request P9.
+These are SDK requests, not measured RF or target-maximum claims. The installed WiFi
+API documents quantization; country/PHY constraints remain in force. WiFi sleep
+policy is still NONE for Max and MIN_MODEM for Normal, separate from TX limits.
+
+The worker saves and applies immutable sequence/level requests outside LVGL,
+with checked allocation of one internal 4096-byte stack retained until reboot.
+It starts on the first radio lifecycle notification or explicit selection. WiFi and
+BLE independently admit active Normal/Max application; no queued radio-mode snapshot
+is used. Explicit WiFi init/start/stop/deinit adapters exclude getters/setters from
+teardown, and BLE uses the existing transition owner. Short atomic admission does
+not hold a spinlock across SDK or storage calls. Lifecycle owners retain their
+synchronous SDK contract, with bounded yield/drain on an admitted WiFi operation;
+the popup request never waits or throttles input. Busy admission is retried with
+100 ms worker waits and owner-release notifications; inactive radios consume the
+latest policy on start. Failed getters/setters/readback remain failed/unknown,
+not applied. Save success is independent of per-radio application.
+
+Plain WiFi stop/start preserves the checked pre-override Normal limit even when the
+SDK retains Max. Full successful driver/controller initialization begins a new
+capture generation. BLE captures DEFAULT/ADV/SCAN independently before the first
+override, checks installed target ranges and readback, and atomically rejects a
+late result after reset/retirement. Stop/deinit invalidates applied status before
+retirement; failure is not a successful inactive/applied claim. Two retained internal
+lifecycle allocations add 12 bytes (WiFi) and 8 bytes (BLE), plus allocator overhead;
+allocation refusal has no unsafe SDK fallback. Runtime heap/stack minima remain
+unmeasured. No SDK/config/display/stack-placement changes were used for fit.
+
+No global TX-disable guarantee, HAT persistence, Package C change, or new RF
+capability is added. Existing B AP and G PN532 ownership are not altered.
+
+New valid pwr_lvl takes precedence. Absent new key migrates legacy 0 to Normal,
+1 to Max. Both absent in a readable namespace are fresh Normal. Wrong type/read
+failure, open failure, unsupported Low, legacy 2/unknown are flagged Normal fallback,
+not evidence of global inhibition and not silently rewritten. Other settings remain.
+
+Installed NVS writes each key immediately; its commit implementation returns success
+without making multiple keys atomic. Save writes authoritative pwr_lvl first, then
+legacy pwr_mode (Normal=0/Max=1), stopping at the first failure, then commit/close.
+A legacy-write failure may leave the new policy saved but downgrade policy stale;
+a failed setter/commit can leave partial or uncertain persistence. No rollback is
+claimed, no guessed rewrite or namespace erase is attempted. Explicit retry is allowed.
+
+Physical acceptance remains OPEN. The supplied NM Max=82/Normal=80 observation
+has no attached capture and is neither calibrated RF nor final-artifact proof.
+Host tests, compiled firmware, author observations and hardware acceptance are separate.
+
+See docs/operators/power-policy-v3.0.46.md. Parent owns publication.

@@ -27,7 +27,7 @@ class StartupIsolation(unittest.TestCase):
   s=(ROOT/'ESP32C5/main/main.c').read_text();f=s[s.index('static const char *game_storage_blocker(void)\n{'):]
   for token in ('s_fileserv_httpd','sd_provision_active','wpasec_upload_task_handle','wdup_task_handle','screenshot_in_progress','g_active_survey','SD transport operation','NVS intent set/commit'):
    self.assertIn(token,f)
-  for bad in ('radio_reset_to_idle(','vTaskDelete(','bt_nimble_deinit(','esp_wifi_stop(','cym_exclusive_begin('):self.assertNotIn(bad,f)
+  for bad in ('radio_reset_to_idle(','vTaskDelete(','bt_nimble_deinit(','cym_wifi_stop(','cym_exclusive_begin('):self.assertNotIn(bad,f)
   self.assertLess(f.index('game_storage_blocker();'),f.index('game_mode_record('))
   self.assertLess(f.index('game_mode_record('),f.index('esp_restart()'))
   app=s[s.index('void app_main(void)\n{'):s.index('static void lvgl_flush_cb',s.index('void app_main(void)\n{'))] if 'static void lvgl_flush_cb' in s[s.index('void app_main(void)\n{'):] else s[s.index('void app_main(void)\n{'):s.index('// Screenshot utilities')]

@@ -3657,3 +3657,12 @@ checked stopping and asynchronous replay for CC1101, nRF24, IR and RF433 only.
 @birolt29 supplied its design origin; JimGat owns the synchronization, emitter/UI
 corrections and validation. See [HAT TX operation and acceptance limits](docs/testing/package-c-hat-tx.md).
 Wi-Fi/BLE/AP/NVS are not controlled. This is not an all-RF-silent control.
+
+### Package D power policy candidate (Development v3.0.46, unpublished)
+
+Co-developer @birolt29 supplied the Normal/Max persistence contribution and decoder
+harness; JimGat integration corrections are separate. Low remains reserved.
+[Operator guide](docs/operators/power-policy-v3.0.46.md) and
+[candidate boundaries](docs/releases/v3.0.46-dev.md) explain storage errors, partial/uncertain
+save, owner-safe asynchronous active application and generation-bound status. This is not
+global inhibition, calibrated RF or physical acceptance evidence.

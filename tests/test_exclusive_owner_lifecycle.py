@@ -55,7 +55,7 @@ int main(void) {
 
     def test_selector_transform_never_stops_radios(self):
         s=(ROOT/"ESP32C5/main/main.c").read_text();f=function(s,"game_selector_rotation")
-        for driver in ("bt_nimble_deinit(","esp_wifi_stop(","esp_ieee802154_sleep(","nvs_settings_save"):
+        for driver in ("bt_nimble_deinit(","cym_wifi_stop(","esp_ieee802154_sleep(","nvs_settings_save"):
             self.assertNotIn(driver,f)
         self.assertIn("apply_screen_orientation(3)",f)
         self.assertIn("apply_screen_orientation(s_game_prior_orientation)",f)

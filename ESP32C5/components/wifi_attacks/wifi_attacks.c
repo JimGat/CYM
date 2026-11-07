@@ -2200,7 +2200,7 @@ static esp_err_t ap_start_owned(const ap_req_snapshot_t *snap) {
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
     s_apctx->radio_touched = true; /* any following failure requires checked unwind */
     if (!netif) {
-        rc = esp_wifi_stop();
+        rc = cym_wifi_stop();
         if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_STARTED) return rc;
         netif = esp_netif_create_default_wifi_ap();
         if (!netif) return ESP_ERR_NO_MEM;
@@ -2235,7 +2235,7 @@ static esp_err_t ap_start_owned(const ap_req_snapshot_t *snap) {
     rc = esp_wifi_get_config(WIFI_IF_AP, &admitted);
     if (rc != ESP_OK) return rc;
     if (admitted.ap.channel != config.ap.channel) return ESP_ERR_INVALID_ARG;
-    rc = esp_wifi_start();
+    rc = cym_wifi_start();
     if (rc != ESP_OK) return rc;
     apply_wifi_power_settings();
     esp_netif_ip_info_t ip = { .ip.addr = esp_ip4addr_aton("172.0.0.1"),
@@ -2299,11 +2299,11 @@ static esp_err_t ap_stop_owned(void) {
         ap_portal_handler_owned = false;
     }
     if (!s_apctx->radio_touched) return ESP_OK;
-    rc = esp_wifi_stop();
+    rc = cym_wifi_stop();
     if (rc != ESP_OK && rc != ESP_ERR_WIFI_NOT_STARTED) return rc;
     rc = esp_wifi_set_mode(WIFI_MODE_STA);
     if (rc != ESP_OK) return rc;
-    rc = esp_wifi_start();
+    rc = cym_wifi_start();
     if (rc != ESP_OK) return rc;
     wifi_mode_t mode;
     rc = esp_wifi_get_mode(&mode);

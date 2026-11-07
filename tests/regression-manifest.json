@@ -738,6 +738,70 @@
       "requires": [
         "cc"
       ]
+    },
+    {
+      "id": "power_paths",
+      "path": "tests/run_power_paths_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "power_storage",
+      "path": "tests/run_power_storage_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "power_worker",
+      "path": "tests/run_power_worker_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
+    },
+    {
+      "id": "power_ble",
+      "path": "tests/run_power_ble_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common"
+      ]
+    },
+    {
+      "id": "power_popup",
+      "path": "tests/run_power_popup_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "id": "power_mutations",
+      "path": "tests/run_power_mutations_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "lvgl",
+        "idf-common"
+      ]
     }
   ]
 }

@@ -176,11 +176,21 @@ extern uint8_t g_pwr_lvl;
 pwr_decode_t pwr_decode(pwr_key_rd_t lvl_rd, uint8_t lvl_raw,
                         pwr_key_rd_t leg_rd, uint8_t leg_raw, int ns_open_ok);
 
-// Apply WiFi TX power and power-save settings for the current level.
-// Captures the boot-default TX power on first call, then restores it for Normal
-// (instead of leaving a prior Max 82 in place). Returns ESP_OK only if every
-// radio setter it issued returned ESP_OK. Call after every esp_wifi_start().
+// Legacy initialization hook: notify the off-UI policy worker, returning deferred.
+// No getters/setters here. Explicit lifecycle adapters below share operation
+// admission with wifi_power_apply_requested; plain restart retains the Normal
+// baseline, while successful full init starts a new capture generation.
 esp_err_t apply_wifi_power_settings(void);
+void wifi_power_new_generation(void);
+enum { PWR_RADIO_OFF = 0, PWR_RADIO_BUSY = 1, PWR_RADIO_FAILED = 2, PWR_RADIO_APPLIED = 3 };
+uint8_t wifi_power_status(void);
+esp_err_t wifi_power_apply_requested(uint8_t level);
+void power_policy_notify(void);
+esp_err_t cym_wifi_init(const wifi_init_config_t *config);
+esp_err_t cym_wifi_start(void);
+esp_err_t cym_wifi_stop(void);
+esp_err_t cym_wifi_deinit(void);
+uint8_t wifi_power_applied_level(void); // 0 means unknown/failed/deferred
 
 // Shared scan results (from wifi_scanner, used by attacks/sniffer)
 extern wifi_ap_record_t g_shared_scan_results[MAX_SCAN_RESULTS];

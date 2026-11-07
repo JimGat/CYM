@@ -3875,6 +3875,10 @@ static esp_err_t bt_nimble_init(void);
 static void bt_nimble_deinit(void);
 static bool bt_nimble_cleanup_bounded(void);
 static esp_err_t apply_ble_power_settings(void);
+static uint8_t ble_power_applied_level(void);
+static uint8_t ble_power_status(void);
+static esp_err_t ble_power_apply_requested(uint8_t level);
+static void ble_power_retire(void);
 static void bt_scan_stop(void);
 static void bt_scan_task(void *pvParameters);
 static BaseType_t bt_scan_worker_start(void);
@@ -4811,6 +4815,8 @@ static void init_display(void)
 
 // Package D: map an nvs_get_* result to the pure decoder's per-key read outcome,
 // so a genuinely absent key is distinguished from a wrong-type or unreadable one.
+static uint8_t s_pwr_load_source = PWR_SRC_FRESH;
+
 static inline pwr_key_rd_t pwr_map_rd(esp_err_t e)
 {
     switch (e) {
@@ -4865,6 +4871,7 @@ static void nvs_settings_load(void)
         esp_err_t leg_e = nvs_get_u8(h, NVS_KEY_POWER_MODE,  &leg_raw);
         pwr_decode_t pd = pwr_decode(pwr_map_rd(lvl_e), lvl_raw,
                                      pwr_map_rd(leg_e), leg_raw, 1 /* namespace open */);
+        s_pwr_load_source = pd.src;
         g_pwr_lvl = pd.level;
         g_max_power_mode = (g_pwr_lvl == PWR_LVL_MAX);
         if (pd.src == PWR_SRC_ERROR)
@@ -4945,13 +4952,15 @@ static void nvs_settings_load(void)
                  (long)screen_timeout_ms, screen_brightness_pct, scan_time_min_ms, scan_time_max_ms,
                  dark_mode_enabled, g_max_power_mode, (unsigned)g_gatt_timeout_ms);
     } else {
-        ESP_LOGW(TAG, "NVS settings not found (first boot), using defaults");
+        pwr_decode_t pd = pwr_decode(PWR_KEY_READERR, 0, PWR_KEY_READERR, 0, 0);
+        s_pwr_load_source = pd.src;
+        ESP_LOGW(TAG, "NVS settings open failed rc=0x%x; power fallback unresolved, not fresh", err);
         screen_timeout_ms = 0;
         screen_brightness_pct = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
         scan_time_min_ms = 100;
         scan_time_max_ms = 300;
         dark_mode_enabled = true;
-        g_pwr_lvl = PWR_LVL_NORMAL;   // Package D: fresh-install default
+        g_pwr_lvl = pd.level; // Open failure is surfaced, never auto-rewritten.
         g_max_power_mode = false;
         g_gatt_timeout_ms = 30000;
         g_saved_wifi_ssid[0] = '\0';
@@ -5078,21 +5087,20 @@ static void nvs_settings_save_home_layout(bool four_cat)
 // writes and the commit succeeded, so the UI reports "persisted" truthfully; a
 // failed commit cannot guarantee the change survives power loss. Other keys
 // (passwords, calibration, etc.) are left untouched — no erase as a shortcut.
+// Installed NVS writes each key immediately; commit is not a multi-key transaction.
+// Authoritative new key first. Stop on first failure; never guess rollback.
+// A legacy failure can leave new policy saved but downgrade policy stale.
 static esp_err_t nvs_settings_save_power_level(uint8_t level)
 {
+    if (level != PWR_LVL_NORMAL && level != PWR_LVL_MAX) return ESP_ERR_INVALID_ARG;
     nvs_handle_t h;
-    esp_err_t eo = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
-    if (eo != ESP_OK) { ESP_LOGW(TAG, "NVS open for power save failed rc=0x%x", eo); return eo; }
-    esp_err_t e1 = nvs_set_u8(h, NVS_KEY_POWER_LEVEL, level);
-    esp_err_t e2 = nvs_set_u8(h, NVS_KEY_POWER_MODE, (level == PWR_LVL_MAX) ? 1 : 0);
-    esp_err_t ec = nvs_commit(h);
-    nvs_close(h);
-    if (e1 == ESP_OK && e2 == ESP_OK && ec == ESP_OK) {
-        ESP_LOGI(TAG, "NVS: saved pwr_lvl=%u (legacy pwr_mode=%u)", level, (level == PWR_LVL_MAX) ? 1 : 0);
-        return ESP_OK;
-    }
-    ESP_LOGW(TAG, "NVS power save incomplete (set rc=0x%x/0x%x, commit rc=0x%x)", e1, e2, ec);
-    return ESP_FAIL;
+    esp_err_t rc = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (rc != ESP_OK) return rc;
+    rc = nvs_set_u8(h, NVS_KEY_POWER_LEVEL, level);
+    if (rc == ESP_OK) rc = nvs_set_u8(h, NVS_KEY_POWER_MODE, level == PWR_LVL_MAX ? 1 : 0);
+    if (rc == ESP_OK) rc = nvs_commit(h);
+    nvs_close(h); // void SDK contract; never erases unrelated keys
+    return rc;
 }
 
 static void nvs_settings_save_gatt_timeout(uint32_t ms)
@@ -7680,7 +7688,7 @@ static bool _ot_switch_to_ble(void)
     /* Cleanly stop any in-flight WiFi scan BEFORE tearing WiFi down for BLE —
      * mirrors the wifi_scanner_abort() call _ot_switch_to_154() already makes
      * for the same reason. Without this, ensure_ble_mode() unconditionally
-     * calls esp_wifi_stop()/esp_wifi_deinit(); if the passive scan
+     * calls cym_wifi_stop()/cym_wifi_deinit(); if the passive scan
      * _ot_switch_to_wifi() started (150 ms/channel, every 2.4+5GHz channel in
      * WIFI_BAND_MODE_AUTO — 24+ 5GHz channels alone in some regulatory
      * domains, e.g. 5.5+ s total) is still running when the 3 s WIFI dwell
@@ -15083,7 +15091,7 @@ static void wardrive_promisc_task(void *pvParameters) {
                 // Restore WiFi if we stopped it for BLE-only mode
                 if (g_wd_radio_mode == WD_RADIO_BLE_ONLY && !wifi_initialized) {
                     ESP_LOGI(TAG, "Wardrive BLE-only done: restarting WiFi");
-                    esp_wifi_start();
+                    cym_wifi_start();
                     wifi_initialized = true;
                     current_radio_mode = RADIO_MODE_WIFI;
                 }
@@ -15118,7 +15126,7 @@ static void wardrive_promisc_task(void *pvParameters) {
         // Restore WiFi if we stopped it for BLE-only mode
         if (g_wd_radio_mode == WD_RADIO_BLE_ONLY && !wifi_initialized) {
             ESP_LOGI(TAG, "Wardrive BLE-only done: restarting WiFi");
-            esp_wifi_start();
+            cym_wifi_start();
             wifi_initialized = true;
             current_radio_mode = RADIO_MODE_WIFI;
         }
@@ -15132,17 +15140,21 @@ static void wardrive_promisc_task(void *pvParameters) {
     if (sd_spi_mutex) xSemaphoreGive(sd_spi_mutex);
 
     // For BLE-only mode, FULLY deinit WiFi (not just stop) to free the ~42KB DMA
-    // pool the WiFi driver holds from boot. esp_wifi_stop() alone leaves that DMA
+    // pool the WiFi driver holds from boot. cym_wifi_stop() alone leaves that DMA
     // allocated, so the BLE controller can sync but then starves its adv-report
     // buffers (hci_err 0x207 BLE_ERR_MEM_CAPACITY -> collects 0 devices). Full
-    // esp_wifi_deinit() returns the pool. Setting RADIO_MODE_NONE also disables the
+    // cym_wifi_deinit() returns the pool. Setting RADIO_MODE_NONE also disables the
     // vestigial coex bt_nimble_init() retry (~11760, guarded by RADIO_MODE_WIFI) so
     // a BLE-only run can never fall into the old re-init spiral. On stop, the restore
     // path below calls ensure_wifi_mode() for the full wifi_cli_init() reinit.
     if (g_wd_radio_mode == WD_RADIO_BLE_ONLY && wifi_initialized) {
         ESP_LOGI(TAG, "Wardrive BLE-only: full WiFi deinit to free DMA pool");
-        esp_wifi_stop();
-        esp_wifi_deinit();
+        if (cym_wifi_stop() != ESP_OK || cym_wifi_deinit() != ESP_OK) {
+            wardrive_active = false;
+            fclose(file);
+            wardrive_task_finish();
+            return;
+        }
         wifi_initialized = false;
         current_radio_mode = RADIO_MODE_NONE;
     }
@@ -15665,7 +15677,7 @@ static void wardrive_promisc_task(void *pvParameters) {
     // Restore WiFi if we stopped it for BLE-only mode
     if (g_wd_radio_mode == WD_RADIO_BLE_ONLY && !wifi_initialized) {
         ESP_LOGI(TAG, "Wardrive BLE-only done: full WiFi reinit");
-        ensure_wifi_mode();  // driver was esp_wifi_deinit()'d, needs full wifi_cli_init()
+        ensure_wifi_mode();  // driver was cym_wifi_deinit()'d, needs full wifi_cli_init()
     }
 
     __atomic_store_n(&wardrive_capture_ready, false, __ATOMIC_SEQ_CST);
@@ -16502,7 +16514,7 @@ static void wardrive_screen_stop(void)
     // Restore WiFi if we stopped it for BLE-only mode
     if (!wardrive_task_handle && g_wd_radio_mode == WD_RADIO_BLE_ONLY && !wifi_initialized) {
         ESP_LOGI(TAG, "Wardrive BLE-only done: full WiFi reinit");
-        ensure_wifi_mode();  // driver was esp_wifi_deinit()'d, needs full wifi_cli_init()
+        ensure_wifi_mode();  // driver was cym_wifi_deinit()'d, needs full wifi_cli_init()
     }
 
     esp_wifi_set_promiscuous(false);
@@ -18255,7 +18267,7 @@ static void radio_reset_to_idle_impl(void)
         esp_wifi_set_promiscuous(false);
         esp_wifi_set_promiscuous_rx_cb(NULL);
         wifi_scanner_abort();   /* clear any stuck scan state before stop */
-        esp_wifi_stop();
+        cym_wifi_stop();
 
         // ========== DMA TRACKING: After WiFi stop ==========
         size_t dma_after_wifi_stop = heap_caps_get_free_size(MALLOC_CAP_DMA);
@@ -18264,7 +18276,7 @@ static void radio_reset_to_idle_impl(void)
         // ==================================================
 
         esp_wifi_set_mode(WIFI_MODE_STA);
-        esp_wifi_start();
+        cym_wifi_start();
 
         // ========== DMA TRACKING: After WiFi restart ==========
         size_t dma_after_wifi_restart = heap_caps_get_free_size(MALLOC_CAP_DMA);
@@ -24559,7 +24571,7 @@ static bool wdup_ensure_wifi(void)
     // No saved credentials — caller should direct user to WiFi Client screen.
     if (g_saved_wifi_ssid[0] == '\0') return false;
 
-    esp_wifi_start();
+    cym_wifi_start();
     wifi_config_t cfg = {0};
     strncpy((char *)cfg.sta.ssid,     g_saved_wifi_ssid, sizeof(cfg.sta.ssid) - 1);
     strncpy((char *)cfg.sta.password, g_saved_wifi_pass,  sizeof(cfg.sta.password) - 1);
@@ -28459,62 +28471,109 @@ static lv_timer_t *powermode_timer     = NULL;   // polls the off-UI worker's re
 // latest request, and a stale result never overwrites a newer selection
 // (guarded by req_seq == done_seq). Closing the popup stops the polling timer but
 // never abandons an in-flight apply/persist — it runs to completion.
+/* Request/result publication alone uses the short critical section. No SDK,
+ * allocation, LVGL or NVS operation runs under it. One lazy internal 4KiB
+ * worker is retained until reboot; it never owns an LVGL object. */
 typedef struct {
-    volatile uint8_t   level;       // latest requested level
-    volatile uint32_t  req_seq;     // bumped per request
-    volatile uint32_t  done_seq;    // seq the published results belong to
-    volatile int       busy;        // 1 while applying
-    volatile esp_err_t applied_rc;  // radio apply result for done_seq
-    volatile esp_err_t saved_rc;    // persist result for done_seq
-    volatile int       radio;       // radio mode captured at request time
+    uint8_t level, wifi_rc, ble_rc; // immutable sequence results
+    uint32_t req_seq, done_seq;
+    bool busy;
+    bool saved_rc, submit_rc; // nonzero = failed/uncertain, not raw SDK error code
 } pwr_job_t;
-static pwr_job_t    s_pwr_job;
-static TaskHandle_t s_pwr_task = NULL;
-static void powermode_timer_cb(lv_timer_t *t);   // fwd: used by powermode_start_poll
+static pwr_job_t s_pwr_job;
+static portMUX_TYPE s_pwr_job_mux = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t s_pwr_task;
+static bool s_pwr_creating;
+static void powermode_timer_cb(lv_timer_t *t);
+
+static pwr_job_t pwr_snapshot(void)
+{
+    portENTER_CRITICAL(&s_pwr_job_mux);
+    pwr_job_t out = s_pwr_job;
+    portEXIT_CRITICAL(&s_pwr_job_mux);
+    return out;
+}
 
 static void pwr_worker(void *arg)
 {
     (void)arg;
+    bool retry = false;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        uint32_t seq;
-        do {
-            seq = s_pwr_job.req_seq;
-            uint8_t level = s_pwr_job.level;
-            int radio = s_pwr_job.radio;
-            s_pwr_job.busy = 1;
-            esp_err_t ar = ESP_OK;
-            if (radio == RADIO_MODE_WIFI)      ar = apply_wifi_power_settings();
-            else if (radio == RADIO_MODE_BLE)  ar = apply_ble_power_settings();
-            esp_err_t sr = nvs_settings_save_power_level(level);
-            s_pwr_job.applied_rc = ar;
-            s_pwr_job.saved_rc   = sr;
-            s_pwr_job.done_seq   = seq;
-            s_pwr_job.busy       = 0;
-        } while (seq != s_pwr_job.req_seq);  // a newer tap arrived meanwhile: re-run
+        /* Busy admission retries are bounded per wake; lifecycle release also
+         * wakes us. Inactive/failed radios do not cause permanent polling. */
+        ulTaskNotifyTake(pdTRUE, retry ? pdMS_TO_TICKS(100) : portMAX_DELAY);
+        retry = false;
+        for (unsigned attempt = 0; attempt < 8; ++attempt) {
+            pwr_job_t request = pwr_snapshot();
+            uint8_t level = request.req_seq ? request.level : __atomic_load_n(&g_pwr_lvl, __ATOMIC_ACQUIRE);
+            bool save = request.done_seq != request.req_seq;
+            portENTER_CRITICAL(&s_pwr_job_mux);
+            s_pwr_job.busy = true;
+            portEXIT_CRITICAL(&s_pwr_job_mux);
+            esp_err_t saved = save ? nvs_settings_save_power_level(level) : ESP_OK;
+            esp_err_t wifi = wifi_power_apply_requested(level);
+            esp_err_t ble = ble_power_apply_requested(level);
+            portENTER_CRITICAL(&s_pwr_job_mux);
+            if (save) {
+                s_pwr_job.saved_rc = saved != ESP_OK;
+                s_pwr_job.done_seq = request.req_seq;
+            }
+            /* Results belong to the immutable snapshot, not a later tap. */
+            if (s_pwr_job.req_seq == request.req_seq) {
+                s_pwr_job.wifi_rc = wifi == ESP_OK ? PWR_RADIO_APPLIED :
+                    wifi == ESP_ERR_TIMEOUT ? PWR_RADIO_BUSY :
+                    wifi == ESP_ERR_INVALID_STATE ? PWR_RADIO_OFF : PWR_RADIO_FAILED;
+                s_pwr_job.ble_rc = ble == ESP_OK ? PWR_RADIO_APPLIED :
+                    ble == ESP_ERR_TIMEOUT ? PWR_RADIO_BUSY :
+                    ble == ESP_ERR_INVALID_STATE ? PWR_RADIO_OFF : PWR_RADIO_FAILED;
+            }
+            s_pwr_job.busy = false;
+            bool again = s_pwr_job.req_seq != request.req_seq;
+            portEXIT_CRITICAL(&s_pwr_job_mux);
+            retry = wifi == ESP_ERR_TIMEOUT || ble == ESP_ERR_TIMEOUT;
+            if (!again) break;
+        }
     }
 }
 
-// Non-screen helper: create the popup's result-polling timer here (not in
-// show_power_mode_popup) — the timer is owned by the modal and freed in
-// powermode_delete_cb (LV_EVENT_DELETE), which is the correct teardown for a
-// lv_scr_act() modal rather than the create_function_page_base stop-hook path.
 static void powermode_start_poll(void)
 {
     if (!powermode_timer) powermode_timer = lv_timer_create(powermode_timer_cb, 250, NULL);
 }
 
+void power_policy_notify(void)
+{
+    portENTER_CRITICAL(&s_pwr_job_mux);
+    TaskHandle_t task = s_pwr_task;
+    bool create = !task && !s_pwr_creating;
+    if (create) s_pwr_creating = true;
+    portEXIT_CRITICAL(&s_pwr_job_mux);
+    if (create) {
+        TaskHandle_t created = NULL;
+        BaseType_t rc = xTaskCreate(pwr_worker, "pwr_apply", 4096, NULL, 4, &created);
+        portENTER_CRITICAL(&s_pwr_job_mux);
+        s_pwr_creating = false;
+        if (rc == pdPASS) s_pwr_task = task = created;
+        else s_pwr_job.submit_rc = true;
+        portEXIT_CRITICAL(&s_pwr_job_mux);
+    }
+    if (task && task != xTaskGetCurrentTaskHandle()) xTaskNotifyGive(task);
+}
 static void pwr_request(uint8_t level)
 {
-    // Persistent app-lifetime worker: created once, never torn down.
-    if (!s_pwr_task) xTaskCreate(pwr_worker, "pwr_apply", 3072, NULL, 4, &s_pwr_task);
-    // Reflect the selection in the shared flags immediately; apply+persist is async.
-    g_pwr_lvl = level;
-    g_max_power_mode = (level == PWR_LVL_MAX);
-    s_pwr_job.level = level;
-    s_pwr_job.radio = current_radio_mode;
-    s_pwr_job.req_seq++;
-    if (s_pwr_task) xTaskNotifyGive(s_pwr_task);
+    if (level != PWR_LVL_NORMAL && level != PWR_LVL_MAX) return;
+    power_policy_notify();
+    portENTER_CRITICAL(&s_pwr_job_mux);
+    TaskHandle_t task = s_pwr_task;
+    if (task) {
+        s_pwr_job.level = level;
+        ++s_pwr_job.req_seq;
+        s_pwr_job.submit_rc = false;
+        __atomic_store_n(&g_pwr_lvl, level, __ATOMIC_RELEASE);
+        __atomic_store_n(&g_max_power_mode, level == PWR_LVL_MAX, __ATOMIC_RELEASE);
+    } else s_pwr_job.submit_rc = true; // creating/unavailable: selection unchanged, explicit retry
+    portEXIT_CRITICAL(&s_pwr_job_mux);
+    if (task) xTaskNotifyGive(task);
 }
 
 static void powermode_refresh_buttons(void)
@@ -28529,21 +28588,23 @@ static void powermode_refresh_buttons(void)
         }
     }
     if (!powermode_status_lbl) return;
-    // Report requested / applying / applied+saved truthfully — never show a
-    // successful apply or save after a partial failure.
-    if (s_pwr_job.busy || s_pwr_job.done_seq != s_pwr_job.req_seq) {
-        lv_label_set_text(powermode_status_lbl, "Applying...");
-    } else if (s_pwr_job.req_seq == 0) {
-        lv_label_set_text(powermode_status_lbl, "");
-    } else if (s_pwr_job.applied_rc != ESP_OK && s_pwr_job.saved_rc != ESP_OK) {
-        lv_label_set_text(powermode_status_lbl, "Apply & save FAILED");
-    } else if (s_pwr_job.applied_rc != ESP_OK) {
-        lv_label_set_text(powermode_status_lbl, "Saved, but apply FAILED");
-    } else if (s_pwr_job.saved_rc != ESP_OK) {
-        lv_label_set_text(powermode_status_lbl, "Applied, but NOT saved");
-    } else {
-        lv_label_set_text(powermode_status_lbl, "Applied & saved");
-    }
+    pwr_job_t job = pwr_snapshot();
+    const char *status;
+    if (job.submit_rc != ESP_OK) status = "Request not admitted; unchanged";
+    else if (job.busy || job.done_seq != job.req_seq) status = powermode_timer ? "Requested; applying/saving..." : "Saving; reopen to check result";
+    else if (!job.req_seq) status = s_pwr_load_source == PWR_SRC_ERROR ?
+        "Storage error; Normal fallback" : "Normal/Max policy; radio-owned apply";
+    else if (job.saved_rc != ESP_OK) status = "Save partial/uncertain";
+    else status = "Saved; check radio status";
+    uint8_t requested = __atomic_load_n(&g_pwr_lvl, __ATOMIC_ACQUIRE);
+    uint8_t wifi = wifi_power_applied_level();
+    uint8_t ble = ble_power_applied_level();
+    lv_label_set_text_fmt(powermode_status_lbl, "Requested: %s\nWiFi: %s; BLE: %s\n%s",
+        requested == PWR_LVL_MAX ? "Max" : "Normal",
+        wifi == requested ? "applied" : wifi_power_status() == PWR_RADIO_OFF ? "inactive" :
+            wifi_power_status() == PWR_RADIO_FAILED ? "failed/unknown" : "busy/pending",
+        ble == requested ? "applied" : ble_power_status() == PWR_RADIO_OFF ? "inactive" :
+            ble_power_status() == PWR_RADIO_FAILED ? "failed/unknown" : "busy/pending", status);
 }
 
 static void powermode_timer_cb(lv_timer_t *t)
@@ -28556,7 +28617,7 @@ static void powermode_timer_cb(lv_timer_t *t)
 // the polling timer and drop every pointer so the timer can never touch freed UI.
 static void powermode_delete_cb(lv_event_t *e)
 {
-    (void)e;
+    if (lv_event_get_target(e) != powermode_popup) return;
     if (powermode_timer) { lv_timer_del(powermode_timer); powermode_timer = NULL; }
     powermode_normal_btn = NULL;
     powermode_max_btn    = NULL;
@@ -28614,7 +28675,7 @@ static void show_power_mode_popup(void)
     lv_obj_set_scroll_dir(dialog, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(dialog, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_flex_flow(dialog, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_flex_align(dialog, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(dialog, 14, 0);
     lv_obj_set_style_pad_gap(dialog, 10, 0);
 
@@ -28622,12 +28683,16 @@ static void show_power_mode_popup(void)
     lv_label_set_text(title, LV_SYMBOL_CHARGE " TX Power Mode");
     lv_obj_set_style_text_color(title, ui_text_color(), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
 
     lv_obj_t *sub = lv_label_create(dialog);
     lv_label_set_text(sub, "Applies to WiFi & BLE");
     lv_obj_set_style_text_color(sub, ui_muted_color(), 0);
     lv_obj_set_style_text_font(sub, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(sub, lv_pct(100));
+    lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
 
     // Mode selector row
     lv_obj_t *mode_row = lv_obj_create(dialog);
@@ -28662,10 +28727,12 @@ static void show_power_mode_popup(void)
     powermode_refresh_buttons();
 
     lv_obj_t *warn = lv_label_create(dialog);
-    lv_label_set_text(warn, "Max power increases range &\nattack effectiveness.");
+    lv_label_set_text(warn, "SDK limits, not measured RF.\nLow reserved; no TX inhibition.");
     lv_obj_set_style_text_color(warn, ui_muted_color(), 0);
     lv_obj_set_style_text_font(warn, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(warn, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(warn, lv_pct(100));
+    lv_label_set_long_mode(warn, LV_LABEL_LONG_WRAP);
 
     // Package D: truthful requested/applying/applied+saved status, polled from the worker.
     powermode_status_lbl = lv_label_create(dialog);
@@ -28673,6 +28740,8 @@ static void show_power_mode_popup(void)
     lv_obj_set_style_text_color(powermode_status_lbl, ui_muted_color(), 0);
     lv_obj_set_style_text_font(powermode_status_lbl, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(powermode_status_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(powermode_status_lbl, lv_pct(100));
+    lv_label_set_long_mode(powermode_status_lbl, LV_LABEL_LONG_WRAP);
 
     lv_obj_t *close_btn = lv_btn_create(dialog);
     lv_obj_set_size(close_btn, 80, 30);
@@ -29839,7 +29908,7 @@ static bool ntp_start_ap_mode(bool *wifi_claimed)
     ap_cfg.ap.max_connection = 4;
     ap_cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
     if (esp_wifi_set_config(WIFI_IF_AP, &ap_cfg) != ESP_OK) return false;
-    esp_err_t start_err = esp_wifi_start();
+    esp_err_t start_err = cym_wifi_start();
     if (start_err != ESP_OK && start_err != ESP_ERR_WIFI_CONN) return false;
 
     esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
@@ -29901,7 +29970,7 @@ static void clock_wifi_task(void *arg)
     }
     wifi_ap_record_t ap;
     if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
-        esp_wifi_start();
+        cym_wifi_start();
         wifi_config_t cfg = {0};
         strncpy((char *)cfg.sta.ssid, g_saved_wifi_ssid, sizeof(cfg.sta.ssid) - 1);
         strncpy((char *)cfg.sta.password, g_saved_wifi_pass, sizeof(cfg.sta.password) - 1);
@@ -44573,8 +44642,10 @@ static bool bt_transition_enter(void)
 static void bt_transition_leave(void)
 {
     // Nested cleanup must not reopen transition admission.
-    if (--s_bt_transition_depth == 0)
+    if (--s_bt_transition_depth == 0) {
         __atomic_store_n(&s_bt_transition_owner, NULL, __ATOMIC_RELEASE);
+        power_policy_notify();
+    }
 }
 
 static bool ensure_wifi_mode_transition(void);
@@ -44603,13 +44674,13 @@ static bool ensure_wifi_mode_transition(void)
             if (wifi_initialized) {
                 // WiFi was previously initialized and is stopped but NOT deinitialized.
                 // This path is no longer reached in normal operation: ensure_ble_mode()
-                // now calls esp_wifi_deinit() and sets wifi_initialized=false.
-                // Kept as a fallback for any legacy code path that only calls esp_wifi_stop().
+                // now calls cym_wifi_deinit() and sets wifi_initialized=false.
+                // Kept as a fallback for any legacy code path that only calls cym_wifi_stop().
                 ESP_LOGI(TAG, "Restarting WiFi (driver retained)...");
                 esp_wifi_set_mode(WIFI_MODE_STA);
                 wifi_config_t restart_cfg = {0};
                 esp_wifi_set_config(WIFI_IF_STA, &restart_cfg);
-                esp_err_t start_err = esp_wifi_start();
+                esp_err_t start_err = cym_wifi_start();
                 if (start_err != ESP_OK) {
                     ESP_LOGE(TAG, "esp_wifi_start failed: 0x%x — restarting", start_err);
                     vTaskDelay(pdMS_TO_TICKS(500));
@@ -44623,7 +44694,7 @@ static bool ensure_wifi_mode_transition(void)
                 ESP_LOGI(TAG, "WiFi restarted OK");
                 return true;
             }
-            // Full init — either first boot or after esp_wifi_deinit() on BLE switch.
+            // Full init — either first boot or after cym_wifi_deinit() on BLE switch.
             ESP_LOGI(TAG, "Initializing WiFi...");
             log_heap_stats("wifi-init-before");
             esp_err_t ret = wifi_cli_init();
@@ -44716,18 +44787,20 @@ static bool ensure_ble_mode_unreserved(void)
             // Full WiFi deinit (not just stop) to free the ~42KB DMA footprint.
             // WiFi static RX/TX + management/control buffers consume nearly the entire
             // 48KB DMA pool, leaving only ~6.9KB — far short of the ~18KB the BLE LL
-            // controller requires. esp_wifi_deinit() returns all of that to the pool.
+            // controller requires. cym_wifi_deinit() returns all of that to the pool.
             // On BLE→WiFi switch, wifi_cli_init() does the full reinit (~700ms).
             ESP_LOGI(TAG, "Switching from WiFi to BLE mode (full WiFi deinit)...");
             ESP_LOGI(TAG, "DMA free before WiFi deinit: %lu bytes",
                      heap_caps_get_free_size(MALLOC_CAP_DMA));
             log_heap_stats("wifi-teardown-before");
             bt_stage(BT_ST_WIFI_STOP,0);
-            esp_err_t stop_rc=esp_wifi_stop();
+            esp_err_t stop_rc=cym_wifi_stop();
             bt_stage(BT_ST_WIFI_STOP_RETURN,stop_rc);
+            if (stop_rc != ESP_OK && stop_rc != ESP_ERR_WIFI_NOT_STARTED) return false;
             bt_stage(BT_ST_WIFI_DEINIT,0);
-            esp_err_t deinit_rc=esp_wifi_deinit();
+            esp_err_t deinit_rc=cym_wifi_deinit();
             bt_stage(BT_ST_WIFI_DEINIT_RETURN,deinit_rc);
+            if (deinit_rc != ESP_OK) return false; // retain owner; never start BLE over undrained WiFi
             log_heap_stats("wifi-teardown-after");
             wifi_initialized = false;
             ESP_LOGI(TAG, "DMA free after WiFi deinit: %lu bytes (freed WiFi DMA pool)",
@@ -45664,7 +45737,10 @@ static void bt_on_sync(void)
 {
     bt_stage(BT_ST_SYNC,nimble_stop_requested ? 1 : 0);
     ESP_LOGI(TAG, "BLE Host synchronized");
-    if (!__atomic_load_n(&nimble_stop_requested, __ATOMIC_SEQ_CST)) nimble_initialized = true;
+    if (!__atomic_load_n(&nimble_stop_requested, __ATOMIC_SEQ_CST)) {
+        nimble_initialized = true;
+        power_policy_notify();
+    }
 }
 
 /**
@@ -45674,6 +45750,8 @@ static void bt_on_reset(int reason)
 {
     ESP_LOGE(TAG, "BLE Host reset, reason: %d", reason);
     nimble_initialized = false;
+    ble_power_retire();
+    power_policy_notify();
 }
 
 /**
@@ -45748,6 +45826,7 @@ static bool bt_nimble_cleanup_bounded_transition(void)
         __atomic_clear(&nimble_cleanup_busy, __ATOMIC_SEQ_CST);
         return false; // worker can still enter host APIs; retain the whole port
     }
+    ble_power_retire(); // transition ownership excludes a live apply before host/controller stop
     __atomic_store_n(&nimble_stop_requested, true, __ATOMIC_SEQ_CST);
     nimble_initialized = false;
     for (int i = 0; i < 30 && !__atomic_load_n(&nimble_host_exited, __ATOMIC_SEQ_CST); ++i)
@@ -45772,40 +45851,104 @@ static bool bt_nimble_cleanup_bounded_transition(void)
 // must be running before esp_ble_tx_power_set() is valid.
 // esp_ble_tx_power_set() is a controller-level API in esp_bt.h — it works
 // regardless of whether the host stack is NimBLE or Bluedroid.
-// Boot-default BLE TX levels, captured once before any override so Normal can
+// Per-controller-generation BLE TX levels, captured before any override so Normal can
 // restore them (Package D: the v3.0.44 path only ever applied Max and never
 // restored a lower level on return to Normal).
-static bool             s_ble_pwr_captured     = false;
-static esp_power_level_t s_ble_pwr_def_default = ESP_PWR_LVL_P3;
-static esp_power_level_t s_ble_pwr_def_adv     = ESP_PWR_LVL_P3;
-static esp_power_level_t s_ble_pwr_def_scan    = ESP_PWR_LVL_P3;
+/* POWER_BLE_STATE_BEGIN */
+typedef struct {
+    uint32_t state; // epoch in upper 24 bits, result in low byte
+    uint8_t normal[3], captured; // independent category validity mask
+} ble_power_state_t;
+static ble_power_state_t *s_ble_power;
+static bool ble_power_state_init(void)
+{
+    if (__atomic_load_n(&s_ble_power, __ATOMIC_ACQUIRE)) return true; // called only under transition ownership
+    ble_power_state_t *created = heap_caps_calloc(1, sizeof(*created), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    __atomic_store_n(&s_ble_power, created, __ATOMIC_RELEASE);
+    return created != NULL;
+}
+static uint8_t ble_power_applied_level(void)
+{
+    ble_power_state_t *state = __atomic_load_n(&s_ble_power, __ATOMIC_ACQUIRE);
+    uint8_t result = state ? __atomic_load_n(&state->state, __ATOMIC_ACQUIRE) & 255 : 0;
+    return result == 4 ? PWR_LVL_NORMAL : result == 8 ? PWR_LVL_MAX : 0;
+}
+static uint8_t ble_power_status(void)
+{
+    ble_power_state_t *state = __atomic_load_n(&s_ble_power, __ATOMIC_ACQUIRE);
+    uint8_t result = state ? __atomic_load_n(&state->state, __ATOMIC_ACQUIRE) & 255 : 0;
+    return result == 4 || result == 8 ? PWR_RADIO_APPLIED : result == 2 ? PWR_RADIO_FAILED : PWR_RADIO_OFF;
+}
+static void ble_power_retire(void)
+{
+    ble_power_state_t *state = __atomic_load_n(&s_ble_power, __ATOMIC_ACQUIRE);
+    if (!state) return;
+    uint32_t old = __atomic_load_n(&state->state, __ATOMIC_ACQUIRE);
+    while (!__atomic_compare_exchange_n(&state->state, &old,
+           (old + 256U) & ~255U, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
+}
+/* POWER_BLE_STATE_END */
 
 // Returns ESP_OK only if all three esp_ble_tx_power_set calls succeeded, so the
 // UI can report BLE "applied" truthfully.
+static bool pwr_ble_level_valid(esp_power_level_t level)
+{
+#if CONFIG_IDF_TARGET_ESP32
+    return (int)level >= ESP_PWR_LVL_N12 && (int)level <= ESP_PWR_LVL_P9;
+#elif CONFIG_IDF_TARGET_ESP32C5
+    return (int)level >= ESP_PWR_LVL_N24 && (int)level <= ESP_PWR_LVL_P20;
+#else
+    // S3 uses the installed esp32c3 controller header (N24 through P20).
+    return (int)level >= ESP_PWR_LVL_N24 && (int)level <= ESP_PWR_LVL_P20;
+#endif
+}
+
+static esp_err_t ble_power_apply_requested(uint8_t level)
+{
+    if (level != PWR_LVL_NORMAL && level != PWR_LVL_MAX) return ESP_ERR_INVALID_ARG;
+    if (!bt_transition_enter()) return ESP_ERR_TIMEOUT;
+    if (!nimble_initialized || nimble_stop_requested || !s_ble_power) {
+        bt_transition_leave();
+        return ESP_ERR_INVALID_STATE;
+    }
+    uint32_t stamp = __atomic_load_n(&s_ble_power->state, __ATOMIC_ACQUIRE);
+    uint32_t generation = stamp & ~255U;
+    const esp_ble_power_type_t types[3] = {ESP_BLE_PWR_TYPE_DEFAULT, ESP_BLE_PWR_TYPE_ADV, ESP_BLE_PWR_TYPE_SCAN};
+    bool ok = true;
+    /* Never override a category with an invalid baseline. Valid categories are
+     * retained independently, including across a partial application failure. */
+    for (unsigned i = 0; i < 3; ++i) {
+        if (!(s_ble_power->captured & (1U << i))) {
+            esp_power_level_t v = esp_ble_tx_power_get(types[i]);
+            if (!pwr_ble_level_valid(v)) { ok = false; continue; }
+            if (generation != (__atomic_load_n(&s_ble_power->state, __ATOMIC_ACQUIRE) & ~255U)) { ok = false; break; }
+            s_ble_power->normal[i] = v;
+            s_ble_power->captured |= 1U << i;
+        }
+    }
+    /* Capture all categories before the first override. A failed getter cannot
+     * poison later capture with this policy's previous Max. */
+    if (s_ble_power->captured != 7) ok = false;
+    if (ok) {
+        for (unsigned i = 0; i < 3; ++i) {
+            if (generation != (__atomic_load_n(&s_ble_power->state, __ATOMIC_ACQUIRE) & ~255U)) { ok = false; break; }
+            esp_power_level_t target = level == PWR_LVL_MAX ? ESP_PWR_LVL_P9 : s_ble_power->normal[i];
+            esp_err_t rc = esp_ble_tx_power_set(types[i], target);
+            esp_power_level_t actual = esp_ble_tx_power_get(types[i]);
+            if (rc != ESP_OK || !pwr_ble_level_valid(actual) || actual != target) ok = false;
+        }
+    }
+    if (generation != (__atomic_load_n(&s_ble_power->state, __ATOMIC_ACQUIRE) & ~255U)) ok = false;
+    uint32_t result = generation | (ok ? (level == PWR_LVL_MAX ? 8U : 4U) : 2U);
+    if (!__atomic_compare_exchange_n(&s_ble_power->state, &stamp, result,
+            false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) ok = false;
+    bt_transition_leave();
+    return ok ? ESP_OK : ESP_FAIL;
+}
 static esp_err_t apply_ble_power_settings(void)
 {
-    // Capture the controller's boot-default levels ONCE, before applying Max.
-    if (!s_ble_pwr_captured) {
-        s_ble_pwr_def_default = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT);
-        s_ble_pwr_def_adv     = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV);
-        s_ble_pwr_def_scan    = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_SCAN);
-        s_ble_pwr_captured    = true;
-    }
-    esp_power_level_t ld, la, ls;
-    if (g_pwr_lvl == PWR_LVL_MAX) {
-        // ESP_PWR_LVL_P9 = +9 dBm — highest level for ESP32-C5 BLE controller.
-        // Set DEFAULT (connections), ADV (advertising), and SCAN (scan requests).
-        ld = la = ls = ESP_PWR_LVL_P9;
-    } else {
-        // Normal (Low clamps to Normal this build): restore captured boot defaults.
-        ld = s_ble_pwr_def_default; la = s_ble_pwr_def_adv; ls = s_ble_pwr_def_scan;
-    }
-    esp_err_t e1 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ld);
-    esp_err_t e2 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,     la);
-    esp_err_t e3 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,    ls);
-    ESP_LOGI(TAG, "BLE TX -> %s: def rc=%d adv rc=%d scan rc=%d",
-             g_pwr_lvl == PWR_LVL_MAX ? "MAX P9" : "NORMAL(restore)", e1, e2, e3);
-    return (e1 == ESP_OK && e2 == ESP_OK && e3 == ESP_OK) ? ESP_OK : ESP_FAIL;
+    power_policy_notify();
+    return ESP_ERR_TIMEOUT;
 }
 
 /**
@@ -45839,6 +45982,7 @@ static esp_err_t bt_nimble_init_transition(void)
     __atomic_store_n(&nimble_stop_requested, false, __ATOMIC_SEQ_CST);
     __atomic_store_n(&nimble_stop_complete, false, __ATOMIC_SEQ_CST);
     bt_stage(BT_ST_PORT_INIT,0);
+    if (!ble_power_state_init()) return ESP_ERR_NO_MEM;
     esp_err_t ret = nimble_port_init();
     bt_stage(BT_ST_PORT_INIT_RETURN,ret);
     if (ret != ESP_OK) {
@@ -45847,6 +45991,8 @@ static esp_err_t bt_nimble_init_transition(void)
     }
     
     nimble_port_initialized = true;
+    ble_power_retire();
+    s_ble_power->captured = 0; // only a full new controller init resets defaults
 
     // Configure BLE host callbacks
     ble_hs_cfg.sync_cb = bt_on_sync;
@@ -71510,8 +71656,7 @@ static void s_zgwd_task_fn(void *arg)
     if (__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE)) goto zgwd_radio_busy;
     if (current_radio_mode == RADIO_MODE_WIFI) {
         esp_wifi_set_promiscuous(false);
-        esp_wifi_stop();
-        esp_wifi_deinit();
+        if (cym_wifi_stop() != ESP_OK || cym_wifi_deinit() != ESP_OK) goto zgwd_radio_busy;
         wifi_initialized = false;
         current_radio_mode = RADIO_MODE_NONE;
     } else if (current_radio_mode == RADIO_MODE_BLE) {
@@ -71994,7 +72139,11 @@ static void s_zgwd_disassoc_task_fn(void *arg)
 
     if (current_radio_mode == RADIO_MODE_WIFI) {
         esp_wifi_set_promiscuous(false);
-        esp_wifi_stop(); esp_wifi_deinit();
+        if (cym_wifi_stop() != ESP_OK || cym_wifi_deinit() != ESP_OK) {
+            s_zgwd_da_result = -2;
+            vTaskDelete(NULL);
+            return;
+        }
         wifi_initialized = false;
         current_radio_mode = RADIO_MODE_NONE;
     }
@@ -72226,7 +72375,12 @@ static void s_zgwd_loc_task_fn(void *arg)
 
     if (current_radio_mode == RADIO_MODE_WIFI) {
         esp_wifi_set_promiscuous(false);
-        esp_wifi_stop(); esp_wifi_deinit();
+        if (cym_wifi_stop() != ESP_OK || cym_wifi_deinit() != ESP_OK) {
+            loc->running = false;
+            loc->task = NULL;
+            vTaskDelete(NULL);
+            return;
+        }
         wifi_initialized = false;
         current_radio_mode = RADIO_MODE_NONE;
     }

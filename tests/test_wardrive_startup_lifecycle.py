@@ -14,6 +14,8 @@ def function(source,name):
 PREFIX=r"""
 #include <assert.h>
 #include <stdbool.h>
+static void power_policy_notify(void){}
+static void ble_power_retire(void){}
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
