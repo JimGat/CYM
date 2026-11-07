@@ -151,11 +151,36 @@ extern volatile app_state_t g_app_state;
 extern volatile bool g_operation_stop_requested;
 
 // Global TX power mode flag (shared across all WiFi/BLE components)
+// Mirrors (g_pwr_lvl == PWR_LVL_MAX); kept for existing Max-only readers.
 extern bool g_max_power_mode;
 
-// Apply WiFi TX power and power-save settings for the current mode.
-// Call after every esp_wifi_start() — safe to call in both Normal and Max Power modes.
-void apply_wifi_power_settings(void);
+// ── Package D: TX power level (Low reserved, Normal/Max active this build) ────
+/* >>> CYM_PWR_DECODE_TYPES_BEGIN  (extracted verbatim by tests/run_pwr_decode_host.py) */
+typedef enum { PWR_LVL_LOW = 0, PWR_LVL_NORMAL = 1, PWR_LVL_MAX = 2 } pwr_lvl_t;
+/* Per-key NVS read outcome, mapped by the caller from the raw esp_err_t. */
+typedef enum { PWR_KEY_OK = 0, PWR_KEY_ABSENT = 1, PWR_KEY_BADTYPE = 2, PWR_KEY_READERR = 3 } pwr_key_rd_t;
+/* Provenance of the decoded level (drives truthful logging / error surfacing). */
+typedef enum { PWR_SRC_FRESH = 0, PWR_SRC_EXPLICIT = 1, PWR_SRC_MIGRATED = 2, PWR_SRC_ERROR = 3 } pwr_src_t;
+typedef struct { pwr_lvl_t level; pwr_src_t src; } pwr_decode_t;
+/* <<< CYM_PWR_DECODE_TYPES_END */
+
+// Authoritative tri-state TX power level (PWR_LVL_*). g_max_power_mode mirrors MAX.
+extern uint8_t g_pwr_lvl;
+
+// Pure migration/decode of the persisted level — NO I/O. The caller maps each
+// key's esp_err_t to a pwr_key_rd_t and reports whether the settings namespace
+// opened. Fresh (both keys genuinely absent) -> Normal; a bad-type / unreadable
+// key or a legacy 2/unknown value is flagged PWR_SRC_ERROR and defaults to Normal
+// (never a silent promotion to Max); Low persisted but unsupported is likewise
+// flagged and run as Normal.
+pwr_decode_t pwr_decode(pwr_key_rd_t lvl_rd, uint8_t lvl_raw,
+                        pwr_key_rd_t leg_rd, uint8_t leg_raw, int ns_open_ok);
+
+// Apply WiFi TX power and power-save settings for the current level.
+// Captures the boot-default TX power on first call, then restores it for Normal
+// (instead of leaving a prior Max 82 in place). Returns ESP_OK only if every
+// radio setter it issued returned ESP_OK. Call after every esp_wifi_start().
+esp_err_t apply_wifi_power_settings(void);
 
 // Shared scan results (from wifi_scanner, used by attacks/sniffer)
 extern wifi_ap_record_t g_shared_scan_results[MAX_SCAN_RESULTS];

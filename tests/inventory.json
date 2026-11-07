@@ -2871,6 +2871,16 @@
         "lvgl",
         "idf-common"
       ]
+    },
+    {
+      "path": "tests/run_pwr_decode_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Pure production-extracted NVS decode/migration + semantic mutants only; not NVS/SDK/concurrency/RF proof"
     }
   ],
   "support_files": [

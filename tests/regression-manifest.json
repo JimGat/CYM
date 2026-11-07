@@ -728,6 +728,16 @@
         "lvgl",
         "idf-common"
       ]
+    },
+    {
+      "id": "pwr_decode",
+      "path": "tests/run_pwr_decode_host.py",
+      "kind": "script",
+      "suite": "portable",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
     }
   ]
 }

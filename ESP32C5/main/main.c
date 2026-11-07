@@ -987,7 +987,8 @@ static char     g_saved_wifi_pass[65] = ""; // Home network password
 #define NVS_KEY_SCAN_MIN    "scan_min"
 #define NVS_KEY_SCAN_MAX    "scan_max"
 #define NVS_KEY_DARK_MODE    "dark_mode"
-#define NVS_KEY_POWER_MODE   "pwr_mode"
+#define NVS_KEY_POWER_MODE   "pwr_mode"   // legacy bool: 0=Normal, 1=Max (migration source)
+#define NVS_KEY_POWER_LEVEL  "pwr_lvl"    // Package D tri-state: 0=Low(reserved),1=Normal,2=Max
 #define NVS_KEY_GATT_TIMEOUT  "gatt_tmo"
 #define NVS_KEY_BT_SCAN_DUR   "bt_scan_dur"
 #define NVS_KEY_WIFI_SSID    "wifi_ssid"
@@ -3873,7 +3874,7 @@ static void radio_reset_to_idle(void);
 static esp_err_t bt_nimble_init(void);
 static void bt_nimble_deinit(void);
 static bool bt_nimble_cleanup_bounded(void);
-static void apply_ble_power_settings(void);
+static esp_err_t apply_ble_power_settings(void);
 static void bt_scan_stop(void);
 static void bt_scan_task(void *pvParameters);
 static BaseType_t bt_scan_worker_start(void);
@@ -4808,6 +4809,18 @@ static void init_display(void)
 // NVS Settings Helpers
 // ============================================================================
 
+// Package D: map an nvs_get_* result to the pure decoder's per-key read outcome,
+// so a genuinely absent key is distinguished from a wrong-type or unreadable one.
+static inline pwr_key_rd_t pwr_map_rd(esp_err_t e)
+{
+    switch (e) {
+        case ESP_OK:                    return PWR_KEY_OK;
+        case ESP_ERR_NVS_NOT_FOUND:     return PWR_KEY_ABSENT;
+        case ESP_ERR_NVS_TYPE_MISMATCH: return PWR_KEY_BADTYPE;
+        default:                        return PWR_KEY_READERR;
+    }
+}
+
 static void nvs_settings_load(void)
 {
     nvs_handle_t h;
@@ -4845,10 +4858,20 @@ static void nvs_settings_load(void)
         if (nvs_get_u8(h, NVS_KEY_DARK_MODE, &dm) == ESP_OK) {
             dark_mode_enabled = (dm != 0);
         }
-        uint8_t pm = 0;
-        if (nvs_get_u8(h, NVS_KEY_POWER_MODE, &pm) == ESP_OK) {
-            g_max_power_mode = (pm != 0);
-        }
+        // Package D: resolve the TX power level with explicit migration from the
+        // legacy pwr_mode bool, distinguishing absent from wrong-type/unreadable.
+        uint8_t lvl_raw = 0, leg_raw = 0;
+        esp_err_t lvl_e = nvs_get_u8(h, NVS_KEY_POWER_LEVEL, &lvl_raw);
+        esp_err_t leg_e = nvs_get_u8(h, NVS_KEY_POWER_MODE,  &leg_raw);
+        pwr_decode_t pd = pwr_decode(pwr_map_rd(lvl_e), lvl_raw,
+                                     pwr_map_rd(leg_e), leg_raw, 1 /* namespace open */);
+        g_pwr_lvl = pd.level;
+        g_max_power_mode = (g_pwr_lvl == PWR_LVL_MAX);
+        if (pd.src == PWR_SRC_ERROR)
+            ESP_LOGW(TAG, "NVS TX power unresolved (lvl rc=0x%x, legacy rc=0x%x) -> Normal; NOT treated as fresh",
+                     lvl_e, leg_e);
+        else
+            ESP_LOGI(TAG, "NVS TX power level=%u (src=%d)", g_pwr_lvl, (int)pd.src);
         uint32_t gatt_tmo = 30000;
         if (nvs_get_u32(h, NVS_KEY_GATT_TIMEOUT, &gatt_tmo) == ESP_OK) {
             g_gatt_timeout_ms = gatt_tmo;
@@ -4928,6 +4951,7 @@ static void nvs_settings_load(void)
         scan_time_min_ms = 100;
         scan_time_max_ms = 300;
         dark_mode_enabled = true;
+        g_pwr_lvl = PWR_LVL_NORMAL;   // Package D: fresh-install default
         g_max_power_mode = false;
         g_gatt_timeout_ms = 30000;
         g_saved_wifi_ssid[0] = '\0';
@@ -5048,15 +5072,27 @@ static void nvs_settings_save_home_layout(bool four_cat)
     }
 }
 
-static void nvs_settings_save_power_mode(bool max_power)
+// Package D: persist the TX power level. Writes the new pwr_lvl key AND keeps the
+// legacy pwr_mode bool in sync so an older firmware still loads a sane level on a
+// downgrade (Low/Normal -> legacy 0, Max -> legacy 1). Returns ESP_OK only if both
+// writes and the commit succeeded, so the UI reports "persisted" truthfully; a
+// failed commit cannot guarantee the change survives power loss. Other keys
+// (passwords, calibration, etc.) are left untouched — no erase as a shortcut.
+static esp_err_t nvs_settings_save_power_level(uint8_t level)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
-        nvs_set_u8(h, NVS_KEY_POWER_MODE, max_power ? 1 : 0);
-        nvs_commit(h);
-        nvs_close(h);
-        ESP_LOGI(TAG, "NVS: saved power_mode = %s", max_power ? "MAX" : "Normal");
+    esp_err_t eo = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (eo != ESP_OK) { ESP_LOGW(TAG, "NVS open for power save failed rc=0x%x", eo); return eo; }
+    esp_err_t e1 = nvs_set_u8(h, NVS_KEY_POWER_LEVEL, level);
+    esp_err_t e2 = nvs_set_u8(h, NVS_KEY_POWER_MODE, (level == PWR_LVL_MAX) ? 1 : 0);
+    esp_err_t ec = nvs_commit(h);
+    nvs_close(h);
+    if (e1 == ESP_OK && e2 == ESP_OK && ec == ESP_OK) {
+        ESP_LOGI(TAG, "NVS: saved pwr_lvl=%u (legacy pwr_mode=%u)", level, (level == PWR_LVL_MAX) ? 1 : 0);
+        return ESP_OK;
     }
+    ESP_LOGW(TAG, "NVS power save incomplete (set rc=0x%x/0x%x, commit rc=0x%x)", e1, e2, ec);
+    return ESP_FAIL;
 }
 
 static void nvs_settings_save_gatt_timeout(uint32_t ms)
@@ -28413,46 +28449,138 @@ static void show_vibrator_test_popup(void)
 static lv_obj_t *powermode_popup       = NULL;
 static lv_obj_t *powermode_normal_btn  = NULL;
 static lv_obj_t *powermode_max_btn     = NULL;
+static lv_obj_t *powermode_status_lbl  = NULL;
+static lv_timer_t *powermode_timer     = NULL;   // polls the off-UI worker's result
+
+// ── Package D: off-UI TX power worker ───────────────────────────────────────
+// The popup callback only records the requested level and wakes this worker; the
+// NVS write and the radio setters/getters run HERE, never on the LVGL task
+// (cym-landscape rule §6). Rapid taps are serialized: the worker re-runs for the
+// latest request, and a stale result never overwrites a newer selection
+// (guarded by req_seq == done_seq). Closing the popup stops the polling timer but
+// never abandons an in-flight apply/persist — it runs to completion.
+typedef struct {
+    volatile uint8_t   level;       // latest requested level
+    volatile uint32_t  req_seq;     // bumped per request
+    volatile uint32_t  done_seq;    // seq the published results belong to
+    volatile int       busy;        // 1 while applying
+    volatile esp_err_t applied_rc;  // radio apply result for done_seq
+    volatile esp_err_t saved_rc;    // persist result for done_seq
+    volatile int       radio;       // radio mode captured at request time
+} pwr_job_t;
+static pwr_job_t    s_pwr_job;
+static TaskHandle_t s_pwr_task = NULL;
+static void powermode_timer_cb(lv_timer_t *t);   // fwd: used by powermode_start_poll
+
+static void pwr_worker(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        uint32_t seq;
+        do {
+            seq = s_pwr_job.req_seq;
+            uint8_t level = s_pwr_job.level;
+            int radio = s_pwr_job.radio;
+            s_pwr_job.busy = 1;
+            esp_err_t ar = ESP_OK;
+            if (radio == RADIO_MODE_WIFI)      ar = apply_wifi_power_settings();
+            else if (radio == RADIO_MODE_BLE)  ar = apply_ble_power_settings();
+            esp_err_t sr = nvs_settings_save_power_level(level);
+            s_pwr_job.applied_rc = ar;
+            s_pwr_job.saved_rc   = sr;
+            s_pwr_job.done_seq   = seq;
+            s_pwr_job.busy       = 0;
+        } while (seq != s_pwr_job.req_seq);  // a newer tap arrived meanwhile: re-run
+    }
+}
+
+// Non-screen helper: create the popup's result-polling timer here (not in
+// show_power_mode_popup) — the timer is owned by the modal and freed in
+// powermode_delete_cb (LV_EVENT_DELETE), which is the correct teardown for a
+// lv_scr_act() modal rather than the create_function_page_base stop-hook path.
+static void powermode_start_poll(void)
+{
+    if (!powermode_timer) powermode_timer = lv_timer_create(powermode_timer_cb, 250, NULL);
+}
+
+static void pwr_request(uint8_t level)
+{
+    // Persistent app-lifetime worker: created once, never torn down.
+    if (!s_pwr_task) xTaskCreate(pwr_worker, "pwr_apply", 3072, NULL, 4, &s_pwr_task);
+    // Reflect the selection in the shared flags immediately; apply+persist is async.
+    g_pwr_lvl = level;
+    g_max_power_mode = (level == PWR_LVL_MAX);
+    s_pwr_job.level = level;
+    s_pwr_job.radio = current_radio_mode;
+    s_pwr_job.req_seq++;
+    if (s_pwr_task) xTaskNotifyGive(s_pwr_task);
+}
 
 static void powermode_refresh_buttons(void)
 {
-    if (!powermode_normal_btn || !powermode_max_btn) return;
-    if (g_max_power_mode) {
-        lv_obj_set_style_bg_color(powermode_normal_btn, lv_color_make(80, 80, 80), 0);
-        lv_obj_set_style_bg_color(powermode_max_btn,    COLOR_MATERIAL_RED, 0);
-    } else {
-        lv_obj_set_style_bg_color(powermode_normal_btn, lv_color_hex(0x2E7D32), 0);
-        lv_obj_set_style_bg_color(powermode_max_btn,    lv_color_make(80, 80, 80), 0);
+    if (powermode_normal_btn && powermode_max_btn) {
+        if (g_max_power_mode) {
+            lv_obj_set_style_bg_color(powermode_normal_btn, lv_color_make(80, 80, 80), 0);
+            lv_obj_set_style_bg_color(powermode_max_btn,    COLOR_MATERIAL_RED, 0);
+        } else {
+            lv_obj_set_style_bg_color(powermode_normal_btn, lv_color_hex(0x2E7D32), 0);
+            lv_obj_set_style_bg_color(powermode_max_btn,    lv_color_make(80, 80, 80), 0);
+        }
     }
+    if (!powermode_status_lbl) return;
+    // Report requested / applying / applied+saved truthfully — never show a
+    // successful apply or save after a partial failure.
+    if (s_pwr_job.busy || s_pwr_job.done_seq != s_pwr_job.req_seq) {
+        lv_label_set_text(powermode_status_lbl, "Applying...");
+    } else if (s_pwr_job.req_seq == 0) {
+        lv_label_set_text(powermode_status_lbl, "");
+    } else if (s_pwr_job.applied_rc != ESP_OK && s_pwr_job.saved_rc != ESP_OK) {
+        lv_label_set_text(powermode_status_lbl, "Apply & save FAILED");
+    } else if (s_pwr_job.applied_rc != ESP_OK) {
+        lv_label_set_text(powermode_status_lbl, "Saved, but apply FAILED");
+    } else if (s_pwr_job.saved_rc != ESP_OK) {
+        lv_label_set_text(powermode_status_lbl, "Applied, but NOT saved");
+    } else {
+        lv_label_set_text(powermode_status_lbl, "Applied & saved");
+    }
+}
+
+static void powermode_timer_cb(lv_timer_t *t)
+{
+    if (t != powermode_timer) return;
+    powermode_refresh_buttons();
+}
+
+// Fires whenever the popup is torn down (Close, or any other deletion): delete
+// the polling timer and drop every pointer so the timer can never touch freed UI.
+static void powermode_delete_cb(lv_event_t *e)
+{
+    (void)e;
+    if (powermode_timer) { lv_timer_del(powermode_timer); powermode_timer = NULL; }
+    powermode_normal_btn = NULL;
+    powermode_max_btn    = NULL;
+    powermode_status_lbl = NULL;
+    powermode_popup      = NULL;
 }
 
 static void powermode_close_cb(lv_event_t *e)
 {
     (void)e;
-    if (powermode_popup) {
-        lv_obj_del(powermode_popup);
-        powermode_popup      = NULL;
-        powermode_normal_btn = NULL;
-        powermode_max_btn    = NULL;
-    }
+    if (powermode_popup) lv_obj_del(powermode_popup);  // -> powermode_delete_cb
 }
 
 static void powermode_normal_cb(lv_event_t *e)
 {
     (void)e;
-    g_max_power_mode = false;
-    nvs_settings_save_power_mode(false);
-    if (current_radio_mode == RADIO_MODE_WIFI) apply_wifi_power_settings();
+    pwr_request(PWR_LVL_NORMAL);
     powermode_refresh_buttons();
 }
 
 static void powermode_max_cb(lv_event_t *e)
 {
     (void)e;
-    g_max_power_mode = true;
-    nvs_settings_save_power_mode(true);
-    if (current_radio_mode == RADIO_MODE_WIFI) apply_wifi_power_settings();
-    if (current_radio_mode == RADIO_MODE_BLE)  apply_ble_power_settings();
+    pwr_request(PWR_LVL_MAX);
     powermode_refresh_buttons();
 }
 
@@ -28469,14 +28597,22 @@ static void show_power_mode_popup(void)
     lv_obj_set_style_radius(powermode_popup, 0, 0);
     lv_obj_clear_flag(powermode_popup, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Package D: cleanup the polling timer + pointers whenever the popup is torn down.
+    lv_obj_add_event_cb(powermode_popup, powermode_delete_cb, LV_EVENT_DELETE, NULL);
+
     lv_obj_t *dialog = lv_obj_create(powermode_popup);
-    lv_obj_set_size(dialog, 210, 195);
+    // Landscape-safe (ver=240): bounded height that fits the shorter screen, with
+    // vertical scroll as the safety net now that a status row is added to the form
+    // (was a hardcoded 195 that assumed portrait). Portrait ver=320 fits trivially.
+    int pm_ver = lv_disp_get_ver_res(NULL);
+    lv_obj_set_size(dialog, 210, pm_ver < 230 ? (pm_ver - 16) : 215);
     lv_obj_center(dialog);
     lv_obj_set_style_bg_color(dialog, ui_panel_color(), 0);
     lv_obj_set_style_border_color(dialog, COLOR_MATERIAL_RED, 0);
     lv_obj_set_style_border_width(dialog, 2, 0);
     lv_obj_set_style_radius(dialog, 12, 0);
-    lv_obj_clear_flag(dialog, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(dialog, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(dialog, LV_SCROLLBAR_MODE_AUTO);
     lv_obj_set_flex_flow(dialog, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(dialog, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_all(dialog, 14, 0);
@@ -28531,6 +28667,13 @@ static void show_power_mode_popup(void)
     lv_obj_set_style_text_font(warn, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(warn, LV_TEXT_ALIGN_CENTER, 0);
 
+    // Package D: truthful requested/applying/applied+saved status, polled from the worker.
+    powermode_status_lbl = lv_label_create(dialog);
+    lv_label_set_text(powermode_status_lbl, "");
+    lv_obj_set_style_text_color(powermode_status_lbl, ui_muted_color(), 0);
+    lv_obj_set_style_text_font(powermode_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(powermode_status_lbl, LV_TEXT_ALIGN_CENTER, 0);
+
     lv_obj_t *close_btn = lv_btn_create(dialog);
     lv_obj_set_size(close_btn, 80, 30);
     lv_obj_set_style_bg_color(close_btn, lv_color_make(80, 80, 80), 0);
@@ -28541,6 +28684,9 @@ static void show_power_mode_popup(void)
     lv_obj_set_style_text_color(cl, ui_text_color(), 0);
     lv_obj_center(cl);
     lv_obj_add_event_cb(close_btn, powermode_close_cb, LV_EVENT_CLICKED, NULL);
+
+    powermode_start_poll();        // result-polling timer (freed in powermode_delete_cb)
+    powermode_refresh_buttons();
 }
 
 // ─── Hardware Options sub-screen ─────────────────────────────────────────────
@@ -45626,15 +45772,40 @@ static bool bt_nimble_cleanup_bounded_transition(void)
 // must be running before esp_ble_tx_power_set() is valid.
 // esp_ble_tx_power_set() is a controller-level API in esp_bt.h — it works
 // regardless of whether the host stack is NimBLE or Bluedroid.
-static void apply_ble_power_settings(void)
+// Boot-default BLE TX levels, captured once before any override so Normal can
+// restore them (Package D: the v3.0.44 path only ever applied Max and never
+// restored a lower level on return to Normal).
+static bool             s_ble_pwr_captured     = false;
+static esp_power_level_t s_ble_pwr_def_default = ESP_PWR_LVL_P3;
+static esp_power_level_t s_ble_pwr_def_adv     = ESP_PWR_LVL_P3;
+static esp_power_level_t s_ble_pwr_def_scan    = ESP_PWR_LVL_P3;
+
+// Returns ESP_OK only if all three esp_ble_tx_power_set calls succeeded, so the
+// UI can report BLE "applied" truthfully.
+static esp_err_t apply_ble_power_settings(void)
 {
-    if (!g_max_power_mode) return;
-    // ESP_PWR_LVL_P9 = +9 dBm — highest level for ESP32-C5 BLE controller.
-    // Set DEFAULT (connections), ADV (advertising), and SCAN (scan requests).
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,     ESP_PWR_LVL_P9);
-    esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,    ESP_PWR_LVL_P9);
-    ESP_LOGI(TAG, "BLE TX power set to P9 (+9 dBm max)");
+    // Capture the controller's boot-default levels ONCE, before applying Max.
+    if (!s_ble_pwr_captured) {
+        s_ble_pwr_def_default = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_DEFAULT);
+        s_ble_pwr_def_adv     = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_ADV);
+        s_ble_pwr_def_scan    = esp_ble_tx_power_get(ESP_BLE_PWR_TYPE_SCAN);
+        s_ble_pwr_captured    = true;
+    }
+    esp_power_level_t ld, la, ls;
+    if (g_pwr_lvl == PWR_LVL_MAX) {
+        // ESP_PWR_LVL_P9 = +9 dBm — highest level for ESP32-C5 BLE controller.
+        // Set DEFAULT (connections), ADV (advertising), and SCAN (scan requests).
+        ld = la = ls = ESP_PWR_LVL_P9;
+    } else {
+        // Normal (Low clamps to Normal this build): restore captured boot defaults.
+        ld = s_ble_pwr_def_default; la = s_ble_pwr_def_adv; ls = s_ble_pwr_def_scan;
+    }
+    esp_err_t e1 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ld);
+    esp_err_t e2 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV,     la);
+    esp_err_t e3 = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_SCAN,    ls);
+    ESP_LOGI(TAG, "BLE TX -> %s: def rc=%d adv rc=%d scan rc=%d",
+             g_pwr_lvl == PWR_LVL_MAX ? "MAX P9" : "NORMAL(restore)", e1, e2, e3);
+    return (e1 == ESP_OK && e2 == ESP_OK && e3 == ESP_OK) ? ESP_OK : ESP_FAIL;
 }
 
 /**

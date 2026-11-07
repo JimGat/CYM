@@ -11,20 +11,66 @@ led_strip_handle_t g_led_strip = NULL;
 volatile app_state_t g_app_state = APP_STATE_IDLE;
 volatile bool g_operation_stop_requested = false;
 bool g_max_power_mode = false;  // default Normal; persisted in NVS by main.c
+uint8_t g_pwr_lvl = PWR_LVL_NORMAL;  // authoritative level; g_max_power_mode mirrors MAX
 
-void apply_wifi_power_settings(void)
+// Boot-default Wi-Fi TX power, captured once before any override so Normal can
+// restore it (a getter read after Max has been applied cannot recover it).
+static bool   s_wifi_tx_captured = false;
+static int8_t s_wifi_tx_default  = 0;
+
+pwr_decode_t pwr_decode(pwr_key_rd_t lvl_rd, uint8_t lvl_raw,
+                        pwr_key_rd_t leg_rd, uint8_t leg_raw, int ns_open_ok)
 {
-    if (g_max_power_mode) {
+    pwr_decode_t out = { PWR_LVL_NORMAL, PWR_SRC_FRESH };
+    // A settings namespace that will not open is an error, not a fresh install.
+    if (!ns_open_ok) { out.src = PWR_SRC_ERROR; return out; }
+    if (lvl_rd == PWR_KEY_OK) {
+        if (lvl_raw == PWR_LVL_NORMAL || lvl_raw == PWR_LVL_MAX) {
+            out.level = (pwr_lvl_t)lvl_raw; out.src = PWR_SRC_EXPLICIT; return out;
+        }
+        // Low persisted but unsupported in this build, or out-of-range: flag and
+        // run Normal; never silently promote to Max.
+        out.src = PWR_SRC_ERROR; return out;
+    }
+    // A bad-type or unreadable new key is NOT proof of a fresh install.
+    if (lvl_rd != PWR_KEY_ABSENT) { out.src = PWR_SRC_ERROR; return out; }
+    // New key genuinely absent: fall back to the legacy pwr_mode encoding.
+    if (leg_rd == PWR_KEY_OK) {
+        if (leg_raw == 0) { out.level = PWR_LVL_NORMAL; out.src = PWR_SRC_MIGRATED; return out; }
+        if (leg_raw == 1) { out.level = PWR_LVL_MAX;    out.src = PWR_SRC_MIGRATED; return out; }
+        // Legacy 2 / unknown: explicit error disposition, not a silent Max.
+        out.src = PWR_SRC_ERROR; return out;
+    }
+    if (leg_rd != PWR_KEY_ABSENT) { out.src = PWR_SRC_ERROR; return out; }
+    // Both keys genuinely absent in a readable namespace: documented fresh default.
+    out.src = PWR_SRC_FRESH; return out;
+}
+
+esp_err_t apply_wifi_power_settings(void)
+{
+    // Capture the driver's boot-default TX power ONCE, before this call can apply
+    // any override, so Normal has a real value to restore to.
+    if (!s_wifi_tx_captured) {
+        int8_t cur = 0;
+        if (esp_wifi_get_max_tx_power(&cur) == ESP_OK) { s_wifi_tx_default = cur; s_wifi_tx_captured = true; }
+    }
+    esp_err_t e1, e2;
+    if (g_pwr_lvl == PWR_LVL_MAX) {
         // 82 is the highest TX power value accepted by the IDF API (~20.5 dBm nominal).
         // Actual radiated EIRP is still bounded by PHY calibration, antenna design, and
         // country/regulatory settings loaded at runtime.
-        esp_wifi_set_max_tx_power(82);
-        esp_wifi_set_ps(WIFI_PS_NONE);   // disable modem sleep for continuous TX capability
-        ESP_LOGI(TAG_PWR, "WiFi TX power set to 82 (~20.5 dBm max), power save OFF");
+        e1 = esp_wifi_set_max_tx_power(82);
+        e2 = esp_wifi_set_ps(WIFI_PS_NONE);   // disable modem sleep for continuous TX capability
+        ESP_LOGI(TAG_PWR, "WiFi TX -> MAX: set_tx(82) rc=%d set_ps(NONE) rc=%d", e1, e2);
     } else {
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // restore default modem-sleep power save
-        ESP_LOGI(TAG_PWR, "WiFi TX power normal, power save MIN_MODEM");
+        // Normal (Low clamps to Normal in this build): actively restore the captured
+        // boot-default TX power — leaving a prior Max 82 in place was the v3.0.44 bug.
+        e1 = s_wifi_tx_captured ? esp_wifi_set_max_tx_power(s_wifi_tx_default) : ESP_OK;
+        e2 = esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // restore default modem-sleep power save
+        ESP_LOGI(TAG_PWR, "WiFi TX -> NORMAL: restore_tx(%d) rc=%d set_ps(MIN_MODEM) rc=%d",
+                 (int)s_wifi_tx_default, e1, e2);
     }
+    return (e1 == ESP_OK && e2 == ESP_OK) ? ESP_OK : ESP_FAIL;
 }
 
 const char* authmode_to_string(wifi_auth_mode_t mode) {
