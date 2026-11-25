@@ -1,4 +1,4 @@
-# CYM Messenger v3.0.47 development candidate
+# CYM Chat v3.0.48 development candidate
 
 Development v3.0.47: all nine profiles built and 36 packaged artifacts verified.
 Classic static-memory overflow was corrected without stack/display/feature
@@ -7,7 +7,7 @@ Board labels and Stable are unchanged.
 
 ## Intended two-device steps (NOT_RUN on hardware)
 
-1. Both devices: Classic Home > Messenger; Modern Tools/System > Messenger.
+1. Both devices: Classic Home > Chat; Modern Tools/System > Chat.
    Own STA address appears after the off-UI identification job. A MAC identifies
    an interface, not a human.
 2. ESP-NOW > Setup: on A enter B's STA MAC; on B enter A's STA MAC. Enter the same

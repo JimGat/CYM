@@ -75,6 +75,7 @@ LV_IMG_DECLARE(deedee_img);
 #define MY_SYMBOL_BUG            "\xEF\x86\x88"   /* fa-bug              U+F188 */
 #define MY_SYMBOL_SKULL          "\xEF\x95\x8C"   /* fa-skull            U+F54C */
 #define MY_SYMBOL_GHOST          "\xEF\x9B\xA2"   /* fa-ghost            U+F6E2 */
+#define MY_SYMBOL_CHAT "\xEF\x81\xB5"   /* fa-comment U+F075: speech bubble */
 #define MY_SYMBOL_CAMERA         "\xEF\x80\xB0"   /* fa-camera U+F030 */
 #define MY_SYMBOL_DRAGON         "\xEF\x9B\x95"   /* fa-dragon (chameleon tile) U+F6D5 */
 #define MY_SYMBOL_FINGERPRINT    "\xEF\x95\xB7"   /* fa-fingerprint      U+F577 */
@@ -18848,7 +18849,7 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles_container, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Classic");
-    create_tile(tiles_container, MY_SYMBOL_CLOCK, "Messenger", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger");
+    create_tile(tiles_container, MY_SYMBOL_CHAT, "Chat", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger");
     lv_obj_add_flag(tiles_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(tiles_container, LV_SCROLLBAR_MODE_AUTO);
 #if BOARD_HAS_AUDIO_RTA
@@ -47368,7 +47369,7 @@ static void show_cat_tools(void)
         create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Modern");
-    create_tile(tiles, MY_SYMBOL_CLOCK, "Messenger", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger");
+    create_tile(tiles, MY_SYMBOL_CHAT, "Chat", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger");
 #if BOARD_HAS_AUDIO_RTA
     create_tile(tiles,RTA_MIC_SYMBOL,"Audio RTA",UI_ACCENT_CYAN,main_tile_event_cb,"Audio RTA");
 #endif

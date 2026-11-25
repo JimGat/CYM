@@ -78,7 +78,7 @@ static void messenger_screen_stop(void){
  lv_textarea_set_text(u->key,"");lv_textarea_set_text(u->composer,"");memset(u,0,sizeof(*u));lv_mem_free(u);
 }
 static void show_messenger_screen(void){
- create_function_page_base("Messenger");g_screen_stop_fn = messenger_screen_stop;
+ create_function_page_base("Chat");g_screen_stop_fn = messenger_screen_stop;
  g_screen_back_fn=g_home_layout_4cat?show_cat_tools:show_main_tiles;apply_menu_bg();
  messenger_ui *u=lv_mem_alloc(sizeof(*u));if(!u){messenger_label(function_page,"Messenger UI allocation failed");return;}memset(u,0,sizeof(*u));lv_obj_set_user_data(function_page,u);
  u->body=lv_obj_create(function_page);lv_obj_set_style_bg_color(u->body,ui_bg_color(),0);lv_obj_set_style_border_width(u->body,0,0);lv_obj_set_style_pad_all(u->body,6,0);lv_obj_set_style_pad_row(u->body,6,0);lv_obj_set_flex_flow(u->body,LV_FLEX_FLOW_COLUMN);

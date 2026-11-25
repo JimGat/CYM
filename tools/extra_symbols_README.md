@@ -25,5 +25,9 @@ hand-edit generated bitmap bytes. --output allows generation into scratch.
 
 The test resolves the generated sparse cmap and hashes each glyph's actual
 4bpp pixels and metrics. It protects the 92 preexisting glyphs byte-for-byte,
-requires the additional camera glyph (93 total), and checks both tile macros.
+requires camera plus the additive U+F075 solid comment speech bubble (94 total),
+and separately protects all 93 pre-Chat glyphs including camera, and checks both tile macros.
 Physical rendering/orientation still requires owner screen verification.
+
+Chat tiles in both layouts use MY_SYMBOL_CHAT/U+F075 with lv_extra_symbols.
+No source-font or converter version changed.

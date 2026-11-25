@@ -9,7 +9,12 @@ class CameraGlyph(unittest.TestCase):
   baseline=json.loads((ROOT/'tests/extra_symbols_baseline.json').read_text());self.assertEqual(len(baseline),92)
   for cp,value in baseline.items():self.assertEqual(actual.get(cp),value,cp)
   self.assertIn(str(0xF030),actual,'camera absent from custom cmap/bitmap')
-  self.assertEqual(len(actual),93)
+  self.assertEqual(len(actual),94)
+ def test_all_93_pre_chat_glyphs_and_one_comment(self):
+  actual=fontgen.glyphs((ROOT/'ESP32C5/main/lv_extra_symbols.c').read_text())
+  prior=json.loads((ROOT/'tests/extra_symbols_pre_chat.json').read_text());self.assertEqual(len(prior),93)
+  for cp,value in prior.items():self.assertEqual(actual.get(cp),value,cp)
+  self.assertEqual(set(actual)-set(prior),{str(0xF075)})
  def test_both_tiles_use_the_camera_macro(self):
   t=(ROOT/'ESP32C5/main/main.c').read_text()
   self.assertIn('#define MY_SYMBOL_CAMERA',t)

@@ -5,10 +5,12 @@ R=Path(__file__).resolve().parents[1]
 class MessengerUI(unittest.TestCase):
  def test_routes_and_lifecycle(self):
   s=(R/'ESP32C5/main/main.c').read_text()
-  self.assertEqual(s.count('"Messenger", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger"'),2)
+  self.assertEqual(s.count('"Chat", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger"'),2)
+  self.assertEqual(s.count('MY_SYMBOL_CHAT, "Chat"'),2)
+  self.assertIn('#define MY_SYMBOL_CHAT "\\xEF\\x81\\xB5"',s)
   self.assertIn('strcmp(tile_name, "Messenger")',s)
   p=R/'ESP32C5/main/cym_messenger_ui.inc';self.assertTrue(p.exists())
-  u=p.read_text();self.assertIn('g_screen_stop_fn = messenger_screen_stop;',u)
+  u=p.read_text();self.assertIn('create_function_page_base("Chat")',u);self.assertIn('g_screen_stop_fn = messenger_screen_stop;',u)
   for v in ['lv_keyboard_create','lv_textarea_create','160 bytes','Not implemented','g_rf_hat_enabled','lv_label_set_recolor','cym_messenger_send','cym_messenger_stop']:
    self.assertIn(v,u)
   self.assertNotIn('vTaskDelay',u);self.assertNotIn('esp_now_',u)
