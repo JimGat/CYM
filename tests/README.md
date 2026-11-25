@@ -244,3 +244,23 @@ Package D live continuation exercises explicit production WiFi lifecycle adapter
 BLE transition admission and generation-CAS publication, active Normal/Max reversal,
 retained-vs-new defaults, busy/off reconciliation, and nine semantic negative controls.
 Native interleavings are not real scheduler/SDK timing or physical RF qualification.
+
+## Messenger v3.0.47 candidate (not release qualification)
+
+The portable UI test is structural. The core harness executes production core
+with OpenSSL HMAC at the crypto boundary; --verify-mutations requires semantic
+assertion failures. The worker harness executes the complete production adapter
+with deterministic SDK/RTOS fault endpoints and an OpenSSL-backed PSA shim.
+Its scenario label is a harness invocation summary, not embedded path coverage.
+Both crypto harnesses are SDK-native membership to preserve the portable
+stdlib/cc-only contract; prerequisites are pkg-config and OpenSSL dev/libcrypto.
+The SDK contract reads installed ESP-NOW headers. The actual-LVGL harness runs
+the full UI include with installed LVGL8.4, 24 layout/theme/geometry combinations
+and ASan/UBSan. Radio endpoints are stubs, not main.c full navigation, embedded
+scheduling, real crypto/SDK or physical touch evidence.
+
+Classic diagnostic link is blocked by 64 bytes static DRAM overflow after lazy
+state changes. No aggregate nine-board or physical acceptance can be claimed.
+See docs/operators/cym-messenger.md.
+
+Saved-GATT static-copy regression: `run_gatt_render_parity_host.py` (`gatt_render_parity`, SDK-native, cc). Production formatting parity with original copy-based renderer, 5,505 sanitized cases and original input restoration. No physical BLE evidence.

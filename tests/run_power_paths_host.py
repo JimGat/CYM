@@ -21,6 +21,9 @@ pre=r"""
 #include <pthread.h>
 #include <unistd.h>
 typedef int esp_err_t;typedef int wifi_init_config_t;
+typedef void *TaskHandle_t;
+static TaskHandle_t task=(void*)9;
+static TaskHandle_t xTaskGetCurrentTaskHandle(void){return task;}
 #define ESP_OK 0
 #define ESP_FAIL -1
 #define ESP_ERR_INVALID_STATE 0x103
@@ -89,7 +92,8 @@ int main(void){
  assert(cym_wifi_stop()==0);assert(!pthread_join(thread,NULL));
  assert(wifi_power_applied_level()==0 && "teardown invalidates drained apply result");
  assert(cym_wifi_start()==0);assert(wifi_power_apply_requested(1)==0 && tx==68);
- assert(sizeof(wifi_power_state_t)<=16 && "retained lifecycle allocation budget");
+ assert(cym_wifi_messenger_claim());assert(cym_wifi_messenger_active());int prior_stops=stops;assert(cym_wifi_stop()!=0&&stops==prior_stops);assert(wifi_power_apply_requested(2)!=0);task=(void*)10;cym_wifi_messenger_release();assert(cym_wifi_messenger_active());task=(void*)9;cym_wifi_messenger_release();assert(!cym_wifi_messenger_active());assert(wifi_power_apply_requested(1)==0);
+ assert(sizeof(wifi_power_state_t)<=(sizeof(void*)==8?24:16) && "retained lifecycle allocation budget");
  printf("PASS WiFi production adapter: active transitions/off-start/teardown drain/overlapping init/getter+setter failures/default generation; allocation=%zu\n",sizeof(wifi_power_state_t));
 }
 """

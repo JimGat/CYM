@@ -74,10 +74,17 @@ Last updated: 2026-09-23.
 - **Arduboy SD library / AVR feasibility** — UNDER INVESTIGATION. Disabled
   COMING SOON selector card only; no emulator delivered this cycle.
 
-- **BLE / WiFi Chat** — IDEA. Device-to-device off-grid messaging between CYM units (and
-  potentially other ESP devices) over BLE and/or WiFi. Long-wanted. Open questions: transport
-  (BLE GATT vs advertising vs ESP-NOW vs SoftAP), peer model (CYM↔CYM only vs open), and how it
-  shares the single WiFi+BLE radio with other features. *(new 2026-09-23)*
+- **BLE / WiFi Chat / CYM Messenger** — DEVELOPMENT v3.0.47; physical acceptance pending.
+  Off-grid direct single-peer ESP-NOW implementation exists with encrypted
+  unicast, HMAC-authenticated session/DATA/ACK, bounded retries/inbox and one
+  protocol-selecting Classic/Modern UI. All nine builds and 36 packages verified;
+  Classic static-memory blocker corrected. Physical gates remain NOT_RUN.
+  BLE, LocalSend, LoRa/Reticulum and IR/CardputerZero remain unimplemented.
+  No discovery, broadcast chat, mesh, bridging, persistent logs or IR wire
+  compatibility claim. Radio handoff uses existing B/D boundaries; further
+  scheduling/physical verification remains mandatory. See
+  [plan](docs/plans/cym-messenger-espnow.md) and
+  [operator record](docs/operators/cym-messenger.md).
 
 - **ESP-NOW Listener / Debugger** — PLANNED. Passive ESP-NOW traffic detection + a
   device/session table and live packet log; channel-hop discovery vs fixed-channel capture;

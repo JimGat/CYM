@@ -3666,3 +3666,9 @@ harness; JimGat integration corrections are separate. Low remains reserved.
 [candidate boundaries](docs/releases/v3.0.46-dev.md) explain storage errors, partial/uncertain
 save, owner-safe asynchronous active application and generation-bound status. This is not
 global inhibition, calibrated RF or physical acceptance evidence.
+
+## Development v3.0.47 — CYM Messenger
+
+[CYM Messenger operator guide](docs/operators/cym-messenger.md): Classic Home > Messenger; Modern Tools/System > Messenger. Direct encrypted single-peer ESP-NOW messaging, up to 160 UTF-8 bytes, application acknowledgements and existing-style keyboard. Peer/key/channel and history are session-only. An idle running WiFi STA is required; other radio owners are not silently displaced.
+
+All nine profiles built and 36 artifacts verified. Classic memory fit was restored without reducing stacks, display buffers or capabilities. Physical paired-device, responsiveness and runtime-memory acceptance remain pending. BLE, LocalSend, LoRa/Reticulum and NM-RF-HAT-only IR are planned and cannot send. Stable v3.0.37 and board classifications are unchanged.

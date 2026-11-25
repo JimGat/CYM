@@ -200,8 +200,9 @@ void wifi_attacks_set_karma_mode(bool enable);
 // off the UI task. wifi_attacks_ap_owner_state() returns an ap_own_state code:
 //   0 IDLE, 1 ACTIVE, 2 SUSPENDING, 3 HELD, 4 RESUMING, 5 LIVE_UNCERTAIN, 6 ERROR.
 
-/* Shared radio lifetime reservations: 2 Clock, 3 file transfer, 4 reset.
+/* Shared radio lifetime reservations: 2 Clock, 3 file transfer, 4 reset, 5 Messenger.
  * Nonblocking claim; release only after the owner's final radio write. */
+bool wifi_attacks_messenger_owns_radio(void);
 bool wifi_attacks_radio_claim(int owner);
 void wifi_attacks_radio_release(int owner);
 esp_err_t wifi_attacks_ap_last_error(void);

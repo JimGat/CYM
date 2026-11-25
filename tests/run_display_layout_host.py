@@ -121,6 +121,7 @@ static void show_wscope_screen(void){}
 static void show_zigbee_wardrive_screen(void){}
 static void sniffer_yes_btn_cb(void*p){(void)p;}
 static void show_ir_menu_screen(void){}
+static void show_messenger_screen(void){}
 static bool s_ntp_stopping;static int g_cc1101_freq_offset_millippm;
 static lv_color_t ui_bg_color(void){return lv_color_hex(0x111111);}
 static lv_color_t ui_panel_color(void){return lv_color_hex(0x222222);}

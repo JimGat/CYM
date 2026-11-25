@@ -31,5 +31,5 @@ class MemoryBoundaryHost(unittest.TestCase):
         self.assertIn('show_menu(); // same Stop -> UI destruction',self.main)
         self.assertIn('if (clock_attack_route_uses_radio(name))',self.main)
         self.assertIn('clock_radio_handoff_poll();',self.main)
-        self.assertRegex(self.main,r'static void radio_reset_to_idle\(void\)\s*\{\s*wifi_attacks_ap_invalidate\(\);\s*if \(!wifi_attacks_radio_claim\(4\)\) return;\s*radio_reset_to_idle_impl\(\);\s*wifi_attacks_radio_release\(4\);')
+        self.assertRegex(self.main,r'static void radio_reset_to_idle\(void\)\s*\{\s*wifi_attacks_ap_invalidate\(\);\s*if \(!wifi_attacks_radio_claim\(4\)\) \{ if \(cym_messenger_busy\(\)\) s_clock_idle_reset_pending = true; return; \}\s*radio_reset_to_idle_impl\(\);\s*wifi_attacks_radio_release\(4\);')
         self.assertIn('if (!wifi_claimed) return;',self.main)

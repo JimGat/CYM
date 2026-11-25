@@ -52,6 +52,10 @@ def missing(requirement):
         return None
     if requirement == 'cc':
         return None if shutil.which('cc') and shutil.which(os.environ.get('CC','cc')) else 'host C compiler missing (cc / CC)'
+    if requirement == 'openssl':
+        if not shutil.which('pkg-config'):return 'OpenSSL dev prerequisite needs pkg-config'
+        x=subprocess.run(['pkg-config','--exists','openssl'],capture_output=True)
+        return None if x.returncode==0 else 'OpenSSL development headers/libcrypto absent'
     if requirement == 'lvgl':
         p=ROOT/'ESP32C5/managed_components/lvgl__lvgl'
         if not (p/'src/core/lv_obj.c').is_file():return 'required managed LVGL absent; see tests/README.md'
@@ -63,7 +67,7 @@ def missing(requirement):
     if requirement.startswith('idf-'):
         if not os.environ.get('IDF_PATH'):return 'required IDF_PATH not configured; see tests/README.md'
         p=Path(os.environ['IDF_PATH'])
-        suffix = {'idf-nimble':'components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c', 'idf-i2c':'components/esp_driver_i2c/i2c_master.c', 'idf-i2s':'components/esp_driver_i2s/i2s_common.c', 'idf-common':'components/esp_common/include/esp_err.h', 'idf-http-parser':'components/http_parser/http_parser.h'}.get(requirement)
+        suffix = {'idf-nimble':'components/bt/host/nimble/nimble/nimble/host/src/ble_gap.c', 'idf-i2c':'components/esp_driver_i2c/i2c_master.c', 'idf-i2s':'components/esp_driver_i2s/i2s_common.c', 'idf-common':'components/esp_common/include/esp_err.h', 'idf-http-parser':'components/http_parser/http_parser.h', 'idf-espnow':'components/esp_wifi/include/esp_now.h'}.get(requirement)
         if suffix is None:return 'unknown SDK prerequisite: '+requirement
         return None if (p/suffix).is_file() else 'required installed SDK source absent: '+suffix
     if requirement=='git-gatt-history':

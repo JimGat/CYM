@@ -229,3 +229,13 @@ added to this repository. Historical FSD/RF claims are not upgraded by consolida
 - `tests/run_pn532_idf_contract_host.py`: sdk-native, installed-sdk-host; prerequisites cc, idf-i2c.
 
 Package C: `run_hat_tx_host.py`, `run_hat_emitters_host.py`, and `run_hat_runtime_host.py` execute production state/emitter/control code with sanitizers, synthetic SDK faults and semantic mutants (portable gate). Actual LVGL topbar geometry/click/delete coverage is in the existing display-layout SDK-native gate. None establishes physical RF/optical silence.
+
+## Messenger candidate
+
+- `tests/test_messenger_ui_contract.py`: portable, structural; prerequisites stdlib.
+- `tests/run_messenger_core_host.py`: sdk-native, mocked-host; prerequisites cc, openssl.
+- `tests/run_messenger_worker_host.py`: sdk-native, mocked-host; prerequisites cc, openssl.
+- `tests/test_messenger_sdk_contract.py`: sdk-native, structural; prerequisites idf-espnow.
+- `tests/run_messenger_lvgl_host.py`: sdk-native, installed-library-host; prerequisites cc, lvgl.
+
+Saved-GATT static-copy regression: `run_gatt_render_parity_host.py` (`gatt_render_parity`, SDK-native, cc). Production formatting parity with original copy-based renderer, 5,505 sanitized cases and original input restoration. No physical BLE evidence.

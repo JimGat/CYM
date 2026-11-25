@@ -350,8 +350,11 @@ static esp_err_t ap_start_owned(const ap_req_snapshot_t *snap);
 static esp_err_t ap_stop_owned(void);
 static void ap_owner_worker(void *arg);
 
+bool wifi_attacks_messenger_owns_radio(void) {
+    portENTER_CRITICAL(&s_ap_spin); bool owns = s_ap_radio_owner == 5; portEXIT_CRITICAL(&s_ap_spin); return owns;
+}
 bool wifi_attacks_radio_claim(int owner) {
-    if (owner < 2 || owner > 4) return false;
+    if (owner < 2 || owner > 5) return false;
     portENTER_CRITICAL(&s_ap_spin);
     bool ok = s_ap_radio_owner == 0;
     if (ok) s_ap_radio_owner = owner;

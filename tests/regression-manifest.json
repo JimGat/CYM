@@ -802,6 +802,67 @@
         "lvgl",
         "idf-common"
       ]
+    },
+    {
+      "id": "messenger_ui_contract",
+      "path": "tests/test_messenger_ui_contract.py",
+      "kind": "unittest",
+      "suite": "portable",
+      "taxonomy": "structural",
+      "requires": []
+    },
+    {
+      "id": "messenger_core",
+      "path": "tests/run_messenger_core_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "openssl"
+      ]
+    },
+    {
+      "id": "messenger_worker",
+      "path": "tests/run_messenger_worker_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "openssl"
+      ]
+    },
+    {
+      "id": "messenger_sdk_contract",
+      "path": "tests/test_messenger_sdk_contract.py",
+      "kind": "unittest",
+      "suite": "sdk-native",
+      "taxonomy": "structural",
+      "requires": [
+        "idf-espnow"
+      ]
+    },
+    {
+      "id": "messenger_lvgl",
+      "path": "tests/run_messenger_lvgl_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ]
+    },
+    {
+      "id": "gatt_render_parity",
+      "path": "tests/run_gatt_render_parity_host.py",
+      "kind": "script",
+      "suite": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc"
+      ]
     }
   ]
 }

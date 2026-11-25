@@ -186,6 +186,9 @@ enum { PWR_RADIO_OFF = 0, PWR_RADIO_BUSY = 1, PWR_RADIO_FAILED = 2, PWR_RADIO_AP
 uint8_t wifi_power_status(void);
 esp_err_t wifi_power_apply_requested(uint8_t level);
 void power_policy_notify(void);
+bool cym_wifi_messenger_claim(void);
+void cym_wifi_messenger_release(void);
+bool cym_wifi_messenger_active(void);
 esp_err_t cym_wifi_init(const wifi_init_config_t *config);
 esp_err_t cym_wifi_start(void);
 esp_err_t cym_wifi_stop(void);

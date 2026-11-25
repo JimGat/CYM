@@ -25,10 +25,12 @@ typedef struct {
     uint32_t generation;
     unsigned char gate, lifecycle_pending;
     bool active, captured;
+    TaskHandle_t messenger_owner;
     int8_t normal;
     uint8_t applied, status;
 } wifi_power_state_t;
 static wifi_power_state_t *s_wifi_power;
+
 static bool wifi_power_state_init(void)
 {
     if (__atomic_load_n(&s_wifi_power, __ATOMIC_ACQUIRE)) return true;
@@ -63,6 +65,7 @@ void wifi_power_new_generation(void)
  * ownership and configuration are deliberately not changed. */
 static bool wifi_power_owner_enter(void)
 {
+    if ((s_wifi_power ? __atomic_load_n(&s_wifi_power->messenger_owner, __ATOMIC_ACQUIRE) : NULL)) return false;
     if (!wifi_power_state_init()) return false;
     wifi_power_state_t *s = s_wifi_power;
     __atomic_add_fetch(&s->lifecycle_pending, 1, __ATOMIC_ACQ_REL);
@@ -78,6 +81,28 @@ static void wifi_power_owner_leave(void)
     __atomic_clear(&s_wifi_power->gate, __ATOMIC_RELEASE);
     __atomic_sub_fetch(&s_wifi_power->lifecycle_pending, 1, __ATOMIC_RELEASE);
     power_policy_notify();
+}
+/* Messenger is exclusive and already owns B before entering D. Holding the
+ * existing operation gate prevents power/driver lifecycle changes mid-session.
+ * No extra stack or alternate WiFi configuration is introduced here. */
+bool cym_wifi_messenger_claim(void)
+{
+    if (!wifi_power_owner_enter()) return false;
+    if (!__atomic_load_n(&s_wifi_power->active, __ATOMIC_ACQUIRE)) {
+        wifi_power_owner_leave(); return false;
+    }
+    __atomic_store_n(&s_wifi_power->messenger_owner, xTaskGetCurrentTaskHandle(), __ATOMIC_RELEASE);
+    return true;
+}
+void cym_wifi_messenger_release(void)
+{
+    if ((s_wifi_power ? __atomic_load_n(&s_wifi_power->messenger_owner, __ATOMIC_ACQUIRE) : NULL) != xTaskGetCurrentTaskHandle()) return;
+    __atomic_store_n(&s_wifi_power->messenger_owner, NULL, __ATOMIC_RELEASE);
+    wifi_power_owner_leave();
+}
+bool cym_wifi_messenger_active(void)
+{
+    return (s_wifi_power ? __atomic_load_n(&s_wifi_power->messenger_owner, __ATOMIC_ACQUIRE) : NULL) != NULL;
 }
 esp_err_t cym_wifi_init(const wifi_init_config_t *config)
 {

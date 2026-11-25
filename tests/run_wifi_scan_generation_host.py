@@ -40,6 +40,8 @@ static _Atomic bool g_scan_in_progress,g_scan_done;
 static _Atomic uint32_t g_scan_generation,g_scan_completed_generation;
 static _Atomic int g_scan_result_status;
 typedef struct{int status;}wifi_event_sta_scan_done_t;
+static bool messenger_active;
+static bool cym_wifi_messenger_active(void){return messenger_active;}
 static int records_rc;
 static void esp_wifi_clear_ap_list(void){}
 typedef struct{uint8_t primary;}wifi_ap_record_t;
@@ -56,7 +58,7 @@ static int esp_wifi_scan_get_ap_num(uint16_t*n){*n=3;return 0;}
 static int esp_wifi_scan_get_ap_records(uint16_t*n,wifi_ap_record_t*r){assert(*n==3&&r==g_shared_scan_results);record_reads++;return records_rc;}
 """
 post=r"""
-int main(void){assert(!wifi_scanner_start_scan());assert(band_sets==1&&"all-band acquisition must restore AUTO, not inherit a prior 2G-only feature");uint32_t first=wifi_scanner_scan_generation();assert(first==1&&g_scan_in_progress&&last_type==WIFI_SCAN_TYPE_ACTIVE);
+int main(void){messenger_active=true;assert(wifi_scanner_start_scan()==ESP_ERR_INVALID_STATE);assert(wifi_scanner_start_passive_scan(100)==ESP_ERR_INVALID_STATE);assert(starts==0&&band_sets==0);messenger_active=false;assert(!wifi_scanner_start_scan());assert(band_sets==1&&"all-band acquisition must restore AUTO, not inherit a prior 2G-only feature");uint32_t first=wifi_scanner_scan_generation();assert(first==1&&g_scan_in_progress&&last_type==WIFI_SCAN_TYPE_ACTIVE);
  assert(wifi_scanner_start_scan()==ESP_ERR_INVALID_STATE&&wifi_scanner_scan_generation()==first&&starts==1);
  wifi_scanner_event_handler(NULL,WIFI_EVENT,WIFI_EVENT_SCAN_DONE,NULL);assert(wifi_scanner_completed_generation()==first&&g_scan_done&&!g_scan_in_progress&&g_shared_scan_count==3&&record_reads==1);
  /* A new start between scanner and UI event handlers cannot rewrite the old completion ticket. */

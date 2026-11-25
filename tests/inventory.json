@@ -39,6 +39,107 @@
       "note": "native-mocked"
     },
     {
+      "path": "tests/run_ap_admit_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
+    },
+    {
+      "path": "tests/run_ap_controls_lvgl_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl",
+        "idf-common"
+      ]
+    },
+    {
+      "path": "tests/run_ap_owner_lifecycle_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
+    },
+    {
+      "path": "tests/run_ap_owner_queue_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
+    },
+    {
+      "path": "tests/run_ap_services_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common",
+        "idf-http-parser"
+      ]
+    },
+    {
+      "path": "tests/run_ap_worker_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-mocked"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess"
+      ],
+      "gate": "sdk-native",
+      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "idf-common"
+      ]
+    },
+    {
       "path": "tests/run_audio_rta_board_host.py",
       "kind": "standalone",
       "flags": [
@@ -542,6 +643,48 @@
       ]
     },
     {
+      "path": "tests/run_gatt_render_parity_host.py",
+      "kind": "script",
+      "flags": [
+        "native-mocked"
+      ],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "note": "Production saved-GATT formatting parity and mutable-input restoration; no physical BLE evidence"
+    },
+    {
+      "path": "tests/run_hat_emitters_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
+    },
+    {
+      "path": "tests/run_hat_runtime_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
+    },
+    {
+      "path": "tests/run_hat_tx_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
+    },
+    {
       "path": "tests/run_ir_task_lifetime_host.py",
       "kind": "standalone",
       "flags": [
@@ -615,6 +758,45 @@
       "requires": [
         "cc"
       ]
+    },
+    {
+      "path": "tests/run_messenger_core_host.py",
+      "kind": "standalone",
+      "flags": [],
+      "imports": [],
+      "gate": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "openssl"
+      ],
+      "note": "Messenger candidate; see tests/README.md for evidence limits"
+    },
+    {
+      "path": "tests/run_messenger_lvgl_host.py",
+      "kind": "standalone",
+      "flags": [],
+      "imports": [],
+      "gate": "sdk-native",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
+      ],
+      "note": "Messenger candidate; see tests/README.md for evidence limits"
+    },
+    {
+      "path": "tests/run_messenger_worker_host.py",
+      "kind": "standalone",
+      "flags": [],
+      "imports": [],
+      "gate": "sdk-native",
+      "taxonomy": "mocked-host",
+      "requires": [
+        "cc",
+        "openssl"
+      ],
+      "note": "Messenger candidate; see tests/README.md for evidence limits"
     },
     {
       "path": "tests/run_netif_lifecycle_host.py",
@@ -776,6 +958,97 @@
       ]
     },
     {
+      "path": "tests/run_power_ble_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "requires": [
+        "cc",
+        "idf-common"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_mutations_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "requires": [
+        "cc",
+        "lvgl",
+        "idf-common"
+      ]
+    },
+    {
+      "path": "tests/run_power_paths_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "requires": [
+        "cc"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_popup_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "sdk-native",
+      "requires": [
+        "cc",
+        "lvgl"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_storage_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "requires": [
+        "cc"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_power_worker_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "requires": [
+        "cc"
+      ],
+      "note": "Production-extracted power-only regression; no RF or hardware proof"
+    },
+    {
+      "path": "tests/run_pwr_decode_host.py",
+      "kind": "script",
+      "flags": [],
+      "imports": [
+        "stdlib"
+      ],
+      "gate": "portable",
+      "note": "Pure production-extracted NVS decode/migration + semantic mutants only; not NVS/SDK/concurrency/RF proof"
+    },
+    {
       "path": "tests/run_radio_repair_host.py",
       "kind": "standalone",
       "flags": [
@@ -897,6 +1170,30 @@
       "taxonomy": "mocked-host",
       "requires": [
         "cc"
+      ]
+    },
+    {
+      "path": "tests/run_wardrive_gps_prompt_lvgl_host.py",
+      "kind": "standalone",
+      "flags": [
+        "SDK/managed",
+        "native-lvgl"
+      ],
+      "imports": [
+        "hashlib",
+        "json",
+        "os",
+        "pathlib",
+        "re",
+        "subprocess",
+        "sys"
+      ],
+      "gate": "sdk-native",
+      "note": "Installed LVGL 8.4.0; see prerequisite list",
+      "taxonomy": "installed-library-host",
+      "requires": [
+        "cc",
+        "lvgl"
       ]
     },
     {
@@ -1909,6 +2206,28 @@
       "note": "native-mocked"
     },
     {
+      "path": "tests/test_messenger_sdk_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [],
+      "gate": "sdk-native",
+      "taxonomy": "structural",
+      "requires": [
+        "idf-espnow"
+      ],
+      "note": "Messenger candidate; see tests/README.md for evidence limits"
+    },
+    {
+      "path": "tests/test_messenger_ui_contract.py",
+      "kind": "unittest",
+      "flags": [],
+      "imports": [],
+      "gate": "portable",
+      "taxonomy": "structural",
+      "requires": [],
+      "note": "Messenger candidate; see tests/README.md for evidence limits"
+    },
+    {
       "path": "tests/test_modern_attack_disclaimer_contract.py",
       "kind": "unittest",
       "flags": [],
@@ -2716,252 +3035,6 @@
       ],
       "gate": "not-automated",
       "note": "private/output legacy; native-mocked"
-    },
-    {
-      "path": "tests/run_hat_tx_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
-    },
-    {
-      "path": "tests/run_hat_emitters_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
-    },
-    {
-      "path": "tests/run_hat_runtime_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Package C production-extracted ASAN/UBSAN emitter/control faults and semantic mutants; no hardware proof"
-    },
-    {
-      "path": "tests/run_wardrive_gps_prompt_lvgl_host.py",
-      "kind": "standalone",
-      "flags": [
-        "SDK/managed",
-        "native-lvgl"
-      ],
-      "imports": [
-        "hashlib",
-        "json",
-        "os",
-        "pathlib",
-        "re",
-        "subprocess",
-        "sys"
-      ],
-      "gate": "sdk-native",
-      "note": "Installed LVGL 8.4.0; see prerequisite list",
-      "taxonomy": "installed-library-host",
-      "requires": [
-        "cc",
-        "lvgl"
-      ]
-    },
-    {
-      "path": "tests/run_ap_owner_lifecycle_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
-    },
-    {
-      "path": "tests/run_ap_owner_queue_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
-    },
-    {
-      "path": "tests/run_ap_admit_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Pure production-extracted decision helpers and semantic mutants only; not worker/SDK/concurrency/RF proof"
-    },
-    {
-      "path": "tests/run_ap_worker_host.py",
-      "kind": "standalone",
-      "flags": [
-        "SDK/managed",
-        "native-mocked"
-      ],
-      "imports": [
-        "hashlib",
-        "json",
-        "os",
-        "pathlib",
-        "re",
-        "subprocess"
-      ],
-      "gate": "sdk-native",
-      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
-      "taxonomy": "mocked-host",
-      "requires": [
-        "cc",
-        "idf-common"
-      ]
-    },
-    {
-      "path": "tests/run_ap_services_host.py",
-      "kind": "standalone",
-      "flags": [
-        "SDK/managed",
-        "native-mocked"
-      ],
-      "imports": [
-        "hashlib",
-        "json",
-        "os",
-        "pathlib",
-        "re",
-        "subprocess"
-      ],
-      "gate": "sdk-native",
-      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
-      "taxonomy": "mocked-host",
-      "requires": [
-        "cc",
-        "idf-common",
-        "idf-http-parser"
-      ]
-    },
-    {
-      "path": "tests/run_ap_controls_lvgl_host.py",
-      "kind": "standalone",
-      "flags": [
-        "SDK/managed",
-        "native-mocked"
-      ],
-      "imports": [
-        "hashlib",
-        "json",
-        "os",
-        "pathlib",
-        "re",
-        "subprocess"
-      ],
-      "gate": "sdk-native",
-      "note": "Production extraction with semantic mutants; SDK boundaries mocked; not SMP or physical proof",
-      "taxonomy": "installed-library-host",
-      "requires": [
-        "cc",
-        "lvgl",
-        "idf-common"
-      ]
-    },
-    {
-      "path": "tests/run_pwr_decode_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "note": "Pure production-extracted NVS decode/migration + semantic mutants only; not NVS/SDK/concurrency/RF proof"
-    },
-    {
-      "path": "tests/run_power_paths_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "requires": [
-        "cc"
-      ],
-      "note": "Production-extracted power-only regression; no RF or hardware proof"
-    },
-    {
-      "path": "tests/run_power_storage_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "requires": [
-        "cc"
-      ],
-      "note": "Production-extracted power-only regression; no RF or hardware proof"
-    },
-    {
-      "path": "tests/run_power_worker_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "portable",
-      "requires": [
-        "cc"
-      ],
-      "note": "Production-extracted power-only regression; no RF or hardware proof"
-    },
-    {
-      "path": "tests/run_power_ble_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "sdk-native",
-      "requires": [
-        "cc",
-        "idf-common"
-      ],
-      "note": "Production-extracted power-only regression; no RF or hardware proof"
-    },
-    {
-      "path": "tests/run_power_popup_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "sdk-native",
-      "requires": [
-        "cc",
-        "lvgl"
-      ],
-      "note": "Production-extracted power-only regression; no RF or hardware proof"
-    },
-    {
-      "path": "tests/run_power_mutations_host.py",
-      "kind": "script",
-      "flags": [],
-      "imports": [
-        "stdlib"
-      ],
-      "gate": "sdk-native",
-      "requires": [
-        "cc",
-        "lvgl",
-        "idf-common"
-      ]
     }
   ],
   "support_files": [

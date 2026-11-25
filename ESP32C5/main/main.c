@@ -1,3 +1,4 @@
+#include "cym_messenger.h"
 #include "esp_attr.h"
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1113,6 +1114,7 @@ static bool clock_radio_reset_admit(void);
 static void ap_suspend_control_cleanup(void);
 static bool s_ap_clock_reserved;
 static bool s_ap_fileserv_reserved;
+static void show_messenger_screen(void);
 static bool clock_defer_radio_navigation(void (*fn)(void));
 static void clock_radio_handoff_poll(void);
 static void clock_cancel_radio_navigation(void);
@@ -18130,7 +18132,7 @@ static void radio_reset_to_idle_impl(void);
 static void radio_reset_to_idle(void)
 {
     wifi_attacks_ap_invalidate();
-    if (!wifi_attacks_radio_claim(4)) return;
+    if (!wifi_attacks_radio_claim(4)) { if (cym_messenger_busy()) s_clock_idle_reset_pending = true; return; }
     radio_reset_to_idle_impl();
     wifi_attacks_radio_release(4);
 }
@@ -18511,6 +18513,7 @@ static void main_tile_event_cb(lv_event_t *e)
 #if BOARD_HAS_AUDIO_RTA
     if(strcmp(tile_name,"Audio RTA")==0){show_audio_rta();return;}
 #endif
+    if (strcmp(tile_name, "Messenger") == 0) { show_messenger_screen(); return; }
     if (strcmp(tile_name, "WiFi Menu") == 0) {
         show_wifi_menu_screen();
     } else if (strcmp(tile_name, "Clock Classic") == 0) {
@@ -18845,6 +18848,9 @@ static void show_main_tiles(void)
     create_tile(tiles_container, MY_SYMBOL_CAR,         "Wardrive",     COLOR_MATERIAL_RED,     main_tile_event_cb, "Wardrive");
     create_tile(tiles_container, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles_container, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Classic");
+    create_tile(tiles_container, MY_SYMBOL_CLOCK, "Messenger", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger");
+    lv_obj_add_flag(tiles_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(tiles_container, LV_SCROLLBAR_MODE_AUTO);
 #if BOARD_HAS_AUDIO_RTA
     create_tile(tiles_container,RTA_MIC_SYMBOL,"Audio RTA",UI_ACCENT_CYAN,main_tile_event_cb,"Audio RTA");
 #endif
@@ -29772,10 +29778,29 @@ static void clock_network_cleanup_poll(void)
 // every other radio claimant must retry until the old owner has parked/reaped.
 static bool clock_radio_admit(void)
 {
+    if (wifi_attacks_messenger_owns_radio()) return false;
     if (wifi_attacks_ap_owner_state() != 0) return false;
     if (!s_clock_radio_reserved && !s_clock_idle_reset_pending) return true;
     TaskHandle_t owner = s_clock_radio_task;
     return owner && owner == xTaskGetCurrentTaskHandle();
+}
+
+/* Worker-only Messenger handoff; B first, then adapter acquires D. */
+bool cym_messenger_radio_claim(void)
+{
+    if (!wifi_attacks_radio_claim(5)) return false;
+    bool ok = current_radio_mode == RADIO_MODE_WIFI && wifi_initialized &&
+        !s_clock_radio_reserved && !s_ap_fileserv_reserved && !s_clock_idle_reset_pending &&
+        !s_ntp_clock_active && !g_ot_survey_active && !s_ots_owner_busy() &&
+        !wifi_scanner_is_scanning() && g_app_state == APP_STATE_IDLE &&
+        !wscope_task_handle && !nimble_port_initialized && !bt_scan_active &&
+        !__atomic_load_n(&s_bt_cham_token, __ATOMIC_ACQUIRE);
+    if (!ok) { wifi_attacks_radio_release(5); return false; }
+    return true;
+}
+void cym_messenger_radio_release(void)
+{
+    wifi_attacks_radio_release(5);
 }
 
 static bool clock_radio_reset_admit(void)
@@ -29789,6 +29814,7 @@ static bool clock_radio_reset_admit(void)
 // Home/Back/offline page creation clears it; ordinary input is never locked.
 static bool clock_defer_radio_navigation(void (*fn)(void))
 {
+    if (cym_messenger_busy()) { cym_messenger_stop(); s_clock_deferred_radio_fn = fn; return true; }
     /* Reuse the existing bounded UI handoff: do not enter another radio tool
      * until cancelled attack resources have actually retired. */
     if (wifi_attacks_ap_owner_state() != 0) {
@@ -29816,6 +29842,7 @@ static void clock_cancel_radio_navigation(void)
 
 static void clock_radio_handoff_poll(void)
 {
+    if (cym_messenger_busy()) return;
     if (wifi_attacks_ap_owner_state() != 0) return;
     clock_network_cleanup_poll();
     if (s_clock_radio_reserved) return;
@@ -37017,11 +37044,13 @@ static void show_bto_device_detail(int dev_idx)
         }
         /* Read data */
         else if (strncmp(line, "\"read_data\": \"", 14) == 0) {
-            static char hexraw[1028];
+            char *hexraw = line + 14;
+            size_t hex_len = strcspn(hexraw, "\"");
+            if (hex_len > 1027) hex_len = 1027;
+            char saved_hex_end = hexraw[hex_len];
+            hexraw[hex_len] = '\0';
             static char ascii[516];
             static char row[620];
-            hexraw[0] = '\0';
-            sscanf(line + 14, "%1027[^\"]", hexraw);
             int total_bytes = (int)strlen(hexraw) / 2;
             /* Show first 32 bytes of hex with total byte count annotation */
             int show_b = (total_bytes < 32) ? total_bytes : 32;
@@ -37042,6 +37071,7 @@ static void show_bto_device_detail(int dev_idx)
                 snprintf(row, sizeof(row), "  Hex: %.64s\n  ASCII: %.*s",
                          hex_preview, ascii_len, ascii);
             DET_ROW(scrl, row, &lv_font_montserrat_12, COLOR_MATERIAL_GREEN);
+            hexraw[hex_len] = saved_hex_end;
         }
         /* Descriptors */
         else if (strncmp(line, "\"descriptors\":", 14) == 0) {
@@ -47326,6 +47356,8 @@ static void show_qr_decoder(void)
 #include "audio_rta_ui.inc"
 #endif
 
+#include "cym_messenger_ui.inc"
+
 static void show_cat_tools(void)
 {
     create_function_page_base("Tools & System");
@@ -47336,6 +47368,7 @@ static void show_cat_tools(void)
         create_tile(tiles, MY_SYMBOL_WAVE,    "Infrared",     lv_color_hex(0xE65100), main_tile_event_cb, "IR Menu");
     create_tile(tiles, LV_SYMBOL_SETTINGS,    "Settings",     UI_ACCENT_GREEN,        main_tile_event_cb, "Settings");
     create_tile(tiles, MY_SYMBOL_CLOCK, "Clock", lv_color_hex(0x00897B), main_tile_event_cb, "Clock Modern");
+    create_tile(tiles, MY_SYMBOL_CLOCK, "Messenger", UI_ACCENT_CYAN, main_tile_event_cb, "Messenger");
 #if BOARD_HAS_AUDIO_RTA
     create_tile(tiles,RTA_MIC_SYMBOL,"Audio RTA",UI_ACCENT_CYAN,main_tile_event_cb,"Audio RTA");
 #endif

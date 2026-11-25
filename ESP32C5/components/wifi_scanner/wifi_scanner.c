@@ -102,6 +102,7 @@ static void wifi_scanner_log_acquisition(void) {
 }
 
 esp_err_t wifi_scanner_start_scan(void) {
+    if (cym_wifi_messenger_active()) return ESP_ERR_INVALID_STATE;
     if (atomic_exchange(&g_scan_in_progress, true)) {
         ESP_LOGW(TAG, "Scan already in progress");
         return ESP_ERR_INVALID_STATE;
@@ -162,6 +163,7 @@ esp_err_t wifi_scanner_start_scan(void) {
 }
 
 esp_err_t wifi_scanner_start_passive_scan(uint32_t per_channel_ms) {
+    if (cym_wifi_messenger_active()) return ESP_ERR_INVALID_STATE;
     if (atomic_exchange(&g_scan_in_progress, true)) {
         ESP_LOGW(TAG, "Scan already in progress");
         return ESP_ERR_INVALID_STATE;
@@ -381,6 +383,7 @@ int wifi_scanner_get_target_count(void) {
 
 // Quick channel scan for specific targets
 void wifi_scanner_quick_channel_scan(void) {
+    if (cym_wifi_messenger_active()) return;
     if (target_bssid_count == 0) {
         ESP_LOGW(TAG, "No targets to scan");
         return;

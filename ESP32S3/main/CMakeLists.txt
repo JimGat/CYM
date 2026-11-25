@@ -9,6 +9,8 @@ endif()
 
 idf_component_register(
     SRCS
+        "${C5_MAIN}/cym_messenger_core.c"
+        "${C5_MAIN}/cym_messenger.c"
         "${C5_MAIN}/debug_settings.c"
         "${C5_MAIN}/debug_console.c"
         "${C5_MAIN}/classic_usb_debug.c"

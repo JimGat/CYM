@@ -72,6 +72,10 @@ static void clock_stop(void),clock_network_cleanup_poll(void);
 static int resets,radio_writes,ble_inits,wifi_inits,new_calls,shared_releases,cleanup_fails;
 static bool s_ap_clock_reserved;
 static int ap_state,ap_cancel;
+static bool messenger_owned;static int messenger_stops;
+static bool wifi_attacks_messenger_owns_radio(void){return messenger_owned;}
+static bool cym_messenger_busy(void){return messenger_owned;}
+static void cym_messenger_stop(void){messenger_stops++;}
 static int wifi_attacks_ap_owner_state(void){return ap_state;}
 static void wifi_attacks_ap_invalidate(void){ap_cancel++;}
 static void wifi_attacks_radio_release(int owner){assert(owner==2);shared_releases++;}
@@ -166,6 +170,7 @@ __OWNER_CASES__
 """
 owner=r"""
     if(c==40) {
+        messenger_owned=true;assert(!clock_radio_admit());assert(clock_defer_radio_navigation(new_wifi));assert(messenger_stops==1);clock_radio_handoff_poll();assert(!new_calls);messenger_owned=false;clock_cancel_radio_navigation();
         ap_state=1;assert(!clock_radio_admit());
         assert(clock_defer_radio_navigation(new_wifi) && ap_cancel==1);
         clock_radio_handoff_poll();assert(!new_calls && s_clock_deferred_radio_fn);
